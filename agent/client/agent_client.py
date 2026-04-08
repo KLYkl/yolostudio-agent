@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from langchain_ollama import ChatOllama
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.checkpoint.memory import MemorySaver
@@ -13,9 +12,11 @@ from langgraph.prebuilt import create_react_agent
 from langgraph.types import Command
 
 from agent_plan.agent.client.context_builder import ContextBuilder
+from agent_plan.agent.client.llm_factory import LlmProviderSettings, build_llm, provider_summary
 from agent_plan.agent.client.event_retriever import EventRetriever
 from agent_plan.agent.client.memory_store import MemoryStore
 from agent_plan.agent.client.session_state import SessionState, utc_now
+from agent_plan.agent.client.tool_adapter import adapt_tools_for_chat_model
 from agent_plan.agent.client.tool_result_parser import parse_tool_message
 
 SYSTEM_PROMPT = """你是 YoloStudio Agent，负责帮助用户完成数据准备和训练管理。
@@ -32,12 +33,26 @@ HIGH_RISK_TOOLS = {"start_training", "split_dataset", "augment_dataset"}
 
 @dataclass(slots=True)
 class AgentSettings:
+    provider: str = os.getenv("YOLOSTUDIO_LLM_PROVIDER", "ollama")
     model: str = os.getenv("YOLOSTUDIO_AGENT_MODEL", "gemma4:e4b")
+    base_url: str = os.getenv("YOLOSTUDIO_LLM_BASE_URL", "")
+    api_key: str = os.getenv("YOLOSTUDIO_LLM_API_KEY", "")
+    temperature: float = float(os.getenv("YOLOSTUDIO_LLM_TEMPERATURE", "0"))
     ollama_url: str = os.getenv("YOLOSTUDIO_OLLAMA_URL", "http://127.0.0.1:11434")
     mcp_url: str = os.getenv("YOLOSTUDIO_MCP_URL", "http://127.0.0.1:8080/mcp")
     max_history_messages: int = int(os.getenv("YOLOSTUDIO_MAX_HISTORY_MESSAGES", "12"))
     session_id: str = os.getenv("YOLOSTUDIO_SESSION_ID", "default")
     memory_root: str = os.getenv("YOLOSTUDIO_MEMORY_ROOT", str(Path(__file__).resolve().parents[2] / "memory"))
+
+    def to_llm_settings(self) -> LlmProviderSettings:
+        base_url = self.base_url or (self.ollama_url if self.provider.strip().lower() == 'ollama' else '')
+        return LlmProviderSettings(
+            provider=self.provider,
+            model=self.model,
+            base_url=base_url,
+            api_key=self.api_key,
+            temperature=self.temperature,
+        )
 
 
 class YoloStudioAgentClient:
@@ -60,7 +75,7 @@ class YoloStudioAgentClient:
     def preview(self) -> str:
         return (
             f"YoloStudio Agent 已就绪 ({self.settings.model})\n"
-            f"MCP Server: {self.settings.mcp_url} | Ollama: {self.settings.ollama_url}\n"
+            f"MCP Server: {self.settings.mcp_url} | LLM: {provider_summary(self.settings.to_llm_settings())}\n"
             f"Session: {self.session_state.session_id}"
         )
 
@@ -319,8 +334,8 @@ async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudi
             }
         }
     )
-    tools = await client.get_tools()
-    llm = ChatOllama(model=settings.model, base_url=settings.ollama_url)
+    tools = adapt_tools_for_chat_model(await client.get_tools())
+    llm = build_llm(settings.to_llm_settings())
     graph = create_react_agent(
         llm,
         tools,

@@ -14,8 +14,10 @@ import time
 from pathlib import Path
 
 from agent_plan.agent.server.services.gpu_utils import (
-    find_available_gpu,
+    GpuAllocationPolicy,
+    get_effective_gpu_policy,
     query_gpu_status,
+    resolve_auto_device,
 )
 from agent_plan.agent.server.services.train_log_parser import parse_latest_metrics
 
@@ -36,7 +38,6 @@ class TrainService:
         epochs: int = 100,
         device: str = "auto",
     ) -> dict:
-        """启动训练。device 默认 auto，自动选择空闲 GPU。"""
         if self._process and self._process.poll() is None:
             return {"ok": False, "error": "已有训练任务在运行，请先停止或等待完成"}
 
@@ -78,9 +79,10 @@ class TrainService:
 
         self._start_time = time.time()
         self._resolved_device = resolved_device
+        device_policy = get_effective_gpu_policy()
         return {
             "ok": True,
-            "message": f"训练已启动：model={model}, data={data_yaml}, epochs={epochs}, device={resolved_device}",
+            "message": f"训练已启动：model={model}, data={data_yaml}, epochs={epochs}, device={resolved_device}, policy={device_policy}",
             "pid": self._process.pid,
             "device": resolved_device,
             "log_file": str(self._log_file),
@@ -90,13 +92,13 @@ class TrainService:
                 "data_yaml": data_yaml,
                 "epochs": epochs,
                 "device": resolved_device,
+                "device_policy": device_policy,
             },
             "yolo_executable": yolo_exe,
             "started_at": self._start_time,
         }
 
     def status(self) -> dict:
-        """查看训练状态 + 最新指标"""
         running = bool(self._process and self._process.poll() is None)
         result: dict = {
             "ok": True,
@@ -106,6 +108,7 @@ class TrainService:
             "command": self._command,
             "started_at": self._start_time,
             "yolo_executable": self._yolo_executable,
+            "device_policy": get_effective_gpu_policy(),
         }
         if self._process:
             result["pid"] = self._process.pid
@@ -118,7 +121,6 @@ class TrainService:
         return result
 
     def stop(self) -> dict:
-        """停止当前训练，必要时强制 kill。"""
         if not self._process or self._process.poll() is not None:
             return {"ok": False, "error": "当前没有正在运行的训练任务"}
 
@@ -140,7 +142,6 @@ class TrainService:
 
     @staticmethod
     def _validate_inputs(model: str, data_yaml: str, epochs: int) -> str | None:
-        """前置校验训练参数"""
         if not str(model).strip():
             return "model 不能为空"
         if not str(data_yaml).strip():
@@ -156,13 +157,6 @@ class TrainService:
 
     @staticmethod
     def _find_yolo_executable() -> str | None:
-        """
-        自动搜索 yolo 可执行文件。
-
-        搜索策略：
-        1. 当前 PATH 中直接找 yolo
-        2. 遍历所有 conda 环境，找到装了 ultralytics 的环境的 yolo
-        """
         yolo_in_path = shutil.which("yolo")
         if yolo_in_path:
             return yolo_in_path
@@ -222,32 +216,33 @@ class TrainService:
 
     @staticmethod
     def _resolve_device(device: str) -> tuple[str, str | None]:
-        """校验并解析设备参数。"""
         device = device.strip().lower()
+        policy = get_effective_gpu_policy()
 
         if device == "cpu":
             return "", "不支持 CPU 训练，请使用 GPU"
-        if "," in device:
-            return "", f"不支持多卡训练（收到 device={device}），请使用单张 GPU"
         if device == "auto":
-            gpu_id = find_available_gpu()
-            if gpu_id is None:
-                return "", "没有可用于训练的 GPU（要么已有进程占用，要么当前不可见）"
-            return gpu_id, None
+            return resolve_auto_device(policy=policy)
 
         gpus = query_gpu_status()
         gpu_map = {gpu.index: gpu for gpu in gpus}
-        if device not in gpu_map:
-            valid_ids = ", ".join(sorted(gpu_map.keys())) or "无"
-            return "", f"GPU {device} 不存在（可用设备: {valid_ids}）"
+        requested_ids = [part.strip() for part in device.split(',') if part.strip()]
+        if not requested_ids:
+            return "", "device 不能为空"
 
-        target = gpu_map[device]
-        if target.busy:
-            return "", (
-                f"GPU {device} 上有进程在运行，不建议同时训练。"
-                f"可使用 device=auto 自动选择空闲 GPU"
-            )
-        return device, None
+        if len(requested_ids) > 1 and policy == GpuAllocationPolicy.SINGLE_IDLE_GPU:
+            return "", f"当前策略 {policy} 仅允许单卡；收到 device={device}"
+
+        missing = [gpu_id for gpu_id in requested_ids if gpu_id not in gpu_map]
+        if missing:
+            valid_ids = ", ".join(sorted(gpu_map.keys())) or "无"
+            return "", f"GPU {', '.join(missing)} 不存在（可用设备: {valid_ids}）"
+
+        busy = [gpu_id for gpu_id in requested_ids if gpu_map[gpu_id].busy]
+        if busy:
+            return "", f"GPU {', '.join(busy)} 上有进程在运行，不建议同时训练；可改用 device=auto 选择空闲 GPU"
+
+        return ','.join(requested_ids), None
 
     @staticmethod
     def _build_status_summary(result: dict) -> str:
