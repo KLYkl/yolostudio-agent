@@ -1,2 +1,4 @@
 mcp[cli]
-
+Pillow
+PyYAML
+PySide6

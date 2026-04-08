@@ -101,6 +101,6 @@ def get_gpu_status_summary() -> str:
         return "无法获取 GPU 信息（nvidia-smi 不可用）"
     lines = []
     for gpu in gpus:
-        status = "🔴 忙碌（有进程占用）" if gpu.busy else "🟢 空闲"
+        status = "忙碌（有进程占用）" if gpu.busy else "空闲"
         lines.append(f"GPU {gpu.index}: {status}, 空闲显存 {gpu.free_mb} MiB")
     return "\n".join(lines)

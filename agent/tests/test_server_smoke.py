@@ -1,0 +1,35 @@
+from __future__ import annotations
+
+from pathlib import Path
+import sys
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+
+from agent_plan.agent.server.services.train_service import TrainService
+from agent_plan.agent.server.tools.train_tools import check_training_status, stop_training
+from agent_plan.agent.server.tools.data_tools import scan_dataset
+
+
+def main() -> None:
+    service = TrainService()
+
+    auto_device = service._resolve_device("auto")
+    multi_gpu = service._resolve_device("0,1")
+    cpu = service._resolve_device("cpu")
+
+    print("resolve:auto", auto_device)
+    print("resolve:multi", multi_gpu)
+    print("resolve:cpu", cpu)
+
+    missing_yaml = str(Path("D:/yolodo2.0/agent_plan/definitely_missing.yaml"))
+    invalid = service.start(model="yolov8n.pt", data_yaml=missing_yaml, epochs=1)
+    print("start:missing_yaml", invalid)
+
+    print("tool:status", check_training_status())
+    print("tool:stop", stop_training())
+    print("tool:scan_missing", scan_dataset("Z:/definitely-not-exist"))
+
+
+if __name__ == "__main__":
+    main()

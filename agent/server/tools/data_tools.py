@@ -1,6 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
+
+
+def _error_payload(exc: Exception, action: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "error": f"{action}失败: {exc}",
+        "error_type": exc.__class__.__name__,
+    }
 
 
 def summarize_scan_result(result) -> str:
@@ -11,16 +20,28 @@ def summarize_scan_result(result) -> str:
     )
 
 
-def scan_dataset(img_dir: str, label_dir: str = "") -> str:
+def scan_dataset(img_dir: str, label_dir: str = "") -> dict[str, Any]:
     """扫描数据集并返回摘要。"""
-    from core.data_handler._handler import DataHandler
+    try:
+        from core.data_handler._handler import DataHandler
 
-    handler = DataHandler()
-    result = handler.scan_dataset(
-        img_dir=Path(img_dir),
-        label_dir=Path(label_dir) if label_dir else None,
-    )
-    return summarize_scan_result(result)
+        handler = DataHandler()
+        result = handler.scan_dataset(
+            img_dir=Path(img_dir),
+            label_dir=Path(label_dir) if label_dir else None,
+        )
+        return {
+            "ok": True,
+            "summary": summarize_scan_result(result),
+            "total_images": result.total_images,
+            "labeled_images": result.labeled_images,
+            "missing_labels": len(result.missing_labels),
+            "empty_labels": result.empty_labels,
+            "classes": result.classes,
+            "class_stats": result.class_stats,
+        }
+    except Exception as exc:
+        return _error_payload(exc, "扫描数据集")
 
 
 def split_dataset(
@@ -32,39 +53,43 @@ def split_dataset(
     mode: str = "copy",
     ignore_orphans: bool = False,
     clear_output: bool = False,
-) -> dict:
+) -> dict[str, Any]:
     """按现有 DataHandler 能力将数据集切分为 train/val。"""
-    from core.data_handler._handler import DataHandler
-    from core.data_handler._models import SplitMode
+    try:
+        from core.data_handler._handler import DataHandler
+        from core.data_handler._models import SplitMode
 
-    handler = DataHandler()
-    mode_map = {
-        "copy": SplitMode.COPY,
-        "move": SplitMode.MOVE,
-        "index": SplitMode.INDEX,
-    }
-    selected_mode = mode_map.get(mode.lower())
-    if selected_mode is None:
-        raise ValueError(f"不支持的 split mode: {mode}")
+        handler = DataHandler()
+        mode_map = {
+            "copy": SplitMode.COPY,
+            "move": SplitMode.MOVE,
+            "index": SplitMode.INDEX,
+        }
+        selected_mode = mode_map.get(mode.lower())
+        if selected_mode is None:
+            raise ValueError(f"不支持的 split mode: {mode}")
 
-    result = handler.split_dataset(
-        img_dir=Path(img_dir),
-        label_dir=Path(label_dir) if label_dir else None,
-        output_dir=Path(output_dir) if output_dir else None,
-        ratio=ratio,
-        seed=seed,
-        mode=selected_mode,
-        ignore_orphans=ignore_orphans,
-        clear_output=clear_output,
-    )
-    return {
-        "train_path": result.train_path,
-        "val_path": result.val_path,
-        "train_count": result.train_count,
-        "val_count": result.val_count,
-        "ratio": ratio,
-        "mode": mode.lower(),
-    }
+        result = handler.split_dataset(
+            img_dir=Path(img_dir),
+            label_dir=Path(label_dir) if label_dir else None,
+            output_dir=Path(output_dir) if output_dir else None,
+            ratio=ratio,
+            seed=seed,
+            mode=selected_mode,
+            ignore_orphans=ignore_orphans,
+            clear_output=clear_output,
+        )
+        return {
+            "ok": True,
+            "train_path": result.train_path,
+            "val_path": result.val_path,
+            "train_count": result.train_count,
+            "val_count": result.val_count,
+            "ratio": ratio,
+            "mode": mode.lower(),
+        }
+    except Exception as exc:
+        return _error_payload(exc, "划分数据集")
 
 
 def validate_dataset(
@@ -75,29 +100,33 @@ def validate_dataset(
     check_class_ids: bool = True,
     check_format: bool = True,
     check_orphans: bool = True,
-) -> dict:
+) -> dict[str, Any]:
     """校验标签合法性并返回问题统计。"""
-    from core.data_handler._handler import DataHandler
+    try:
+        from core.data_handler._handler import DataHandler
 
-    handler = DataHandler()
-    result = handler.validate_labels(
-        img_dir=Path(img_dir),
-        label_dir=Path(label_dir) if label_dir else None,
-        classes_txt=Path(classes_txt) if classes_txt else None,
-        check_coords=check_coords,
-        check_class_ids=check_class_ids,
-        check_format=check_format,
-        check_orphans=check_orphans,
-    )
-    return {
-        "total_labels": result.total_labels,
-        "has_issues": result.has_issues,
-        "issue_count": result.issue_count,
-        "coord_errors": len(result.coord_errors),
-        "class_errors": len(result.class_errors),
-        "format_errors": len(result.format_errors),
-        "orphan_labels": len(result.orphan_labels),
-    }
+        handler = DataHandler()
+        result = handler.validate_labels(
+            img_dir=Path(img_dir),
+            label_dir=Path(label_dir) if label_dir else None,
+            classes_txt=Path(classes_txt) if classes_txt else None,
+            check_coords=check_coords,
+            check_class_ids=check_class_ids,
+            check_format=check_format,
+            check_orphans=check_orphans,
+        )
+        return {
+            "ok": True,
+            "total_labels": result.total_labels,
+            "has_issues": result.has_issues,
+            "issue_count": result.issue_count,
+            "coord_errors": len(result.coord_errors),
+            "class_errors": len(result.class_errors),
+            "format_errors": len(result.format_errors),
+            "orphan_labels": len(result.orphan_labels),
+        }
+    except Exception as exc:
+        return _error_payload(exc, "校验数据集")
 
 
 def augment_dataset(
@@ -118,39 +147,43 @@ def augment_dataset(
     contrast_strength: float = 0.25,
     enable_noise: bool = False,
     noise_strength: float = 0.08,
-) -> dict:
+) -> dict[str, Any]:
     """执行离线数据增强，默认启用最常用的水平翻转。"""
-    from core.data_handler._handler import DataHandler
-    from core.data_handler._models import AugmentConfig
+    try:
+        from core.data_handler._handler import DataHandler
+        from core.data_handler._models import AugmentConfig
 
-    handler = DataHandler()
-    config = AugmentConfig(
-        copies_per_image=copies_per_image,
-        include_original=include_original,
-        seed=seed,
-        mode=mode,
-        enable_horizontal_flip=enable_horizontal_flip,
-        enable_rotate=enable_rotate,
-        rotate_degrees=rotate_degrees,
-        enable_brightness=enable_brightness,
-        brightness_strength=brightness_strength,
-        enable_contrast=enable_contrast,
-        contrast_strength=contrast_strength,
-        enable_noise=enable_noise,
-        noise_strength=noise_strength,
-    )
-    result = handler.augment_dataset(
-        img_dir=Path(img_dir),
-        config=config,
-        label_dir=Path(label_dir) if label_dir else None,
-        output_dir=Path(output_dir) if output_dir else None,
-        classes_txt=Path(classes_txt) if classes_txt else None,
-    )
-    return {
-        "output_dir": result.output_dir,
-        "source_images": result.source_images,
-        "copied_originals": result.copied_originals,
-        "augmented_images": result.augmented_images,
-        "label_files_written": result.label_files_written,
-        "skipped_images": result.skipped_images,
-    }
+        handler = DataHandler()
+        config = AugmentConfig(
+            copies_per_image=copies_per_image,
+            include_original=include_original,
+            seed=seed,
+            mode=mode,
+            enable_horizontal_flip=enable_horizontal_flip,
+            enable_rotate=enable_rotate,
+            rotate_degrees=rotate_degrees,
+            enable_brightness=enable_brightness,
+            brightness_strength=brightness_strength,
+            enable_contrast=enable_contrast,
+            contrast_strength=contrast_strength,
+            enable_noise=enable_noise,
+            noise_strength=noise_strength,
+        )
+        result = handler.augment_dataset(
+            img_dir=Path(img_dir),
+            config=config,
+            label_dir=Path(label_dir) if label_dir else None,
+            output_dir=Path(output_dir) if output_dir else None,
+            classes_txt=Path(classes_txt) if classes_txt else None,
+        )
+        return {
+            "ok": True,
+            "output_dir": result.output_dir,
+            "source_images": result.source_images,
+            "copied_originals": result.copied_originals,
+            "augmented_images": result.augmented_images,
+            "label_files_written": result.label_files_written,
+            "skipped_images": result.skipped_images,
+        }
+    except Exception as exc:
+        return _error_payload(exc, "增强数据集")
