@@ -23,9 +23,6 @@ from agent_plan.agent.server.services.gpu_utils import (
 )
 from agent_plan.agent.server.services.train_log_parser import parse_latest_metrics
 
-# 训练最低显存要求 (MiB)
-MIN_TRAIN_FREE_MB = 6000
-
 
 class TrainService:
     def __init__(self) -> None:
@@ -115,9 +112,9 @@ class TrainService:
 
         # 自动选择
         if device == "auto":
-            gpu_id = find_available_gpu(min_free_mb=MIN_TRAIN_FREE_MB)
+            gpu_id = find_available_gpu()
             if gpu_id is None:
-                return "", "没有可用的 GPU（所有卡都有进程在运行或显存不足）"
+                return "", "没有可用的 GPU（所有卡都有进程在运行）"
             return gpu_id, None
 
         # 手动指定设备号：校验是否存在且空闲
@@ -133,10 +130,6 @@ class TrainService:
             return "", (
                 f"GPU {device} 上有进程在运行，不建议同时训练。"
                 f"可使用 device=auto 自动选择空闲 GPU"
-            )
-        if target.free_mb < MIN_TRAIN_FREE_MB:
-            return "", (
-                f"GPU {device} 空闲显存不足（{target.free_mb} MiB < {MIN_TRAIN_FREE_MB} MiB）"
             )
 
         return device, None

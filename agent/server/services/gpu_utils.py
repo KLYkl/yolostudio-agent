@@ -3,9 +3,8 @@ gpu_utils.py - GPU 状态检测工具
 =======================================
 用于训练前动态选择可用 GPU，避免与 Ollama 或其他 CUDA 进程冲突。
 
-判断逻辑（两条缺一不可）：
-1. 卡上无任何 compute 进程（不只查 Ollama，任何 CUDA 进程都算 busy）
-2. 空闲显存 >= min_free_mb
+判断逻辑：
+卡上无任何 compute 进程（不只查 Ollama，任何 CUDA 进程都算 busy）
 """
 
 from __future__ import annotations
@@ -74,29 +73,23 @@ def query_gpu_status() -> list[GpuInfo]:
     return gpus
 
 
-def find_available_gpu(min_free_mb: int = 6000) -> str | None:
+def find_available_gpu() -> str | None:
     """
-    找一张 **无进程** 且 **显存足够** 的 GPU，返回设备号。
+    找一张 **无进程** 的 GPU，返回设备号。
 
     选择策略：
     - 只从无 compute 进程的卡里选
-    - 多张都满足时，选空闲显存最大的
-    - 没有满足条件的卡返回 None
-
-    Args:
-        min_free_mb: 最低空闲显存要求 (MiB)
+    - 多张空闲时，选空闲显存最大的（作为 tiebreaker）
+    - 没有空闲卡返回 None
 
     Returns:
         GPU 设备号 (如 "0", "1") 或 None
     """
     gpus = query_gpu_status()
-    candidates = [
-        gpu for gpu in gpus
-        if not gpu.busy and gpu.free_mb >= min_free_mb
-    ]
+    candidates = [gpu for gpu in gpus if not gpu.busy]
     if not candidates:
         return None
-    # 选空闲显存最大的
+    # 多张空闲时选显存最大的
     best = max(candidates, key=lambda g: g.free_mb)
     return best.index
 
