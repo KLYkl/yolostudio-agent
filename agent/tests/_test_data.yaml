@@ -1,0 +1,5 @@
+path: /home/kly/test_dataset/images_split
+train: images/train
+val: images/val
+names:
+  0: bicycle

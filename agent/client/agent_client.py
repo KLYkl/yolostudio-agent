@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from langchain_ollama import ChatOllama
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import create_react_agent
@@ -144,10 +144,30 @@ class YoloStudioAgentClient:
         return list(messages)
 
     def _trim_history(self) -> None:
+        """裁剪历史消息，保持 tool_call ↔ ToolMessage 配对完整。"""
         max_history = max(2, self.settings.max_history_messages)
-        system_messages = [message for message in self._messages if isinstance(message, SystemMessage)]
-        non_system_messages = [message for message in self._messages if not isinstance(message, SystemMessage)]
-        self._messages = system_messages[:1] + non_system_messages[-max_history:]
+        system_messages = [m for m in self._messages if isinstance(m, SystemMessage)]
+        non_system = [m for m in self._messages if not isinstance(m, SystemMessage)]
+
+        if len(non_system) <= max_history:
+            return
+
+        trimmed = non_system[-max_history:]
+
+        # 向前扩展：如果首条是 ToolMessage，必须包含其对应的 AIMessage(tool_calls)
+        while trimmed and isinstance(trimmed[0], ToolMessage):
+            # 找到该 ToolMessage 在原始列表中的位置，往前补消息
+            idx = non_system.index(trimmed[0])
+            if idx > 0:
+                trimmed.insert(0, non_system[idx - 1])
+            else:
+                break
+
+        # 向后检查：如果末尾 AIMessage 有 tool_calls 但没有后续 ToolMessage，移除它
+        if trimmed and isinstance(trimmed[-1], AIMessage) and getattr(trimmed[-1], 'tool_calls', None):
+            trimmed.pop()
+
+        self._messages = system_messages[:1] + trimmed
 
     @staticmethod
     def _build_confirmation_prompt(tool_call: dict[str, Any]) -> str:
