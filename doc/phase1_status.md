@@ -35,6 +35,8 @@ Date: 2026-04-08 (updated)
 
 ## 本轮补强 ✅
 
+- [x] 结构化上下文系统 v1：`SessionState` + `MemoryStore` + `ContextBuilder` + `ToolResult Parser`
+- [x] 会话状态持久化：支持跨进程恢复当前数据集/待确认操作/最近工具结果
 - [x] server 侧 Tool 统一错误处理
 - [x] TrainService 前置校验（epochs/data_yaml/yolo 命令）
 - [x] TrainService `stop()` 增加 terminate → wait → kill fallback
@@ -43,5 +45,5 @@ Date: 2026-04-08 (updated)
 
 ## 剩余事项 ⏳
 
-- [ ] 做一次更完整的 scan → validate → start/status/stop 闭环验证
-- [ ] 为 MCP Server 增加标准启动/重启脚本
+- [x] 做一次更完整的 scan → validate → start/status/stop 闭环验证
+- [x] 为 MCP Server 增加标准启动/重启脚本（`/home/kly/yolostudio_agent_proto/manage_mcp_server.sh`）
