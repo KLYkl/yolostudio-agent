@@ -25,3 +25,12 @@ runs/
 
 # 日志
 *.log
+
+# Agent runtime artifacts
+memory/
+train_log_*.txt
+agent/tests/test_long_context_smoke_output.json
+agent/tests/_v2ray_config.json
+agent/tests/_train_log.txt
+agent/tests/.tmp_*/
+.tmp_*/

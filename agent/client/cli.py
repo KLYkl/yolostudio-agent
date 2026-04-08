@@ -7,7 +7,7 @@ from pathlib import Path
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from agent_plan.agent.client.agent_client import build_agent_client
+from agent_plan.agent.client.agent_client import AgentSettings, build_agent_client
 
 for stream_name in ("stdin", "stdout", "stderr"):
     stream = getattr(sys, stream_name, None)
@@ -16,7 +16,8 @@ for stream_name in ("stdin", "stdout", "stderr"):
 
 
 async def main() -> None:
-    agent = await build_agent_client()
+    session_id = sys.argv[1] if len(sys.argv) > 1 else "default"
+    agent = await build_agent_client(AgentSettings(session_id=session_id))
     print(agent.preview())
     print("输入 exit / quit 退出。")
 

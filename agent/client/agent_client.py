@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from langchain_ollama import ChatOllama
@@ -10,6 +11,12 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import create_react_agent
 from langgraph.types import Command
+
+from agent_plan.agent.client.context_builder import ContextBuilder
+from agent_plan.agent.client.event_retriever import EventRetriever
+from agent_plan.agent.client.memory_store import MemoryStore
+from agent_plan.agent.client.session_state import SessionState, utc_now
+from agent_plan.agent.client.tool_result_parser import parse_tool_message
 
 SYSTEM_PROMPT = """你是 YoloStudio Agent，负责帮助用户完成数据准备和训练管理。
 
@@ -29,14 +36,22 @@ class AgentSettings:
     ollama_url: str = os.getenv("YOLOSTUDIO_OLLAMA_URL", "http://127.0.0.1:11434")
     mcp_url: str = os.getenv("YOLOSTUDIO_MCP_URL", "http://127.0.0.1:8080/mcp")
     max_history_messages: int = int(os.getenv("YOLOSTUDIO_MAX_HISTORY_MESSAGES", "12"))
+    session_id: str = os.getenv("YOLOSTUDIO_SESSION_ID", "default")
+    memory_root: str = os.getenv("YOLOSTUDIO_MEMORY_ROOT", str(Path(__file__).resolve().parents[2] / "memory"))
 
 
 class YoloStudioAgentClient:
     def __init__(self, graph: Any, settings: AgentSettings) -> None:
         self.graph = graph
         self.settings = settings
-        self._messages: list[BaseMessage] = [SystemMessage(content=SYSTEM_PROMPT)]
+        self._messages: list[BaseMessage] = []
         self._turn_index = 0
+        self.memory = MemoryStore(settings.memory_root)
+        self.context_builder = ContextBuilder(SYSTEM_PROMPT)
+        self.event_retriever = EventRetriever(self.memory)
+        self.session_state: SessionState = self.memory.load_state(settings.session_id)
+        self._sync_preferences()
+        self.memory.save_state(self.session_state)
 
     @property
     def messages(self) -> list[BaseMessage]:
@@ -45,30 +60,34 @@ class YoloStudioAgentClient:
     def preview(self) -> str:
         return (
             f"YoloStudio Agent 已就绪 ({self.settings.model})\n"
-            f"MCP Server: {self.settings.mcp_url} | Ollama: {self.settings.ollama_url}"
+            f"MCP Server: {self.settings.mcp_url} | Ollama: {self.settings.ollama_url}\n"
+            f"Session: {self.session_state.session_id}"
         )
 
     async def chat(self, user_text: str, auto_approve: bool = False) -> dict[str, Any]:
         self._messages.append(HumanMessage(content=user_text))
         self._turn_index += 1
-        thread_id = f"cli-turn-{self._turn_index}"
+        thread_id = f"{self.session_state.session_id}-turn-{self._turn_index}"
         config = {"configurable": {"thread_id": thread_id}}
 
         self._trim_history()
-        result = await self.graph.ainvoke({"messages": self._messages}, config=config)
+        digest = self.event_retriever.build_digest(self.session_state.session_id, self.session_state)
+        built_messages = self.context_builder.build_messages(self.session_state, self._messages, digest=digest)
+        result = await self.graph.ainvoke({"messages": built_messages}, config=config)
         pending = self._get_pending_tool_call(config)
         if pending:
             if pending["name"] in HIGH_RISK_TOOLS:
+                self._set_pending_confirmation(thread_id, pending)
                 if auto_approve:
                     result = await self.graph.ainvoke(Command(resume="approved"), config=config)
+                    self._clear_pending_confirmation()
+                    self._apply_tool_results(result["messages"], built_messages_len=len(built_messages))
                     final_message = self._extract_final_ai(result["messages"])
-                    self._messages = self._normalize_history(result["messages"])
-                    return {
-                        "status": "completed",
-                        "message": final_message.content if final_message else "",
-                        "tool_call": pending,
-                        "approved": True,
-                    }
+                    self._messages.append(final_message or AIMessage(content=""))
+                    self._trim_history()
+                    self.memory.save_state(self.session_state)
+                    return {"status": "completed", "message": final_message.content if final_message else "", "tool_call": pending, "approved": True}
+                self.memory.save_state(self.session_state)
                 return {
                     "status": "needs_confirmation",
                     "message": self._build_confirmation_prompt(pending),
@@ -77,9 +96,12 @@ class YoloStudioAgentClient:
                 }
             result = await self.graph.ainvoke(Command(resume="approved"), config=config)
 
+        self._apply_tool_results(result["messages"], built_messages_len=len(built_messages))
         final_message = self._extract_final_ai(result["messages"])
-        self._messages = self._normalize_history(result["messages"])
+        if final_message:
+            self._messages.append(AIMessage(content=final_message.content))
         self._trim_history()
+        self.memory.save_state(self.session_state)
         return {
             "status": "completed",
             "message": final_message.content if final_message else "",
@@ -88,14 +110,17 @@ class YoloStudioAgentClient:
 
     async def confirm(self, thread_id: str, approved: bool) -> dict[str, Any]:
         config = {"configurable": {"thread_id": thread_id}}
-        pending = self._get_pending_tool_call(config)
+        pending = self._get_pending_tool_call(config) or self._pending_from_state()
         if not pending:
             return {"status": "error", "message": "当前没有待确认的高风险操作。"}
 
         if not approved:
             cancel_message = self._build_cancel_message(pending)
             self._messages.append(AIMessage(content=cancel_message))
+            self._clear_pending_confirmation()
             self._trim_history()
+            self.memory.append_event(self.session_state.session_id, "confirmation_cancelled", {"tool": pending["name"], "args": pending.get("args", {})})
+            self.memory.save_state(self.session_state)
             return {
                 "status": "cancelled",
                 "message": cancel_message,
@@ -103,15 +128,129 @@ class YoloStudioAgentClient:
             }
 
         result = await self.graph.ainvoke(Command(resume="approved"), config=config)
+        self.memory.append_event(self.session_state.session_id, "confirmation_approved", {"tool": pending["name"], "args": pending.get("args", {})})
+        self._clear_pending_confirmation()
+        self._apply_tool_results(result["messages"], built_messages_len=0)
         final_message = self._extract_final_ai(result["messages"])
-        self._messages = self._normalize_history(result["messages"])
+        if final_message:
+            self._messages.append(AIMessage(content=final_message.content))
         self._trim_history()
+        self.memory.save_state(self.session_state)
         return {
             "status": "completed",
             "message": final_message.content if final_message else "",
             "tool_call": pending,
             "approved": True,
         }
+
+    def _sync_preferences(self) -> None:
+        # settings.model 是 LLM 模型，不应污染训练默认模型上下文。
+        if self.session_state.preferences.default_model == self.settings.model:
+            self.session_state.preferences.default_model = ""
+        if self.session_state.preferences.language != "zh-CN":
+            self.session_state.preferences.language = "zh-CN"
+
+    def _set_pending_confirmation(self, thread_id: str, pending: dict[str, Any]) -> None:
+        pc = self.session_state.pending_confirmation
+        pc.thread_id = thread_id
+        pc.tool_name = pending["name"]
+        pc.tool_args = pending.get("args", {})
+        pc.created_at = utc_now()
+        self.memory.append_event(self.session_state.session_id, "confirmation_requested", {"tool": pc.tool_name, "args": pc.tool_args, "thread_id": thread_id})
+
+    def _clear_pending_confirmation(self) -> None:
+        self.session_state.pending_confirmation.thread_id = ""
+        self.session_state.pending_confirmation.tool_name = ""
+        self.session_state.pending_confirmation.tool_args = {}
+        self.session_state.pending_confirmation.created_at = ""
+
+    def _pending_from_state(self) -> dict[str, Any] | None:
+        pc = self.session_state.pending_confirmation
+        if not pc.tool_name:
+            return None
+        return {"name": pc.tool_name, "args": pc.tool_args, "id": None}
+
+    def _apply_tool_results(self, messages: list[BaseMessage], built_messages_len: int) -> None:
+        delta_messages = messages[built_messages_len:] if built_messages_len <= len(messages) else messages
+        tool_args_by_id: dict[str, dict[str, Any]] = {}
+        for message in delta_messages:
+            if isinstance(message, AIMessage):
+                for tool_call in getattr(message, 'tool_calls', []) or []:
+                    if tool_call.get('id'):
+                        tool_args_by_id[tool_call['id']] = tool_call.get('args', {})
+        for message in delta_messages:
+            if not isinstance(message, ToolMessage):
+                continue
+            parsed = parse_tool_message(message)
+            tool_name = message.name or "unknown_tool"
+            tool_args = tool_args_by_id.get(message.tool_call_id or '', {})
+            self.memory.append_event(self.session_state.session_id, "tool_result", {"tool": tool_name, "args": tool_args, "result": parsed})
+            self._apply_to_state(tool_name, parsed, tool_args)
+
+    def _apply_to_state(self, tool_name: str, result: dict[str, Any], tool_args: dict[str, Any] | None = None) -> None:
+        ds = self.session_state.active_dataset
+        tr = self.session_state.active_training
+
+        tool_args = tool_args or {}
+        if tool_name == "scan_dataset" and result.get("ok"):
+            ds.img_dir = str(tool_args.get('img_dir', ds.img_dir))
+            ds.label_dir = str(tool_args.get('label_dir', ds.label_dir))
+            detected_yaml = result.get("detected_data_yaml") or ""
+            if detected_yaml:
+                ds.data_yaml = str(detected_yaml)
+            if summary := result.get("summary"):
+                ds.last_scan = {
+                    "total_images": result.get("total_images"),
+                    "labeled_images": result.get("labeled_images"),
+                    "missing_labels": result.get("missing_labels"),
+                    "empty_labels": result.get("empty_labels"),
+                    "summary": summary,
+                    "detected_data_yaml": detected_yaml,
+                }
+        elif tool_name == "validate_dataset" and result.get("ok"):
+            ds.img_dir = str(tool_args.get('img_dir', ds.img_dir))
+            ds.label_dir = str(tool_args.get('label_dir', ds.label_dir))
+            ds.last_validate = {
+                "issue_count": result.get("issue_count"),
+                "has_issues": result.get("has_issues"),
+            }
+        elif tool_name == "split_dataset" and result.get("ok"):
+            ds.img_dir = str(tool_args.get('img_dir', ds.img_dir))
+            ds.label_dir = str(tool_args.get('label_dir', ds.label_dir))
+            ds.last_split = {
+                "train_path": result.get("train_path"),
+                "val_path": result.get("val_path"),
+                "train_count": result.get("train_count"),
+                "val_count": result.get("val_count"),
+            }
+        elif tool_name == "start_training" and result.get("ok"):
+            tr.running = True
+            resolved_args = result.get("resolved_args") or {}
+            tr.model = str(resolved_args.get("model") or tool_args.get("model", tr.model))
+            tr.data_yaml = str(resolved_args.get("data_yaml") or tool_args.get("data_yaml", tr.data_yaml))
+            if tr.data_yaml:
+                ds.data_yaml = tr.data_yaml
+            tr.device = result.get("device", "")
+            tr.pid = result.get("pid")
+            tr.log_file = result.get("log_file", "")
+            tr.started_at = result.get("started_at")
+            tr.last_start_result = result
+        elif tool_name == "check_training_status":
+            tr.last_status = result
+            tr.running = bool(result.get("running"))
+            tr.device = result.get("device", tr.device)
+            tr.pid = result.get("pid", tr.pid)
+            tr.log_file = result.get("log_file", tr.log_file)
+            tr.started_at = result.get("started_at", tr.started_at)
+            command = result.get("command") or []
+            for part in command:
+                if isinstance(part, str) and part.startswith("model="):
+                    tr.model = part.split("=", 1)[1]
+                if isinstance(part, str) and part.startswith("data="):
+                    tr.data_yaml = part.split("=", 1)[1]
+        elif tool_name == "stop_training" and result.get("ok"):
+            tr.running = False
+            tr.last_status = result
 
     def _get_pending_tool_call(self, config: dict[str, Any]) -> dict[str, Any] | None:
         state = self.graph.get_state(config)
@@ -139,35 +278,11 @@ class YoloStudioAgentClient:
                 return message
         return None
 
-    @staticmethod
-    def _normalize_history(messages: list[BaseMessage]) -> list[BaseMessage]:
-        return list(messages)
-
     def _trim_history(self) -> None:
-        """裁剪历史消息，保持 tool_call ↔ ToolMessage 配对完整。"""
         max_history = max(2, self.settings.max_history_messages)
-        system_messages = [m for m in self._messages if isinstance(m, SystemMessage)]
-        non_system = [m for m in self._messages if not isinstance(m, SystemMessage)]
-
-        if len(non_system) <= max_history:
+        if len(self._messages) <= max_history:
             return
-
-        trimmed = non_system[-max_history:]
-
-        # 向前扩展：如果首条是 ToolMessage，必须包含其对应的 AIMessage(tool_calls)
-        while trimmed and isinstance(trimmed[0], ToolMessage):
-            # 找到该 ToolMessage 在原始列表中的位置，往前补消息
-            idx = non_system.index(trimmed[0])
-            if idx > 0:
-                trimmed.insert(0, non_system[idx - 1])
-            else:
-                break
-
-        # 向后检查：如果末尾 AIMessage 有 tool_calls 但没有后续 ToolMessage，移除它
-        if trimmed and isinstance(trimmed[-1], AIMessage) and getattr(trimmed[-1], 'tool_calls', None):
-            trimmed.pop()
-
-        self._messages = system_messages[:1] + trimmed
+        self._messages = self._messages[-max_history:]
 
     @staticmethod
     def _build_confirmation_prompt(tool_call: dict[str, Any]) -> str:
@@ -208,4 +323,3 @@ async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudi
 
 async def build_agent():
     return await build_agent_client()
-
