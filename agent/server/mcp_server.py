@@ -14,7 +14,7 @@ from agent_plan.agent.server.tools.train_tools import (
     stop_training,
 )
 
-mcp = FastMCP("yolostudio")
+mcp = FastMCP("yolostudio", host="127.0.0.1", port=8080)
 
 mcp.tool()(scan_dataset)
 mcp.tool()(split_dataset)
@@ -26,4 +26,4 @@ mcp.tool()(stop_training)
 
 
 if __name__ == "__main__":
-    mcp.run(transport="streamable-http", host="127.0.0.1", port=8080)
+    mcp.run(transport="streamable-http")
