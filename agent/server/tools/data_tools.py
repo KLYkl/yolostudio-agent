@@ -54,7 +54,11 @@ def split_dataset(
     ignore_orphans: bool = False,
     clear_output: bool = False,
 ) -> dict[str, Any]:
-    """按现有 DataHandler 能力将数据集切分为 train/val。"""
+    """按现有 DataHandler 能力将数据集切分为 train/val。
+
+    mode 可选值: copy（复制文件）、move（移动文件）、index（生成索引txt）。
+    不支持其他值（如 trainval）。
+    """
     try:
         from core.data_handler._handler import DataHandler
         from core.data_handler._models import SplitMode
@@ -69,18 +73,26 @@ def split_dataset(
         if selected_mode is None:
             raise ValueError(f"不支持的 split mode: {mode}")
 
+        resolved_output = Path(output_dir) if output_dir else None
         result = handler.split_dataset(
             img_dir=Path(img_dir),
             label_dir=Path(label_dir) if label_dir else None,
-            output_dir=Path(output_dir) if output_dir else None,
+            output_dir=resolved_output,
             ratio=ratio,
             seed=seed,
             mode=selected_mode,
             ignore_orphans=ignore_orphans,
             clear_output=clear_output,
         )
+        # 推算实际输出目录的绝对路径
+        if resolved_output:
+            abs_output = str(resolved_output.resolve())
+        else:
+            # 默认: img_dir 同级的 {name}_split 目录
+            abs_output = str((Path(img_dir).parent / f"{Path(img_dir).name}_split").resolve())
         return {
             "ok": True,
+            "output_dir": abs_output,
             "train_path": result.train_path,
             "val_path": result.val_path,
             "train_count": result.train_count,
