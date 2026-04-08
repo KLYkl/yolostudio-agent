@@ -27,11 +27,12 @@ class TrainService:
         self._start_time: float | None = None
         self._resolved_device: str | None = None
         self._command: list[str] | None = None
+        self._yolo_executable: str | None = None
 
     def start(
         self,
         model: str,
-        data_yaml: str,
+        data_yaml: str = "",
         epochs: int = 100,
         device: str = "auto",
     ) -> dict:
@@ -47,7 +48,6 @@ class TrainService:
         if error:
             return {"ok": False, "error": error}
 
-        # 查找 yolo 可执行文件
         yolo_exe = self._find_yolo_executable()
         if not yolo_exe:
             return {"ok": False, "error": "未找到 yolo 命令。请确认某个 conda 环境中已安装 ultralytics"}
@@ -62,6 +62,7 @@ class TrainService:
             f"epochs={epochs}",
             f"device={resolved_device}",
         ]
+        self._yolo_executable = yolo_exe
 
         log_handle = self._log_file.open("w", encoding="utf-8")
         try:
@@ -79,21 +80,32 @@ class TrainService:
         self._resolved_device = resolved_device
         return {
             "ok": True,
+            "message": f"训练已启动：model={model}, data={data_yaml}, epochs={epochs}, device={resolved_device}",
             "pid": self._process.pid,
             "device": resolved_device,
             "log_file": str(self._log_file),
             "command": self._command,
+            "resolved_args": {
+                "model": model,
+                "data_yaml": data_yaml,
+                "epochs": epochs,
+                "device": resolved_device,
+            },
+            "yolo_executable": yolo_exe,
+            "started_at": self._start_time,
         }
 
     def status(self) -> dict:
         """查看训练状态 + 最新指标"""
         running = bool(self._process and self._process.poll() is None)
         result: dict = {
+            "ok": True,
             "running": running,
             "log_file": str(self._log_file) if self._log_file else None,
             "device": self._resolved_device,
             "command": self._command,
             "started_at": self._start_time,
+            "yolo_executable": self._yolo_executable,
         }
         if self._process:
             result["pid"] = self._process.pid
@@ -102,6 +114,7 @@ class TrainService:
             result["elapsed_seconds"] = round(max(0.0, time.time() - self._start_time), 2)
         if self._log_file:
             result["latest_metrics"] = parse_latest_metrics(self._log_file)
+        result["summary"] = self._build_status_summary(result)
         return result
 
     def stop(self) -> dict:
@@ -120,6 +133,7 @@ class TrainService:
 
         return {
             "ok": True,
+            "message": "训练任务已停止" if not forced else "训练任务已强制停止",
             "forced": forced,
             "return_code": self._process.returncode,
         }
@@ -130,12 +144,11 @@ class TrainService:
         if not str(model).strip():
             return "model 不能为空"
         if not str(data_yaml).strip():
-            return "data_yaml 不能为空"
+            return "data_yaml 不能为空；请先提供 YAML 路径，或先完成数据集准备后再训练"
         if int(epochs) <= 0:
             return "epochs 必须大于 0"
         if not Path(data_yaml).exists():
             return f"数据配置文件不存在: {data_yaml}"
-        # yolo 命令检查移到 start() 中通过 _find_yolo_executable 完成
         model_path = Path(model)
         if model_path.suffix and model_path.suffix in {'.pt', '.onnx', '.yaml'} and not model_path.exists() and not model.startswith('yolo'):
             return f"模型文件不存在: {model}"
@@ -149,19 +162,13 @@ class TrainService:
         搜索策略：
         1. 当前 PATH 中直接找 yolo
         2. 遍历所有 conda 环境，找到装了 ultralytics 的环境的 yolo
-
-        复用自 core/train_handler.py 的 detect_conda_envs + _resolve_yolo_path 逻辑。
         """
-        # 策略 1: 当前 PATH
         yolo_in_path = shutil.which("yolo")
         if yolo_in_path:
             return yolo_in_path
 
-        # 策略 2: 搜索 conda 环境
-        python_name = "python.exe" if sys.platform == "win32" else "python"
         search_roots: list[Path] = []
 
-        # 方法 A: conda env list
         try:
             result = subprocess.run(
                 ["conda", "env", "list"],
@@ -183,7 +190,6 @@ class TrainService:
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             pass
 
-        # 方法 B: 扫描常见目录
         if sys.platform == "win32":
             search_roots = [
                 Path.home() / "anaconda3" / "envs",
@@ -243,14 +249,18 @@ class TrainService:
             )
         return device, None
 
+    @staticmethod
+    def _build_status_summary(result: dict) -> str:
+        if result.get("running"):
+            elapsed = result.get("elapsed_seconds")
+            elapsed_text = f", 已运行 {elapsed}s" if elapsed is not None else ""
+            return f"训练进行中 (device={result.get('device')}, pid={result.get('pid')}{elapsed_text})"
+        if result.get("return_code") is None and not result.get("log_file"):
+            return "当前没有训练任务"
+        return f"当前无训练在跑，最近 return_code={result.get('return_code')}"
+
 
 def _resolve_yolo_in_env(env_path: Path) -> str | None:
-    """
-    从 conda 环境目录推导 yolo 可执行文件路径。
-
-    Windows: envs/xxx/Scripts/yolo.exe
-    Unix:    envs/xxx/bin/yolo
-    """
     if sys.platform == "win32":
         yolo_exe = env_path / "Scripts" / "yolo.exe"
     else:

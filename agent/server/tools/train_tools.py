@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from agent_plan.agent.server.services.gpu_utils import get_gpu_status_summary
+from agent_plan.agent.server.services.gpu_utils import get_gpu_status_summary, query_gpu_status
 from agent_plan.agent.server.services.train_service import TrainService
 
 service = TrainService()
@@ -22,8 +22,8 @@ def _wrap(action: str, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> dic
         }
 
 
-def start_training(model: str, data_yaml: str, epochs: int = 100, device: str = "auto") -> dict:
-    """启动一次 YOLO 训练任务。device 默认 auto，自动选择空闲 GPU。"""
+def start_training(model: str, data_yaml: str = "", epochs: int = 100, device: str = "auto") -> dict:
+    """启动一次 YOLO 训练任务。优先传入 model / data_yaml / epochs，device 默认 auto。"""
     return _wrap("启动训练", service.start, model=model, data_yaml=data_yaml, epochs=epochs, device=device)
 
 
@@ -39,4 +39,20 @@ def stop_training() -> dict:
 
 def check_gpu_status() -> dict[str, Any]:
     """查询所有 GPU 的状态：是否有进程占用、空闲显存。"""
-    return _wrap("查询 GPU 状态", lambda: {"ok": True, "summary": get_gpu_status_summary()})
+    def _impl() -> dict[str, Any]:
+        gpus = query_gpu_status()
+        return {
+            "ok": True,
+            "summary": get_gpu_status_summary(),
+            "gpus": [
+                {
+                    "index": gpu.index,
+                    "uuid": gpu.uuid,
+                    "free_mb": gpu.free_mb,
+                    "busy": gpu.busy,
+                }
+                for gpu in gpus
+            ],
+            "available_gpu_indexes": [gpu.index for gpu in gpus if not gpu.busy],
+        }
+    return _wrap("查询 GPU 状态", _impl)
