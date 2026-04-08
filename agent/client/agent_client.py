@@ -222,7 +222,17 @@ class YoloStudioAgentClient:
                 "val_path": result.get("val_path"),
                 "train_count": result.get("train_count"),
                 "val_count": result.get("val_count"),
+                "output_dir": result.get("output_dir"),
+                "suggested_yaml_path": result.get("suggested_yaml_path"),
             }
+        elif tool_name == "generate_yaml" and result.get("ok"):
+            output_path = result.get("output_path") or ""
+            if output_path:
+                ds.data_yaml = str(output_path)
+        elif tool_name == "training_readiness" and result.get("ok"):
+            resolved_yaml = result.get("resolved_data_yaml") or ""
+            if resolved_yaml:
+                ds.data_yaml = str(resolved_yaml)
         elif tool_name == "start_training" and result.get("ok"):
             tr.running = True
             resolved_args = result.get("resolved_args") or {}

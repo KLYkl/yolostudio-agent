@@ -85,6 +85,20 @@ def _format_issue_examples(result) -> dict[str, list[str]]:
     return examples
 
 
+def _read_yaml_names(yaml_path: Path) -> list[str]:
+    try:
+        import yaml
+        data = yaml.safe_load(yaml_path.read_text(encoding='utf-8')) or {}
+        names = data.get('names', {})
+        if isinstance(names, dict):
+            return [str(names[k]) for k in sorted(names.keys(), key=lambda x: int(x) if str(x).isdigit() else str(x))]
+        if isinstance(names, list):
+            return [str(x) for x in names]
+    except Exception:
+        pass
+    return []
+
+
 def summarize_scan_result(result) -> str:
     return (
         f"总图片: {result.total_images}, 已标注: {result.labeled_images}, "
@@ -198,6 +212,78 @@ def split_dataset(
         return _error_payload(exc, "划分数据集")
 
 
+def generate_yaml(
+    train_path: str,
+    val_path: str,
+    classes: list[str] | None = None,
+    output_path: str = "",
+    classes_txt: str = "",
+    img_dir: str = "",
+    label_dir: str = "",
+) -> dict[str, Any]:
+    """根据 split 结果或现有 data.yaml/classes.txt 生成 YOLO 训练 YAML。"""
+    try:
+        import os
+        import yaml
+
+        train_value = str(train_path).strip()
+        val_value = str(val_path).strip()
+        if not train_value or not val_value:
+            raise ValueError('train_path 和 val_path 不能为空')
+
+        class_names = [str(c) for c in (classes or []) if str(c).strip()]
+        classes_txt_path = Path(classes_txt) if classes_txt else None
+        if not class_names and classes_txt_path and classes_txt_path.exists():
+            class_names = _read_yaml_names(classes_txt_path)
+            if not class_names:
+                class_names = [line.strip() for line in classes_txt_path.read_text(encoding='utf-8').splitlines() if line.strip()]
+
+        if not class_names and img_dir:
+            _, candidates = _discover_data_yaml(Path(img_dir), Path(label_dir) if label_dir else None)
+            if candidates:
+                class_names = _read_yaml_names(Path(candidates[0]))
+
+        if not class_names:
+            raise ValueError('无法确定 classes；请显式传入 classes，或提供 classes_txt / 可解析的 data.yaml')
+
+        output = Path(output_path).resolve() if output_path else (Path(train_value).resolve().parent.parent / 'data.yaml')
+        train_p = Path(train_value)
+        val_p = Path(val_value)
+        if train_p.is_absolute() and val_p.is_absolute():
+            dataset_root = Path(os.path.commonpath([train_p, val_p]))
+            train_yaml_value = str(train_p.relative_to(dataset_root))
+            val_yaml_value = str(val_p.relative_to(dataset_root))
+        else:
+            dataset_root = output.parent
+            train_yaml_value = train_value
+            val_yaml_value = val_value
+
+        yaml_content = {
+            'path': str(dataset_root),
+            'train': train_yaml_value,
+            'val': val_yaml_value,
+            'names': {i: name for i, name in enumerate(class_names)},
+        }
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(yaml.safe_dump(yaml_content, allow_unicode=True, sort_keys=False), encoding='utf-8')
+
+        return {
+            'ok': True,
+            'summary': f'YAML 已生成: {output}',
+            'output_path': str(output),
+            'dataset_root': str(dataset_root),
+            'train_path': train_yaml_value,
+            'val_path': val_yaml_value,
+            'class_count': len(class_names),
+            'classes': class_names,
+            'next_actions': [
+                f'可直接使用该 YAML 启动训练: {output}',
+            ],
+        }
+    except Exception as exc:
+        return _error_payload(exc, '生成 YAML')
+
+
 def validate_dataset(
     img_dir: str,
     label_dir: str = "",
@@ -246,6 +332,64 @@ def validate_dataset(
         }
     except Exception as exc:
         return _error_payload(exc, "校验数据集")
+
+
+def training_readiness(
+    img_dir: str,
+    label_dir: str = "",
+    data_yaml: str = "",
+    require_clean_labels: bool = True,
+) -> dict[str, Any]:
+    """给出当前数据集是否适合直接训练的综合判断。"""
+    try:
+        from agent_plan.agent.server.services.gpu_utils import query_gpu_status
+
+        scan = scan_dataset(img_dir=img_dir, label_dir=label_dir)
+        if not scan.get('ok'):
+            return scan
+        validate = validate_dataset(img_dir=img_dir, label_dir=label_dir)
+        if not validate.get('ok'):
+            return validate
+
+        resolved_yaml = data_yaml or scan.get('detected_data_yaml', '')
+        yaml_exists = bool(resolved_yaml and Path(resolved_yaml).exists())
+        labels_clean = not validate.get('has_issues', False)
+        gpu_info = query_gpu_status()
+        available_gpus = [gpu.index for gpu in gpu_info if not gpu.busy]
+        ready = yaml_exists and (labels_clean or not require_clean_labels) and bool(available_gpus)
+
+        blockers: list[str] = []
+        if not yaml_exists:
+            blockers.append('缺少可用的 data_yaml')
+        if require_clean_labels and not labels_clean:
+            blockers.append('标签校验未通过')
+        if not available_gpus:
+            blockers.append('当前没有空闲 GPU')
+
+        next_actions: list[str] = []
+        if not yaml_exists:
+            next_actions.append('可先调用 generate_yaml 生成训练 YAML')
+        if require_clean_labels and not labels_clean:
+            next_actions.append('先根据 issue_examples 修复标签问题')
+        if not available_gpus:
+            next_actions.append('等待空闲 GPU，或释放当前占用后再训练')
+        if ready:
+            next_actions.append('可以直接调用 start_training 开始训练')
+
+        return {
+            'ok': True,
+            'ready': ready,
+            'summary': '可以直接训练' if ready else f"当前还不能直接训练: {', '.join(blockers)}",
+            'resolved_data_yaml': resolved_yaml,
+            'labels_clean': labels_clean,
+            'available_gpu_indexes': available_gpus,
+            'scan_summary': scan.get('summary'),
+            'validation_summary': validate.get('summary'),
+            'blockers': blockers,
+            'next_actions': next_actions,
+        }
+    except Exception as exc:
+        return _error_payload(exc, '检查训练就绪状态')
 
 
 def augment_dataset(
