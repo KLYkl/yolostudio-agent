@@ -167,6 +167,188 @@ def _build_missing_label_risk(scan_result) -> dict[str, Any]:
     }
 
 
+_RISK_LEVEL_ORDER = {
+    'none': 0,
+    'low': 1,
+    'medium': 2,
+    'high': 3,
+    'critical': 4,
+}
+
+
+def _merge_risk_levels(*levels: str) -> str:
+    best = 'none'
+    best_rank = -1
+    for level in levels:
+        rank = _RISK_LEVEL_ORDER.get(str(level or 'none').lower(), -1)
+        if rank > best_rank:
+            best_rank = rank
+            best = str(level or 'none').lower()
+    return best
+
+
+def _sample_path_strings(paths: list[Path], limit: int = MAX_ISSUE_EXAMPLES) -> list[str]:
+    return [str(path) for path in paths[:limit]]
+
+
+def _sample_integrity_entries(entries: list[tuple[Any, ...]], limit: int = MAX_ISSUE_EXAMPLES) -> list[str]:
+    samples: list[str] = []
+    for item in entries[:limit]:
+        if len(item) == 2:
+            path, reason = item
+            samples.append(f'{path} - {reason}')
+        elif len(item) == 3:
+            path, left, right = item
+            samples.append(f'{path} - {left} -> {right}')
+        else:
+            samples.append(' | '.join(str(part) for part in item))
+    return samples
+
+
+def _serialize_duplicate_groups(duplicates, max_groups: int = MAX_ISSUE_EXAMPLES, max_paths_per_group: int = MAX_ISSUE_EXAMPLES) -> list[dict[str, Any]]:
+    groups: list[dict[str, Any]] = []
+    for group in duplicates[:max_groups]:
+        paths = [str(path) for path in group.paths[:max_paths_per_group]]
+        groups.append({
+            'hash_value': group.hash_value,
+            'count': len(group.paths),
+            'paths': paths,
+            'truncated_paths': max(0, len(group.paths) - len(paths)),
+        })
+    return groups
+
+
+def _summarize_health_outputs(integrity, sizes, duplicates, *, include_duplicates: bool) -> dict[str, Any]:
+    corrupted_count = len(getattr(integrity, 'corrupted', []) or [])
+    zero_bytes_count = len(getattr(integrity, 'zero_bytes', []) or [])
+    format_mismatch_count = len(getattr(integrity, 'format_mismatch', []) or [])
+    exif_rotation_count = len(getattr(integrity, 'exif_rotation', []) or [])
+    abnormal_small_count = len(getattr(sizes, 'abnormal_small', []) or [])
+    abnormal_large_count = len(getattr(sizes, 'abnormal_large', []) or [])
+    duplicate_group_count = len(duplicates or [])
+    duplicate_files_total = sum(len(group.paths) for group in duplicates or [])
+    duplicate_extra_files = sum(max(len(group.paths) - 1, 0) for group in duplicates or [])
+
+    risk_level = _merge_risk_levels(
+        'critical' if (corrupted_count or zero_bytes_count) else 'none',
+        'high' if format_mismatch_count else 'none',
+        'medium' if (abnormal_small_count or abnormal_large_count) else 'none',
+        'medium' if duplicate_group_count else 'none',
+        'low' if exif_rotation_count else 'none',
+    )
+
+    warnings: list[str] = []
+    if corrupted_count:
+        warnings.append(f'发现 {corrupted_count} 张损坏图片')
+    if zero_bytes_count:
+        warnings.append(f'发现 {zero_bytes_count} 个零字节文件')
+    if format_mismatch_count:
+        warnings.append(f'发现 {format_mismatch_count} 个文件扩展名与真实格式不匹配')
+    if abnormal_small_count:
+        warnings.append(f'发现 {abnormal_small_count} 张异常小图片')
+    if abnormal_large_count:
+        warnings.append(f'发现 {abnormal_large_count} 张异常大图片')
+    if include_duplicates and duplicate_group_count:
+        warnings.append(f'发现 {duplicate_group_count} 组重复图片（额外重复文件 {duplicate_extra_files} 个）')
+    if exif_rotation_count:
+        warnings.append(f'发现 {exif_rotation_count} 张图片带 EXIF 旋转标记')
+
+    issue_count = (
+        getattr(integrity, 'issue_count', 0)
+        + abnormal_small_count
+        + abnormal_large_count
+        + duplicate_group_count
+    )
+
+    if issue_count <= 0:
+        summary = '健康检查完成，未发现明显图像问题'
+    else:
+        summary = (
+            f'健康检查完成: 完整性问题 {getattr(integrity, "issue_count", 0)}, '
+            f'异常尺寸 {abnormal_small_count + abnormal_large_count}, '
+            f'重复组 {duplicate_group_count}'
+        )
+
+    return {
+        'risk_level': risk_level,
+        'warnings': warnings,
+        'issue_count': issue_count,
+        'summary': summary,
+        'corrupted_count': corrupted_count,
+        'zero_bytes_count': zero_bytes_count,
+        'format_mismatch_count': format_mismatch_count,
+        'exif_rotation_count': exif_rotation_count,
+        'abnormal_small_count': abnormal_small_count,
+        'abnormal_large_count': abnormal_large_count,
+        'duplicate_group_count': duplicate_group_count,
+        'duplicate_files_total': duplicate_files_total,
+        'duplicate_extra_files': duplicate_extra_files,
+    }
+
+
+def _install_headless_pyside6_stub() -> None:
+    import sys
+    import types
+
+    if 'PySide6.QtCore' in sys.modules:
+        return
+
+    class _DummySignal:
+        def __init__(self, *args, **kwargs) -> None:
+            self._slots: list[Any] = []
+
+        def connect(self, slot) -> None:
+            self._slots.append(slot)
+
+        def emit(self, *args, **kwargs) -> None:
+            for slot in list(self._slots):
+                try:
+                    slot(*args, **kwargs)
+                except Exception:
+                    pass
+
+    class _DummyQThread:
+        def __init__(self, parent=None) -> None:
+            self.parent = parent
+
+        def start(self) -> None:
+            raise RuntimeError('当前为 headless PySide6 stub，不支持启动 QThread')
+
+    qtcore = types.ModuleType('PySide6.QtCore')
+    qtcore.QThread = _DummyQThread
+    qtcore.Signal = lambda *args, **kwargs: _DummySignal()
+
+    pyside6 = types.ModuleType('PySide6')
+    pyside6.QtCore = qtcore
+
+    sys.modules.setdefault('PySide6', pyside6)
+    sys.modules['PySide6.QtCore'] = qtcore
+
+
+def _import_core_data_handler_module(module_name: str):
+    import importlib
+    import sys
+
+    try:
+        return importlib.import_module(module_name)
+    except Exception as exc:
+        message = str(exc)
+        if 'PySide6' not in message and 'QtCore' not in message:
+            raise
+        _install_headless_pyside6_stub()
+        for name in ['core.data_handler', 'core.data_handler._worker']:
+            sys.modules.pop(name, None)
+        return importlib.import_module(module_name)
+
+
+def _get_data_handler_cls():
+    return _import_core_data_handler_module('core.data_handler._handler').DataHandler
+
+
+def _get_data_models_module():
+    return _import_core_data_handler_module('core.data_handler._models')
+
+
 def summarize_scan_result(result) -> str:
     return (
         f"总图片: {result.total_images}, 已标注: {result.labeled_images}, "
@@ -178,7 +360,7 @@ def summarize_scan_result(result) -> str:
 def scan_dataset(img_dir: str, label_dir: str = "") -> dict[str, Any]:
     """扫描数据集并返回结构化摘要、类别统计、候选 YAML / classes.txt 信息。img_dir 支持传入 dataset root。"""
     try:
-        from core.data_handler._handler import DataHandler
+        DataHandler = _get_data_handler_cls()
 
         img_path, label_path, resolution = _resolve_dataset_inputs(img_dir, label_dir)
         dataset_root = Path(resolution.get('dataset_root') or _infer_dataset_root(img_path, label_path))
@@ -246,8 +428,8 @@ def split_dataset(
 ) -> dict[str, Any]:
     """按现有 DataHandler 能力将数据集切分为 train/val。"""
     try:
-        from core.data_handler._handler import DataHandler
-        from core.data_handler._models import SplitMode
+        DataHandler = _get_data_handler_cls()
+        SplitMode = _get_data_models_module().SplitMode
 
         handler = DataHandler()
         mode_map = {
@@ -388,7 +570,7 @@ def validate_dataset(
 ) -> dict[str, Any]:
     """校验标签合法性并返回问题统计与示例。img_dir 支持传入 dataset root。"""
     try:
-        from core.data_handler._handler import DataHandler
+        DataHandler = _get_data_handler_cls()
 
         handler = DataHandler()
         img_path, label_path, resolution = _resolve_dataset_inputs(img_dir, label_dir)
@@ -574,6 +756,184 @@ def training_readiness(
         return _error_payload(exc, '检查训练就绪状态')
 
 
+def run_dataset_health_check(
+    dataset_path: str,
+    include_duplicates: bool = True,
+    duplicate_method: str = 'md5',
+    hash_threshold: int = 8,
+    small_threshold: int = 32,
+    large_threshold: int = 8192,
+    export_report: bool = False,
+    report_path: str = '',
+    max_examples: int = MAX_ISSUE_EXAMPLES,
+    max_duplicate_groups: int = MAX_ISSUE_EXAMPLES,
+) -> dict[str, Any]:
+    """对数据集图片做只读健康检查：完整性、尺寸异常、重复图片，并可选导出报告。"""
+    try:
+        DataHandler = _get_data_handler_cls()
+
+        duplicate_method = duplicate_method.lower().strip() or 'md5'
+        if duplicate_method not in {'md5', 'phash'}:
+            raise ValueError(f'不支持的 duplicate_method: {duplicate_method}')
+        if duplicate_method == 'phash':
+            try:
+                import imagehash  # noqa: F401
+            except ImportError as exc:
+                raise RuntimeError('当前环境未安装 imagehash，无法使用 phash；请改用 md5') from exc
+
+        resolution = resolve_dataset_root(dataset_path)
+        if not resolution.get('ok'):
+            return resolution
+
+        img_path = Path(resolution.get('img_dir') or dataset_path)
+        dataset_root = Path(resolution.get('dataset_root') or _infer_dataset_root(img_path))
+        handler = DataHandler()
+
+        integrity = handler.check_image_integrity(img_path)
+        sizes = handler.analyze_image_sizes(
+            img_path,
+            small_threshold=small_threshold,
+            large_threshold=large_threshold,
+        )
+        duplicates = handler.detect_duplicates(
+            img_path,
+            method=duplicate_method,
+            hash_threshold=hash_threshold,
+        ) if include_duplicates else []
+
+        health_summary = _summarize_health_outputs(integrity, sizes, duplicates, include_duplicates=include_duplicates)
+        exported_report = ''
+        if export_report:
+            resolved_report = Path(report_path).resolve() if report_path else (dataset_root / '_health_check_report.txt').resolve()
+            exported_report = str(handler.export_check_report(
+                resolved_report,
+                integrity=integrity,
+                sizes=sizes,
+                duplicates=duplicates,
+            ))
+
+        next_actions: list[str] = []
+        if health_summary['warnings']:
+            next_actions.append('建议先处理损坏/异常图片，再继续数据准备或训练')
+        if health_summary['duplicate_group_count']:
+            next_actions.append('可先人工确认重复图片是否需要清理；如需进一步查看，可单独调用 detect_duplicate_images')
+        if exported_report:
+            next_actions.append(f'可离线查看健康检查报告: {exported_report}')
+        elif health_summary['issue_count']:
+            next_actions.append('如需归档检查结果，可设置 export_report=true 导出文本报告')
+        if not next_actions:
+            next_actions.append('图像层面未见明显阻塞，可继续做 validate_dataset 或 training_readiness')
+
+        return {
+            'ok': True,
+            'summary': health_summary['summary'],
+            'dataset_root': str(dataset_root),
+            'structure_type': resolution.get('structure_type'),
+            'resolved_from_root': resolution.get('resolved_from_root', False),
+            'resolved_img_dir': str(img_path),
+            'risk_level': health_summary['risk_level'],
+            'warnings': health_summary['warnings'],
+            'issue_count': health_summary['issue_count'],
+            'report_path': exported_report,
+            'integrity': {
+                'total_images': integrity.total_images,
+                'issue_count': integrity.issue_count,
+                'corrupted_count': health_summary['corrupted_count'],
+                'zero_bytes_count': health_summary['zero_bytes_count'],
+                'format_mismatch_count': health_summary['format_mismatch_count'],
+                'exif_rotation_count': health_summary['exif_rotation_count'],
+                'corrupted_examples': _sample_integrity_entries(integrity.corrupted, max_examples),
+                'zero_bytes_examples': _sample_path_strings(integrity.zero_bytes, max_examples),
+                'format_mismatch_examples': _sample_integrity_entries(integrity.format_mismatch, max_examples),
+                'exif_rotation_examples': _sample_integrity_entries(integrity.exif_rotation, max_examples),
+            },
+            'size_stats': {
+                'total_images': sizes.total_images,
+                'min_size': list(sizes.min_size),
+                'max_size': list(sizes.max_size),
+                'avg_size': list(sizes.avg_size),
+                'abnormal_small_count': health_summary['abnormal_small_count'],
+                'abnormal_large_count': health_summary['abnormal_large_count'],
+                'abnormal_small_examples': _sample_path_strings(sizes.abnormal_small, max_examples),
+                'abnormal_large_examples': _sample_path_strings(sizes.abnormal_large, max_examples),
+            },
+            'duplicate_method': duplicate_method if include_duplicates else '',
+            'hash_threshold': hash_threshold if include_duplicates else None,
+            'duplicate_groups': health_summary['duplicate_group_count'],
+            'duplicate_files_total': health_summary['duplicate_files_total'],
+            'duplicate_extra_files': health_summary['duplicate_extra_files'],
+            'duplicate_group_samples': _serialize_duplicate_groups(duplicates, max_groups=max_duplicate_groups, max_paths_per_group=max_examples),
+            'next_actions': next_actions,
+        }
+    except Exception as exc:
+        return _error_payload(exc, '执行数据集健康检查')
+
+
+def detect_duplicate_images(
+    dataset_path: str,
+    method: str = 'md5',
+    hash_threshold: int = 8,
+    max_groups: int = 10,
+    max_paths_per_group: int = MAX_ISSUE_EXAMPLES,
+) -> dict[str, Any]:
+    """检测图片重复样本，返回重复组摘要和示例路径。dataset_path 支持 dataset root。"""
+    try:
+        DataHandler = _get_data_handler_cls()
+
+        method = method.lower().strip() or 'md5'
+        if method not in {'md5', 'phash'}:
+            raise ValueError(f'不支持的重复检测方法: {method}')
+        if method == 'phash':
+            try:
+                import imagehash  # noqa: F401
+            except ImportError as exc:
+                raise RuntimeError('当前环境未安装 imagehash，无法使用 phash；请改用 md5') from exc
+
+        resolution = resolve_dataset_root(dataset_path)
+        if not resolution.get('ok'):
+            return resolution
+
+        img_path = Path(resolution.get('img_dir') or dataset_path)
+        dataset_root = Path(resolution.get('dataset_root') or _infer_dataset_root(img_path))
+        handler = DataHandler()
+        duplicates = handler.detect_duplicates(
+            img_path,
+            method=method,
+            hash_threshold=hash_threshold,
+        )
+
+        duplicate_groups = len(duplicates)
+        duplicate_files_total = sum(len(group.paths) for group in duplicates)
+        duplicate_extra_files = sum(max(len(group.paths) - 1, 0) for group in duplicates)
+        risk_level = 'high' if duplicate_groups >= 10 else ('medium' if duplicate_groups else 'none')
+        summary = (
+            f'检测完成: 发现 {duplicate_groups} 组重复图片，额外重复文件 {duplicate_extra_files} 个'
+            if duplicate_groups
+            else '检测完成，未发现重复图片'
+        )
+        next_actions = [
+            '建议人工确认 sample groups 中的文件是否应合并或清理'
+        ] if duplicate_groups else ['当前未发现重复图片，可继续做健康检查或训练准备']
+        return {
+            'ok': True,
+            'summary': summary,
+            'dataset_root': str(dataset_root),
+            'structure_type': resolution.get('structure_type'),
+            'resolved_from_root': resolution.get('resolved_from_root', False),
+            'resolved_img_dir': str(img_path),
+            'method': method,
+            'hash_threshold': hash_threshold,
+            'risk_level': risk_level,
+            'duplicate_groups': duplicate_groups,
+            'duplicate_files_total': duplicate_files_total,
+            'duplicate_extra_files': duplicate_extra_files,
+            'groups': _serialize_duplicate_groups(duplicates, max_groups=max_groups, max_paths_per_group=max_paths_per_group),
+            'next_actions': next_actions,
+        }
+    except Exception as exc:
+        return _error_payload(exc, '检测重复图片')
+
+
 def augment_dataset(
     img_dir: str,
     label_dir: str = "",
@@ -595,8 +955,8 @@ def augment_dataset(
 ) -> dict[str, Any]:
     """执行离线数据增强，默认启用最常用的水平翻转。"""
     try:
-        from core.data_handler._handler import DataHandler
-        from core.data_handler._models import AugmentConfig
+        DataHandler = _get_data_handler_cls()
+        AugmentConfig = _get_data_models_module().AugmentConfig
 
         handler = DataHandler()
         config = AugmentConfig(

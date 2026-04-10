@@ -5,7 +5,9 @@ from mcp.server.fastmcp import FastMCP
 from agent_plan.agent.server.tools.combo_tools import prepare_dataset_for_training
 from agent_plan.agent.server.tools.data_tools import (
     augment_dataset,
+    detect_duplicate_images,
     generate_yaml,
+    run_dataset_health_check,
     scan_dataset,
     split_dataset,
     training_readiness,
@@ -23,6 +25,8 @@ mcp = FastMCP("yolostudio", host="127.0.0.1", port=8080)
 mcp.tool()(scan_dataset)
 mcp.tool()(split_dataset)
 mcp.tool()(validate_dataset)
+mcp.tool()(run_dataset_health_check)
+mcp.tool()(detect_duplicate_images)
 mcp.tool()(augment_dataset)
 mcp.tool()(generate_yaml)
 mcp.tool()(training_readiness)

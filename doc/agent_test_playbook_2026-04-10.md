@@ -919,7 +919,133 @@ Gemma 和 DeepSeek：
 
 ---
 
-## 19. 一句话总结
+## 19. 测试产物清理与环境复位
+
+测试文档不能只写“怎么测”，还要写“测完怎么收场”。
+
+因为这个项目的很多测试不是纯只读的，而是会产生派生产物，例如：
+
+- `images_split/`
+- `pics_split/`
+- `data.yaml`
+- 训练日志
+- runs 目录
+- registry 文件
+
+如果每轮测试都只测不清理，会出现两个问题：
+
+1. **测试之间互相污染**
+   - 上一轮生成了 split 目录
+   - 下一轮 readiness 可能直接把它当现成产物
+   - 导致测试结果不再纯净
+
+2. **环境越来越脏**
+   - 目录越来越多
+   - 日志越来越多
+   - 很难分辨哪些是基准数据，哪些是测试副产物
+
+### 19.1 当前已经提供的安全清理脚本
+
+本项目已经有一个专门用于清理 split 类测试产物的脚本：
+
+- 本地路径：`D:\yolodo2.0\agent_plan\deploy\scripts\cleanup_split_artifacts.sh`（不可以在本地运行这个脚本，因为不在本地进行数据划分）
+- 服务器路径：`/home/kly/yolostudio_agent_proto/cleanup_split_artifacts.sh`
+
+### 19.2 这个脚本解决什么问题
+
+它解决的是：
+
+> **测试后如何安全清理 split 派生产物，而不误删原始数据。**
+
+它不是一个“随便删点目录”的脚本，而是带了明确的安全约束：
+
+1. **白名单根目录限制**
+   - 只允许清理：
+     - `/home/kly/test_dataset`
+     - `/home/kly/agent_cap_tests`
+     - `/home/kly/test_dataset_split_for_yaml`
+
+2. **目标目录显式枚举**
+   - 不是模糊通配全盘删除
+   - 只删除已知 split-like 目录
+
+3. **目标类型校验**
+   - 必须看起来像 split 产物
+   - 避免误删原始 images/labels
+
+4. **先 list，再 clean**
+   - 默认只是查看
+   - 必须显式传 `clean` 才删除
+
+### 19.3 推荐使用方式
+
+#### 第一步：先 dry-run
+
+```bash
+/home/kly/yolostudio_agent_proto/cleanup_split_artifacts.sh list
+```
+
+作用：
+- 看当前有哪些 split 产物
+- 检查目标是否符合预期
+
+#### 第二步：确认后再清理
+
+```bash
+/home/kly/yolostudio_agent_proto/cleanup_split_artifacts.sh clean
+```
+
+作用：
+- 删除脚本白名单中的 split 派生产物
+
+#### 第三步：清理后复查
+
+再次执行：
+
+```bash
+/home/kly/yolostudio_agent_proto/cleanup_split_artifacts.sh list
+```
+
+理想结果应为：
+- `existing_targets=0`
+
+### 19.4 当前脚本覆盖范围
+
+当前它**只清理 split 类派生产物**，不会清理：
+
+- 原始 `images/`
+- 原始 `labels/`
+- 训练 `runs/`
+- `train_log_*.txt`
+- `active_train_job.json / last_train_job.json`
+- augmented 目录
+
+所以它适合用于：
+
+> **每轮数据准备测试之后，把 split 环境恢复干净。**
+
+### 19.5 建议把清理步骤写进每轮测试流程
+
+建议以后每次执行：
+
+- `prepare_dataset_for_training`
+- `split_dataset`
+- 脏数据集大规模测试
+
+之后，都加一个固定收尾动作：
+
+1. `list`
+2. `clean`
+3. `list` 复查
+
+这能保证：
+- 主线回归更纯净
+- 测试结果更可复现
+- 服务器环境不越来越脏
+
+---
+
+## 20. 一句话总结
 
 > **这份手册的意义，不是教你怎么“跟 Agent 聊天”，而是教你怎么把一个工具型 Agent 当成工程系统来测试。**
 
@@ -932,3 +1058,31 @@ Gemma 和 DeepSeek：
 - 它出错时是否能被定位和复现
 
 如果这五件事能持续做，你这个项目就会越来越像一个真正可交付的系统，而不是一个偶尔表现不错的 demo。
+
+
+## 20. 数据健康与重复检测专项
+
+### 20.1 图片健康检查（只读）
+- 推荐话术：`请检查这个数据集的图片是否有损坏、尺寸异常或重复图片，但不要修改原始数据。`
+- 预期路径：`run_dataset_health_check(dataset_path=...)`
+- 重点检查：
+  - 是否正确解析 dataset root
+  - 是否返回 `risk_level / warnings / issue_count`
+  - 是否区分完整性问题、尺寸异常、重复图片
+  - 是否在需要时给出 `report_path`
+- 常见问题：
+  - 模型只口头总结、不调用工具
+  - 把只读检查误说成会修改数据
+  - 回答时遗漏 `warnings` 里的关键风险
+
+### 20.2 重复图片检测（只读）
+- 推荐话术：`帮我找出这个数据集里重复的图片，并给我几组样例路径，不要删除任何文件。`
+- 预期路径：`detect_duplicate_images(dataset_path=..., method='md5')`
+- 重点检查：
+  - 是否返回 `duplicate_groups / duplicate_extra_files / groups`
+  - 是否能基于样例组做 grounded 回答
+  - 是否明确说明当前只是检测，没有执行清理
+- 常见问题：
+  - 模型把“检测重复”误说成“已经去重”
+  - 回答中编造不存在的重复组或路径
+  - 将 `auto` 或默认参数误描述成用户显式指定

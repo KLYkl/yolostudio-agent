@@ -18,6 +18,8 @@ class DatasetContext:
     last_scan: dict[str, Any] = field(default_factory=dict)
     last_validate: dict[str, Any] = field(default_factory=dict)
     last_split: dict[str, Any] = field(default_factory=dict)
+    last_health_check: dict[str, Any] = field(default_factory=dict)
+    last_duplicate_check: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

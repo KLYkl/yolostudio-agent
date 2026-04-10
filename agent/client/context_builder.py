@@ -48,6 +48,8 @@ class ContextBuilder:
             f'  last_scan: {_fmt_mapping(ds.last_scan)}\n'
             f'  last_validate: {_fmt_mapping(ds.last_validate)}\n'
             f'  last_split: {_fmt_mapping(ds.last_split)}\n'
+            f'  last_health_check: {_fmt_mapping(ds.last_health_check)}\n'
+            f'  last_duplicate_check: {_fmt_mapping(ds.last_duplicate_check)}\n'
             '训练:\n'
             f'  running: {tr.running}\n'
             f'  model: {tr.model or "未设置"}\n'
