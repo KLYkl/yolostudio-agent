@@ -1,5 +1,14 @@
 # 第二主线 Phase 1 预测回归报告（2026-04-11）
 
+> 2026-04-11 后续补充：第二主线已继续推进到 **Phase 2（视频预测 + 结果汇总）**。
+> 本报告中的 `1.0` 分数对应 **Phase 1 基线**；后续新增的 `summarize_prediction_results` 与 `predict_videos` 当前已完成：
+> - `py_compile`
+> - `D:\yolodo2.0\agent_plan\agent\tests\test_predict_tools.py` 工具级验证
+> - `D:\yolodo2.0\agent_plan\agent\tests\test_predict_video_tools.py` 工具级验证
+> - route / alias / grounded 代码集成
+>
+> 受本地 `asyncio/_overlapped` 环境异常影响，依赖 LangChain 的第二轮 prediction route/regression 脚本尚待补跑。
+
 - Case 数量: `6`
 - 检查项通过: `20/20`
 - 总体得分: `1.0`

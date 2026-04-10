@@ -10,13 +10,14 @@
 
 当前项目已经进入：
 
-> **第一主线（数据准备 -> 训练）基本进入实用态；第二主线（图片 / 图片目录预测）已完成本地落地与本地回归，下一步应优先做远端部署与真实验证。**
+> **第一主线（数据准备 -> 训练）基本进入实用态；第二主线（图片 / 图片目录 / 视频 / 视频目录预测 + 结果汇总）已完成本地工具级落地，下一步应优先做远端部署与真实验证。**
 
 更直白一点：
 
 - 第一主线已经不是 demo 了
 - 主线训练、脏数据、恢复接管、checkpoint、测试手册都已经成型
-- 第二主线已经起线，但目前还是**本地验证为主**
+- 第二主线已经起线，并补到了**预测结果汇总与视频预测**
+- 目前还是**本地验证为主**
 - 下一步最有价值的事情，不是再发散加功能，而是把第二主线真正落到远端环境并验证
 
 ---
@@ -50,11 +51,11 @@
 ### 第二主线
 第二主线指：
 
-> 图片 / 图片目录预测 -> grounded 结果总结 ->（后续）批处理扩展 / 结果汇总 / 视频预测
+> 图片 / 图片目录 / 视频 / 视频目录预测 -> 预测结果汇总 -> grounded 结果总结 ->（后续）RTSP / 摄像头 / 屏幕流
 
 当前判断：
-- 已完成 **Phase 1：headless 图片 / 图片目录预测**
-- 已完成本地自动化回归
+- 已完成 **Phase 2：headless 图片 / 图片目录 / 视频 / 视频目录预测 + 结果汇总**
+- 已完成本地工具级验证
 - **还没完成远端部署与远端真实验证**
 
 ---
@@ -79,17 +80,30 @@
 - 新增：`D:\yolodo2.0\agent_plan\agent\server\services\predict_service.py`
 - 新增：`D:\yolodo2.0\agent_plan\agent\server\tools\predict_tools.py`
 - MCP 新工具：`predict_images`
+- MCP 新工具：`summarize_prediction_results`
+- MCP 新工具：`predict_videos`
 - Agent 侧已接入：
   - 预测意图路由
   - 预测 grounded reply
   - `active_prediction` 会话状态
+  - 预测结果汇总路由与 grounded 汇总
 
-### 4.3 第二主线已有本地回归基线
+### 4.3 第二主线已有本地验证基线
 - `D:\yolodo2.0\agent_plan\agent\tests\test_predict_tools.py`
 - `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_route.py`
 - `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_regression_suite.py`
 - 报告：`D:\yolodo2.0\agent_plan\doc\prediction_regression_report_2026-04-11.md`
 - 当前本地预测回归分数：`1.0`
+- 追加完成：
+  - `summarize_prediction_results` 的工具级验证
+  - `predict_videos` 的工具级验证
+  - 旧汇总工具名/参数名兼容层
+
+> 注意：本地存在 `asyncio/_overlapped` 环境异常，会阻塞一部分依赖 LangChain 的回归脚本执行。
+> 因此当前第二主线最可信的最新验证依据是：
+> - `py_compile`
+> - `test_predict_tools.py`
+> - 代码级 route / alias / grounded 集成检查
 
 ---
 
@@ -119,13 +133,17 @@
 - 缺失标签风险表达
 - dirty dataset（`zyb`）长任务训练验证
 
-### 5.3 第二主线：预测 Phase 1
+### 5.3 第二主线：预测 Phase 2
 已经具备：
 - 单张图片预测
 - 图片目录批量预测
+- 单个视频预测
+- 视频目录批量预测
 - 标注图输出
 - YOLO 标签输出
 - JSON 结果报告
+- 视频预测报告
+- `prediction_report.json` 汇总
 - grounded 预测总结
 - 旧工具名兼容：
   - `predict_directory`
@@ -133,6 +151,13 @@
   - `predict_images_in_dir`
 - 旧参数名兼容：
   - `path/source/input_path/dir_path/folder -> source_path`
+- 旧汇总工具名兼容：
+  - `summarize_predictions`
+  - `summarize_prediction_report`
+  - `analyze_prediction_report`
+- 旧汇总参数名兼容：
+  - `path/report/json_report/file -> report_path`
+  - `dir_path/folder/output -> output_dir`
 
 ---
 
@@ -146,14 +171,12 @@
 还没做的包括：
 - 远端同步 `predict_service.py` / `predict_tools.py`
 - 重启远端 MCP，确认 `predict_images` 已注册可用
-- 用真实图片 / 图片目录做远端 prediction 验证
+- 用真实图片 / 图片目录 / 视频 / 视频目录做远端 prediction 验证
 - 检查输出目录、标注图、JSON 报告是否正常
 - 做第二主线的远端回归基线
 
 ### 6.2 第二主线后续扩展项
 在远端 prediction 验证稳定后，再继续：
-- 预测结果汇总 / `summarize_prediction_results`
-- 视频批处理预测
 - 更复杂的筛选 / 导出工作流
 
 ### 6.3 第一主线剩余尾巴

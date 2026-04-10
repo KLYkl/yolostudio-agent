@@ -1298,13 +1298,16 @@ Gemma 和 DeepSeek：
 - 多用户共享
 - 远程数据库级 checkpoint
 - 跨机器共享恢复
-## 24. 第二主线 Phase 1：图片预测回归（2026-04-11 增补）
+## 24. 第二主线 Phase 2：静态媒体预测与结果汇总回归（2026-04-11 增补）
 
-随着 `predict_images` 落地，第二主线已经从“规划阶段”进入“可回归阶段”。
+随着 `predict_images`、`predict_videos` 和 `summarize_prediction_results` 落地，第二主线已经从“规划阶段”进入“可回归阶段”。
 当前先不碰 RTSP / 摄像头 / 视频流，而是固定收口：
 
 - 单张图片预测
 - 图片目录批量预测
+- 单个视频预测
+- 视频目录批量预测
+- `prediction_report.json` 结果汇总
 - grounded 结果总结
 - 旧工具名 / 旧参数名兼容
 
@@ -1313,14 +1316,22 @@ Gemma 和 DeepSeek：
    - 成功目录预测
    - 缺少模型失败
    - 输入路径不存在失败
+   - 视频工具成功路径
 2. **Agent 路由层**
    - 同一句话里同时出现模型路径和图片目录路径
-   - 预测结果二次总结
+   - 同一句话里出现“视频/录像”与目录路径时，应优先走 `predict_videos`
+   - 预测结果二次总结（优先走 `summarize_prediction_results`）
 3. **兼容层**
    - `predict_directory`
    - `batch_predict_images`
    - `predict_images_in_dir`
+   - `predict_video_directory`
+   - `batch_predict_videos`
+   - `predict_videos_in_dir`
    - `path/source/input_path -> source_path`
+   - `summarize_predictions`
+   - `summarize_prediction_report`
+   - `report/path/json_report -> report_path`
 
 ### 24.2 推荐话术
 #### A. 标准图片目录预测
@@ -1329,16 +1340,39 @@ Gemma 和 DeepSeek：
 
 #### B. 只总结预测结果
 - `总结一下刚才预测结果。`
-- 预期路径：优先从 `SessionState.active_prediction` 做 grounded 总结，而不是重新发起预测。
+- 预期路径：优先复用 `SessionState.active_prediction.report_path` 调 `summarize_prediction_results`，若没有报告路径，再降级用最近一次预测结果做 grounded 总结。
+
+#### B2. 显式指定报告目录或报告文件
+- `帮我分析 /tmp/predict/prediction_report.json 这份预测报告。`
+- `总结 /tmp/predict 目录下的预测结果。`
+- 预期路径：
+  - `.json` 路径 → `summarize_prediction_results(report_path=...)`
+  - 普通目录路径 → `summarize_prediction_results(output_dir=...)`
 
 #### C. 兼容旧风格表达
 - `请批量识别 /data/images 目录里的图片，模型用 /models/yolov8n.pt。`
 - 重点检查：即使模型幻觉出 `predict_directory` 这类旧名字，也能被兼容层收口到 `predict_images`。
 
+#### D. 视频目录预测
+- `请用 /models/yolov8n.pt 预测 /data/videos 这个目录里的视频。`
+- 预期路径：`predict_videos(source_path=/data/videos, model=/models/yolov8n.pt)`
+
+#### E. 视频结果总结
+- `总结一下刚才的视频预测结果。`
+- 预期路径：优先复用最近一次视频预测留下的 `video_prediction_report.json`，走 `summarize_prediction_results`
+
 ### 24.3 当前回归脚本
 - `D:\yolodo2.0\agent_plan\agent\tests\test_predict_tools.py`
+- `D:\yolodo2.0\agent_plan\agent\tests\test_predict_video_tools.py`
 - `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_route.py`
 - `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_regression_suite.py`
+- `D:\yolodo2.0\agent_plan\agent\tests\test_tool_alias_adapter.py`
+
+> 说明：当前本地环境存在 `asyncio/_overlapped` 异常，会阻塞部分依赖 LangChain 的脚本执行。
+> 因此第二主线的最低验证要求应至少包含：
+> - `py_compile`
+> - `test_predict_tools.py`
+> - 代码级 review（确认 route / alias / grounded 分支已接好）
 
 ### 24.4 当前输出产物
 - JSON：`D:\yolodo2.0\agent_plan\agent\tests\test_prediction_regression_suite_output.json`
@@ -1346,6 +1380,8 @@ Gemma 和 DeepSeek：
 
 ### 24.5 当前最该盯住的问题
 - 预测工具是否会误把模型路径当成 `source_path`
+- 视频预测是否会误把图片目录意图错路由到 `predict_images`
 - grounded 回复是否会把“无检测”说成“失败”
+- 预测结果汇总是否优先走 `prediction_report.json`，而不是重复跑一次预测
 - 是否会编造不存在的视频 / 摄像头能力
 - 兼容层是否足够覆盖旧桌面风格工具名

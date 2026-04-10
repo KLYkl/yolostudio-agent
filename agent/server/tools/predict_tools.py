@@ -53,9 +53,70 @@ def predict_images(
     if result.get('ok'):
         result.setdefault('next_actions', [])
         if result.get('detected_images', 0) > 0 and result.get('annotated_dir'):
-            if f"可查看标注结果目录: {result.get('annotated_dir')}" not in result['next_actions']:
-                result['next_actions'].insert(0, f"可查看标注结果目录: {result.get('annotated_dir')}")
+            suggestion = f"可查看标注结果目录: {result.get('annotated_dir')}"
+            if suggestion not in result['next_actions']:
+                result['next_actions'].insert(0, suggestion)
     else:
         result.setdefault('summary', '预测未完成')
         result.setdefault('next_actions', ['请确认 source_path 是否包含可读取图片，并检查模型路径'])
+    return result
+
+
+def summarize_prediction_results(report_path: str = '', output_dir: str = '') -> dict[str, Any]:
+    """读取预测 JSON 报告或预测输出目录，汇总当前预测结果，用于 grounded 总结与后续分析。"""
+    result = _wrap(
+        '预测结果汇总',
+        service.summarize_prediction_results,
+        report_path=report_path,
+        output_dir=output_dir,
+    )
+    if result.get('ok'):
+        result.setdefault('next_actions', [])
+        if result.get('annotated_dir'):
+            suggestion = f"可查看标注结果目录: {result.get('annotated_dir')}"
+            if suggestion not in result['next_actions']:
+                result['next_actions'].insert(0, suggestion)
+    else:
+        result.setdefault('summary', '预测结果汇总未完成')
+        result.setdefault('next_actions', ['请提供 report_path，或传入包含 prediction_report.json 的 output_dir'])
+    return result
+
+
+def predict_videos(
+    source_path: str,
+    model: str,
+    conf: float = 0.25,
+    iou: float = 0.45,
+    output_dir: str = '',
+    save_video: bool = True,
+    save_keyframes_annotated: bool = True,
+    save_keyframes_raw: bool = False,
+    generate_report: bool = True,
+    max_videos: int = 0,
+    max_frames: int = 0,
+) -> dict[str, Any]:
+    """对单个视频或视频目录执行 YOLO 预测。默认保存结果视频与关键帧报告，不修改原始视频。"""
+    result = _wrap(
+        '视频预测',
+        service.predict_videos,
+        source_path=source_path,
+        model=model,
+        conf=conf,
+        iou=iou,
+        output_dir=output_dir,
+        save_video=save_video,
+        save_keyframes_annotated=save_keyframes_annotated,
+        save_keyframes_raw=save_keyframes_raw,
+        generate_report=generate_report,
+        max_videos=max_videos,
+        max_frames=max_frames,
+    )
+    if result.get('ok'):
+        result.setdefault('next_actions', [])
+        suggestion = f"可查看视频预测输出目录: {result.get('output_dir')}"
+        if result.get('output_dir') and suggestion not in result['next_actions']:
+            result['next_actions'].insert(0, suggestion)
+    else:
+        result.setdefault('summary', '视频预测未完成')
+        result.setdefault('next_actions', ['请确认 source_path 是否包含可读取视频，并检查模型路径'])
     return result

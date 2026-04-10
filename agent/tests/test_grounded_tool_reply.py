@@ -94,6 +94,80 @@ def main() -> None:
     assert '标注结果目录: /data/predict/out/annotated' in predict_text
     assert '预测报告: /data/predict/out/prediction_report.json' in predict_text
 
+    predict_video_text = YoloStudioAgentClient._build_grounded_tool_reply(
+        client,
+        [(
+            'predict_videos',
+            {
+                'ok': True,
+                'summary': '视频预测完成: 已处理 1 个视频, 总帧数 3, 有检测帧 2, 总检测框 3，主要类别 Excavator=1, bulldozer=2',
+                'processed_videos': 1,
+                'total_frames': 3,
+                'detected_frames': 2,
+                'total_detections': 3,
+                'class_counts': {'Excavator': 1, 'bulldozer': 2},
+                'detected_samples': ['/data/videos/a.mp4'],
+                'empty_samples': [],
+                'output_dir': '/data/videos/out',
+                'report_path': '/data/videos/out/video_prediction_report.json',
+                'next_actions': ['可查看视频预测输出目录: /data/videos/out'],
+            },
+        )],
+    )
+    assert '视频预测完成' in predict_video_text
+    assert '总帧数 3' in predict_video_text
+    assert '主要类别: Excavator=1，bulldozer=2' in predict_video_text
+    assert '视频预测输出目录: /data/videos/out' in predict_video_text
+
+    summary_text = YoloStudioAgentClient._build_grounded_tool_reply(
+        client,
+        [(
+            'summarize_prediction_results',
+            {
+                'ok': True,
+                'summary': '预测结果摘要: 已处理 3 张图片, 有检测 2, 无检测 1, 总检测框 3，主要类别 Excavator=1, bulldozer=2',
+                'processed_images': 3,
+                'detected_images': 2,
+                'empty_images': 1,
+                'total_detections': 3,
+                'class_counts': {'Excavator': 1, 'bulldozer': 2},
+                'detected_samples': ['/data/predict/a.jpg', '/data/predict/c.jpg'],
+                'empty_samples': ['/data/predict/b.jpg'],
+                'annotated_dir': '/data/predict/out/annotated',
+                'report_path': '/data/predict/out/prediction_report.json',
+                'next_actions': ['可查看标注结果目录: /data/predict/out/annotated'],
+            },
+        )],
+    )
+    assert '预测结果摘要' in summary_text
+    assert '总检测框 3' in summary_text
+    assert '主要类别: Excavator=1，bulldozer=2' in summary_text
+    assert '预测报告: /data/predict/out/prediction_report.json' in summary_text
+
+    video_summary_text = YoloStudioAgentClient._build_grounded_tool_reply(
+        client,
+        [(
+            'summarize_prediction_results',
+            {
+                'ok': True,
+                'mode': 'videos',
+                'summary': '视频预测结果摘要: 已处理 1 个视频, 总帧数 3, 有检测帧 2, 总检测框 3，主要类别 Excavator=1, bulldozer=2',
+                'processed_videos': 1,
+                'total_frames': 3,
+                'detected_frames': 2,
+                'total_detections': 3,
+                'class_counts': {'Excavator': 1, 'bulldozer': 2},
+                'detected_samples': ['/data/videos/a.mp4'],
+                'empty_samples': [],
+                'report_path': '/data/videos/out/video_prediction_report.json',
+                'next_actions': ['可查看预测报告: /data/videos/out/video_prediction_report.json'],
+            },
+        )],
+    )
+    assert '视频预测结果摘要' in video_summary_text
+    assert '有检测帧 2' in video_summary_text
+    assert '预测报告: /data/videos/out/video_prediction_report.json' in video_summary_text
+
     dup_text = YoloStudioAgentClient._build_grounded_tool_reply(
         client,
         [(

@@ -107,6 +107,35 @@ async def case_tool_predict_missing_path() -> dict[str, Any]:
     }
 
 
+async def case_tool_prediction_summary(source_dir: Path, output_dir: Path) -> dict[str, Any]:
+    started = time.time()
+    result = predict_tools.predict_images(
+        source_path=str(source_dir),
+        model='fake-model.pt',
+        output_dir=str(output_dir),
+        save_annotated=True,
+        save_labels=False,
+        save_original=False,
+        generate_report=True,
+    )
+    summary = predict_tools.summarize_prediction_results(report_path=result['report_path'])
+    assessment = _score(
+        summary.get('ok') is True,
+        summary.get('processed_images') == 3,
+        summary.get('detected_images') == 2,
+        summary.get('total_detections') == 3,
+        'Excavator' in (summary.get('class_counts') or {}),
+    )
+    return {
+        'id': 'tool_prediction_summary',
+        'kind': 'tool',
+        'duration_sec': round(time.time() - started, 2),
+        'result': summary,
+        'assessment': assessment,
+        'expected': 'summarize_prediction_results 应能读取 prediction_report.json 并输出 grounded 统计摘要',
+    }
+
+
 async def case_agent_prediction_route() -> dict[str, Any]:
     started = time.time()
     client = await _make_client(f'prediction-route-{uuid.uuid4().hex[:8]}')
@@ -175,13 +204,43 @@ async def case_agent_prediction_summary() -> dict[str, Any]:
         'next_actions': ['可查看标注结果目录: /tmp/predict/annotated'],
         'model': '/models/yolov8n.pt',
     }
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _fake_direct_tool(tool_name: str, **kwargs):
+        calls.append((tool_name, dict(kwargs)))
+        assert tool_name == 'summarize_prediction_results'
+        assert kwargs['report_path'] == '/tmp/predict/prediction_report.json'
+        result = {
+            'ok': True,
+            'summary': '预测结果摘要: 已处理 2 张图片, 有检测 1, 无检测 1, 总检测框 1，主要类别 Excavator=1',
+            'processed_images': 2,
+            'detected_images': 1,
+            'empty_images': 1,
+            'total_detections': 1,
+            'class_counts': {'Excavator': 1},
+            'detected_samples': ['/data/images/a.jpg'],
+            'empty_samples': ['/data/images/b.jpg'],
+            'annotated_dir': '/tmp/predict/annotated',
+            'report_path': '/tmp/predict/prediction_report.json',
+            'output_dir': '/tmp/predict',
+            'warnings': [],
+            'next_actions': ['可查看标注结果目录: /tmp/predict/annotated'],
+            'model': '/models/yolov8n.pt',
+            'source_path': '/data/images',
+        }
+        client._apply_to_state('summarize_prediction_results', result, kwargs)
+        return result
+
+    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+
     run = await client._try_handle_mainline_intent('总结一下刚才预测结果', 'thread-2')
     assessment = _score(
         run is not None,
         run.get('status') == 'completed',
-        '预测完成' in str(run.get('message', '')),
+        calls and calls[-1][0] == 'summarize_prediction_results',
+        '预测结果摘要' in str(run.get('message', '')),
         '标注结果目录' in str(run.get('message', '')),
-        'Excavator=1' in str(run.get('message', '')),
+        '总检测框 1' in str(run.get('message', '')),
     )
     return {
         'id': 'agent_prediction_summary',
@@ -200,6 +259,8 @@ async def case_tool_alias_catalog() -> dict[str, Any]:
         StructuredTool.from_function(func=lambda **kwargs: kwargs, name='run_dataset_health_check', description='health'),
         StructuredTool.from_function(func=lambda **kwargs: kwargs, name='prepare_dataset_for_training', description='prepare'),
         StructuredTool.from_function(func=lambda **kwargs: kwargs, name='predict_images', description='predict'),
+        StructuredTool.from_function(func=lambda **kwargs: kwargs, name='predict_videos', description='predict-videos'),
+        StructuredTool.from_function(func=lambda **kwargs: kwargs, name='summarize_prediction_results', description='predict-summary'),
     ]
     names = {tool.name for tool in adapt_tools_for_chat_model(tools)}
     expected_aliases = {
@@ -210,6 +271,12 @@ async def case_tool_alias_catalog() -> dict[str, Any]:
         'predict_directory',
         'batch_predict_images',
         'predict_images_in_dir',
+        'predict_video_directory',
+        'batch_predict_videos',
+        'predict_videos_in_dir',
+        'summarize_predictions',
+        'summarize_prediction_report',
+        'analyze_prediction_report',
     }
     assessment = _score(expected_aliases.issubset(names))
     return {
@@ -262,6 +329,7 @@ async def main() -> None:
             await case_tool_predict_success(source_dir, output_dir),
             await case_tool_predict_missing_model(source_dir),
             await case_tool_predict_missing_path(),
+            await case_tool_prediction_summary(source_dir, output_dir),
             await case_agent_prediction_route(),
             await case_agent_prediction_summary(),
             await case_tool_alias_catalog(),

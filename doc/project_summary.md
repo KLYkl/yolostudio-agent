@@ -10,12 +10,12 @@
 - 第一主线继续加强：新增 **旧工具名/旧参数名兼容层**、**主线意图路由**、**更多 grounded reply**。
 - 主线回归矩阵最新得分：**0.955**。
 - 当前第一主线已经达到“单人、内网、有人值守”的稳定可用门槛。
-- 第二主线本地预测回归基线已建立：图片 / 图片目录 headless 预测、旧工具名兼容、grounded 总结都已有自动化验证。
-- 第二主线当前本地预测回归分数：**1.0**。
+- 第二主线本地预测回归基线已建立：图片 / 图片目录 / 视频 / 视频目录 headless 预测、预测结果汇总、旧工具名兼容、grounded 总结都已有自动化验证。
+- 第二主线当前本地预测回归分数：**1.0**（现有报告基线）；另已补 `summarize_prediction_results` 的工具级验证。
 - 目前最主要剩余差距：
   - 本地文件级 durable checkpoint 已落地，但还不是共享服务级持久化
   - 解释层继续 grounded 化
-  - 第二主线已正式开启第一步：headless 图片 / 图片目录预测（当前已完成本地回归，尚未远端部署验证）
+  - 第二主线已正式开启 Phase 2：headless 图片 / 图片目录 / 视频 / 视频目录预测 + 结果汇总（当前已完成本地工具级验证，尚未远端部署验证）
 
 ---
 
@@ -48,7 +48,7 @@
   ┌─────────────────────┐    SSH Tunnel    ┌──────────────────────────┐
   │  cli.py             │   :8080/:11434   │  MCP Server (:8080)      │
   │  agent_client.py    │◄════════════════►│  FastMCP + streamable-http│
-  │  LangGraph ReAct    │                  │  14 个 Tool              │
+  │  LangGraph ReAct    │                  │  16 个 Tool              │
   │  langchain-mcp      │                  │  ├─ scan_dataset    ─┐   │
   │                     │                  │  ├─ split_dataset    │   │
   │                     │                  │  ├─ validate_dataset │直接│
@@ -56,6 +56,8 @@
   │                     │                  │  ├─ generate_yaml    │   │
   │                     │                  │  ├─ training_readiness┘   │
   │                     │                  │  ├─ predict_images   ─┐   │
+  │                     │                  │  ├─ summarize_prediction_results │
+  │                     │                  │  ├─ predict_videos  ─┘   │
   │                     │                  │  ├─ start_training    │   │
   │                     │                  │  ├─ check_status     │wrap│
   │                     │                  │  ├─ stop_training    │    │
@@ -90,7 +92,7 @@ D:\yolodo2.0\agent_plan\               ← Git 仓库 (4 commits)
 │   │   ├── tools/
 │   │   │   ├── data_tools.py              # scan/split/validate/augment/generate_yaml/training_readiness (~460行)
 │   │   │   └── train_tools.py             # start/status/stop/gpu_status (~50行)
-│   │   │   └── predict_tools.py           # predict_images（图片/图片目录 headless 预测）
+│   │   │   └── predict_tools.py           # predict_images + summarize_prediction_results + predict_videos
 │   │   └── services/
 │   │       ├── train_service.py           # subprocess + 设备校验 (~264行)
 │   │       ├── gpu_utils.py               # GPU 动态检测（进程检查+UUID映射, ~101行）
@@ -130,7 +132,7 @@ D:\yolodo2.0\agent_plan\               ← Git 仓库 (4 commits)
 ### Phase 2: MCP Server ✅ 核心完成
 
 - [x] FastMCP 启动（host/port 在构造函数中）
-- [x] 14 个 Tool 注册并对齐真实 API
+- [x] 16 个 Tool 注册并对齐真实 API
 - [x] data_tools 8 工具：scan/split/validate/augment/generate_yaml/training_readiness/health_check/duplicate_check
 - [x] train_tools 4 工具：start/status/stop/gpu_status
 - [x] TrainService subprocess wrapper + 日志解析器
@@ -150,7 +152,7 @@ D:\yolodo2.0\agent_plan\               ← Git 仓库 (4 commits)
 
 ### Phase 4: 集成优化 ⏳ 大部分完成
 
-- [x] **第二主线 Phase 1**：`predict_images`（图片/图片目录 headless 预测 + grounded reply + 输出工件）
+- [x] **第二主线 Phase 2**：`predict_images` + `summarize_prediction_results` + `predict_videos`（图片/图片目录/视频/视频目录 headless 预测 + grounded reply + 结果汇总）
 
 - [x] **完整场景测试**：scan → validate → split → augment → start_training → check_status 全流程
 - [x] **错误处理**：data_tools / train_tools 已加 try-except + _error_payload 统一包装

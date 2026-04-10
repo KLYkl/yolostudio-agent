@@ -9,7 +9,7 @@
 
 截至 2026-04-11，项目已经从“能不能做”推进到：
 
-> **第一主线（数据准备 → 训练）已经完成核心收尾，正式进入“第一主线长期可用化 + 第二主线 Phase 1（图片预测）启动”的阶段。**
+> **第一主线（数据准备 → 训练）已经完成核心收尾，正式进入“第一主线长期可用化 + 第二主线 Phase 2（图片/视频预测 + 结果汇总）”的阶段。**
 
 更直白一点：
 
@@ -19,7 +19,7 @@
 - 当前主要矛盾从“没有能力”转成了：
   - 极少数解释层 grounded 细节仍需继续收口
   - 本地文件级 durable checkpoint 已落地，但还不是共享服务级持久化
-  - 第二主线 Phase 1（图片预测）的 headless Agent 化与测试基线
+  - 第二主线 Phase 2（图片/视频预测 + 结果汇总）的 headless Agent 化与测试基线
 
 ---
 
@@ -89,12 +89,12 @@ flowchart TD
     CLIENT --> LLM["LLM Provider\nollama / deepseek / openai_compatible"]
     CLIENT --> MCPCLIENT["langchain-mcp client"]
     MCPCLIENT --> MCPSERVER["server/mcp_server.py"]
-    MCPSERVER --> TOOLS["14 个 MCP Tools"]
+    MCPSERVER --> TOOLS["16 个 MCP Tools"]
     TOOLS --> SERVICES["dataset_root / gpu_utils / train_service / train_log_parser"]
     SERVICES --> RUNTIME["真实数据集 / GPU / YOLO 训练进程 / 日志 / run registry"]
 ```
 
-### 4.2 当前已注册工具（14 个）
+### 4.2 当前已注册工具（16 个）
 
 1. `scan_dataset`
 2. `split_dataset`
@@ -110,6 +110,8 @@ flowchart TD
 12. `stop_training`
 13. `check_gpu_status`
 14. `predict_images`
+15. `summarize_prediction_results`
+16. `predict_videos`
 
 ---
 
@@ -163,7 +165,7 @@ flowchart TD
 
 ### 4.5 2026-04-11 深夜新增推进（四）
 
-第二主线已经正式启动，当前完成的是 **Phase 1：图片 / 图片目录 headless 预测**。
+第二主线已经正式启动，当前完成的是 **Phase 2：图片 / 图片目录 / 视频 / 视频目录 headless 预测 + 预测结果汇总**。
 
 本轮新增：
 
@@ -179,16 +181,24 @@ flowchart TD
     - JSON 报告导出
 - `agent/server/tools/predict_tools.py`
   - 暴露 `predict_images`
+  - 暴露 `summarize_prediction_results`
+  - 暴露 `predict_videos`
   - 输入语义改成 `source_path / model / output_dir / save_* / generate_report / max_images`
 - `agent/client/agent_client.py`
   - 增加预测意图路由
   - 增加 `predict_images` grounded reply
+  - 增加 `summarize_prediction_results` grounded reply
+  - 增加 `predict_videos` grounded reply
   - 增加预测状态写回 `SessionState.active_prediction`
 - `agent/client/tool_adapter.py`
   - 增加预测相关旧名/旧参数兼容：
     - `predict_directory -> predict_images`
     - `batch_predict_images -> predict_images`
     - `path/source/input_path -> source_path`
+    - `predict_video_directory -> predict_videos`
+    - `batch_predict_videos -> predict_videos`
+    - `summarize_predictions -> summarize_prediction_results`
+    - `summarize_prediction_report -> summarize_prediction_results`
 - 新增测试：
   - `agent/tests/test_predict_tools.py`
   - `agent/tests/test_prediction_route.py`
@@ -196,13 +206,32 @@ flowchart TD
   - `agent/tests/test_prediction_regression_suite.py`
   - `doc/prediction_regression_report_2026-04-11.md`
 
+- 追加的本地工具级验证：
+  - `agent/tests/test_predict_tools.py`
+  - `agent/tests/test_predict_video_tools.py`
+  - 已覆盖 `prediction_report.json` 生成后再调用 `summarize_prediction_results`
+  - 已验证可通过 `report_path` 或 `output_dir` 两种方式汇总
+  - 已验证视频批处理输出 `video_prediction_report.json`
+
 这一轮的意义：
 
 > 第二主线没有直接把桌面预测逻辑硬搬进 Agent，
-> 而是先把“图片 / 图片目录批量预测”做成了低耦合、可测试、可 grounded 的 headless 工具。
+> 而是先把“图片 / 图片目录 / 视频 / 视频目录预测 + 结果汇总”做成了低耦合、可测试、可 grounded 的 headless 工具。
+
+当前补充说明：
+
+- `summarize_prediction_results` 已完成代码集成、tool 级验证和 grounded 路由实现
+- `predict_videos` 已完成代码集成与工具级验证
+- 但本地 `asyncio/_overlapped` 环境异常会阻塞一部分依赖 LangChain 的 route/regression 脚本执行
+- 因此这一小步当前的验证强度是：
+  - `py_compile` ✅
+  - `predict_tools` 工具级验证 ✅
+  - 代码级路由/grounded 集成已完成
+  - 依赖 LangChain 的部分本地回归脚本等待环境问题解决后补跑
 
 当前第二主线还没做：
-- 视频批处理
+- 远端 prediction MCP 实测
+- 视频结果的远端真实验证
 - 摄像头 / RTSP / 屏幕实时流
 - 预测结果二次筛选 / 汇总工作流
 

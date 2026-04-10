@@ -15,6 +15,12 @@ TOOL_NAME_ALIASES: dict[str, str] = {
     'predict_directory': 'predict_images',
     'batch_predict_images': 'predict_images',
     'predict_images_in_dir': 'predict_images',
+    'predict_video_directory': 'predict_videos',
+    'batch_predict_videos': 'predict_videos',
+    'predict_videos_in_dir': 'predict_videos',
+    'summarize_predictions': 'summarize_prediction_results',
+    'summarize_prediction_report': 'summarize_prediction_results',
+    'analyze_prediction_report': 'summarize_prediction_results',
 }
 
 _ARG_ALIASES: dict[str, dict[str, str]] = {
@@ -60,6 +66,22 @@ _ARG_ALIASES: dict[str, dict[str, str]] = {
         'input_path': 'source_path',
         'dir_path': 'source_path',
         'folder': 'source_path',
+    },
+    'predict_videos': {
+        'path': 'source_path',
+        'source': 'source_path',
+        'input_path': 'source_path',
+        'dir_path': 'source_path',
+        'folder': 'source_path',
+    },
+    'summarize_prediction_results': {
+        'path': 'report_path',
+        'report': 'report_path',
+        'json_report': 'report_path',
+        'file': 'report_path',
+        'dir_path': 'output_dir',
+        'folder': 'output_dir',
+        'output': 'output_dir',
     },
 }
 
@@ -136,21 +158,31 @@ class _PrepareAliasArgs(BaseModel):
 
 
 class _PredictAliasArgs(BaseModel):
-    source_path: str = Field(default='' , description='图片文件路径或图片目录路径')
-    path: str = Field(default='' , description='旧参数兼容；等价于 source_path')
-    source: str = Field(default='' , description='旧参数兼容；等价于 source_path')
-    input_path: str = Field(default='' , description='旧参数兼容；等价于 source_path')
-    dir_path: str = Field(default='' , description='旧参数兼容；等价于 source_path')
-    folder: str = Field(default='' , description='旧参数兼容；等价于 source_path')
-    model: str = Field(default='' , description='预测模型路径或模型名')
+    source_path: str = Field(default='', description='图片文件路径或图片目录路径')
+    path: str = Field(default='', description='旧参数兼容；等价于 source_path')
+    source: str = Field(default='', description='旧参数兼容；等价于 source_path')
+    input_path: str = Field(default='', description='旧参数兼容；等价于 source_path')
+    dir_path: str = Field(default='', description='旧参数兼容；等价于 source_path')
+    folder: str = Field(default='', description='旧参数兼容；等价于 source_path')
+    model: str = Field(default='', description='预测模型路径或模型名')
     conf: float = Field(default=0.25, description='置信度阈值')
     iou: float = Field(default=0.45, description='NMS IoU 阈值')
-    output_dir: str = Field(default='' , description='输出目录')
+    output_dir: str = Field(default='', description='输出目录')
     save_annotated: bool = Field(default=True, description='是否保存标注图')
     save_labels: bool = Field(default=False, description='是否保存 YOLO 标签')
     save_original: bool = Field(default=False, description='是否复制原图')
     generate_report: bool = Field(default=True, description='是否生成 JSON 报告')
     max_images: int = Field(default=0, description='最多处理图片数，0 表示不限制')
+
+class _PredictSummaryAliasArgs(BaseModel):
+    report_path: str = Field(default='', description='预测报告 JSON 路径')
+    path: str = Field(default='', description='旧参数兼容；等价于 report_path')
+    report: str = Field(default='', description='旧参数兼容；等价于 report_path')
+    json_report: str = Field(default='', description='旧参数兼容；等价于 report_path')
+    file: str = Field(default='', description='旧参数兼容；等价于 report_path')
+    output_dir: str = Field(default='', description='预测输出目录；若未显式给 report_path，则会尝试读取 output_dir/prediction_report.json')
+    dir_path: str = Field(default='', description='旧参数兼容；等价于 output_dir')
+    folder: str = Field(default='', description='旧参数兼容；等价于 output_dir')
 
 def _build_alias_tool(alias_name: str, target_tool: BaseTool, *, description: str, args_schema: type[BaseModel]) -> BaseTool:
     async def _arun(**kwargs: Any) -> str:
@@ -223,6 +255,34 @@ def adapt_tools_for_chat_model(tools: list[BaseTool]) -> list[BaseTool]:
                     tool_map['predict_images'],
                     description=description,
                     args_schema=_PredictAliasArgs,
+                )
+            )
+    if 'predict_videos' in tool_map:
+        for alias_name, description in (
+            ('predict_video_directory', '兼容旧工具名 predict_video_directory。用于对视频目录做批量预测。'),
+            ('batch_predict_videos', '兼容旧工具名 batch_predict_videos。用于对视频目录做批量预测。'),
+            ('predict_videos_in_dir', '兼容旧工具名 predict_videos_in_dir。用于对视频目录做批量预测。'),
+        ):
+            alias_tools.append(
+                _build_alias_tool(
+                    alias_name,
+                    tool_map['predict_videos'],
+                    description=description,
+                    args_schema=_PredictAliasArgs,
+                )
+            )
+    if 'summarize_prediction_results' in tool_map:
+        for alias_name, description in (
+            ('summarize_predictions', '兼容旧工具名 summarize_predictions。用于汇总 prediction_report.json。'),
+            ('summarize_prediction_report', '兼容旧工具名 summarize_prediction_report。用于汇总 prediction_report.json。'),
+            ('analyze_prediction_report', '兼容旧工具名 analyze_prediction_report。用于汇总 prediction_report.json。'),
+        ):
+            alias_tools.append(
+                _build_alias_tool(
+                    alias_name,
+                    tool_map['summarize_prediction_results'],
+                    description=description,
+                    args_schema=_PredictSummaryAliasArgs,
                 )
             )
 

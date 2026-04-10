@@ -85,9 +85,29 @@ def main() -> None:
         assert result['empty_samples'], result
         assert result['next_actions'], result
 
+        summary = predict_tools.summarize_prediction_results(report_path=result['report_path'])
+        assert summary['ok'] is True, summary
+        assert summary['processed_images'] == 3, summary
+        assert summary['detected_images'] == 2, summary
+        assert summary['empty_images'] == 1, summary
+        assert summary['total_detections'] == 3, summary
+        assert summary['class_counts']['bulldozer'] == 2, summary
+        assert summary['class_counts']['Excavator'] == 1, summary
+        assert summary['report_path'] == result['report_path'], summary
+        assert summary['detected_samples'], summary
+        assert summary['next_actions'], summary
+
+        summary_by_dir = predict_tools.summarize_prediction_results(output_dir=str(output_dir))
+        assert summary_by_dir['ok'] is True, summary_by_dir
+        assert summary_by_dir['report_path'] == result['report_path'], summary_by_dir
+
         missing_model = predict_tools.predict_images(source_path=str(source_dir), model='')
         assert missing_model['ok'] is False, missing_model
         assert '缺少模型参数' in missing_model['summary'], missing_model
+
+        missing_report = predict_tools.summarize_prediction_results(output_dir=str(TMP_ROOT / 'missing'))
+        assert missing_report['ok'] is False, missing_report
+        assert '找不到报告文件' in missing_report['summary'], missing_report
 
         print('predict tools ok')
     finally:
