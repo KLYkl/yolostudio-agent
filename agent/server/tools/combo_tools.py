@@ -76,6 +76,8 @@ def prepare_dataset_for_training(
     should_split = force_split or (not has_yaml and not resolution.get('is_split', False))
 
     generated_yaml = detected_yaml
+    split_reason = 'user_requested' if force_split else ('missing_yaml' if should_split else ('already_split' if resolution.get('is_split', False) else 'existing_yaml'))
+    data_yaml_source = 'detected_existing_yaml' if generated_yaml else ''
     if should_split:
         split_result = split_dataset(
             img_dir=img_dir,
@@ -108,6 +110,7 @@ def prepare_dataset_for_training(
                 'next_actions': ['请检查 split 结果路径和 classes 信息'],
             }
         generated_yaml = yaml_result.get('output_path', generated_yaml)
+        data_yaml_source = 'generated_from_split'
 
     readiness = training_readiness(
         img_dir=img_dir,
@@ -124,6 +127,10 @@ def prepare_dataset_for_training(
         'label_dir': label_dir,
         'data_yaml': generated_yaml,
         'ready': readiness.get('ready', False),
+        'force_split_applied': bool(should_split),
+        'split_reason': split_reason,
+        'data_yaml_source': data_yaml_source,
+        'recommended_start_training_args': {'data_yaml': generated_yaml} if readiness.get('ready') and generated_yaml else {},
         'blocked_at': None if readiness.get('ready') else 'readiness',
         'actions_taken': [step['step'] for step in steps_completed if step.get('ok')],
         'steps_completed': steps_completed,

@@ -28,7 +28,9 @@ def start_training(model: str, data_yaml: str = "", epochs: int = 100, device: s
     """启动一次 YOLO 训练任务。优先传 model/data_yaml/epochs；device 默认 auto，由服务端按当前 GPU 策略解析。"""
     result = _wrap("启动训练", service.start, model=model, data_yaml=data_yaml, epochs=epochs, device=device)
     if result.get("ok"):
-        result.setdefault("summary", f"训练已启动: model={result.get('resolved_args', {}).get('model', model)}, data={result.get('resolved_args', {}).get('data_yaml', data_yaml)}, device={result.get('device')}")
+        requested_device = result.get('requested_device', device)
+        device_note = f"{result.get('device')} (auto 解析)" if str(requested_device).strip().lower() == 'auto' else result.get('device')
+        result.setdefault("summary", f"训练已启动: model={result.get('resolved_args', {}).get('model', model)}, data={result.get('resolved_args', {}).get('data_yaml', data_yaml)}, device={device_note}")
         result.setdefault("next_actions", [
             "可调用 check_training_status 查看训练进度",
             "如需中止，可调用 stop_training",

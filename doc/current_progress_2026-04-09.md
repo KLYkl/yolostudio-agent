@@ -669,3 +669,66 @@ Agent 当前会直接把：
 1. Gemma / DeepSeek 对复杂训练意图的解释一致性
 2. 训练参数“默认推断”与“用户明确指定”的措辞边界
 3. CLI / 文档里的恢复指引与失败可观测性
+
+---
+
+## 14. 2026-04-10 复杂训练意图一致性收口
+
+本轮进一步收口了主线里最容易让 provider 分叉的部分：
+
+### 已完成
+
+#### 1) 参数来源显式化
+- `training_readiness` 现在会返回：
+  - `data_yaml_source`
+  - `recommended_start_training_args`
+- `prepare_dataset_for_training` 现在会返回：
+  - `force_split_applied`
+  - `split_reason`
+  - `data_yaml_source`
+  - `recommended_start_training_args`
+- `start_training` / `train_service` 现在会返回：
+  - `requested_device`
+  - `argument_sources`
+
+#### 2) Prompt / contract 收口
+- 如果用户明确表达“按默认比例划分 / 先划分再训练”，应传 `force_split=true`
+- 如果工具已经给出 `args_hint` / `recommended_start_training_args`，后续优先原样复用
+- 回答参数时要区分：
+  - 用户明确指定
+  - 工具检测/生成
+  - auto 解析
+
+#### 3) 主线控制器兜底
+- 在 `prepare_dataset_for_training` 已确认成功、用户原始意图包含训练、但模型自己没有继续发出 `start_training` tool call 时，客户端会按当前会话状态自动合成下一步 `start_training` 确认请求。
+- 这个逻辑只服务主线，不是通用“替模型做规划”。
+
+### 已验证
+
+#### Gemma 路线
+复杂提示词：
+- `数据在 /home/kly/test_dataset/，按默认划分比例，然后用yolov8n模型进行训练`
+
+结果：
+1. `prepare_dataset_for_training(force_split=true)` 确认
+2. `start_training(data_yaml=..., model=yolov8n.pt)` 确认
+
+#### DeepSeek 路线
+同一提示词回归通过：
+1. `prepare_dataset_for_training(force_split=true)`
+2. `start_training(...)`
+
+### 当前判断
+
+经过这一轮，当前主线已经不只是“能跑”，而是：
+- 标准路径稳定
+- 常见非标准目录可处理
+- truly unknown 结构可提前阻断
+- 复杂训练意图在双 provider 下都能回到一致的两段式流程
+
+也就是说：
+> **已经接近可以开始谨慎增加功能的节点。**
+
+如果继续稳一轮，我建议最后再补：
+1. 训练 run registry / MCP 重启后的训练接管
+2. CLI 恢复与故障提示再收口

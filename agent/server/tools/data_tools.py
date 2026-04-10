@@ -378,6 +378,7 @@ def training_readiness(
         if auto_error:
             blockers.append(f'当前 auto 设备不可解析: {auto_error}')
 
+        data_yaml_source = 'explicit_input' if data_yaml else ('detected_existing_yaml' if resolved_yaml else '')
         next_actions: list[dict[str, Any]] = []
         if not yaml_exists:
             next_actions.append({
@@ -412,6 +413,8 @@ def training_readiness(
             'resolved_img_dir': scan.get('resolved_img_dir', img_dir),
             'resolved_label_dir': scan.get('resolved_label_dir', label_dir),
             'resolved_data_yaml': resolved_yaml,
+            'data_yaml_source': data_yaml_source,
+            'recommended_start_training_args': {'data_yaml': resolved_yaml} if ready and resolved_yaml else {},
             'labels_clean': labels_clean,
             'device_policy': device_policy,
             'device_policy_summary': describe_gpu_policy(device_policy),

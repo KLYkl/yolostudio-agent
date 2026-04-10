@@ -80,12 +80,20 @@ class TrainService:
         self._start_time = time.time()
         self._resolved_device = resolved_device
         device_policy = get_effective_gpu_policy()
+        argument_sources = {
+            'model': 'request_or_agent_input',
+            'data_yaml': 'request_or_tool_output',
+            'epochs': 'request_or_default',
+            'device': 'auto_resolved' if device.strip().lower() == 'auto' else 'manual_request',
+        }
         return {
             "ok": True,
             "message": f"训练已启动：model={model}, data={data_yaml}, epochs={epochs}, device={resolved_device}, policy={device_policy}",
             "pid": self._process.pid,
             "device": resolved_device,
+            "requested_device": device,
             "log_file": str(self._log_file),
+            "argument_sources": argument_sources,
             "command": self._command,
             "resolved_args": {
                 "model": model,

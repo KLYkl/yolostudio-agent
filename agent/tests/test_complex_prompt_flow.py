@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import uuid
 from pathlib import Path
@@ -21,8 +22,14 @@ def _norm(payload):
 
 
 async def main() -> None:
-    session_id = f'test-complex-flow-{uuid.uuid4().hex[:8]}'
-    agent = await build_agent_client(AgentSettings(provider='ollama', model='gemma4:e4b', session_id=session_id))
+    provider = os.getenv('YOLOSTUDIO_TEST_PROVIDER', 'ollama')
+    model = os.getenv('YOLOSTUDIO_TEST_MODEL', 'gemma4:e4b')
+    session_id = f'test-complex-flow-{provider}-{uuid.uuid4().hex[:8]}'
+    settings = AgentSettings(provider=provider, model=model, session_id=session_id)
+    if provider != 'ollama':
+        settings.base_url = os.getenv('YOLOSTUDIO_LLM_BASE_URL', settings.base_url)
+        settings.api_key = os.getenv('YOLOSTUDIO_LLM_API_KEY', settings.api_key)
+    agent = await build_agent_client(settings)
     first = await agent.chat('数据在 /home/kly/test_dataset/，按默认划分比例，然后用yolov8n模型进行训练')
     print('first', json.dumps(first, ensure_ascii=False))
     if first.get('status') != 'needs_confirmation':
@@ -55,7 +62,7 @@ async def main() -> None:
         stop = _norm(await tool_map['stop_training'].ainvoke({}))
         print('stop', json.dumps(stop, ensure_ascii=False))
 
-    print('complex prompt flow smoke ok')
+    print(f'complex prompt flow smoke ok ({provider})')
 
 
 if __name__ == '__main__':

@@ -390,3 +390,71 @@ afab4c1  test: comprehensive validation + log parser fix
 1. 继续收口 Gemma / DeepSeek 对复杂训练意图的解释差异
 2. 把训练参数的“默认推断”与“用户明确指定”表达得更严格
 3. 在文档与 CLI 中补充更清晰的故障恢复指引
+
+---
+
+## 十二、2026-04-10 主线一致性收口（复杂训练意图）
+
+本轮继续沿主线推进，重点不是扩功能，而是收口“复杂训练意图”的行为一致性，主要解决两个问题：
+
+1. **provider 行为分叉**
+   - 同一句复杂提示词下，Gemma 有时会在 `prepare_dataset_for_training` 后停在自然语言总结，不继续进入 `start_training`。
+2. **默认推断 vs 用户明确指定 的表达边界**
+   - 之前 tool 返回里缺少参数来源提示，Agent 容易把默认值或 auto 解析说成用户明确指定。
+
+### 本轮完成的增强
+
+#### 1) 参数来源显式化
+- `training_readiness` 新增：
+  - `data_yaml_source`
+  - `recommended_start_training_args`
+- `prepare_dataset_for_training` 新增：
+  - `force_split_applied`
+  - `split_reason`
+  - `data_yaml_source`
+  - `recommended_start_training_args`
+- `start_training` / `TrainService.start` 新增：
+  - `requested_device`
+  - `argument_sources`
+  - 当 `device=auto` 时，summary 会明确显示为“auto 解析”。
+
+#### 2) Agent 规则收口
+- `SYSTEM_PROMPT` 已强化：
+  - 用户明确说“按默认比例划分 / 先划分再训练”时，应向 `prepare_dataset_for_training` 传 `force_split=true`
+  - 若工具返回 `next_actions / args_hint / recommended_start_training_args`，后续优先原样复用
+  - 回答参数时必须区分：用户指定 / 工具检测生成 / auto 解析
+
+#### 3) 复杂训练意图的控制器兜底
+- `agent_client.py` 已增加一个 **主线专用控制器 fallback**：
+  - 当 `prepare_dataset_for_training` 已确认成功、用户原始意图明确包含“训练”、且模型自己没有继续发出 `start_training` tool call 时，客户端会根据当前会话状态自动合成下一步 `start_training` 确认请求。
+- 这个 fallback 只覆盖主线：
+  - `dataset root -> prepare -> start_training`
+- 作用是减少 Gemma / DeepSeek 在复杂意图上的分叉，而不是替代模型本身。
+
+### 回归结果
+
+#### Gemma (`ollama + gemma4:e4b`)
+复杂提示词：
+- `数据在 /home/kly/test_dataset/，按默认划分比例，然后用yolov8n模型进行训练`
+
+现在稳定回到两段式确认链：
+1. `prepare_dataset_for_training(force_split=true)`
+2. `start_training(data_yaml=..., model=yolov8n.pt)`
+
+#### DeepSeek (`deepseek-chat`)
+同一条复杂提示词也已通过回归：
+1. `prepare_dataset_for_training(force_split=true)`
+2. `start_training(...)`
+
+### 当前主线判断
+
+到这一步，主线已经从：
+- “标准路径能跑”
+推进到：
+- “复杂训练意图在 Gemma / DeepSeek 两条路上都能稳定落到 prepare -> train 两段式流程”
+
+这意味着当前已经**接近可以开始谨慎加功能**的节点；如果继续保持收口优先，我建议只再补一轮：
+1. 训练 run registry / MCP 重启后的训练接管
+2. 更明确的 CLI 恢复指引
+
+做完这两项后，再扩预测/批处理类功能会更稳。

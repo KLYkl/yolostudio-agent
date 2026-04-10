@@ -56,6 +56,8 @@ def main() -> None:
         assert readiness['device_policy'] == GpuAllocationPolicy.SINGLE_IDLE_GPU
         assert readiness['device_policy_summary']
         assert readiness['auto_device'] == '1'
+        assert readiness['data_yaml_source'] == 'detected_existing_yaml'
+        assert readiness['recommended_start_training_args']['data_yaml'] == str(tmp_yaml)
         assert readiness['next_actions']
 
         failed = start_training(model='yolov8n.pt', data_yaml='Z:/definitely-missing.yaml', epochs=1)

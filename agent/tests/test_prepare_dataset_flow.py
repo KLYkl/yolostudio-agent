@@ -92,6 +92,10 @@ def _run_success_path() -> None:
     assert result['ok'] is True
     assert result['ready'] is True
     assert result['data_yaml'] == '/tmp/data.yaml'
+    assert result['force_split_applied'] is True
+    assert result['split_reason'] == 'missing_yaml'
+    assert result['data_yaml_source'] == 'generated_from_split'
+    assert result['recommended_start_training_args'] == {'data_yaml': '/tmp/data.yaml'}
     assert steps == ['resolve_root', 'scan', 'validate', 'split', 'generate_yaml', 'readiness']
 
 
