@@ -31,19 +31,31 @@ def _run_success_path() -> None:
             'ok': True,
             'summary': 'scan ok',
             'classes': ['cat', 'dog'],
+            'detected_classes_txt': f'{img_dir}/../labels/classes.txt',
+            'class_name_source': 'classes_txt',
             'detected_data_yaml': '',
             'total_images': 10,
-            'labeled_images': 10,
-            'missing_labels': 0,
+            'labeled_images': 8,
+            'missing_labels': 2,
+            'missing_label_images': 2,
+            'missing_label_ratio': 0.2,
+            'risk_level': 'high',
+            'warnings': ['发现 2 张图片缺少标签（占比 20.0%），训练结果可能受到明显影响'],
             'empty_labels': 0,
         }
 
-    def fake_validate_dataset(img_dir: str, label_dir: str = ''):
+    def fake_validate_dataset(img_dir: str, label_dir: str = '', classes_txt: str = ''):
         steps.append('validate')
+        assert classes_txt.endswith('classes.txt')
         return {
             'ok': True,
             'summary': 'validate ok',
             'has_issues': False,
+            'has_risks': True,
+            'risk_level': 'high',
+            'warnings': ['发现 2 张图片缺少标签（占比 20.0%），训练结果可能受到明显影响'],
+            'missing_label_images': 2,
+            'missing_label_ratio': 0.2,
             'issue_count': 0,
         }
 
@@ -61,14 +73,16 @@ def _run_success_path() -> None:
             'suggested_yaml_path': '/tmp/data.yaml',
         }
 
-    def fake_generate_yaml(train_path: str, val_path: str, classes: list[str] | None = None, output_path: str = ''):
+    def fake_generate_yaml(train_path: str, val_path: str, classes: list[str] | None = None, output_path: str = '', classes_txt: str = '', img_dir: str = '', label_dir: str = ''):
         steps.append('generate_yaml')
         assert classes == ['cat', 'dog']
+        assert classes_txt.endswith('classes.txt')
         assert output_path == '/tmp/data.yaml'
         return {
             'ok': True,
             'summary': 'yaml ok',
             'output_path': '/tmp/data.yaml',
+            'class_name_source': 'classes_txt',
         }
 
     def fake_training_readiness(img_dir: str, label_dir: str = '', data_yaml: str = ''):
@@ -77,7 +91,12 @@ def _run_success_path() -> None:
         return {
             'ok': True,
             'ready': True,
-            'summary': '可以直接训练',
+            'summary': '可以训练，但存在数据质量风险: 发现 2 张图片缺少标签（占比 20.0%），训练结果可能受到明显影响',
+            'risk_level': 'high',
+            'warnings': ['发现 2 张图片缺少标签（占比 20.0%），训练结果可能受到明显影响'],
+            'missing_label_images': 2,
+            'missing_label_ratio': 0.2,
+            'recommended_start_training_args': {'data_yaml': '/tmp/data.yaml'},
             'next_actions': [{'tool': 'start_training'}],
         }
 
@@ -95,8 +114,14 @@ def _run_success_path() -> None:
     assert result['force_split_applied'] is True
     assert result['split_reason'] == 'missing_yaml'
     assert result['data_yaml_source'] == 'generated_from_split'
+    assert result['detected_classes_txt'].endswith('classes.txt')
+    assert result['class_name_source'] == 'classes_txt'
+    assert result['risk_level'] == 'high'
+    assert result['missing_label_images'] == 2
     assert result['recommended_start_training_args'] == {'data_yaml': '/tmp/data.yaml'}
+    assert '数据质量风险' in result['summary']
     assert steps == ['resolve_root', 'scan', 'validate', 'split', 'generate_yaml', 'readiness']
+
 
 
 def _run_early_block_path() -> None:
@@ -131,6 +156,7 @@ def _run_early_block_path() -> None:
     assert result['blocked_at'] == 'resolve_root'
     assert result['steps_completed'][0]['step'] == 'resolve_root'
     assert steps == ['resolve_root']
+
 
 
 def main() -> None:

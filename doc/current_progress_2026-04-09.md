@@ -845,3 +845,59 @@ Agent 当前会直接把：
 
 1. 是否要把“大量缺失标签图片”显式提升为 readiness 风险提示
 2. `generate_yaml / prepare_dataset_for_training` 是否应优先利用 `classes.txt` 保留真实类名
+
+## 17. 2026-04-10 zyb 主线问题收口（classes.txt + 缺失标签风险）
+
+这轮主线没有横向加功能，而是直接收口 `zyb` 大数据脏数据集测试里暴露出的两项主问题：
+
+1. `prepare / generate_yaml` 没有优先利用 `labels/classes.txt` 保留真实类名
+2. `validate_dataset / training_readiness` 没有把大量缺失标签图片稳定提升为训练风险提示
+
+### 本轮改动
+
+- `agent/server/tools/data_tools.py`
+  - 新增 `classes.txt` 自动发现逻辑
+  - `scan_dataset` 会返回：
+    - `detected_classes_txt`
+    - `class_name_source`
+    - `missing_label_images`
+    - `missing_label_ratio`
+    - `risk_level`
+    - `warnings`
+  - `validate_dataset` 现在会把大量缺失标签显式提升为 `has_risks=true`
+  - `training_readiness` 现在会保留 `warnings / risk_level`，并在可训练时明确返回“可以训练，但存在数据质量风险”
+- `agent/server/tools/combo_tools.py`
+  - `prepare_dataset_for_training` 现在会把 `classes_txt` 透传给 `generate_yaml`
+  - 返回结果会保留：
+    - `detected_classes_txt`
+    - `class_name_source`
+    - `warnings`
+    - `risk_level`
+
+### 远端真实验证
+
+对 `/home/kly/agent_cap_tests/zyb` 的真实回归结果：
+
+- `scan_dataset(...)`：
+  - `detected_classes_txt=/home/kly/agent_cap_tests/zyb/labels/classes.txt`
+  - `class_name_source=classes_txt`
+  - `classes=[Excavator, bulldozer, piling_machine, two_wheeler]`
+  - `missing_label_images=5179`
+  - `missing_label_ratio=0.737`
+  - `risk_level=critical`
+- `training_readiness(...)`：
+  - `ready=false`（原因仍是缺少 data_yaml）
+  - 但已显式返回 `warnings` 和 `risk_level=critical`
+- `prepare_dataset_for_training(...)`：
+  - `ready=true`
+  - `summary=数据集已准备到可训练状态，但存在数据质量风险...`
+  - 输出 YAML：`/home/kly/agent_cap_tests/zyb/images_split/data.yaml`
+  - 生成的 `names` 已保留真实类名，而不是 `0/1/2/3`
+
+### 当前主线判断
+
+到这一步，主线已经把 `zyb` 压测暴露出的两个最核心问题收掉：
+- 类名语义不丢
+- 大量缺失标签不再“看见但不提示”
+
+因此当前主线更接近“可以谨慎投入单人内网使用”的状态。

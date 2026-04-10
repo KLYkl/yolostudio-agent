@@ -41,11 +41,23 @@ def main() -> None:
             'resolved_img_dir': '/dataset/images',
             'resolved_label_dir': '/dataset/labels',
             'detected_data_yaml': str(tmp_yaml),
+            'detected_classes_txt': '',
+            'labeled_images': 10,
+            'total_images': 10,
+            'missing_label_images': 0,
+            'missing_label_ratio': 0.0,
+            'risk_level': 'none',
+            'class_name_source': '',
         }
-        data_tools.validate_dataset = lambda img_dir, label_dir='': {
+        data_tools.validate_dataset = lambda img_dir, label_dir='', classes_txt='': {
             'ok': True,
             'summary': 'validate ok',
             'has_issues': False,
+            'has_risks': False,
+            'risk_level': 'none',
+            'warnings': [],
+            'missing_label_images': 0,
+            'missing_label_ratio': 0.0,
             'issue_count': 0,
         }
         gpu_utils.query_gpu_status = lambda: [GpuInfo(index='1', uuid='u1', free_mb=12000, busy=False)]

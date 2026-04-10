@@ -571,3 +571,35 @@ afab4c1  test: comprehensive validation + log parser fix
 
 1. 是否要把“大量缺失标签图片”显式提升为 readiness 风险提示
 2. `generate_yaml / prepare_dataset_for_training` 是否应优先利用 `classes.txt` 保留真实类名
+
+## 17. 2026-04-10 主线补丁：classes.txt 语义保留与缺失标签风险表达
+
+本轮主线围绕 `zyb` 大数据脏数据集测试暴露的问题继续收口，目标不是加新功能，而是把“数据准备 → readiness → 训练”这条链在 dirty dataset 下做得更稳。
+
+### 已完成
+- `scan_dataset` 现在会自动发现 `classes.txt`，并返回 `class_name_source`
+- `generate_yaml` / `prepare_dataset_for_training` 现在会优先保留 `classes.txt` 中的真实类名
+- `validate_dataset` / `training_readiness` 现在会显式暴露：
+  - `missing_label_images`
+  - `missing_label_ratio`
+  - `risk_level`
+  - `warnings`
+- `prepare_dataset_for_training` 在 `ready=true` 但存在风险时，会明确把风险写进 `summary`
+
+### zyb 真实回归结果
+- `scan_dataset('/home/kly/agent_cap_tests/zyb')` 已返回真实类名：
+  - `Excavator`
+  - `bulldozer`
+  - `piling_machine`
+  - `two_wheeler`
+- 同时明确暴露：
+  - `5179` 张缺失标签图片
+  - 占比 `73.7%`
+  - `risk_level=critical`
+- `prepare_dataset_for_training(...)` 生成的 YAML 已写入真实类名，不再退化成 `0/1/2/3`
+
+### 意义
+这一步并没有增加“更多 tool 数量”，但它直接提升了当前主线在真实脏数据场景中的可信度：
+- 解释更准
+- 风险更早暴露
+- 训练前判断更像一个工程系统，而不是只靠模型猜测

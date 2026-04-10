@@ -62,6 +62,32 @@ def _discover_data_yaml(img_dir: Path, label_dir: Path | None = None) -> tuple[s
     return detected, candidates
 
 
+def _discover_classes_txt(img_dir: Path, label_dir: Path | None = None) -> tuple[str, list[str]]:
+    dataset_root = _infer_dataset_root(img_dir, label_dir)
+    search_dirs = [
+        label_dir,
+        dataset_root / 'labels',
+        dataset_root,
+        img_dir.parent,
+    ]
+    names = {'classes.txt', 'class.txt', 'classes.names'}
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for base in search_dirs:
+        if not base:
+            continue
+        for name in names:
+            path = (base / name).resolve()
+            key = str(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            if path.exists():
+                candidates.append(key)
+    detected = candidates[0] if candidates else ''
+    return detected, candidates
+
+
 def _top_class_stats(class_stats: dict[str, int], limit: int = 5) -> list[dict[str, Any]]:
     ordered = sorted(class_stats.items(), key=lambda item: item[1], reverse=True)
     return [{"class": name, "count": count} for name, count in ordered[:limit]]
@@ -100,6 +126,47 @@ def _read_yaml_names(yaml_path: Path) -> list[str]:
     return []
 
 
+def _read_classes_txt_lines(classes_txt_path: Path) -> list[str]:
+    try:
+        return [line.strip() for line in classes_txt_path.read_text(encoding='utf-8').splitlines() if line.strip()]
+    except Exception:
+        return []
+
+
+def _build_missing_label_risk(scan_result) -> dict[str, Any]:
+    total_images = getattr(scan_result, 'total_images', 0) or 0
+    missing_count = len(getattr(scan_result, 'missing_labels', []) or [])
+    ratio = round(missing_count / total_images, 4) if total_images else 0.0
+    warnings: list[str] = []
+    risk_level = 'none'
+    if missing_count <= 0:
+        return {
+            'missing_label_images': 0,
+            'missing_label_ratio': 0.0,
+            'risk_level': risk_level,
+            'warnings': warnings,
+        }
+
+    if ratio >= 0.5:
+        risk_level = 'critical'
+    elif ratio >= 0.2:
+        risk_level = 'high'
+    elif ratio >= 0.05:
+        risk_level = 'medium'
+    else:
+        risk_level = 'low'
+
+    warnings.append(
+        f'发现 {missing_count} 张图片缺少标签（占比 {ratio:.1%}），训练结果可能受到明显影响'
+    )
+    return {
+        'missing_label_images': missing_count,
+        'missing_label_ratio': ratio,
+        'risk_level': risk_level,
+        'warnings': warnings,
+    }
+
+
 def summarize_scan_result(result) -> str:
     return (
         f"总图片: {result.total_images}, 已标注: {result.labeled_images}, "
@@ -109,24 +176,32 @@ def summarize_scan_result(result) -> str:
 
 
 def scan_dataset(img_dir: str, label_dir: str = "") -> dict[str, Any]:
-    """扫描数据集并返回结构化摘要、类别统计、候选 YAML 信息。img_dir 支持传入 dataset root。"""
+    """扫描数据集并返回结构化摘要、类别统计、候选 YAML / classes.txt 信息。img_dir 支持传入 dataset root。"""
     try:
         from core.data_handler._handler import DataHandler
 
         img_path, label_path, resolution = _resolve_dataset_inputs(img_dir, label_dir)
         dataset_root = Path(resolution.get('dataset_root') or _infer_dataset_root(img_path, label_path))
         detected_data_yaml, data_yaml_candidates = _discover_data_yaml(img_path, label_path)
+        detected_classes_txt, classes_txt_candidates = _discover_classes_txt(img_path, label_path)
 
         handler = DataHandler()
         result = handler.scan_dataset(
             img_dir=img_path,
             label_dir=label_path,
+            classes_txt=Path(detected_classes_txt) if detected_classes_txt else None,
         )
+        missing_label_risk = _build_missing_label_risk(result)
         next_actions = ["可继续 validate_dataset 做标签合法性校验"]
         if detected_data_yaml:
             next_actions.append(f"可直接使用 detected_data_yaml 训练: {detected_data_yaml}")
         else:
             next_actions.append("尚未发现可直接训练的 data.yaml；如要训练需显式提供 YAML 路径")
+        if detected_classes_txt:
+            next_actions.append(f"已发现 classes.txt，可用于保留真实类名: {detected_classes_txt}")
+        if missing_label_risk['warnings']:
+            next_actions.append("建议先处理缺失标签图片，或在 readiness 阶段确认是否接受当前风险")
+        class_name_source = 'classes_txt' if detected_classes_txt else ('parsed_labels' if result.classes else '')
         return {
             "ok": True,
             "summary": summarize_scan_result(result),
@@ -138,6 +213,10 @@ def scan_dataset(img_dir: str, label_dir: str = "") -> dict[str, Any]:
             "total_images": result.total_images,
             "labeled_images": result.labeled_images,
             "missing_labels": len(result.missing_labels),
+            "missing_label_images": missing_label_risk['missing_label_images'],
+            "missing_label_ratio": missing_label_risk['missing_label_ratio'],
+            "risk_level": missing_label_risk['risk_level'],
+            "warnings": missing_label_risk['warnings'],
             "missing_label_examples": [str(path) for path in result.missing_labels[:MAX_ISSUE_EXAMPLES]],
             "empty_labels": result.empty_labels,
             "classes": result.classes,
@@ -146,6 +225,9 @@ def scan_dataset(img_dir: str, label_dir: str = "") -> dict[str, Any]:
             "label_format": result.label_format.name if result.label_format else None,
             "detected_data_yaml": detected_data_yaml,
             "data_yaml_candidates": data_yaml_candidates,
+            "detected_classes_txt": detected_classes_txt,
+            "classes_txt_candidates": classes_txt_candidates,
+            "class_name_source": class_name_source,
             "next_actions": next_actions,
         }
     except Exception as exc:
@@ -236,16 +318,22 @@ def generate_yaml(
             raise ValueError('train_path 和 val_path 不能为空')
 
         class_names = [str(c) for c in (classes or []) if str(c).strip()]
+        class_name_source = 'explicit_classes' if class_names else ''
         classes_txt_path = Path(classes_txt) if classes_txt else None
+        if not class_names and not classes_txt_path and img_dir:
+            detected_classes_txt, _ = _discover_classes_txt(Path(img_dir), Path(label_dir) if label_dir else None)
+            classes_txt_path = Path(detected_classes_txt) if detected_classes_txt else None
+
         if not class_names and classes_txt_path and classes_txt_path.exists():
-            class_names = _read_yaml_names(classes_txt_path)
-            if not class_names:
-                class_names = [line.strip() for line in classes_txt_path.read_text(encoding='utf-8').splitlines() if line.strip()]
+            class_names = _read_classes_txt_lines(classes_txt_path)
+            class_name_source = 'classes_txt' if class_names else class_name_source
 
         if not class_names and img_dir:
-            _, candidates = _discover_data_yaml(Path(img_dir), Path(label_dir) if label_dir else None)
-            if candidates:
-                class_names = _read_yaml_names(Path(candidates[0]))
+            detected_yaml, candidates = _discover_data_yaml(Path(img_dir), Path(label_dir) if label_dir else None)
+            yaml_candidate = detected_yaml or (candidates[0] if candidates else '')
+            if yaml_candidate:
+                class_names = _read_yaml_names(Path(yaml_candidate))
+                class_name_source = 'detected_yaml' if class_names else class_name_source
 
         if not class_names:
             raise ValueError('无法确定 classes；请显式传入 classes，或提供 classes_txt / 可解析的 data.yaml')
@@ -280,6 +368,7 @@ def generate_yaml(
             'val_path': val_yaml_value,
             'class_count': len(class_names),
             'classes': class_names,
+            'class_name_source': class_name_source,
             'next_actions': [
                 f'可直接使用该 YAML 启动训练: {output}',
             ],
@@ -303,40 +392,67 @@ def validate_dataset(
 
         handler = DataHandler()
         img_path, label_path, resolution = _resolve_dataset_inputs(img_dir, label_dir)
+        detected_classes_txt, classes_txt_candidates = _discover_classes_txt(img_path, label_path)
+        effective_classes_txt = classes_txt or detected_classes_txt
         result = handler.validate_labels(
             img_dir=img_path,
             label_dir=label_path,
-            classes_txt=Path(classes_txt) if classes_txt else None,
+            classes_txt=Path(effective_classes_txt) if effective_classes_txt else None,
             check_coords=check_coords,
             check_class_ids=check_class_ids,
             check_format=check_format,
             check_orphans=check_orphans,
         )
+        scan_result = handler.scan_dataset(
+            img_dir=img_path,
+            label_dir=label_path,
+            classes_txt=Path(effective_classes_txt) if effective_classes_txt else None,
+        )
+        missing_label_risk = _build_missing_label_risk(scan_result)
         breakdown = {
             "coord_errors": len(result.coord_errors),
             "class_errors": len(result.class_errors),
             "format_errors": len(result.format_errors),
             "orphan_labels": len(result.orphan_labels),
         }
-        summary = (
-            "未发现标签问题" if not result.has_issues else
-            f"发现 {result.issue_count} 个问题: 坐标 {breakdown['coord_errors']}, 类别 {breakdown['class_errors']}, 格式 {breakdown['format_errors']}, 孤立标签 {breakdown['orphan_labels']}"
-        )
+        warnings = list(missing_label_risk['warnings'])
+        has_risks = bool(warnings)
+        summary_parts = []
+        if result.has_issues:
+            summary_parts.append(
+                f"发现 {result.issue_count} 个标签问题: 坐标 {breakdown['coord_errors']}, 类别 {breakdown['class_errors']}, 格式 {breakdown['format_errors']}, 孤立标签 {breakdown['orphan_labels']}"
+            )
+        else:
+            summary_parts.append('未发现标签格式/坐标问题')
+        if warnings:
+            summary_parts.extend(warnings)
+        summary = '；'.join(summary_parts)
+        next_actions = []
+        if result.has_issues:
+            next_actions.append('建议先修复 issue_examples 中的问题，再继续划分或训练')
+        else:
+            next_actions.append('标签格式层面可继续训练或做数据划分')
+        if warnings:
+            next_actions.append('建议确认缺失标签图片是否属于背景图；如不是，先补齐标签再训练')
         return {
             "ok": True,
             "summary": summary,
             "dataset_root": resolution.get('dataset_root', ''),
             "resolved_img_dir": str(img_path),
             "resolved_label_dir": str(label_path) if label_path else '',
+            "detected_classes_txt": detected_classes_txt,
+            "classes_txt_candidates": classes_txt_candidates,
             "total_labels": result.total_labels,
             "has_issues": result.has_issues,
+            "has_risks": has_risks,
+            "risk_level": missing_label_risk['risk_level'],
+            "warnings": warnings,
+            "missing_label_images": missing_label_risk['missing_label_images'],
+            "missing_label_ratio": missing_label_risk['missing_label_ratio'],
             "issue_count": result.issue_count,
             "issue_breakdown": breakdown,
             "issue_examples": _format_issue_examples(result),
-            "next_actions": (
-                ["可继续训练或做数据划分"] if not result.has_issues else
-                ["建议先修复 issue_examples 中的问题，再继续划分或训练"]
-            ),
+            "next_actions": next_actions,
         }
     except Exception as exc:
         return _error_payload(exc, "校验数据集")
@@ -355,24 +471,31 @@ def training_readiness(
         scan = scan_dataset(img_dir=img_dir, label_dir=label_dir)
         if not scan.get('ok'):
             return scan
-        validate = validate_dataset(img_dir=img_dir, label_dir=label_dir)
+        validate = validate_dataset(img_dir=img_dir, label_dir=label_dir, classes_txt=scan.get('detected_classes_txt', ''))
         if not validate.get('ok'):
             return validate
 
         resolved_yaml = data_yaml or scan.get('detected_data_yaml', '')
         yaml_exists = bool(resolved_yaml and Path(resolved_yaml).exists())
         labels_clean = not validate.get('has_issues', False)
+        labeled_images = int(scan.get('labeled_images', 0) or 0)
+        total_images = int(scan.get('total_images', 0) or 0)
+        hard_label_block = total_images > 0 and labeled_images <= 0
         gpu_info = query_gpu_status()
         available_gpus = [gpu.index for gpu in gpu_info if not gpu.busy]
         device_policy = get_effective_gpu_policy()
         auto_device, auto_error = resolve_auto_device(policy=device_policy, gpus=gpu_info)
-        ready = yaml_exists and (labels_clean or not require_clean_labels) and bool(available_gpus)
+        warnings = list(validate.get('warnings', []))
+        risk_level = validate.get('risk_level', scan.get('risk_level', 'none'))
+        ready = yaml_exists and (labels_clean or not require_clean_labels) and bool(available_gpus) and not hard_label_block
 
         blockers: list[str] = []
         if not yaml_exists:
             blockers.append('缺少可用的 data_yaml')
         if require_clean_labels and not labels_clean:
             blockers.append('标签校验未通过')
+        if hard_label_block:
+            blockers.append('当前没有任何有效标注图片，无法进行训练')
         if not available_gpus:
             blockers.append('当前没有空闲 GPU')
         if auto_error:
@@ -384,12 +507,23 @@ def training_readiness(
             next_actions.append({
                 'description': '可先调用 generate_yaml 生成训练 YAML',
                 'tool': 'generate_yaml',
-                'args_hint': {'img_dir': scan.get('resolved_img_dir', img_dir), 'label_dir': scan.get('resolved_label_dir', label_dir), 'classes': scan.get('classes', [])},
+                'args_hint': {
+                    'img_dir': scan.get('resolved_img_dir', img_dir),
+                    'label_dir': scan.get('resolved_label_dir', label_dir),
+                    'classes_txt': scan.get('detected_classes_txt', ''),
+                    'classes': scan.get('classes', []),
+                },
             })
         if require_clean_labels and not labels_clean:
             next_actions.append({
                 'description': '先根据 issue_examples 修复标签问题',
                 'tool': 'validate_dataset',
+                'args_hint': {'img_dir': scan.get('resolved_img_dir', img_dir), 'label_dir': scan.get('resolved_label_dir', label_dir)},
+            })
+        if warnings:
+            next_actions.append({
+                'description': '确认缺失标签图片是否属于背景图；如不是，建议先补齐标签',
+                'tool': 'scan_dataset',
                 'args_hint': {'img_dir': scan.get('resolved_img_dir', img_dir), 'label_dir': scan.get('resolved_label_dir', label_dir)},
             })
         if not available_gpus:
@@ -405,17 +539,27 @@ def training_readiness(
                 'args_hint': {'data_yaml': resolved_yaml},
             })
 
+        summary = '可以直接训练' if ready else f"当前还不能直接训练: {', '.join(blockers)}"
+        if ready and warnings:
+            summary = f"可以训练，但存在数据质量风险: {'; '.join(warnings)}"
+
         return {
             'ok': True,
             'ready': ready,
-            'summary': '可以直接训练' if ready else f"当前还不能直接训练: {', '.join(blockers)}",
+            'summary': summary,
             'dataset_root': scan.get('dataset_root', ''),
             'resolved_img_dir': scan.get('resolved_img_dir', img_dir),
             'resolved_label_dir': scan.get('resolved_label_dir', label_dir),
             'resolved_data_yaml': resolved_yaml,
             'data_yaml_source': data_yaml_source,
+            'detected_classes_txt': scan.get('detected_classes_txt', ''),
+            'class_name_source': scan.get('class_name_source', ''),
             'recommended_start_training_args': {'data_yaml': resolved_yaml} if ready and resolved_yaml else {},
             'labels_clean': labels_clean,
+            'risk_level': risk_level,
+            'warnings': warnings,
+            'missing_label_images': validate.get('missing_label_images', scan.get('missing_label_images', 0)),
+            'missing_label_ratio': validate.get('missing_label_ratio', scan.get('missing_label_ratio', 0.0)),
             'device_policy': device_policy,
             'device_policy_summary': describe_gpu_policy(device_policy),
             'auto_device': auto_device,

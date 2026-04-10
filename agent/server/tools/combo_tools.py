@@ -14,7 +14,9 @@ def prepare_dataset_for_training(
     split_ratio: float = 0.8,
     force_split: bool = False,
 ) -> dict[str, Any]:
-    """将数据集准备到可训练状态：解析根目录、扫描、校验、按需划分并生成 YAML。\n\n注意：本工具只做数据准备，不会启动训练；若用户最终目标是训练，Agent 应在 ready=true 后继续调用 start_training。"""
+    """将数据集准备到可训练状态：解析根目录、扫描、校验、按需划分并生成 YAML。
+
+注意：本工具只做数据准备，不会启动训练；若用户最终目标是训练，Agent 应在 ready=true 后继续调用 start_training。"""
     resolution = resolve_dataset_root(dataset_path)
     if not resolution.get('ok'):
         return resolution
@@ -60,7 +62,11 @@ def prepare_dataset_for_training(
             'next_actions': ['请先修复扫描错误，再继续准备数据集'],
         }
 
-    validate = validate_dataset(img_dir=img_dir, label_dir=label_dir)
+    validate = validate_dataset(
+        img_dir=img_dir,
+        label_dir=label_dir,
+        classes_txt=scan.get('detected_classes_txt', ''),
+    )
     steps_completed.append({'step': 'validate', **validate})
     if not validate.get('ok'):
         return {
@@ -98,6 +104,9 @@ def prepare_dataset_for_training(
             train_path=split_result.get('train_path', ''),
             val_path=split_result.get('val_path', ''),
             classes=scan.get('classes', []),
+            classes_txt=scan.get('detected_classes_txt', ''),
+            img_dir=img_dir,
+            label_dir=label_dir,
             output_path=split_result.get('suggested_yaml_path', ''),
         )
         steps_completed.append({'step': 'generate_yaml', **yaml_result})
@@ -107,7 +116,7 @@ def prepare_dataset_for_training(
                 'summary': '准备失败：generate_yaml 执行失败',
                 'blocked_at': 'generate_yaml',
                 'steps_completed': steps_completed,
-                'next_actions': ['请检查 split 结果路径和 classes 信息'],
+                'next_actions': ['请检查 split 结果路径和 classes / classes.txt 信息'],
             }
         generated_yaml = yaml_result.get('output_path', generated_yaml)
         data_yaml_source = 'generated_from_split'
@@ -119,21 +128,32 @@ def prepare_dataset_for_training(
     )
     steps_completed.append({'step': 'readiness', **readiness})
 
+    ready = readiness.get('ready', False)
+    warnings = readiness.get('warnings', [])
+    summary = '数据集已准备到可训练状态，尚未启动训练' if ready else readiness.get('summary', '数据集尚未准备完成')
+    if ready and warnings:
+        summary = f"数据集已准备到可训练状态，但存在数据质量风险：{'；'.join(warnings)}"
+
     return {
         'ok': readiness.get('ok', False),
-        'summary': '数据集已准备到可训练状态，尚未启动训练' if readiness.get('ready') else readiness.get('summary', '数据集尚未准备完成'),
+        'summary': summary,
         'dataset_root': dataset_root,
         'img_dir': img_dir,
         'label_dir': label_dir,
         'data_yaml': generated_yaml,
-        'ready': readiness.get('ready', False),
+        'data_yaml_source': data_yaml_source,
+        'detected_classes_txt': scan.get('detected_classes_txt', ''),
+        'class_name_source': scan.get('class_name_source', ''),
+        'risk_level': readiness.get('risk_level', validate.get('risk_level', 'none')),
+        'warnings': warnings,
+        'missing_label_images': readiness.get('missing_label_images', validate.get('missing_label_images', 0)),
+        'missing_label_ratio': readiness.get('missing_label_ratio', validate.get('missing_label_ratio', 0.0)),
+        'ready': ready,
         'force_split_applied': bool(should_split),
         'split_reason': split_reason,
-        'data_yaml_source': data_yaml_source,
-        'recommended_start_training_args': {'data_yaml': generated_yaml} if readiness.get('ready') and generated_yaml else {},
-        'blocked_at': None if readiness.get('ready') else 'readiness',
+        'recommended_start_training_args': readiness.get('recommended_start_training_args', {'data_yaml': generated_yaml} if ready and generated_yaml else {}),
+        'blocked_at': None if ready else 'readiness',
         'actions_taken': [step['step'] for step in steps_completed if step.get('ok')],
         'steps_completed': steps_completed,
         'next_actions': readiness.get('next_actions', []),
     }
-

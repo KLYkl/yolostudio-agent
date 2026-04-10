@@ -64,3 +64,24 @@
 - `scan_dataset` 能看见大量缺失标签，但 `validate_dataset` / `training_readiness` 还不会把这类情况稳定提升为训练风险提示
 - `prepare_dataset_for_training` 自动生成 YAML 时，当前会保留数字类 ID（`0/1/2/3`），不会优先利用 `labels/classes.txt` 写入真实类名
 - Gemma 在脏数据解释和 prepare-only 场景下，仍可能生成超出工具事实范围的自然语言说明
+
+## zyb 问题收口结果（2026-04-10 深夜）
+
+此前 `zyb` 压测暴露出的两项主问题，本轮已完成主线修复：
+
+1. **大量缺失标签没有被稳定提升为训练风险**
+   - 已修复：`validate_dataset / training_readiness` 现在会显式返回
+     - `missing_label_images`
+     - `missing_label_ratio`
+     - `risk_level`
+     - `warnings`
+2. **自动生成 YAML 时丢失真实类名**
+   - 已修复：`generate_yaml / prepare_dataset_for_training` 现在会优先利用 `classes.txt`
+
+对 `/home/kly/agent_cap_tests/zyb` 的远端真实验证结果：
+- `class_name_source=classes_txt`
+- `classes=[Excavator, bulldozer, piling_machine, two_wheeler]`
+- `missing_label_images=5179`
+- `missing_label_ratio=0.737`
+- `risk_level=critical`
+- `prepare_dataset_for_training(...).ready=true` 且 `summary` 会明确指出存在数据质量风险
