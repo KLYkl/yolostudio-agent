@@ -732,3 +732,80 @@ Agent 当前会直接把：
 如果继续稳一轮，我建议最后再补：
 1. 训练 run registry / MCP 重启后的训练接管
 2. CLI 恢复与故障提示再收口
+
+## 15. 2026-04-10 训练 run registry / MCP 重启接管
+
+本轮继续沿主线推进，没有扩新业务，而是补上了主线最后一个明显的系统缺口：
+
+### 已完成
+
+#### 1) 训练 run registry
+- `train_service.py` 现在会把当前训练任务持久化到：
+  - `runs/active_train_job.json`
+- 训练结束、停止或进程消失后，会落最近一次运行信息到：
+  - `runs/last_train_job.json`
+- 持久化字段包括：
+  - `pid`
+  - `log_file`
+  - `started_at`
+  - `requested_device / device`
+  - `command`
+  - `resolved_args`
+  - `argument_sources`
+
+#### 2) MCP 重启后的训练接管
+- fresh `TrainService()` 现在会在 `status()/stop()/start()` 前自动读取 active registry。
+- 如果发现注册表里的 pid 仍在运行：
+  - 会把当前任务重新装载到 runtime 中
+  - `check_training_status` 会返回 `reattached=true`
+  - `summary` 会明确提示“已从注册表接管”
+- 如果发现 pid 已不在运行：
+  - 会自动把 active registry 归档成 last run
+  - 避免 registry 残留导致假阳性
+
+#### 3) MCP 重启后仍可 stop
+- 如果 MCP 重启后 `_process` 句柄已丢失，`stop()` 仍可基于注册表中的 pid 发送终止信号。
+- 这意味着主线现在已经具备：
+  - 启动训练
+  - 重启 MCP
+  - 再次查询训练
+  - 再次停止训练
+  的完整接管能力。
+
+### 已验证
+
+#### 本地验证
+- `py_compile` ✅
+- `agent/tests/test_train_run_registry.py` ✅
+  - 模拟：写入 active registry → 新建 `TrainService()` → `status()` 重新接管 → `stop()` 成功结束 → last registry 正确落盘
+
+#### 远端真实验证
+- 已同步最新 `train_service.py` 到 `/home/kly/yolostudio_agent_proto`
+- 真实服务器验证链路：
+  1. 启动真实训练（`epochs=50`）
+  2. 重启 MCP Server
+  3. fresh 进程调用 `check_training_status`
+  4. 观察到：
+     - `running=true`
+     - `reattached=true`
+     - `summary=训练进行中 ... 已从注册表接管`
+  5. fresh 进程调用 `stop_training`
+  6. 成功停止，返回 `return_code=-15`
+
+### 当前主线判断
+
+到这一步，主线已经补上了“训练进行中时 MCP 重启会丢失控制权”的明显缺口。
+
+也就是说当前主线已经具备：
+- root → prepare → train
+- 双 provider 复杂训练意图收口
+- 非标准目录容错与早失败
+- fresh session 状态纯净化
+- 训练 run registry / MCP 重启接管
+
+### 剩余主线重点
+
+如果继续保持“先稳再扩”，当前主线剩余最值得做的只剩：
+1. durable checkpoint / persistent HITL（替换 `MemorySaver()`）
+2. provider 在复杂训练意图上的剩余解释差异再收一轮
+3. CLI 恢复与故障提示收口

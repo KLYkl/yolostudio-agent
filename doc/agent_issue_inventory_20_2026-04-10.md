@@ -20,23 +20,40 @@
 | 14 | 只做准备不训练是否会误触发训练 | 动态测试：Gemma `prepare_only_no_train` | 未复现 | 该场景只执行 prepare，不会误启动训练。 |
 | 15 | GPU 规则是否仍靠模型自由发挥 | 动态测试：`check_gpu_status`/`training_readiness` 远端实测 + 本地规则契约测试 | 未复现 | 工具层已显式返回 `device_policy / auto_device / next_actions`，主要规则已下沉到 service/tool。 |
 | 16 | 训练工具返回是否仍然缺少统一语义 | 本地测试：`test_training_rules_contract.py` + 远端 `check_training_status/stop_training/start_training` | 未复现 | 训练相关工具已有 `summary / next_actions`，失败和空任务场景也有统一输出。 |
-| 17 | MCP 重启后是否还能继续管理已启动训练 | 代码检查：`TrainService._process` 为内存进程句柄 | 确认存在 | 训练进程句柄只保存在 MCP 进程内存里，MCP 重启后无法恢复同一进程引用。 |
+| 17 | MCP 重启后是否还能继续管理已启动训练 | 真实回归：启动训练 → 重启 MCP → fresh 进程调用 `check_training_status/stop_training` | 本轮已修 | 已新增持久化 run registry。真实服务器验证：MCP 重启后能显示 `reattached=true`，并可继续 `check_training_status` 与 `stop_training`。 |
 | 18 | Agent 重启后是否还能继续 pending confirmation | 代码检查：使用 `MemorySaver()` + 进程内 checkpoint | 确认存在 | 当前 checkpoint 是 `MemorySaver()`，适合进程内恢复；Agent 进程重启后，图执行断点不具备持久恢复保障。 |
 | 19 | DeepSeek tool schema 是否已启用 strict 约束 | 代码检查：`llm_factory.py` 仅接 `https://api.deepseek.com` + `ChatOpenAI`，未启用 beta strict | 确认存在 | 当前 provider 没启用 strict function schema，参数稳定性仍部分依赖 prompt 和 tool contract。 |
 | 20 | 当前 HITL 机制是否完全是官方推荐的持久化做法 | 代码检查 + 官方文档对照：`interrupt_before=["tools"]` + `MemorySaver()` | 低优先级风险 | 当前做法能跑，但 LangGraph 官方更推荐用可持久 checkpoint 和更显式的人审中断模式做生产级 HITL。 |
 
 ## 结论汇总
 
-- **已确认存在的问题（高价值）**：5、6、8、9、10、11、12、17、18、19
+- **当前仍存在的问题（高价值）**：8、9、10、12、18、19
+- **已在后续主线中解决的问题**：5、6、11、17
 - **低优先级架构风险**：20
 - **本轮未复现/已较稳的能力**：1、2、3、4、7、13、14、15、16
 
 ## 当前最值得继续收口的 5 项
 
-1. 非标准目录命名的失败点前移（不要先 split 再失败）
-2. fresh session 下 `check_training_status` 的状态污染
-3. Gemma 对默认模型与 device 的解释性漂移
-4. provider 间对“是否应 split”的行为差异
-5. durable checkpoint / persistent HITL 的后续演进
+1. provider 间对“是否应 split”的行为差异
+2. Gemma 对默认模型与 `device=auto` 的解释性漂移
+3. DeepSeek strict tool schema / 更强参数约束
+4. durable checkpoint / persistent HITL
+5. CLI 恢复与故障提示再收口
 
 原始压力测试结果：`D:\yolodo2.0\agent_plan\agent\tests\test_agent_capability_range_output.json`
+
+## 后续进展（2026-04-10 晚间）
+
+在后续主线收口中，以下问题已被补掉：
+- #5 非标准目录命名识别不足：已通过 dataset root alias 支持覆盖常见 `pics/ann/imgs/annotations` 等目录名
+- #6 非标准目录失败点过晚：`prepare_dataset_for_training` 现已在 `resolve_root` 提前阻断 truly unknown 结构
+- #11 fresh session 训练状态污染：`check_training_status` 在 `running=false` 时只刷新 `last_status`
+- #17 MCP 重启后无法继续管理已启动训练：已通过 run registry + reattach 修复
+
+当前仍值得继续收口的主要是：
+- #8 / #9 / #10：Gemma 对默认模型与 `device=auto` 的解释性漂移
+- #12：provider 间对复杂训练意图的细微行为差异
+- #18 / #20：durable checkpoint / persistent HITL
+- #19：DeepSeek strict tool schema / 更强参数约束
+
+
