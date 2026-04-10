@@ -67,6 +67,16 @@ def get_effective_gpu_policy() -> str:
     return policy if policy in valid else GpuAllocationPolicy.SINGLE_IDLE_GPU
 
 
+def describe_gpu_policy(policy: str | None = None) -> str:
+    effective = (policy or get_effective_gpu_policy()).strip().lower()
+    mapping = {
+        GpuAllocationPolicy.SINGLE_IDLE_GPU: 'auto 仅选择 1 张空闲 GPU',
+        GpuAllocationPolicy.ALL_IDLE_GPUS: 'auto 会选择所有空闲 GPU，可形成多卡 device',
+        GpuAllocationPolicy.MANUAL_ONLY: '不允许 auto，必须手动指定 device',
+    }
+    return mapping.get(effective, f'未知 GPU 策略: {effective}')
+
+
 def resolve_auto_device(policy: str | None = None, gpus: list[GpuInfo] | None = None) -> tuple[str, str | None]:
     selected_policy = (policy or get_effective_gpu_policy()).strip().lower()
     idle_gpus = get_idle_gpus(gpus)
@@ -93,7 +103,7 @@ def get_gpu_status_summary() -> str:
     gpus = query_gpu_status()
     if not gpus:
         return '无法获取 GPU 信息（nvidia-smi 不可用）'
-    lines = []
+    lines = [f'GPU 策略: {describe_gpu_policy()}']
     for gpu in gpus:
         status = '忙碌（有进程占用）' if gpu.busy else '空闲'
         lines.append(f'GPU {gpu.index}: {status}, 空闲显存 {gpu.free_mb} MiB')

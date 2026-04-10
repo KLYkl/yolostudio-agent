@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_plan.agent.server.services.dataset_root import resolve_dataset_inputs, resolve_dataset_root
+from agent_plan.agent.server.services.gpu_utils import describe_gpu_policy, get_effective_gpu_policy, resolve_auto_device
 
 MAX_ISSUE_EXAMPLES = 3
 
@@ -363,6 +364,8 @@ def training_readiness(
         labels_clean = not validate.get('has_issues', False)
         gpu_info = query_gpu_status()
         available_gpus = [gpu.index for gpu in gpu_info if not gpu.busy]
+        device_policy = get_effective_gpu_policy()
+        auto_device, auto_error = resolve_auto_device(policy=device_policy, gpus=gpu_info)
         ready = yaml_exists and (labels_clean or not require_clean_labels) and bool(available_gpus)
 
         blockers: list[str] = []
@@ -372,6 +375,8 @@ def training_readiness(
             blockers.append('标签校验未通过')
         if not available_gpus:
             blockers.append('当前没有空闲 GPU')
+        if auto_error:
+            blockers.append(f'当前 auto 设备不可解析: {auto_error}')
 
         next_actions: list[dict[str, Any]] = []
         if not yaml_exists:
@@ -408,6 +413,10 @@ def training_readiness(
             'resolved_label_dir': scan.get('resolved_label_dir', label_dir),
             'resolved_data_yaml': resolved_yaml,
             'labels_clean': labels_clean,
+            'device_policy': device_policy,
+            'device_policy_summary': describe_gpu_policy(device_policy),
+            'auto_device': auto_device,
+            'auto_error': auto_error,
             'available_gpu_indexes': available_gpus,
             'scan_summary': scan.get('summary'),
             'validation_summary': validate.get('summary'),
