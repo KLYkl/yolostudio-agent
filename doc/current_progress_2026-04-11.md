@@ -1,7 +1,7 @@
 # YoloStudio Agent 项目连续进展（2026-04-11）
 
 > 用途：这是一份给“中断后续上”的连续进展文档。
-> 如果后续会话要快速进入状态，优先阅读本文件，再结合 `doc/project_summary.md`、`doc/current_progress_2026-04-09.md`、`doc/agent_test_playbook_2026-04-10.md` 使用。
+> 如果后续会话要快速进入状态，优先阅读 `doc/conversation_context_handoff.md` 和本文件，再结合 `doc/project_summary.md`、`doc/current_progress_2026-04-09.md`、`doc/agent_test_playbook_2026-04-10.md` 使用。
 
 ---
 
