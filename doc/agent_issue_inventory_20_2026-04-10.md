@@ -57,3 +57,10 @@
 - #19：DeepSeek strict tool schema / 更强参数约束
 
 
+
+## zyb 大数据测试补充发现（2026-04-10 夜）
+
+新增发现的 3 个问题：
+- `scan_dataset` 能看见大量缺失标签，但 `validate_dataset` / `training_readiness` 还不会把这类情况稳定提升为训练风险提示
+- `prepare_dataset_for_training` 自动生成 YAML 时，当前会保留数字类 ID（`0/1/2/3`），不会优先利用 `labels/classes.txt` 写入真实类名
+- Gemma 在脏数据解释和 prepare-only 场景下，仍可能生成超出工具事实范围的自然语言说明

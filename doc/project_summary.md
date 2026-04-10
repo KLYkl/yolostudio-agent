@@ -535,3 +535,39 @@ afab4c1  test: comprehensive validation + log parser fix
 1. durable checkpoint / persistent HITL（替换 `MemorySaver()`）
 2. provider 在复杂训练意图上的剩余解释差异再收一轮
 3. CLI 恢复与故障提示收口
+
+## 16. 2026-04-10 zyb 大数据脏数据集压力测试
+
+本轮引入了一份更大的真实数据集 `zyb` 做高强度主线测试，目标不是验证“理想路径”，而是验证当前系统面对大数据量、缺失标签多、labels 中混有 `classes.txt` 的场景时会怎么表现。
+
+### 关键结论
+
+1. **主链路已能承载大数据 dirty dataset**
+   - `scan_dataset` 能稳定返回：
+     - `7027` 张图
+     - `1848` 已标注
+     - `5179` 缺失标签
+   - `prepare_dataset_for_training` 能把这份数据推到 `ready=true`
+   - 基于 prepare 产出的 YAML，`start_training` 也能真实启动训练并正常 stop
+
+2. **当前工具层对“缺失标签很多”的风险表达不足**
+   - `scan_dataset` 能看见大量缺失标签
+   - 但 `validate_dataset` 仍返回“未发现标签问题”
+   - `training_readiness` 也不会把这点提升为 blocker
+   - 这说明当前系统能“看见问题”，但还不会把它稳定提升成训练风险提示
+
+3. **prepare 生成的 YAML 会丢失类名语义**
+   - 当前自动生成的 YAML 使用的是：
+     - `0 / 1 / 2 / 3`
+   - 而不是 `labels/classes.txt` 中的真实类别名
+   - 这不一定阻塞训练，但会影响后续解释性与结果可读性
+
+4. **Gemma 的执行链路比解释层更稳**
+   - 复杂提示词下：
+     - `prepare -> start_training` 两段式链路已经稳定
+   - 但在解释脏数据细节、或 prepare-only 完成后的自然语言包装上，Gemma 仍会说得过头
+
+### 当前主线新增出的两个重要后续问题
+
+1. 是否要把“大量缺失标签图片”显式提升为 readiness 风险提示
+2. `generate_yaml / prepare_dataset_for_training` 是否应优先利用 `classes.txt` 保留真实类名
