@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import uuid
 from pathlib import Path
 
 if __package__ in {None, ""}:
@@ -20,7 +21,8 @@ def _norm(payload):
 
 
 async def main() -> None:
-    agent = await build_agent_client(AgentSettings(provider='ollama', model='gemma4:e4b', session_id='test-complex-flow'))
+    session_id = f'test-complex-flow-{uuid.uuid4().hex[:8]}'
+    agent = await build_agent_client(AgentSettings(provider='ollama', model='gemma4:e4b', session_id=session_id))
     first = await agent.chat('数据在 /home/kly/test_dataset/，按默认划分比例，然后用yolov8n模型进行训练')
     print('first', json.dumps(first, ensure_ascii=False))
     if first.get('status') != 'needs_confirmation':
@@ -31,8 +33,11 @@ async def main() -> None:
     if second.get('status') != 'needs_confirmation' or (second.get('tool_call') or {}).get('name') != 'start_training':
         raise SystemExit('expected second confirmation for start_training')
 
-    third = await agent.confirm(second['thread_id'], approved=True)
+    third = await agent.confirm(second['thread_id'], approved=False)
     print('third', json.dumps(third, ensure_ascii=False))
+    if third.get('status') != 'cancelled':
+        raise SystemExit('expected cancellation path for start_training')
+
     state = {
         'dataset_root': agent.session_state.active_dataset.dataset_root,
         'img_dir': agent.session_state.active_dataset.img_dir,
@@ -49,6 +54,8 @@ async def main() -> None:
     if status.get('running'):
         stop = _norm(await tool_map['stop_training'].ainvoke({}))
         print('stop', json.dumps(stop, ensure_ascii=False))
+
+    print('complex prompt flow smoke ok')
 
 
 if __name__ == '__main__':

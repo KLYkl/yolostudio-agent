@@ -1,4 +1,4 @@
-# YoloStudio Agent 项目总结（2026-04-08 更新）
+# YoloStudio Agent 项目总结（2026-04-09 更新）
 
 > 本文档是项目交接文档，新会话直接读此文件即可续上。
 
@@ -33,11 +33,13 @@
   ┌─────────────────────┐    SSH Tunnel    ┌──────────────────────────┐
   │  cli.py             │   :8080/:11434   │  MCP Server (:8080)      │
   │  agent_client.py    │◄════════════════►│  FastMCP + streamable-http│
-  │  LangGraph ReAct    │                  │  8 个 Tool               │
+  │  LangGraph ReAct    │                  │  10 个 Tool              │
   │  langchain-mcp      │                  │  ├─ scan_dataset    ─┐   │
-  │                     │                  │  ├─ split_dataset    │直接│
-  │                     │                  │  ├─ validate_dataset │调用│
-  │                     │                  │  ├─ augment_dataset ─┘   │
+  │                     │                  │  ├─ split_dataset    │   │
+  │                     │                  │  ├─ validate_dataset │直接│
+  │                     │                  │  ├─ augment_dataset  │调用│
+  │                     │                  │  ├─ generate_yaml    │   │
+  │                     │                  │  ├─ training_readiness┘   │
   │                     │                  │  ├─ start_training  ─┐   │
   │                     │                  │  ├─ check_status     │wrap│
   │                     │                  │  ├─ stop_training    │    │
@@ -68,18 +70,25 @@ D:\yolodo2.0\agent_plan\               ← Git 仓库 (4 commits)
 │
 ├── agent/
 │   ├── server/                            # 部署到服务器
-│   │   ├── mcp_server.py                  # FastMCP 入口, 8个 Tool 注册
+│   │   ├── mcp_server.py                  # FastMCP 入口, 10个 Tool 注册
 │   │   ├── tools/
-│   │   │   ├── data_tools.py              # scan/split/validate/augment (157行)
-│   │   │   └── train_tools.py             # start/status/stop/gpu_status (27行)
+│   │   │   ├── data_tools.py              # scan/split/validate/augment/generate_yaml/training_readiness (~460行)
+│   │   │   └── train_tools.py             # start/status/stop/gpu_status (~50行)
 │   │   └── services/
-│   │       ├── train_service.py           # subprocess + 设备校验 (133行)
-│   │       ├── gpu_utils.py               # GPU 动态检测（进程检查+UUID映射）
-│   │       └── train_log_parser.py        # YOLO stdout 正则解析 (27行)
+│   │       ├── train_service.py           # subprocess + 设备校验 (~264行)
+│   │       ├── gpu_utils.py               # GPU 动态检测（进程检查+UUID映射, ~101行）
+│   │       └── train_log_parser.py        # YOLO stdout 正则解析 + ANSI 去转义 (~36行)
 │   │
 │   ├── client/                            # 运行在 Windows
-│   │   ├── agent_client.py                # LangGraph Agent + HITL (192行)
-│   │   └── cli.py                         # CLI Chat 入口 (49行)
+│   │   ├── agent_client.py                # LangGraph Agent + HITL (~351行)
+│   │   ├── cli.py                         # CLI Chat 入口 (~50行)
+│   │   ├── llm_factory.py                 # LLM Provider 抽象 (ollama/deepseek/openai)
+│   │   ├── tool_adapter.py                # MCP Tool 返回格式统一适配
+│   │   ├── context_builder.py             # 结构化上下文注入 System Prompt
+│   │   ├── session_state.py               # 会话状态持久化（数据集/训练/待确认）
+│   │   ├── memory_store.py                # 事件日志 + 会话 JSON 存储
+│   │   ├── event_retriever.py             # 历史摘要回灌
+│   │   └── tool_result_parser.py          # 工具返回解析器
 │   │
 │   └── tests/
 │       └── test_gemma4_fc.py              # Function Calling 验证
@@ -104,8 +113,8 @@ D:\yolodo2.0\agent_plan\               ← Git 仓库 (4 commits)
 ### Phase 2: MCP Server ✅ 核心完成
 
 - [x] FastMCP 启动（host/port 在构造函数中）
-- [x] 8 个 Tool 注册并对齐真实 API
-- [x] data_tools 4 工具：scan/split/validate/augment
+- [x] 10 个 Tool 注册并对齐真实 API
+- [x] data_tools 6 工具：scan/split/validate/augment/generate_yaml/training_readiness
 - [x] train_tools 4 工具：start/status/stop/gpu_status
 - [x] TrainService subprocess wrapper + 日志解析器
 - [x] **GPU 动态检测**：gpu_utils.py（查 compute 进程 + UUID→index 映射）
@@ -122,15 +131,21 @@ D:\yolodo2.0\agent_plan\               ← Git 仓库 (4 commits)
 - [x] 对话上下文裁剪（`_trim_history` + `max_history_messages=12`）
 - [x] 端到端冒烟：低风险 check_status ✅ + 高风险 start_training 确认/取消 ✅
 
-### Phase 4: 集成优化 ⏳ 部分完成
+### Phase 4: 集成优化 ⏳ 大部分完成
 
 - [x] **完整场景测试**：scan → validate → split → augment → start_training → check_status 全流程
 - [x] **错误处理**：data_tools / train_tools 已加 try-except + _error_payload 统一包装
 - [x] **train_service 前置校验**：epochs/data_yaml/yolo 命令检查
 - [x] **train_service 进程停止兜底**：terminate → wait → kill
-- [x] **服务器代码同步**：已上传并重启 MCP（PID 25915）
+- [x] **服务器代码同步**：已上传并重启 MCP
 - [x] **冒烟测试脚本**：`tests/test_server_smoke.py`
-- [ ] System Prompt 精调
+- [x] **Context/Memory 系统**：session_state + memory_store + context_builder + event_retriever
+- [x] **LLM Provider 抽象**：llm_factory.py + tool_adapter.py（ollama/deepseek/openai_compatible）
+- [x] **generate_yaml / training_readiness** 工具注册
+- [x] **train_log_parser 修复**：ANSI 去转义 + epoch 行精确匹配
+- [x] **GPU 分配策略升级**：single_idle_gpu / all_idle_gpus / manual_only + 真实多卡验证
+- [x] **端到端真实训练验证**：多轮训练（单卡/多卡/Agent 驱动）全部成功
+- [ ] System Prompt 精调（scan_dataset 根目录语义收口）
 - [ ] 使用文档
 - [ ] MCP Server 标准启动/重启脚本（systemd/supervisor）
 
@@ -146,8 +161,8 @@ D:\yolodo2.0\agent_plan\               ← Git 仓库 (4 commits)
 | ~~split 路径丢失~~ | ~~🟡~~ | ~~data_tools~~ | ✅ **已修**：返回值加了 `output_dir` 绝对路径 |
 | ~~yolo 命令找不到~~ | ~~🔴~~ | ~~train_service~~ | ✅ **已修**：`_find_yolo_executable()` 自动搜索 conda 环境 |
 | ~~CLI 崩溃 INVALID_CHAT_HISTORY~~ | ~~🔴~~ | ~~agent_client~~ | ✅ **已修**：`_trim_history` 保持配对完整性 |
-| **latest_metrics 始终 null** | 🟡 | train_log_parser | 正则未匹配 YOLO 实际输出格式，需要检查 |
-| **generate_yaml 未暴露** | 🟡 | data_tools | core 有 `generate_yaml` 方法但未注册为 MCP Tool |
+| ~~latest_metrics 始终 null~~ | ~~🟡~~ | ~~train_log_parser~~ | ✅ **已修**：ANSI 去转义 + epoch 行精确正则匹配 |
+| ~~generate_yaml 未暴露~~ | ~~🟡~~ | ~~data_tools~~ | ✅ **已修**：已注册为 MCP Tool，同时新增 `training_readiness` |
 | **MCP 重启后训练丢失** | 🟡 | train_service | 进程引用是内存级的，MCP 重启后无法恢复 |
 | **split 只支持 train/val** | 🟡 | core API | 现有 `split_dataset()` 只做二分 |
 | **MCP Server 没有重启脚本** | 🟢 | 运维 | 目前手动启动 |
@@ -260,8 +275,8 @@ D:\yolodo2.0\agent_plan\agent\.venv\Scripts\python.exe agent_plan\agent\client\c
 
 1. ~~🔴 **训练完整闭环**~~：✅ 已通过！启动 → 查状态 → 完成
 2. 🔴 **scan_dataset 路径引导**：修改 System Prompt 或 Tool docstring，引导 Agent 自动推导 `images/` 和 `labels/` 子目录
-3. 🟡 **latest_metrics 解析器**：修正 `train_log_parser.py` 的正则匹配 YOLO 实际输出格式（含 ANSI 转义码）
-4. 🟡 **generate_yaml Tool**：暴露 core 的 `generate_yaml` 为 MCP Tool
+3. ~~🟡 **latest_metrics 解析器**~~：✅ 已修复（ANSI 去转义 + epoch 行精确正则）
+4. ~~🟡 **generate_yaml Tool**~~：✅ 已注册为 MCP Tool + 新增 `training_readiness`
 5. 🟡 **预下载常用模型权重**：编写脚本预下载 yolov8n/yolo26n 等到服务器工作目录，避免训练时联网失败
 6. 🟢 **MCP 启动脚本**：systemd 或 supervisor 配置
 7. 🟢 **System Prompt 精调**：增加数据集目录结构约定说明
@@ -291,10 +306,18 @@ D:\yolodo2.0\agent_plan\agent\.venv\Scripts\python.exe agent_plan\agent\client\c
 8d11b3d  feat: GPU 动态检测 + 设备校验
 2aa8425  simplify: 去掉 MIN_TRAIN_FREE_MB 硬门槛
 8d55276  fix: split_dataset 补充 mode 合法值说明 + 返回 output_dir 绝对路径
-xxxxxxx  fix: _trim_history 保持 tool_call/ToolMessage 配对 + train_service 自动搜索 yolo
+3347fd0  fix: _trim_history 保持 tool_call/ToolMessage 配对 + train_service 自动搜索 yolo
+8ce4cda  feat: server 侧 Tool 统一错误处理 + TrainService 前置校验 + smoke test
+c95fe49  doc: 更新项目总结
+3de7d06  feat: structured context memory and event retrieval
+1925381  feat: training and dataset tool outputs improvement
+2ded8bc  feat: yaml generation and training readiness tools
+76bc3f7  feat: provider abstraction and adaptive gpu allocation
+5088a57  docs: update status and deployment notes
+afab4c1  test: comprehensive validation + log parser fix
 ```
 
-**服务器代码已同步**（截止 2026-04-08 20:07），MCP Server PID 25915。
+**服务器代码已同步**（截止 2026-04-09），共 14 个 commit。
 
 **本次修复的服务器文件：**
 - `/home/kly/yolostudio_agent_proto/yolov8n.pt` → 从 `/home/kly/yolov8n.pt` 覆盖（6.3MB）
@@ -303,3 +326,67 @@ xxxxxxx  fix: _trim_history 保持 tool_call/ToolMessage 配对 + train_service 
 
 **训练产出：** `/home/kly/yolostudio_agent_proto/runs/detect/train5/weights/best.pt`
 
+---
+
+## 十、2026-04-10 高强度能力测试结论（已记录）
+
+本轮已额外完成 20 类潜在问题的逐项验证，详见：
+- `D:\yolodo2.0gent_plan\docgent_issue_inventory_20_2026-04-10.md`
+- `D:\yolodo2.0gent_plan\docgent_capability_stress_report_2026-04-10.md`
+
+### 当前确认存在的高价值问题
+1. **非标准目录命名识别不足**（如 `pics/`、`ann/`）
+2. **非标准目录失败点过晚**（会先进入 prepare，甚至先 split，再到 generate_yaml 阶段失败）
+3. **fresh session 的训练状态会被最近一次训练污染**
+4. **Gemma 在默认模型与 device 参数解释上存在轻微漂移**
+5. **不同 provider 对“是否应 split”仍存在行为差异**
+
+### 当前已证明较稳的能力范围
+- 标准 YOLO 目录（`images/` + `labels/`）下的 root → prepare → train 主线
+- “如果能直接训练就不要 split” 这类条件分支
+- “只检查，不启动训练” 的约束型任务
+- 扫描后接 follow-up 训练的多轮承接
+- 取消后回忆最近一次待确认训练参数
+
+---
+
+## 十一、2026-04-10 主线鲁棒性收口（后续更新）
+
+本轮没有扩新业务，而是继续沿“数据准备 → 训练”主线做鲁棒性收口，重点修了三件事：
+
+1. **非标准目录别名支持**
+   - `dataset_root.py` 已支持把 `pics/`、`ann/`、`annotations/`、`imgs/` 等常见别名识别为图片/标签目录。
+   - 真实服务器验证：`/home/kly/agent_cap_tests/nonstandard_dataset` 现在可解析为：
+     - `img_dir=/home/kly/agent_cap_tests/nonstandard_dataset/pics`
+     - `label_dir=/home/kly/agent_cap_tests/nonstandard_dataset/ann`
+
+2. **失败点前移**
+   - `prepare_dataset_for_training` 遇到真正 `unknown / images_only / flat` 的目录结构时，不再继续 scan → split → generate_yaml；
+   - 而是直接在 `resolve_root` 阶段返回 `blocked_at=resolve_root` 和恢复建议。
+   - 真实服务器验证：`/home/kly/agent_cap_tests/unknown_dataset` 现在会在 `resolve_root` 提前失败，不再产生无意义 split 产物。
+
+3. **训练状态纯净化**
+   - `agent_client.py` 已修正 `check_training_status` 的状态回写逻辑：
+   - 当 `running=false` 时，只保留 `last_status`，不会把服务端最近一次训练的 `model / data_yaml / device` 污染到 fresh session 的 `active_training`。
+   - 本地回归脚本：`agent/tests/test_training_state_purity.py` 已验证通过。
+
+### 新增/更新验证
+
+- `agent/tests/test_dataset_root_resolver.py`
+- `agent/tests/test_prepare_dataset_flow.py`
+- `agent/tests/test_training_state_purity.py`
+
+### 关键回归结论
+
+- 标准 root 路径：仍然稳定可用
+- 非标准别名目录（`pics/ann`）：现已可自动准备到可训练状态
+- 真正未知目录：现已提前阻断
+- Gemma 复杂提示词：在 fresh session 下，已重新稳定回到两段式确认链
+  - 第一次确认：`prepare_dataset_for_training`
+  - 第二次确认：`start_training`
+
+### 当前主线剩余重点
+
+1. 继续收口 Gemma / DeepSeek 对复杂训练意图的解释差异
+2. 把训练参数的“默认推断”与“用户明确指定”表达得更严格
+3. 在文档与 CLI 中补充更清晰的故障恢复指引

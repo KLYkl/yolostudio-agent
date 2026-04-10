@@ -3,17 +3,64 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-IMAGE_DIR_NAMES = {'images', 'imgs', 'jpegimages'}
-LABEL_DIR_NAMES = {'labels', 'annotations', 'label'}
+IMAGE_DIR_NAMES = {'images', 'imgs', 'jpegimages', 'pics', 'pictures', 'imageset'}
+LABEL_DIR_NAMES = {'labels', 'annotations', 'label', 'ann', 'anns', 'txt_labels'}
 IMAGE_SUFFIXES = {'.jpg', '.jpeg', '.png', '.bmp', '.webp'}
+LABEL_SUFFIXES = {'.txt', '.xml', '.json'}
 
 
-def _find_subdir(base: Path, names: set[str]) -> Path | None:
+def _count_files(path: Path, suffixes: set[str], max_depth: int = 2) -> int:
+    if not path.is_dir():
+        return 0
+    count = 0
+    base_depth = len(path.parts)
+    try:
+        for child in path.rglob('*'):
+            if not child.is_file():
+                continue
+            if len(child.parts) - base_depth > max_depth:
+                continue
+            if child.suffix.lower() in suffixes:
+                count += 1
+    except OSError:
+        return 0
+    return count
+
+
+def _find_named_subdir(base: Path, names: set[str]) -> Path | None:
     for name in names:
         candidate = base / name
         if candidate.is_dir():
             return candidate
     return None
+
+
+def _find_best_subdir_by_content(base: Path, suffixes: set[str]) -> Path | None:
+    if not base.is_dir():
+        return None
+    best: tuple[int, Path] | None = None
+    try:
+        children = [child for child in base.iterdir() if child.is_dir()]
+    except OSError:
+        return None
+    for child in children:
+        score = _count_files(child, suffixes)
+        if score <= 0:
+            continue
+        if best is None or score > best[0]:
+            best = (score, child)
+    return best[1] if best else None
+
+
+def _find_subdir(base: Path, names: set[str], suffixes: set[str] | None = None) -> tuple[Path | None, str]:
+    named = _find_named_subdir(base, names)
+    if named:
+        return named, 'name'
+    if suffixes is not None:
+        guessed = _find_best_subdir_by_content(base, suffixes)
+        if guessed:
+            return guessed, 'content_score'
+    return None, 'none'
 
 
 def _detect_yaml_candidates(dataset_root: Path) -> list[str]:
@@ -39,13 +86,22 @@ def _detect_yaml_candidates(dataset_root: Path) -> list[str]:
     return candidates
 
 
-def _has_image_files(path: Path) -> bool:
+def _has_direct_files(path: Path, suffixes: set[str]) -> bool:
     if not path.is_dir():
         return False
-    for child in path.iterdir():
-        if child.is_file() and child.suffix.lower() in IMAGE_SUFFIXES:
-            return True
+    try:
+        for child in path.iterdir():
+            if child.is_file() and child.suffix.lower() in suffixes:
+                return True
+    except OSError:
+        return False
     return False
+
+
+def _has_split_subdirs(path: Path, suffixes: set[str]) -> bool:
+    return (path / 'train').is_dir() and (path / 'val').is_dir() and (
+        _count_files(path / 'train', suffixes, max_depth=1) > 0 or _count_files(path / 'val', suffixes, max_depth=1) > 0
+    )
 
 
 def resolve_dataset_root(path: str, label_dir: str = '') -> dict[str, Any]:
@@ -61,6 +117,7 @@ def resolve_dataset_root(path: str, label_dir: str = '') -> dict[str, Any]:
             'img_dir': str(base),
             'label_dir': str(explicit_label) if explicit_label else '',
             'resolved_from_root': False,
+            'resolution_method': 'none',
             'is_split': False,
             'split_info': {},
             'detected_data_yaml': '',
@@ -69,60 +126,88 @@ def resolve_dataset_root(path: str, label_dir: str = '') -> dict[str, Any]:
             'next_actions': ['请确认数据集路径是否正确'],
         }
 
-    if base.is_dir() and base.name.lower() in IMAGE_DIR_NAMES:
+    if base.is_dir() and (
+        base.name.lower() in IMAGE_DIR_NAMES or _has_direct_files(base, IMAGE_SUFFIXES) or _has_split_subdirs(base, IMAGE_SUFFIXES)
+    ):
         dataset_root = base.parent
-        inferred_label = explicit_label or _find_subdir(dataset_root, LABEL_DIR_NAMES)
+        inferred_label = explicit_label or _find_named_subdir(dataset_root, LABEL_DIR_NAMES)
         candidates = _detect_yaml_candidates(dataset_root)
-        is_split = (base / 'train').is_dir() and (base / 'val').is_dir()
+        is_split = _has_split_subdirs(base, IMAGE_SUFFIXES)
         return {
             'ok': True,
-            'dataset_root': str(dataset_root),
+            'dataset_root': str(dataset_root.resolve()),
             'structure_type': 'images_dir',
-            'img_dir': str(base),
-            'label_dir': str(inferred_label) if inferred_label else '',
+            'img_dir': str(base.resolve()),
+            'label_dir': str(inferred_label.resolve()) if inferred_label else '',
             'resolved_from_root': False,
+            'resolution_method': 'direct',
             'is_split': is_split,
             'split_info': {
-                'train_img_dir': str(base / 'train'),
-                'val_img_dir': str(base / 'val'),
-                'train_label_dir': str((inferred_label / 'train')) if inferred_label and (inferred_label / 'train').is_dir() else '',
-                'val_label_dir': str((inferred_label / 'val')) if inferred_label and (inferred_label / 'val').is_dir() else '',
+                'train_img_dir': str((base / 'train').resolve()),
+                'val_img_dir': str((base / 'val').resolve()),
+                'train_label_dir': str((inferred_label / 'train').resolve()) if inferred_label and (inferred_label / 'train').is_dir() else '',
+                'val_label_dir': str((inferred_label / 'val').resolve()) if inferred_label and (inferred_label / 'val').is_dir() else '',
             } if is_split else {},
             'detected_data_yaml': candidates[0] if candidates else '',
             'data_yaml_candidates': candidates,
-            'summary': '已直接使用 images 目录',
+            'summary': '已直接使用图片目录',
             'next_actions': ['可直接用 img_dir/label_dir 调用 scan_dataset'],
         }
 
-    images_dir = _find_subdir(base, IMAGE_DIR_NAMES) if base.is_dir() else None
-    labels_dir = explicit_label or (_find_subdir(base, LABEL_DIR_NAMES) if base.is_dir() else None)
-    if images_dir:
-        is_split = (images_dir / 'train').is_dir() and (images_dir / 'val').is_dir()
+    images_dir, image_method = _find_subdir(base, IMAGE_DIR_NAMES, IMAGE_SUFFIXES) if base.is_dir() else (None, 'none')
+    labels_dir = explicit_label
+    label_method = 'explicit' if explicit_label else 'none'
+    if labels_dir is None and base.is_dir():
+        labels_dir, label_method = _find_subdir(base, LABEL_DIR_NAMES, LABEL_SUFFIXES)
+
+    if images_dir and labels_dir:
+        is_split = _has_split_subdirs(images_dir, IMAGE_SUFFIXES)
         split_info = {}
         if is_split:
             split_info = {
-                'train_img_dir': str(images_dir / 'train'),
-                'val_img_dir': str(images_dir / 'val'),
-                'train_label_dir': str((labels_dir / 'train')) if labels_dir and (labels_dir / 'train').is_dir() else '',
-                'val_label_dir': str((labels_dir / 'val')) if labels_dir and (labels_dir / 'val').is_dir() else '',
+                'train_img_dir': str((images_dir / 'train').resolve()),
+                'val_img_dir': str((images_dir / 'val').resolve()),
+                'train_label_dir': str((labels_dir / 'train').resolve()) if (labels_dir / 'train').is_dir() else '',
+                'val_label_dir': str((labels_dir / 'val').resolve()) if (labels_dir / 'val').is_dir() else '',
             }
         candidates = _detect_yaml_candidates(base)
+        structure_type = 'yolo_split' if is_split else 'yolo_standard'
+        if image_method == 'content_score' or label_method == 'content_score':
+            structure_type = 'heuristic_split' if is_split else 'heuristic_standard'
         return {
             'ok': True,
             'dataset_root': str(base.resolve()),
-            'structure_type': 'yolo_split' if is_split else 'yolo_standard',
+            'structure_type': structure_type,
             'img_dir': str(images_dir.resolve()),
-            'label_dir': str(labels_dir.resolve()) if labels_dir else '',
+            'label_dir': str(labels_dir.resolve()),
             'resolved_from_root': True,
+            'resolution_method': f'image={image_method},label={label_method}',
             'is_split': is_split,
             'split_info': split_info,
             'detected_data_yaml': candidates[0] if candidates else '',
             'data_yaml_candidates': candidates,
-            'summary': '检测到已划分数据集结构' if is_split else '检测到 YOLO 标准目录结构 (images/ + labels/)',
+            'summary': '通过目录内容推断出数据集结构' if 'content_score' in {image_method, label_method} else ('检测到已划分数据集结构' if is_split else '检测到 YOLO 标准目录结构 (images/ + labels/)'),
             'next_actions': ['可直接用解析后的 img_dir/label_dir 调用 scan_dataset'],
         }
 
-    if base.is_dir() and _has_image_files(base):
+    if images_dir and not labels_dir:
+        return {
+            'ok': True,
+            'dataset_root': str(base.resolve()),
+            'structure_type': 'images_only',
+            'img_dir': str(images_dir.resolve()),
+            'label_dir': '',
+            'resolved_from_root': True,
+            'resolution_method': f'image={image_method},label=none',
+            'is_split': _has_split_subdirs(images_dir, IMAGE_SUFFIXES),
+            'split_info': {},
+            'detected_data_yaml': '',
+            'data_yaml_candidates': [],
+            'summary': '只识别到图片目录，未找到标签目录',
+            'next_actions': ['请显式提供 label_dir，或将标签目录整理为 labels/、ann/、annotations/ 等常见名称'],
+        }
+
+    if base.is_dir() and _has_direct_files(base, IMAGE_SUFFIXES):
         dataset_root = base.parent if base.name.lower() in IMAGE_DIR_NAMES else base
         candidates = _detect_yaml_candidates(dataset_root)
         return {
@@ -132,6 +217,7 @@ def resolve_dataset_root(path: str, label_dir: str = '') -> dict[str, Any]:
             'img_dir': str(base.resolve()),
             'label_dir': str(explicit_label.resolve()) if explicit_label else '',
             'resolved_from_root': False,
+            'resolution_method': 'flat',
             'is_split': False,
             'split_info': {},
             'detected_data_yaml': candidates[0] if candidates else '',
@@ -153,15 +239,15 @@ def resolve_dataset_root(path: str, label_dir: str = '') -> dict[str, Any]:
         'img_dir': str(base.resolve()),
         'label_dir': str(explicit_label.resolve()) if explicit_label else '',
         'resolved_from_root': False,
+        'resolution_method': 'none',
         'is_split': False,
         'split_info': {},
         'detected_data_yaml': '',
         'data_yaml_candidates': [],
         'summary': '未识别出标准数据集目录结构',
         'directory_entries': children,
-        'next_actions': ['请确认是否存在 images/ 与 labels/ 子目录，或直接提供准确的 img_dir/label_dir'],
+        'next_actions': ['请确认是否存在 images/labels 或 pics/ann 等子目录，或直接提供准确的 img_dir/label_dir'],
     }
-
 
 
 def resolve_dataset_inputs(path: str, label_dir: str = '') -> dict[str, Any]:

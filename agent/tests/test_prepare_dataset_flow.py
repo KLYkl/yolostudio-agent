@@ -9,7 +9,7 @@ if __package__ in {None, ""}:
 import agent_plan.agent.server.tools.combo_tools as combo_tools
 
 
-def main() -> None:
+def _run_success_path() -> None:
     steps: list[str] = []
 
     def fake_resolve_dataset_root(dataset_path: str):
@@ -21,6 +21,8 @@ def main() -> None:
             'label_dir': f'{dataset_path}/labels',
             'summary': 'ok',
             'is_split': False,
+            'structure_type': 'yolo_standard',
+            'resolution_method': 'name',
         }
 
     def fake_scan_dataset(img_dir: str, label_dir: str = ''):
@@ -92,6 +94,44 @@ def main() -> None:
     assert result['data_yaml'] == '/tmp/data.yaml'
     assert steps == ['resolve_root', 'scan', 'validate', 'split', 'generate_yaml', 'readiness']
 
+
+def _run_early_block_path() -> None:
+    steps: list[str] = []
+
+    def fake_resolve_dataset_root(dataset_path: str):
+        steps.append('resolve_root')
+        return {
+            'ok': True,
+            'dataset_root': dataset_path,
+            'img_dir': f'{dataset_path}/pics',
+            'label_dir': '',
+            'summary': '只识别到图片目录，未找到标签目录',
+            'is_split': False,
+            'structure_type': 'images_only',
+            'resolution_method': 'image=content_score,label=none',
+            'next_actions': ['请显式提供 label_dir'],
+        }
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError('early-block path should stop before downstream tools')
+
+    combo_tools.resolve_dataset_root = fake_resolve_dataset_root
+    combo_tools.scan_dataset = fail_if_called
+    combo_tools.validate_dataset = fail_if_called
+    combo_tools.split_dataset = fail_if_called
+    combo_tools.generate_yaml = fail_if_called
+    combo_tools.training_readiness = fail_if_called
+
+    result = combo_tools.prepare_dataset_for_training('/dataset')
+    assert result['ok'] is False
+    assert result['blocked_at'] == 'resolve_root'
+    assert result['steps_completed'][0]['step'] == 'resolve_root'
+    assert steps == ['resolve_root']
+
+
+def main() -> None:
+    _run_success_path()
+    _run_early_block_path()
     print('prepare dataset flow smoke ok')
 
 
