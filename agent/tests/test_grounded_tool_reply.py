@@ -33,6 +33,41 @@ def main() -> None:
     assert '重复图片: 83 组' in health_text
     assert '建议先处理损坏/异常图片' in health_text
 
+    readiness_text = YoloStudioAgentClient._build_grounded_tool_reply(
+        client,
+        [(
+            'training_readiness',
+            {
+                'ok': True,
+                'summary': '可以训练，但存在数据质量风险',
+                'warnings': ['发现 5179 张图片缺少标签（占比 73.7%），训练结果可能受到明显影响'],
+                'resolved_data_yaml': '/data/dirty/data.yaml',
+                'auto_device': '1',
+                'next_actions': ['建议先确认是否接受当前缺失标签风险，再决定是否直接训练'],
+            },
+        )],
+    )
+    assert '可以训练，但存在数据质量风险' in readiness_text
+    assert '当前可用 YAML: /data/dirty/data.yaml' in readiness_text
+    assert '当前 auto 设备策略会解析到: 1' in readiness_text
+
+    prepare_text = YoloStudioAgentClient._build_grounded_tool_reply(
+        client,
+        [(
+            'prepare_dataset_for_training',
+            {
+                'ok': True,
+                'summary': '数据集已准备到可训练状态，但存在数据质量风险',
+                'data_yaml': '/data/dirty/images_split/data.yaml',
+                'warnings': ['发现 5179 张图片缺少标签（占比 73.7%），训练结果可能受到明显影响'],
+                'next_actions': ['如要训练，可直接复用上面的 data_yaml 调用 start_training'],
+            },
+        )],
+    )
+    assert '数据集已准备到可训练状态' in prepare_text
+    assert '已准备好的 YAML: /data/dirty/images_split/data.yaml' in prepare_text
+    assert '如要训练，可直接复用上面的 data_yaml' in prepare_text
+
     dup_text = YoloStudioAgentClient._build_grounded_tool_reply(
         client,
         [(

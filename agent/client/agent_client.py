@@ -18,7 +18,7 @@ from agent_plan.agent.client.event_retriever import EventRetriever
 from agent_plan.agent.client.llm_factory import LlmProviderSettings, build_llm, provider_summary
 from agent_plan.agent.client.memory_store import MemoryStore
 from agent_plan.agent.client.session_state import SessionState, utc_now
-from agent_plan.agent.client.tool_adapter import adapt_tools_for_chat_model
+from agent_plan.agent.client.tool_adapter import adapt_tools_for_chat_model, canonical_tool_name, normalize_tool_args
 from agent_plan.agent.client.tool_result_parser import parse_tool_message
 
 SYSTEM_PROMPT = """你是 YoloStudio Agent，负责帮助用户完成数据准备和训练管理。
@@ -37,6 +37,7 @@ SYSTEM_PROMPT = """你是 YoloStudio Agent，负责帮助用户完成数据准�
 - 如果用户明确表达了“按默认比例划分 / 先划分再训练 / split 后训练”，调用 prepare_dataset_for_training 时应传 force_split=true。
 - 当用户明确要求检查图片损坏、尺寸异常、重复图片或导出检查报告时，必须先调用对应工具，不要直接凭经验总结：综合检查优先用 run_dataset_health_check；如果用户只关心重复图片，再用 detect_duplicate_images；这些是只读检查，不会修改原始数据。
 - 不要自己猜测子目录名称；优先依赖工具返回的 img_dir / label_dir / data_yaml。
+- 当前只允许使用 MCP 已注册的工具名；不要发明工具名，也不要把桌面功能名直接当成工具名。像 detect_duplicates、detect_corrupted_images、dataset_manager.prepare_dataset 这类旧名字只属于兼容别名，不是首选正式名称。
 
 训练约定：
 - device 默认传 auto，GPU 分配由服务器端策略决定。
@@ -116,13 +117,15 @@ class YoloStudioAgentClient:
         )
 
     async def direct_tool(self, tool_name: str, **kwargs: Any) -> dict[str, Any]:
-        tool = self.tool_registry.get(tool_name)
+        canonical_name = canonical_tool_name(tool_name)
+        normalized_args = normalize_tool_args(canonical_name, kwargs)
+        tool = self.tool_registry.get(canonical_name)
         if not tool:
-            return {"ok": False, "error": f"未找到工具: {tool_name}"}
-        payload = await tool.ainvoke(kwargs)
+            return {"ok": False, "error": f"未找到工具: {canonical_name}"}
+        payload = await tool.ainvoke(normalized_args)
         parsed = self._normalize_tool_output(payload)
-        self.memory.append_event(self.session_state.session_id, "tool_result", {"tool": tool_name, "args": kwargs, "result": parsed})
-        self._apply_to_state(tool_name, parsed, kwargs)
+        self.memory.append_event(self.session_state.session_id, "tool_result", {"tool": canonical_name, "args": normalized_args, "result": parsed})
+        self._apply_to_state(canonical_name, parsed, normalized_args)
         self.memory.save_state(self.session_state)
         return parsed
 
@@ -131,6 +134,12 @@ class YoloStudioAgentClient:
         self._turn_index += 1
         thread_id = f"{self.session_state.session_id}-turn-{self._turn_index}"
         config = {"configurable": {"thread_id": thread_id}}
+
+        routed = await self._try_handle_mainline_intent(user_text, thread_id)
+        if routed is not None:
+            self._trim_history()
+            self.memory.save_state(self.session_state)
+            return routed
 
         self._trim_history()
         digest = self.event_retriever.build_digest(self.session_state.session_id, self.session_state)
@@ -149,6 +158,17 @@ class YoloStudioAgentClient:
                     "message": self._build_confirmation_prompt(pending),
                     "tool_call": pending,
                     "thread_id": thread_id,
+                }
+            if pending.get('adapted'):
+                parsed = await self.direct_tool(pending['name'], **pending.get('args', {}))
+                final_text = self._build_grounded_tool_reply([(pending['name'], parsed)]) or parsed.get('summary') or parsed.get('message') or parsed.get('error') or '操作已完成'
+                self._messages.append(AIMessage(content=final_text))
+                self._trim_history()
+                self.memory.save_state(self.session_state)
+                return {
+                    "status": "completed",
+                    "message": final_text,
+                    "tool_call": pending,
                 }
             result = await self.graph.ainvoke(Command(resume="approved"), config=config)
 
@@ -186,12 +206,23 @@ class YoloStudioAgentClient:
         self.memory.append_event(self.session_state.session_id, "confirmation_approved", {"tool": pending["name"], "args": pending.get("args", {})})
         self._clear_pending_confirmation()
 
-        if graph_pending is None and pending.get("name") in self.tool_registry:
+        if graph_pending is None or graph_pending.get('adapted'):
             parsed = await self.direct_tool(pending["name"], **pending.get("args", {}))
-            final_text = parsed.get("summary") or parsed.get("message") or ("操作执行成功" if parsed.get("ok") else parsed.get("error", "操作执行失败"))
+            final_text = self._build_grounded_tool_reply([(pending['name'], parsed)]) or parsed.get("summary") or parsed.get("message") or ("操作执行成功" if parsed.get("ok") else parsed.get("error", "操作执行失败"))
             self._messages.append(AIMessage(content=final_text))
             self._trim_history()
             self.memory.save_state(self.session_state)
+            if pending.get('name') == 'prepare_dataset_for_training':
+                synthetic_followup = self._build_followup_training_request()
+                if synthetic_followup:
+                    self._set_pending_confirmation(thread_id, synthetic_followup)
+                    self.memory.save_state(self.session_state)
+                    return {
+                        "status": "needs_confirmation",
+                        "message": self._build_confirmation_prompt(synthetic_followup),
+                        "tool_call": synthetic_followup,
+                        "thread_id": thread_id,
+                    }
             return {
                 "status": "completed",
                 "message": final_text,
@@ -248,6 +279,104 @@ class YoloStudioAgentClient:
         if self.session_state.preferences.language != "zh-CN":
             self.session_state.preferences.language = "zh-CN"
 
+    async def _try_handle_mainline_intent(self, user_text: str, thread_id: str) -> dict[str, Any] | None:
+        dataset_path = self._extract_dataset_path_from_text(user_text) or self.session_state.active_dataset.dataset_root or self.session_state.active_dataset.img_dir
+        normalized_text = user_text.lower()
+        wants_train = any(token in normalized_text for token in ('train', 'fine-tune', 'fit')) or ('训练' in user_text)
+        no_train = any(token in user_text for token in ('不要训练', '不训练', '只检查', '仅检查', '不要启动'))
+        wants_duplicates = ('重复' in user_text) or ('duplicate' in normalized_text)
+        wants_health = any(token in user_text for token in ('损坏', '尺寸异常', '健康检查', '健康状况', '图片质量'))
+        wants_quality = any(token in user_text for token in ('质量问题', '质量风险', '数据集质量', '分析', '总结'))
+        wants_readiness = any(token in user_text for token in ('能不能直接训练', '是否可以直接训练', '可不可以直接训练', '直接训练', '训练前检查'))
+        wants_split = any(token in user_text for token in ('默认划分', '划分比例', '先划分', 'split'))
+
+        if dataset_path and wants_quality and not wants_train:
+            return await self._complete_dataset_quality_reply(dataset_path)
+
+        if dataset_path and wants_duplicates and not wants_train and not wants_health:
+            return await self._complete_direct_tool_reply('detect_duplicate_images', dataset_path=dataset_path)
+
+        if dataset_path and wants_health and not wants_train:
+            return await self._complete_direct_tool_reply(
+                'run_dataset_health_check',
+                dataset_path=dataset_path,
+                include_duplicates=wants_duplicates,
+            )
+
+        if dataset_path and wants_readiness and no_train:
+            return await self._complete_direct_tool_reply('training_readiness', img_dir=dataset_path)
+
+        if dataset_path and wants_train and not no_train:
+            args: dict[str, Any] = {'dataset_path': dataset_path}
+            if wants_split:
+                args['force_split'] = True
+            self._set_pending_confirmation(thread_id, {'name': 'prepare_dataset_for_training', 'args': args, 'id': None, 'synthetic': True})
+            return {
+                'status': 'needs_confirmation',
+                'message': self._build_confirmation_prompt({'name': 'prepare_dataset_for_training', 'args': args}),
+                'tool_call': {'name': 'prepare_dataset_for_training', 'args': args},
+                'thread_id': thread_id,
+            }
+        return None
+
+    async def _complete_direct_tool_reply(self, tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        parsed = await self.direct_tool(tool_name, **kwargs)
+        reply = self._build_grounded_tool_reply([(canonical_tool_name(tool_name), parsed)])
+        if not reply:
+            reply = parsed.get('summary') or parsed.get('message') or parsed.get('error') or '操作已完成'
+        self._messages.append(AIMessage(content=reply))
+        return {
+            'status': 'completed' if parsed.get('ok', True) else 'error',
+            'message': reply,
+            'tool_call': None,
+        }
+
+    async def _complete_dataset_quality_reply(self, dataset_path: str) -> dict[str, Any]:
+        scan = await self.direct_tool('scan_dataset', img_dir=dataset_path)
+        validate = await self.direct_tool('validate_dataset', img_dir=dataset_path)
+        health = await self.direct_tool('run_dataset_health_check', dataset_path=dataset_path, include_duplicates=True, max_duplicate_groups=3)
+
+        warnings: list[str] = []
+        for source in (scan, validate, health):
+            for item in source.get('warnings') or []:
+                if item not in warnings:
+                    warnings.append(str(item))
+
+        lines = [validate.get('summary') or scan.get('summary') or health.get('summary') or '数据集质量分析完成']
+        if warnings:
+            lines.append('最值得注意的风险:')
+            lines.extend(f'- {item}' for item in warnings[:3])
+        classes = scan.get('classes') or []
+        if classes:
+            lines.append(f"涉及类别: {', '.join(str(item) for item in classes[:4])}")
+        if scan.get('detected_classes_txt'):
+            lines.append(f"类名来源: {scan.get('detected_classes_txt')}")
+        if health.get('duplicate_groups'):
+            lines.append(f"重复图片: {health.get('duplicate_groups')} 组，额外重复文件 {health.get('duplicate_extra_files', 0)} 个")
+        next_actions = validate.get('next_actions') or scan.get('next_actions') or health.get('next_actions') or []
+        if next_actions:
+            lines.append('建议:')
+            lines.extend(f'- {item}' for item in next_actions[:2])
+        reply = '\n'.join(lines)
+        self._messages.append(AIMessage(content=reply))
+        return {
+            'status': 'completed',
+            'message': reply,
+            'tool_call': None,
+        }
+
+    def _extract_dataset_path_from_text(self, text: str) -> str:
+        patterns = [
+            r"([A-Za-z]:\\[^\s，,。；;\"']+)",
+            r"(/[^\s，,。；;\"']+)",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                return match.group(1).rstrip('。，“”,,;；')
+        return ""
+
+
     def _set_pending_confirmation(self, thread_id: str, pending: dict[str, Any]) -> None:
         pc = self.session_state.pending_confirmation
         pc.thread_id = thread_id
@@ -283,8 +412,8 @@ class YoloStudioAgentClient:
             if message.tool_call_id and message.tool_call_id in self._applied_tool_call_ids:
                 continue
             parsed = parse_tool_message(message)
-            tool_name = message.name or "unknown_tool"
-            tool_args = tool_args_by_id.get(message.tool_call_id or '', {})
+            tool_name = canonical_tool_name(message.name or "unknown_tool")
+            tool_args = normalize_tool_args(tool_name, tool_args_by_id.get(message.tool_call_id or '', {}))
             self.memory.append_event(self.session_state.session_id, "tool_result", {"tool": tool_name, "args": tool_args, "result": parsed})
             self._apply_to_state(tool_name, parsed, tool_args)
             applied_results.append((tool_name, parsed))
@@ -334,6 +463,75 @@ class YoloStudioAgentClient:
                 for group in groups[:3]:
                     sample_paths = ', '.join(group.get('paths', [])[:2])
                     lines.append(f'- {sample_paths}')
+            next_actions = result.get('next_actions') or []
+            if next_actions:
+                lines.append('建议:')
+                lines.extend(f'- {item}' for item in next_actions[:2])
+            return '\n'.join(lines)
+        if tool_name == 'scan_dataset':
+            lines = [result.get('summary', '扫描完成')]
+            if result.get('warnings'):
+                lines.append('风险:')
+                lines.extend(f'- {item}' for item in (result.get('warnings') or [])[:2])
+            top_classes = result.get('top_classes') or []
+            if top_classes:
+                preview = '，'.join(f"{item.get('class')}={item.get('count')}" for item in top_classes[:3])
+                lines.append(f'主要类别: {preview}')
+            next_actions = result.get('next_actions') or []
+            if next_actions:
+                lines.append('建议:')
+                lines.extend(f'- {item}' for item in next_actions[:2])
+            return '\n'.join(lines)
+        if tool_name == 'validate_dataset':
+            lines = [result.get('summary', '校验完成')]
+            warnings = result.get('warnings') or []
+            if warnings:
+                lines.append('风险:')
+                lines.extend(f'- {item}' for item in warnings[:3])
+            next_actions = result.get('next_actions') or []
+            if next_actions:
+                lines.append('建议:')
+                lines.extend(f'- {item}' for item in next_actions[:2])
+            return '\n'.join(lines)
+        if tool_name == 'training_readiness':
+            lines = [result.get('summary', '训练前检查完成')]
+            blockers = result.get('blockers') or []
+            warnings = result.get('warnings') or []
+            if blockers:
+                lines.append('阻塞项:')
+                lines.extend(f'- {item}' for item in blockers[:3])
+            elif warnings:
+                lines.append('风险:')
+                lines.extend(f'- {item}' for item in warnings[:3])
+            if result.get('resolved_data_yaml'):
+                lines.append(f"当前可用 YAML: {result.get('resolved_data_yaml')}")
+            if result.get('auto_device'):
+                lines.append(f"当前 auto 设备策略会解析到: {result.get('auto_device')}")
+            next_actions = result.get('next_actions') or []
+            if next_actions:
+                lines.append('建议:')
+                lines.extend(f'- {item}' for item in next_actions[:2])
+            return '\n'.join(lines)
+        if tool_name == 'prepare_dataset_for_training':
+            lines = [result.get('summary', '数据准备完成')]
+            if result.get('data_yaml'):
+                lines.append(f"已准备好的 YAML: {result.get('data_yaml')}")
+            if result.get('warnings'):
+                lines.append('风险:')
+                lines.extend(f'- {item}' for item in (result.get('warnings') or [])[:2])
+            next_actions = result.get('next_actions') or []
+            if next_actions:
+                lines.append('建议:')
+                lines.extend(f'- {item}' for item in next_actions[:2])
+            return '\n'.join(lines)
+        if tool_name == 'check_training_status':
+            lines = [result.get('summary', '训练状态已更新')]
+            metrics = ((result.get('latest_metrics') or {}).get('metrics') or {})
+            if metrics:
+                epoch = metrics.get('epoch')
+                total = metrics.get('total_epochs')
+                if epoch is not None and total is not None:
+                    lines.append(f'最近观测到 epoch: {epoch}/{total}')
             next_actions = result.get('next_actions') or []
             if next_actions:
                 lines.append('建议:')
@@ -493,10 +691,17 @@ class YoloStudioAgentClient:
         if not isinstance(last_message, AIMessage) or not last_message.tool_calls:
             return None
         tool_call = last_message.tool_calls[0]
+        raw_name = tool_call.get("name") or ""
+        raw_args = tool_call.get("args", {})
+        tool_name = canonical_tool_name(raw_name)
+        tool_args = normalize_tool_args(tool_name, raw_args)
         return {
             "id": tool_call.get("id"),
-            "name": tool_call.get("name"),
-            "args": tool_call.get("args", {}),
+            "name": tool_name,
+            "args": tool_args,
+            "raw_name": raw_name,
+            "raw_args": raw_args,
+            "adapted": raw_name != tool_name or raw_args != tool_args,
         }
 
     @staticmethod
@@ -585,7 +790,7 @@ class YoloStudioAgentClient:
         for msg in messages:
             if isinstance(msg, AIMessage):
                 for tc in getattr(msg, 'tool_calls', []) or []:
-                    name = tc.get('name')
+                    name = canonical_tool_name(tc.get('name'))
                     if name and name not in tool_calls:
                         tool_calls.append(name)
             if isinstance(msg, ToolMessage):

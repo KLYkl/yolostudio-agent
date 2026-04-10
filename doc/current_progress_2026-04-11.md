@@ -113,6 +113,33 @@ flowchart TD
 
 ---
 
+## 4.3 2026-04-11 当日晚些时候新增推进
+
+这轮又继续按主线推进了一步，重点不是扩新功能，而是**收口弱模型对现有工具契约的贴合度**。
+
+新增的主线增强包括：
+
+- 在 `agent/client/tool_adapter.py` 增加 **旧工具名 / 旧参数名兼容层**
+  - `detect_duplicates -> detect_duplicate_images`
+  - `detect_corrupted_images -> run_dataset_health_check`
+  - `prepare_dataset -> prepare_dataset_for_training`
+  - `path -> dataset_path` 等参数别名
+- 在 `agent/client/agent_client.py` 增加 **主线意图路由**
+  - 明显的 readiness 请求，优先直达 `training_readiness`
+  - 明显的健康检查 / 重复检测请求，优先直达只读工具
+  - 明显的 root + train 请求，优先收敛到 `prepare_dataset_for_training` 两段式链路
+- 扩大 grounded reply 覆盖范围
+  - 从 health / duplicate 扩大到 `scan_dataset`、`validate_dataset`、`training_readiness`、`prepare_dataset_for_training`、`check_training_status`
+- 追加主线回归矩阵测试
+  - 最新一轮 `test_mainline_regression_matrix.py` 得分提升到 **0.955**
+
+这轮说明：
+
+> 当前主线最大的风险已经不在服务层，而是在**弱模型的解释层和旧接口幻觉**。
+> 通过“工具兼容层 + 意图路由 + grounded reply”三件套，主线稳定性又向前推了一步。
+
+---
+
 ## 5. 这段时间主线推进了什么
 
 下面按“问题 → 解决 → 价值”来写，不按流水账写。
