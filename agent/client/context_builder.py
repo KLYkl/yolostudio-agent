@@ -41,6 +41,7 @@ class ContextBuilder:
             '当前结构化上下文:\n'
             f'- session_id: {state.session_id}\n'
             '数据集:\n'
+            f'  dataset_root: {ds.dataset_root or "未设置"}\n'
             f'  img_dir: {ds.img_dir or "未设置"}\n'
             f'  label_dir: {ds.label_dir or "未设置"}\n'
             f'  data_yaml: {ds.data_yaml or "未设置"}\n'

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from mcp.server.fastmcp import FastMCP
 
+from agent_plan.agent.server.tools.combo_tools import prepare_dataset_for_training
 from agent_plan.agent.server.tools.data_tools import (
     augment_dataset,
     generate_yaml,
@@ -25,6 +26,7 @@ mcp.tool()(validate_dataset)
 mcp.tool()(augment_dataset)
 mcp.tool()(generate_yaml)
 mcp.tool()(training_readiness)
+mcp.tool()(prepare_dataset_for_training)
 mcp.tool()(start_training)
 mcp.tool()(check_training_status)
 mcp.tool()(stop_training)
@@ -33,3 +35,4 @@ mcp.tool()(check_gpu_status)
 
 if __name__ == "__main__":
     mcp.run(transport="streamable-http")
+

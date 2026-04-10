@@ -11,6 +11,7 @@ def utc_now() -> str:
 
 @dataclass(slots=True)
 class DatasetContext:
+    dataset_root: str = ""
     img_dir: str = ""
     label_dir: str = ""
     data_yaml: str = ""

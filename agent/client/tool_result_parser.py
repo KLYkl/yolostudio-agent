@@ -6,8 +6,7 @@ from typing import Any
 from langchain_core.messages import ToolMessage
 
 
-def parse_tool_message(message: ToolMessage) -> dict[str, Any]:
-    content = message.content
+def parse_tool_payload(content: Any) -> dict[str, Any]:
     if isinstance(content, list):
         text_parts = [item.get('text', '') for item in content if isinstance(item, dict)]
         raw = '\n'.join(part for part in text_parts if part)
@@ -19,3 +18,7 @@ def parse_tool_message(message: ToolMessage) -> dict[str, Any]:
     except Exception:
         parsed = {'ok': True, 'raw': raw}
     return parsed if isinstance(parsed, dict) else {'ok': True, 'value': parsed}
+
+
+def parse_tool_message(message: ToolMessage) -> dict[str, Any]:
+    return parse_tool_payload(message.content)

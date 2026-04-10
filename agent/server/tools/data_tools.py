@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from agent_plan.agent.server.services.dataset_root import resolve_dataset_inputs, resolve_dataset_root
 
 MAX_ISSUE_EXAMPLES = 3
 
@@ -16,19 +17,18 @@ def _error_payload(exc: Exception, action: str) -> dict[str, Any]:
 
 
 def _infer_dataset_root(img_dir: Path, label_dir: Path | None = None) -> Path:
-    candidates = [img_dir]
-    if img_dir.name.lower() in {"images", "imgs", "jpegimages"}:
-        candidates.append(img_dir.parent)
-    if label_dir:
-        candidates.append(label_dir)
-        if label_dir.name.lower() in {"labels", "annotations", "label"}:
-            candidates.append(label_dir.parent)
-    for candidate in candidates:
-        if candidate.exists() and candidate.is_dir():
-            if candidate.name.lower() in {"images", "labels", "annotations", "label", "imgs", "jpegimages"}:
-                continue
-            return candidate
+    resolution = resolve_dataset_root(str(img_dir), str(label_dir) if label_dir else '')
+    dataset_root = resolution.get('dataset_root') if isinstance(resolution, dict) else ''
+    if dataset_root:
+        return Path(dataset_root)
     return img_dir.parent if img_dir.name.lower() in {"images", "imgs", "jpegimages"} else img_dir
+
+
+def _resolve_dataset_inputs(img_dir: str, label_dir: str = '') -> tuple[Path, Path | None, dict[str, Any]]:
+    resolution = resolve_dataset_inputs(img_dir, label_dir)
+    resolved_img = Path(resolution.get('img_dir') or img_dir)
+    resolved_label = Path(resolution['label_dir']) if resolution.get('label_dir') else (Path(label_dir) if label_dir else None)
+    return resolved_img, resolved_label, resolution
 
 
 def _discover_data_yaml(img_dir: Path, label_dir: Path | None = None) -> tuple[str, list[str]]:
@@ -108,13 +108,12 @@ def summarize_scan_result(result) -> str:
 
 
 def scan_dataset(img_dir: str, label_dir: str = "") -> dict[str, Any]:
-    """扫描数据集并返回结构化摘要、类别统计、候选 YAML 信息。"""
+    """扫描数据集并返回结构化摘要、类别统计、候选 YAML 信息。img_dir 支持传入 dataset root。"""
     try:
         from core.data_handler._handler import DataHandler
 
-        img_path = Path(img_dir)
-        label_path = Path(label_dir) if label_dir else None
-        dataset_root = _infer_dataset_root(img_path, label_path)
+        img_path, label_path, resolution = _resolve_dataset_inputs(img_dir, label_dir)
+        dataset_root = Path(resolution.get('dataset_root') or _infer_dataset_root(img_path, label_path))
         detected_data_yaml, data_yaml_candidates = _discover_data_yaml(img_path, label_path)
 
         handler = DataHandler()
@@ -131,6 +130,10 @@ def scan_dataset(img_dir: str, label_dir: str = "") -> dict[str, Any]:
             "ok": True,
             "summary": summarize_scan_result(result),
             "dataset_root": str(dataset_root),
+            "structure_type": resolution.get('structure_type'),
+            "resolved_from_root": resolution.get('resolved_from_root', False),
+            "resolved_img_dir": str(img_path),
+            "resolved_label_dir": str(label_path) if label_path else '',
             "total_images": result.total_images,
             "labeled_images": result.labeled_images,
             "missing_labels": len(result.missing_labels),
@@ -293,14 +296,15 @@ def validate_dataset(
     check_format: bool = True,
     check_orphans: bool = True,
 ) -> dict[str, Any]:
-    """校验标签合法性并返回问题统计与示例。"""
+    """校验标签合法性并返回问题统计与示例。img_dir 支持传入 dataset root。"""
     try:
         from core.data_handler._handler import DataHandler
 
         handler = DataHandler()
+        img_path, label_path, resolution = _resolve_dataset_inputs(img_dir, label_dir)
         result = handler.validate_labels(
-            img_dir=Path(img_dir),
-            label_dir=Path(label_dir) if label_dir else None,
+            img_dir=img_path,
+            label_dir=label_path,
             classes_txt=Path(classes_txt) if classes_txt else None,
             check_coords=check_coords,
             check_class_ids=check_class_ids,
@@ -320,6 +324,9 @@ def validate_dataset(
         return {
             "ok": True,
             "summary": summary,
+            "dataset_root": resolution.get('dataset_root', ''),
+            "resolved_img_dir": str(img_path),
+            "resolved_label_dir": str(label_path) if label_path else '',
             "total_labels": result.total_labels,
             "has_issues": result.has_issues,
             "issue_count": result.issue_count,
@@ -340,7 +347,7 @@ def training_readiness(
     data_yaml: str = "",
     require_clean_labels: bool = True,
 ) -> dict[str, Any]:
-    """给出当前数据集是否适合直接训练的综合判断。"""
+    """给出当前数据集是否适合直接训练的综合判断。优先用作训练前的标准检查入口。"""
     try:
         from agent_plan.agent.server.services.gpu_utils import query_gpu_status
 
@@ -366,20 +373,39 @@ def training_readiness(
         if not available_gpus:
             blockers.append('当前没有空闲 GPU')
 
-        next_actions: list[str] = []
+        next_actions: list[dict[str, Any]] = []
         if not yaml_exists:
-            next_actions.append('可先调用 generate_yaml 生成训练 YAML')
+            next_actions.append({
+                'description': '可先调用 generate_yaml 生成训练 YAML',
+                'tool': 'generate_yaml',
+                'args_hint': {'img_dir': scan.get('resolved_img_dir', img_dir), 'label_dir': scan.get('resolved_label_dir', label_dir), 'classes': scan.get('classes', [])},
+            })
         if require_clean_labels and not labels_clean:
-            next_actions.append('先根据 issue_examples 修复标签问题')
+            next_actions.append({
+                'description': '先根据 issue_examples 修复标签问题',
+                'tool': 'validate_dataset',
+                'args_hint': {'img_dir': scan.get('resolved_img_dir', img_dir), 'label_dir': scan.get('resolved_label_dir', label_dir)},
+            })
         if not available_gpus:
-            next_actions.append('等待空闲 GPU，或释放当前占用后再训练')
+            next_actions.append({
+                'description': '等待空闲 GPU，或释放当前占用后再训练',
+                'tool': 'check_gpu_status',
+                'args_hint': {},
+            })
         if ready:
-            next_actions.append('可以直接调用 start_training 开始训练')
+            next_actions.append({
+                'description': '可以直接调用 start_training 开始训练',
+                'tool': 'start_training',
+                'args_hint': {'data_yaml': resolved_yaml},
+            })
 
         return {
             'ok': True,
             'ready': ready,
             'summary': '可以直接训练' if ready else f"当前还不能直接训练: {', '.join(blockers)}",
+            'dataset_root': scan.get('dataset_root', ''),
+            'resolved_img_dir': scan.get('resolved_img_dir', img_dir),
+            'resolved_label_dir': scan.get('resolved_label_dir', label_dir),
             'resolved_data_yaml': resolved_yaml,
             'labels_clean': labels_clean,
             'available_gpu_indexes': available_gpus,
