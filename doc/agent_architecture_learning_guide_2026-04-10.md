@@ -1,16 +1,29 @@
-# YoloStudio Agent 架构学习手册（面向初学者）
+# YoloStudio Agent 架构学习手册（面向初学者，扩展版）
 
-> 目的：这不是“项目总结”，而是一份**带知识解释的学习文档**。  
-> 它试图回答 4 个问题：
->
-> 1. 这个 Agent 项目现在到底长什么样？
-> 2. 每一层技术是拿来解决什么问题的？
-> 3. 这些设计是怎么一步步演化出来的？
-> 4. 我如果想借这个项目学习 Agent 开发，应该从哪里看起？
+> 文件定位：这是 `D:\yolodo2.0\agent_plan` 里的**学习型文档**，不是单纯项目总结。  
+> 目标：把这个项目当成一个 Agent 工程样本，用它来解释“Agent 系统为什么这样设计、解决了什么问题、还差什么”。
 
 ---
 
-## 1. 先用一句话理解这个项目
+## 0. 你应该怎么使用这份文档
+
+这份文档不是给“只想知道当前能不能用”的人看的。它是给下面这类读者准备的：
+
+- 想学 Agent 开发，但不想停留在概念层
+- 想知道一个真实项目为什么要引入 MCP、LangGraph、Memory、HITL
+- 想从“项目演进历史”反推技术决策
+- 想知道一个工程化 Agent 和“普通聊天机器人”到底差在哪
+
+推荐阅读顺序：
+
+1. 先看 **第 1 章到第 3 章**，建立全局印象
+2. 再看 **第 4 章到第 8 章**，理解每层技术是干什么的
+3. 再看 **第 9 章到第 12 章**，理解项目是怎么演化出来的
+4. 最后看 **第 13 章到第 16 章**，把它变成你的学习地图
+
+---
+
+## 1. 用一句话理解这个项目
 
 这个项目不是“让大模型直接替你训练 YOLO”。
 
@@ -23,723 +36,1598 @@
 - “扫描这个数据集”
 - “先按默认比例划分，然后训练”
 - “现在有没有训练在跑”
+- “如果有训练在跑就停掉，没有就只告诉我状态”
 
-系统内部做的是：
+系统内部做的却是很多层动作：
 
 - 理解意图
 - 选择工具
-- 执行真实代码
-- 记录状态
-- 对高风险步骤做人审确认（HITL）
+- 调真实代码
+- 记录上下文
+- 在高风险点暂停
+- 让人确认后继续
+- 在服务重启后尝试接管训练状态
+
+这就是为什么这个项目适合拿来学 Agent：
+
+> 它不是“会聊天的模型”，而是“由模型驱动、但受系统约束的执行系统”。
 
 ---
 
-## 2. 当前架构总览
+## 2. 先建立 3 个最重要的认知
 
-### 2.1 总体分层图
+### 2.1 认知一：Agent != 聊天机器人
+
+很多初学者一说 Agent，脑中想到的是：
+
+- 一个更聪明的聊天框
+- 一个能回答更多问题的模型
+
+但在工程里，Agent 更像：
+
+> **一个用自然语言作为入口、用模型做规划、用工具做执行、用状态系统做记忆的软件系统。**
+
+也就是说：
+
+- 聊天机器人重点在“回答”
+- Agent 重点在“完成任务”
+
+这两者的核心差别不是“模型多强”，而是：
+
+- 有没有工具层
+- 有没有状态层
+- 有没有流程控制
+- 有没有风险控制
+
+---
+
+### 2.2 认知二：模型是“大脑”，不是“手脚”
+
+在这个项目里，模型的作用主要是：
+
+- 理解用户说的话
+- 判断应该调用哪个工具
+- 决定工具调用顺序
+- 在工具返回后进行总结
+
+真正干活的是：
+
+- 数据扫描逻辑
+- 数据集划分逻辑
+- YAML 生成逻辑
+- GPU 检测逻辑
+- 训练启动 / 查询 / 停止逻辑
+
+也就是说：
+
+> **LLM 负责想，tools/service 负责做。**
+
+这是一个非常关键的 Agent 工程原则。
+
+---
+
+### 2.3 认知三：Agent 成败不只看模型，更看系统设计
+
+现实里，很多 Agent 做不稳，不是因为模型不够聪明，而是因为：
+
+- tool 设计太底层
+- 数据语义和用户语言不一致
+- 上下文没有结构化
+- 高风险动作没有 HITL
+- 运行状态只放在内存里
+
+所以真正的 Agent 工程，实际上是在解决：
+
+```text
+模型规划能力
+× 工具抽象质量
+× 记忆结构设计
+× 运行时流程控制
+× 恢复/观测能力
+```
+
+这个项目一路演进下来，最值得学习的，恰恰就是这一整套平衡过程。
+
+---
+
+## 3. 当前系统长什么样：整体架构
+
+### 3.1 总体分层图
 
 ```mermaid
 flowchart LR
     U["用户（CLI 输入自然语言）"]
-    C["Agent Client 层<br/>cli.py / agent_client.py"]
-    M["上下文与记忆层<br/>SessionState / MemoryStore / EventRetriever / ContextBuilder"]
-    L["LLM Provider 层<br/>Ollama / DeepSeek / OpenAI-compatible"]
-    P["编排层<br/>LangGraph ReAct + HITL"]
-    MCP["MCP Client / MCP Server"]
-    T["工具层<br/>data_tools.py / train_tools.py / combo_tools.py"]
-    S["服务层<br/>dataset_root.py / gpu_utils.py / train_service.py / train_log_parser.py"]
-    Y["真实能力层<br/>DataHandler / YOLO CLI / GPU / 文件系统"]
+    CLI["CLI 层<br/>cli.py"]
+    AC["Agent Client 层<br/>agent_client.py"]
+    CTX["上下文层<br/>SessionState / MemoryStore / EventRetriever / ContextBuilder"]
+    ORCH["编排层<br/>LangGraph ReAct + Interrupt + HITL"]
+    LLM["LLM Provider 层<br/>Ollama / DeepSeek / OpenAI-compatible"]
+    MCP["MCP Client"]
+    SERVER["MCP Server<br/>FastMCP + streamable-http"]
+    TOOLS["工具层<br/>data_tools / train_tools / combo_tools"]
+    SVCS["服务层<br/>dataset_root / gpu_utils / train_service / train_log_parser"]
+    CORE["真实能力层<br/>DataHandler / YOLO CLI / GPU / 文件系统"]
 
-    U --> C
-    C --> M
-    C --> P
-    P --> L
-    P --> MCP
-    MCP --> T
-    T --> S
-    S --> Y
-    T --> M
+    U --> CLI
+    CLI --> AC
+    AC --> CTX
+    AC --> ORCH
+    ORCH --> LLM
+    ORCH --> MCP
+    MCP --> SERVER
+    SERVER --> TOOLS
+    TOOLS --> SVCS
+    SVCS --> CORE
+    TOOLS --> CTX
 ```
 
-这张图最重要的意思是：
+### 3.2 为什么要这么分层？
 
-- **模型不直接碰训练代码**
-- **模型先走工具层**
-- **工具层再去调用真实服务**
-- **执行结果会回写到记忆层**
+因为如果不分层，最后很容易变成这种混乱结构：
 
-这是 Agent 工程里一个很典型的思路：  
-**把“会说话的大脑”和“真的干活的手脚”分开。**
+```text
+聊天输入 -> 模型 -> if/else -> 直接调代码 -> 直接开训练 -> 结果乱塞回对话
+```
+
+这种结构的问题是：
+
+- 很难换模型
+- 很难远程部署
+- 很难定位问题
+- 很难加 HITL
+- 很难做状态恢复
+
+所以我们把系统拆成层，每层只负责一件事：
+
+| 层 | 负责什么 |
+|---|---|
+| CLI 层 | 用户入口 |
+| Agent Client 层 | 管理一次对话与一次任务流 |
+| 上下文层 | 记住当前状态与历史事件 |
+| 编排层 | 管理“模型 → 工具 → 继续/暂停”的流程 |
+| LLM Provider 层 | 统一接入不同模型 |
+| MCP 层 | 把能力标准化成工具调用 |
+| 工具层 | 对外暴露稳定接口 |
+| 服务层 | 执行真正业务逻辑 |
+| 真实能力层 | 数据处理、训练、文件系统、GPU |
+
+这就是“工程化 Agent”和“脚本拼接”的本质区别。
 
 ---
 
-### 2.2 一次典型请求是怎么流转的
+## 4. 部署视角：它是怎么跑起来的
 
-例如用户输入：
+### 4.1 部署拓扑图
 
-> “数据在某个目录里，先按默认比例划分，然后用 yolov8n 训练”
+```mermaid
+flowchart LR
+    subgraph Win["Windows 本地"]
+        CLI["cli.py"]
+        CLIENT["agent_client.py"]
+        MEM["memory/sessions + events"]
+    end
 
-系统内部大致是这样走的：
+    subgraph Tunnel["SSH Tunnel"]
+        T1[":8080 -> MCP"]
+        T2[":11434 -> Ollama（可选）"]
+    end
+
+    subgraph Server["远端服务器"]
+        MCPS["FastMCP Server"]
+        TOOLS["MCP Tools"]
+        OLLAMA["Ollama / 本地模型（可选）"]
+        YOLO["YOLO 训练进程"]
+        GPU["GPU / nvidia-smi / NVML 信息"]
+        FILES["真实数据集 / 日志 / YAML / 产物"]
+    end
+
+    CLI --> CLIENT
+    CLIENT --> MEM
+    CLIENT --> Tunnel
+    Tunnel --> MCPS
+    Tunnel --> OLLAMA
+    MCPS --> TOOLS
+    TOOLS --> YOLO
+    TOOLS --> GPU
+    TOOLS --> FILES
+```
+
+### 4.2 这张图说明了什么？
+
+它说明系统有两个关键分离：
+
+#### 分离 1：Agent Client 和真实执行环境分离
+
+- Windows 上跑的是交互层
+- 服务器上跑的是执行层
+
+好处：
+
+- 你本地不用背训练环境
+- 服务器负责真正 GPU 与数据
+- 本地只负责对话和状态组织
+
+#### 分离 2：模型来源和训练资源分离
+
+这个项目现在已经支持：
+
+- 本地/服务器上的 Ollama 模型
+- DeepSeek 这类 API provider
+- OpenAI-compatible provider
+
+这意味着：
+
+> **训练用什么 GPU，不应该再由“模型部署方式”硬编码决定。**
+
+所以后面才会演化出动态 GPU 策略。
+
+---
+
+## 5. 典型请求：一次用户输入，系统内部怎么走
+
+### 5.1 简单请求：查询当前训练状态
 
 ```mermaid
 sequenceDiagram
     participant User as 用户
-    participant CLI as CLI / AgentClient
-    participant State as SessionState / Memory
-    participant Graph as LangGraph Agent
+    participant CLI as CLI
+    participant Agent as AgentClient
+    participant Graph as LangGraph
     participant LLM as LLM
-    participant MCP as MCP Tools
+    participant MCP as MCP Tool
+    participant Train as train_service
+
+    User->>CLI: 现在有没有训练在跑？
+    CLI->>Agent: chat()
+    Agent->>Graph: 构造 prompt + 上下文
+    Graph->>LLM: 判断下一步
+    LLM->>MCP: check_training_status
+    MCP->>Train: status()
+    Train-->>MCP: 训练状态
+    MCP-->>Agent: tool result
+    Agent->>Agent: 写回 SessionState
+    Agent-->>CLI: 自然语言总结
+    CLI-->>User: 当前没有训练 / 当前有训练在跑
+```
+
+这是最标准的 ReAct 模式：
+
+1. 模型先判断需不需要工具
+2. 工具返回真实结果
+3. 模型再基于真实结果回答
+
+---
+
+### 5.2 复杂请求：数据根目录 → 准备 → 训练
+
+```mermaid
+sequenceDiagram
+    participant User as 用户
+    participant Agent as AgentClient
+    participant LLM as 模型
     participant Combo as prepare_dataset_for_training
+    participant Data as scan/validate/split/generate_yaml/readiness
     participant Train as start_training
 
-    User->>CLI: 输入自然语言
-    CLI->>State: 读取会话状态
-    CLI->>Graph: 构造 prompt + 上下文摘要
-    Graph->>LLM: 让模型决定下一步
-    LLM->>MCP: 调用 prepare_dataset_for_training
-    MCP->>Combo: 解析 root、scan、validate、split、generate_yaml、readiness
-    Combo-->>CLI: 返回可训练状态 + data_yaml
-    CLI->>State: 写回 dataset_root / img_dir / label_dir / data_yaml
-    CLI-->>User: 第一次高风险确认（准备数据）
-    User->>CLI: 确认
-    CLI->>Graph: 恢复执行
-    Graph->>LLM: 继续规划
-    LLM->>MCP: 调用 start_training
-    MCP->>Train: 启动真实 YOLO 训练
-    Train-->>CLI: 返回 pid / device / log_file
-    CLI->>State: 写回 active_training
-    CLI-->>User: 第二次高风险确认（启动训练）
+    User->>Agent: 数据在 /path/to/dataset，按默认比例划分，然后训练
+    Agent->>LLM: 解释意图
+    LLM->>Combo: prepare_dataset_for_training(force_split=true)
+    Combo->>Data: resolve root
+    Combo->>Data: scan
+    Combo->>Data: validate
+    Combo->>Data: split
+    Combo->>Data: generate_yaml
+    Combo->>Data: readiness
+    Combo-->>Agent: ready + data_yaml + args_hint
+    Agent-->>User: 第一次确认（准备数据）
+    User->>Agent: 确认
+    Agent->>LLM: 继续规划
+    LLM->>Train: start_training(...)
+    Train-->>Agent: pid / device / log_file
+    Agent-->>User: 第二次确认（启动训练）
 ```
 
-要点：
+### 5.3 这条链为什么重要？
 
-1. **LLM 不直接训练**，只是做规划和工具选择。
-2. **高风险动作被拦截**，不会模型一想到就直接执行。
-3. **状态会被写回**，这样下轮对话还能接上。
+因为它正好是这个项目最典型、也最容易暴露问题的主线：
+
+- 用户说的是 dataset root
+- 工具实际需要的是 img_dir / label_dir / data_yaml
+- 模型需要规划多个步骤
+- 中间既有“会改数据”的动作，又有“会开长任务”的动作
+
+所以这个项目很多关键设计，都是围绕这条链不断补出来的。
 
 ---
 
-## 3. 当前目录结构：每一层到底放什么
+## 6. 代码结构总表：每个文件到底在做什么
 
-> 以下路径全部是相对项目根目录的相对路径，便于理解结构。
+### 6.1 客户端层
 
-### 3.1 Agent 客户端
+| 文件 | 作用 | 为什么要有它 |
+|---|---|---|
+| `agent/client/cli.py` | 命令行入口 | 让用户能直接在本地交互 |
+| `agent/client/agent_client.py` | Agent 主协调器 | 串起 LLM、Graph、Memory、HITL、Tool 结果回写 |
+| `agent/client/llm_factory.py` | 模型工厂 | 解耦 Ollama / DeepSeek / OpenAI-compatible |
+| `agent/client/session_state.py` | 结构化会话状态 | 保存当前 dataset、training、pending confirmation |
+| `agent/client/memory_store.py` | 状态和事件落盘 | 让状态不只存在内存中 |
+| `agent/client/context_builder.py` | prompt 组装器 | 控制喂给模型的上下文结构 |
+| `agent/client/event_retriever.py` | 历史摘要与事件检索 | 防止长对话只靠原始历史 |
+| `agent/client/tool_adapter.py` | Tool 消息格式适配 | 兼容 DeepSeek/OpenAI-compatible 的消息格式要求 |
+| `agent/client/tool_result_parser.py` | 统一解析 tool result | 把工具返回转成结构化 dict |
 
-```text
-agent/client/
-├── cli.py
-├── agent_client.py
-├── llm_factory.py
-├── session_state.py
-├── memory_store.py
-├── context_builder.py
-├── event_retriever.py
-├── tool_adapter.py
-└── tool_result_parser.py
+---
+
+### 6.2 服务端层
+
+| 文件 | 作用 | 为什么要有它 |
+|---|---|---|
+| `agent/server/mcp_server.py` | MCP 注册入口 | 把 tools 暴露成 MCP 能调用的接口 |
+| `agent/server/tools/data_tools.py` | 数据工具接口 | 把数据处理能力包装成 LLM 可调工具 |
+| `agent/server/tools/train_tools.py` | 训练工具接口 | 把训练能力包装成 LLM 可调工具 |
+| `agent/server/tools/combo_tools.py` | 高层组合工具 | 降低复杂任务对模型规划能力的依赖 |
+| `agent/server/services/dataset_root.py` | 数据集根目录解析 | 解决“用户说 root，但代码要 img_dir/label_dir” |
+| `agent/server/services/gpu_utils.py` | GPU 状态与策略 | 按真实占用决定 auto 设备行为 |
+| `agent/server/services/train_service.py` | 训练生命周期管理 | 启动、查询、停止、重启接管训练 |
+| `agent/server/services/train_log_parser.py` | 日志解析 | 把 YOLO 训练日志转成机器可理解状态 |
+
+---
+
+### 6.3 测试层
+
+测试文件很多，但可以按意图归类：
+
+| 类型 | 例子 | 目的 |
+|---|---|---|
+| 冒烟测试 | `test_server_smoke.py` | 基本链路是否可用 |
+| Provider 测试 | `test_llm_factory.py`、`test_tool_adapter.py` | 模型接入是否兼容 |
+| 上下文测试 | `test_long_context_smoke.py`、`test_memory_retriever.py` | Memory 是否起作用 |
+| 主线流程测试 | `test_prepare_dataset_flow.py`、`test_complex_prompt_flow.py` | root → prepare → train 主线是否稳定 |
+| 系统稳定性测试 | `test_train_run_registry.py` | MCP 重启后训练能否接管 |
+| 能力边界测试 | `test_agent_capability_range.py` | 复杂提示词下 Agent 能力范围 |
+| 大数据脏数据测试 | `test_zyb_large_dataset_e2e.py` | 真实世界数据鲁棒性 |
+
+---
+
+## 7. 核心技术详解：这些技术为什么会被引入
+
+这一章是最适合“系统学知识”的部分。
+
+### 7.1 MCP：为什么需要“工具协议”
+
+#### 7.1.1 它是什么
+
+MCP（Model Context Protocol）可以理解为：
+
+> **把模型能访问的能力，统一包装成标准协议。**
+
+在这个项目里，它的作用很具体：
+
+- `scan_dataset`
+- `validate_dataset`
+- `prepare_dataset_for_training`
+- `start_training`
+- `check_training_status`
+
+这些能力，不再只是 Python 函数，而是变成了**模型可调用的工具接口**。
+
+#### 7.1.2 它解决的问题
+
+如果没有 MCP，常见做法是：
+
+- Agent 代码直接 `import` 业务模块
+- 模型通过某些本地 function calling 直接驱动内部代码
+
+这会带来问题：
+
+- 强耦合
+- 难以远程部署
+- 难以跨模型/跨客户端复用
+- 未来难以扩展成标准服务
+
+#### 7.1.3 初学者应该记住什么
+
+> **MCP 的核心价值，不是“能不能调用函数”，而是“能不能把能力变成稳定接口”。**
+
+这是 Agent 系统真正工程化的第一步。
+
+---
+
+### 7.2 FastMCP：为什么不用自己手搓一个协议服务器
+
+FastMCP 的作用是：
+
+- 让你不用自己写底层协议
+- 直接把 Python 函数注册成 MCP 工具
+
+这个项目里：
+
+- `mcp_server.py` 是入口
+- `mcp.tool()(xxx)` 把函数注册出去
+
+如果手搓，成本会高很多，而且容易把精力浪费在：
+
+- 协议细节
+- transport 细节
+- 错误处理细节
+
+而不是浪费在真正有价值的业务抽象上。
+
+所以这里的知识点是：
+
+> **工程项目优先复用成熟协议实现，把精力留给业务层。**
+
+---
+
+### 7.3 LangGraph：为什么 Agent 需要“编排框架”
+
+#### 7.3.1 它在这个项目里做什么
+
+这里用它做的是：
+
+- ReAct Agent
+- Tool 调用
+- `interrupt_before=["tools"]`
+- 人工确认恢复
+- 统一 graph 状态流
+
+#### 7.3.2 如果没有它会怎样
+
+你也可以自己写一个大循环：
+
+```python
+while True:
+    llm_reply = call_model(...)
+    if wants_tool:
+        call_tool()
+    if high_risk:
+        ask_user_confirm()
 ```
 
-#### 这一层解决什么问题？
+但很快会遇到：
 
-它解决的是：
+- 当前在哪个步骤？
+- 暂停后怎么恢复？
+- 上一轮 graph state 怎么保存？
+- 哪些 tool 要自动继续、哪些要停？
 
-- 用户如何输入自然语言
-- 模型怎么接入
-- 上下文怎么保存
-- HITL 怎么做
-- 工具结果怎么回写状态
+这就是为什么 Agent 项目里，经常会引入编排层。
 
-#### 为什么不把这些逻辑都写在一个文件里？
+#### 7.3.3 对初学者最重要的认知
 
-因为 Agent 最容易失控的地方不是“能不能调模型”，而是：
+> **Agent 不是“模型 + 几个函数”，而是“状态机 + 模型 + 工具 + 恢复点”。**
 
-- 状态乱
-- 工具乱
-- 历史对话越来越长
-- 不同 provider 接入方式不同
-
-所以这里做了拆分。
+LangGraph 本质上是在帮你管理这件事。
 
 ---
 
-### 3.2 MCP Server 与工具层
+### 7.4 ReAct：为什么不是直接让模型“一次回答到底”
 
-```text
-agent/server/
-├── mcp_server.py
-├── tools/
-│   ├── data_tools.py
-│   ├── train_tools.py
-│   └── combo_tools.py
-└── services/
-    ├── dataset_root.py
-    ├── gpu_utils.py
-    ├── train_service.py
-    └── train_log_parser.py
-```
+ReAct 可以粗略理解成：
 
-#### 这一层解决什么问题？
+- 先思考（Reason）
+- 再行动（Act）
+- 再看结果（Observe）
+- 再决定下一步
 
-它解决的是：
+在这个项目里，用户一句话通常不能直接转成最终答案，尤其是：
 
-- 哪些能力对 Agent 可调用
-- 工具接口长什么样
-- 训练如何启动 / 停止 / 查询
-- GPU 怎么选
-- 数据集目录怎么识别
+- 数据集需要先扫描
+- 训练前要先 readiness
+- 高风险要先确认
 
-#### 为什么要分成 tools 和 services？
+所以这里不能只靠“一次输出最终答案”。
 
-这是个很重要的工程点：
+ReAct 的意义是：
 
-- `tools/`：**给 LLM 调用的外部接口**
-- `services/`：**真正执行业务逻辑的内部实现**
+> **模型不是一次把所有结论都说完，而是边观察边推进。**
 
-也就是说：
-
-> tool 像“前台窗口”，service 像“后台车间”。
-
-这样做的好处是：
-
-- LLM 看到的是稳定接口
-- 真正复杂逻辑藏在 service 层
-- 后面换模型、换 tool schema，都不用推翻核心逻辑
+这对真实任务特别关键。
 
 ---
 
-### 3.3 测试层
+### 7.5 HITL：为什么必须有人审确认
 
-```text
-agent/tests/
-```
+HITL = Human-in-the-Loop。
 
-这里不是只放单元测试，而是放了三类测试：
+在这个项目里，至少这些动作是高风险的：
 
-1. **冒烟测试**
-   - 能不能跑起来
-2. **能力范围测试**
-   - 能不能处理复杂提示词
-3. **真实数据集压力测试**
-   - 用真实脏数据、大数据、真实训练去测边界
+- `start_training`
+- `split_dataset`
+- `augment_dataset`
+- `prepare_dataset_for_training`
 
-这非常重要，因为 Agent 项目最怕：
+#### 为什么这些危险？
 
-> “函数都没报错，但真实场景一用就翻车。”
+因为它们会：
 
----
+- 修改数据目录
+- 生成新文件
+- 启动长任务
+- 占用 GPU
 
-## 4. 核心技术清单：每项技术到底是干嘛的
+如果没有 HITL，模型可能因为：
 
-下面这张表，是这份文档最重要的部分之一。
+- 理解偏差
+- 参数猜错
+- 路径推断错误
 
-| 技术/模块 | 它是什么 | 它解决什么问题 | 如果没有它会怎样 |
-|---|---|---|---|
-| MCP | 模型上下文协议 | 把能力暴露成标准工具接口 | Agent 会和具体代码强耦合 |
-| FastMCP | MCP Server 实现 | 快速把 Python 函数暴露成工具 | 需要手写一堆 server 协议代码 |
-| LangGraph | Agent 编排框架 | 管多轮、工具、HITL、中断恢复 | 流程会散在一堆 if/else 里 |
-| ReAct Agent | 一种“思考→行动→观察”模式 | 让模型先判断再调用工具 | 模型只会闲聊，不会做事 |
-| HITL | Human-in-the-Loop | 高风险动作必须人工确认 | 模型可能直接改数据或开训练 |
-| SessionState | 会话状态对象 | 记住当前数据集、当前训练、待确认操作 | 每轮都像失忆 |
-| MemoryStore | 状态持久化 | 把状态和事件落盘 | client 重启就丢上下文 |
-| EventRetriever | 历史事件摘要 | 长对话后还能回忆关键事实 | 历史越长越乱 |
-| ContextBuilder | prompt 组装器 | 把“状态 + 摘要 + 最近消息”喂给模型 | 只能靠原始聊天历史硬扛 |
-| LLM Provider 抽象 | 统一接入 Ollama / DeepSeek | 模型可替换 | 代码会绑死某一个模型 |
-| tool_adapter | 工具输出适配层 | 兼容不同模型对 tool message 的格式要求 | DeepSeek/OpenAI 兼容模型会报格式错 |
-| dataset_root resolver | 数据集根目录解析器 | 把 dataset root 自动解析成 images/labels | 用户说 root 路径时很容易扫错 |
-| prepare_dataset_for_training | 高层组合工具 | 把“准备数据”压缩成稳定流程 | 模型要自己规划太多步 |
-| gpu_utils | GPU 状态/策略层 | 按真实占用选择单卡/多卡/手动 | device 逻辑会写死、易过时 |
-| train_service | 训练服务层 | 用 subprocess 启动训练、查状态、停训练 | 训练逻辑会散在 tool 层，难维护 |
-| run registry | 训练任务注册表 | MCP 重启后还能接管训练 | 重启后训练在跑，但系统“失联” |
-| train_log_parser | 日志解析器 | 从 YOLO 输出里提取状态/指标 | 只能看到日志文件，看不到状态摘要 |
-| SSH Tunnel | 安全连接方案 | 不直接暴露远端 MCP / LLM 服务 | 内网安全边界更弱 |
+而直接造成损失。
+
+#### 这里的知识点
+
+> **真实 Agent 要做的不只是“能不能自动执行”，还要决定“哪些动作必须由人兜底”。**
+
+所以这个项目里，HITL 不是装饰，而是主链路的一部分。
 
 ---
 
-## 5. 为什么这些技术会被引入：知识点解释
+### 7.6 SessionState：为什么记忆不能只靠聊天历史
 
-### 5.1 为什么要引入 MCP，而不是直接 import 函数？
+#### 7.6.1 它在这个项目里记什么
 
-#### 初学者版理解
+当前会话状态里主要保存：
 
-如果 Agent 直接 `import xxx` 然后随便调：
+- 当前数据集：`dataset_root / img_dir / label_dir / data_yaml`
+- 当前训练：`running / model / pid / device / log_file`
+- 当前待确认动作：`tool_name / tool_args / thread_id`
+- 用户偏好：`default_model / default_epochs / language`
 
-- 模型和代码耦合非常死
-- 很难远程部署
-- 很难给别的 Agent/客户端复用
+#### 7.6.2 这类信息为什么要结构化？
 
-MCP 的价值是：
-
-> **把“模型能用的能力”标准化成工具接口。**
-
-你可以把它理解成：
-
-- Python 函数是“裸能力”
-- MCP tool 是“标准插座”
-
-这样以后：
-
-- 可以换模型
-- 可以换客户端
-- 可以换运行位置
-- 工具层不用推倒重来
-
----
-
-### 5.2 为什么要用 LangGraph，而不是自己手写一个 while 循环？
-
-因为 Agent 和普通脚本不一样。
-
-它需要处理：
-
-- 多轮对话
-- 工具调用
-- 中途暂停
-- 人工确认
-- 失败恢复
-
-手写 `while True` 也不是不行，但很快会变成：
-
-- 状态难维护
-- 恢复点难找
-- 多 provider 行为难控
-
-LangGraph 的价值是：
-
-> **把“Agent 的流程状态机”这件事变成正式能力。**
-
----
-
-### 5.3 为什么要有 SessionState，而不是只保留聊天记录？
-
-这是 Agent 新手最容易误解的点之一。
-
-很多人以为：
-
-> “只要把前面聊天记录都丢给模型，它就能记住。”
-
-现实里这通常不够好，因为：
-
-1. 聊天记录会越来越长
-2. 工具结果很长，模型未必能准确回忆
-3. “当前数据集是谁”其实是结构化信息，不是适合靠自然语言记忆的信息
-
-所以我们把记忆拆成两类：
-
-#### 非结构化记忆
-- 最近几轮聊天
-
-#### 结构化记忆
-- 当前 dataset_root
-- 当前 img_dir / label_dir
-- 当前 data_yaml
-- 当前 active_training
-- 当前 pending_confirmation
-
-这个设计思路本身就是一个重要知识点：
-
-> **Agent 不应该只靠原始聊天历史记忆关键状态。**
-
----
-
-### 5.4 为什么引入 EventRetriever，而不是只存 state？
-
-因为 `SessionState` 更像“当前快照”，而不是“历史过程”。
+因为这些信息不是“适合人说给人听”的历史，而是“系统运行必需的状态”。
 
 例如：
 
 - 当前数据集是谁
-- 当前训练是否在跑
+- 当前训练是否正在跑
+- 当前确认的是哪个工具
 
-这是 state。
+这些如果只靠聊天记录，很快会变得：
 
-但这些问题：
+- 模型记不准
+- 长上下文成本过高
+- 新 session 无法恢复
 
-- “刚才为什么没训练？”
-- “最近一次 prepare 做了什么？”
-- “上一次 validation 发现了什么问题？”
+#### 7.6.3 知识点
 
-其实更像**历史事件**。
+> **结构化状态 = 让 Agent 像软件系统；纯聊天历史 = 让 Agent 更像 improvisation。**
 
-所以需要：
-
-- `MemoryStore` 记录事件
-- `EventRetriever` 把历史事件压缩成摘要
-
-这个设计对应的知识点是：
-
-> **Agent 的记忆通常至少要分成：当前状态 + 历史事件。**
+工程上必须偏向前者。
 
 ---
 
-### 5.5 为什么要做 LLM Provider 抽象？
+### 7.7 MemoryStore / EventRetriever：为什么状态之外还要有事件日志
 
-因为真正可用的 Agent 不能绑死在一个模型上。
+状态能回答：
 
-如果系统写成：
+- 当前是谁
+- 现在是什么
 
-- 全部默认 `ChatOllama(gemma4:e4b)`
+但很多问题其实在问：
 
-那后面一旦切：
+- 刚才发生了什么
+- 为什么会这样
+- 最近一次是怎么走到这里的
+
+这时候只靠 state 不够，需要事件流：
+
+- tool_result
+- confirmation_requested
+- confirmation_approved
+- confirmation_cancelled
+
+然后再通过 `EventRetriever` 做：
+
+- 最近事件摘要
+- 历史行为压缩
+- 针对 session 的记忆回捞
+
+知识点：
+
+> **Agent 的 Memory 至少分成两类：当前状态（state）和过程历史（events）。**
+
+---
+
+### 7.8 ContextBuilder：为什么需要专门“拼 prompt”
+
+很多初学者会把 prompt 理解成一段静态 system prompt。
+
+但这个项目里，真正喂给模型的内容其实是：
+
+- 固定的系统规则
+- 当前结构化状态摘要
+- 历史事件摘要
+- 最近几轮消息
+
+也就是说，prompt 不是固定文案，而是：
+
+> **一个动态拼装的上下文对象。**
+
+这就是 `ContextBuilder` 的价值。
+
+如果没有它，很容易出现：
+
+- prompt 结构失控
+- 不同地方拼 prompt 逻辑不一致
+- 上下文含义不稳定
+
+---
+
+### 7.9 LLM Provider 抽象：为什么不能把模型写死在 AgentClient 里
+
+#### 一开始的诱惑
+
+最省事的写法通常是：
+
+- 直接在 `agent_client.py` 里 new 一个 `ChatOllama`
+- 默认固定模型 `gemma4:e4b`
+
+#### 后果
+
+后面一旦接：
 
 - DeepSeek
 - 其他 OpenAI-compatible API
-- vLLM / 本地别的 serving
+- 本地别的 serving
 
-就会很痛。
+你会到处改代码。
 
-所以引入 `llm_factory.py` 的核心思想是：
+#### 所以这里怎么做的
 
-> **让系统依赖“统一的模型接口”，而不是依赖某一个模型品牌。**
+通过 `llm_factory.py` 抽象成：
 
-这个思想在工程里非常常见：
+- `provider`
+- `model`
+- `base_url`
+- `api_key`
 
-- 面向接口编程
-- 抽象层隔离变化
+这样 client 层只依赖统一接口。
 
----
+#### 知识点
 
-### 5.6 为什么 GPU 不能写死成“0 给 LLM，1 给训练”？
-
-这也是一个很重要的工程教训。
-
-一开始很容易这么想：
-
-- GPU0 跑 Ollama
-- GPU1 跑训练
-
-但现实会变：
-
-- 有时改成 API provider，根本不占本地 GPU
-- 有时换 vLLM，多卡 serving
-- 有时用户把推理进程放到别的卡
-
-所以正确做法不是按“模型框架”写死规则，而是：
-
-> **按 GPU 当前真实占用状态，再结合策略决定设备。**
-
-这就是 `gpu_utils.py` 的核心知识点：
-
-- 先查 `nvidia-smi`
-- 看哪些卡 busy
-- 再按策略决定：
-  - `single_idle_gpu`
-  - `all_idle_gpus`
-  - `manual_only`
+> **模型是系统里的可替换部件，不应该变成系统结构本身。**
 
 ---
 
-### 5.7 为什么需要 run registry？
+### 7.10 tool_adapter：为什么会有一个“看起来有点奇怪”的适配层
 
-这个问题是主线后期才补上的，很有代表性。
+这是一个特别有代表性的真实工程问题。
 
-一开始 `TrainService` 只在内存里有：
+我们接入 DeepSeek / OpenAI-compatible provider 时，发现：
 
-- `_process`
-- `_pid`
+- 有些模型对 tool message 的 `content` 更严格
+- 原始 MCP tool 返回 block/list 结构时会报格式错
 
-这会导致一个严重问题：
+解决方法不是去改整个系统，而是加一个适配层：
 
-> MCP 重启后，训练可能还在跑，但 Agent 已经不知道它是谁了。
+- 把 MCP 的 tool 输出适配成模型想要的字符串格式
 
-所以后面引入了 run registry：
+这件事的知识点非常经典：
 
+> **不同模型 provider 之间，问题往往不在“能不能调用”，而在“消息协议细节是否一致”。**
+
+所以工程上经常需要 adapter 层。
+
+---
+
+### 7.11 dataset_root resolver：为什么一个“目录解析器”会这么重要
+
+这是这个项目主线里最具教学意义的一个点。
+
+#### 用户说的话
+
+用户常说的是：
+
+- `/home/kly/test_dataset/`
+- `H:\fuyangben\zyb`
+
+#### 但工具真正想要的是
+
+- `img_dir=.../images`
+- `label_dir=.../labels`
+- 可能还需要发现 `data.yaml`
+
+这就是“人类语义”和“程序语义”的鸿沟。
+
+如果不补 resolver，模型每次都得自己猜：
+
+- 哪个是图片目录
+- 哪个是标签目录
+- 有没有 split
+- 有没有 yaml
+
+这会导致：
+
+- 扫描错目录
+- 错误 split
+- 错误训练
+
+所以后来专门引入 `dataset_root.py`。
+
+#### 知识点
+
+> **Agent 的难点，经常不在算法，而在把用户自然语言映射成系统真正需要的参数。**
+
+---
+
+### 7.12 combo tool：为什么高层组合工具能极大降低失败率
+
+这是这个项目后期一个很关键的思想升级。
+
+一开始工具都是底层动作：
+
+- `scan_dataset`
+- `validate_dataset`
+- `split_dataset`
+- `generate_yaml`
+- `start_training`
+
+这样做的问题是：
+
+- 模型要自己规划很多步
+- 任何一步理解错都会失败
+- 尤其是较弱模型更容易空白或卡住
+
+于是后来加了：
+
+- `prepare_dataset_for_training`
+
+它把很多低层动作统一收进一个高层业务动作。
+
+这不是为了“偷懒”，而是为了：
+
+> **把复杂度从模型转移到系统。**
+
+这几乎是 Agent 工程里最重要的经验之一。
+
+---
+
+### 7.13 gpu_utils：为什么 GPU 策略不能拍脑袋写死
+
+这块我们踩过很真实的坑。
+
+一开始很容易想：
+
+- 0 卡给 LLM
+- 1 卡给训练
+
+但后来发现这不可靠，因为：
+
+- 有时换成 API provider，本地 GPU 不跑模型
+- 有时未来可能用 vLLM，多卡 serving
+- 有时两张卡都空闲
+- 有时某张卡正在被别的进程占用
+
+所以后来改成：
+
+1. 先看真实 GPU 状态
+2. 再按策略决定 auto device：
+   - `single_idle_gpu`
+   - `all_idle_gpus`
+   - `manual_only`
+
+这件事对应的知识点是：
+
+> **资源策略应该依赖运行时真实状态，而不是依赖对部署方式的静态想象。**
+
+---
+
+### 7.14 train_service：为什么要有一层“训练服务”而不是直接在 tool 里开进程
+
+如果直接在 `train_tools.py` 里把所有事情都做掉，会出现：
+
+- 启动逻辑和工具接口混在一起
+- 训练状态、日志、pid 管理混乱
+- 后续扩展 stop / reattach / registry 会很痛
+
+所以后来引入 `train_service.py`，让它专门负责：
+
+- 参数校验
+- 设备解析
+- 找 `yolo` 命令
+- 启动训练子进程
+- 维护当前运行态
+- 查询状态
+- 停止训练
+- 接管重启后的训练
+
+知识点：
+
+> **业务长任务通常需要一个专门的 service 层，不应该直接塞进 tool handler。**
+
+---
+
+### 7.15 run registry：为什么“进程内句柄”不够
+
+这点已经在主线上被证明是关键系统项。
+
+#### 一开始的问题
+
+- 训练启动后，`TrainService` 只在内存里记 `_process`
+- 只要 MCP 重启，句柄就没了
+
+#### 后果
+
+- 训练还在服务器上跑
+- 但 Agent 以为“我不知道它是谁了”
+
+#### 解决办法
+
+引入 run registry：
+
+- active run 持久化
+- last run 持久化
+- fresh 进程重新 attach pid / log / args
+
+知识点：
+
+> **任务生命周期只要跨越进程边界，就必须有 durable state。**
+
+---
+
+### 7.16 train_log_parser：为什么还要解析日志
+
+训练不是一个瞬时动作，而是长任务。
+
+如果不解析日志，你只能知道：
+
+- 进程在不在
+- 日志文件路径是什么
+
+但用户更想知道的是：
+
+- 训练是否还在跑
+- 最近有没有指标
+- 当前进展大概如何
+
+所以要把 YOLO 输出转成机器可理解的结构。
+
+这件事的知识点是：
+
+> **长任务系统里，“日志”不只是给人看的文本，也应该成为机器状态输入。**
+
+---
+
+## 8. 这些模块是如何配合的：结构图细化
+
+### 8.1 Client 层内部关系图
+
+```mermaid
+flowchart TD
+    CLI["cli.py"] --> AC["agent_client.py"]
+    AC --> LLMF["llm_factory.py"]
+    AC --> STORE["memory_store.py"]
+    AC --> STATE["session_state.py"]
+    AC --> BUILDER["context_builder.py"]
+    AC --> RETRIEVER["event_retriever.py"]
+    AC --> PARSER["tool_result_parser.py"]
+    AC --> ADAPTER["tool_adapter.py"]
+```
+
+### 8.2 这里体现了什么设计思想？
+
+- `cli.py` 只负责输入输出，不负责复杂逻辑
+- `agent_client.py` 负责串联，而不是把所有逻辑写死在自己内部
+- Memory、Context、LLM 接入都被拆分成可独立理解的组件
+
+这是典型的“控制器 + 组件”架构。
+
+---
+
+### 8.3 服务端内部关系图
+
+```mermaid
+flowchart TD
+    MCP["mcp_server.py"] --> DT["data_tools.py"]
+    MCP --> TT["train_tools.py"]
+    MCP --> CT["combo_tools.py"]
+
+    DT --> ROOT["dataset_root.py"]
+    DT --> GPU["gpu_utils.py"]
+    TT --> TRAIN["train_service.py"]
+    CT --> DT
+    TRAIN --> GPU
+    TRAIN --> LOG["train_log_parser.py"]
+    TRAIN --> YOLO["YOLO CLI / subprocess"]
+```
+
+这个结构说明：
+
+- combo tool 不直接自己实现所有逻辑
+- train tool 不直接自己管理训练生命周期
+- dataset root / gpu / train 是可复用服务能力
+
+这是服务层抽象的价值。
+
+---
+
+## 9. 数据与状态：Agent 到底记了什么
+
+### 9.1 SessionState 数据模型图
+
+```mermaid
+classDiagram
+    class SessionState {
+        +session_id
+        +created_at
+        +updated_at
+        +active_dataset
+        +active_training
+        +pending_confirmation
+        +preferences
+    }
+
+    class DatasetContext {
+        +dataset_root
+        +img_dir
+        +label_dir
+        +data_yaml
+        +last_scan
+        +last_validate
+        +last_split
+    }
+
+    class TrainingContext {
+        +running
+        +model
+        +data_yaml
+        +device
+        +pid
+        +log_file
+        +started_at
+        +last_status
+        +last_start_result
+    }
+
+    class PendingConfirmation {
+        +thread_id
+        +tool_name
+        +tool_args
+        +created_at
+    }
+
+    class UserPreferences {
+        +default_model
+        +default_epochs
+        +language
+    }
+
+    SessionState --> DatasetContext
+    SessionState --> TrainingContext
+    SessionState --> PendingConfirmation
+    SessionState --> UserPreferences
+```
+
+### 9.2 为什么这个结构很关键？
+
+因为它定义了 Agent 的“当前现实世界”。
+
+不是说模型觉得什么，而是系统当前明确知道：
+
+- 正在处理哪个数据集
+- 正在进行哪个训练
+- 现在有没有待确认操作
+- 用户的默认偏好是什么
+
+这就是一个 Agent 从“聊天模型”升级成“系统组件”的分水岭。
+
+---
+
+### 9.3 events.jsonl 是干什么的
+
+状态只存“当前值”，但 Agent 还需要记“过程”。
+
+当前 events 里会记：
+
+- `tool_result`
+- `confirmation_requested`
+- `confirmation_approved`
+- `confirmation_cancelled`
+
+这样做的意义是：
+
+- 回放发生了什么
+- 摘要最近关键动作
+- 对复杂失败做诊断
+
+你可以把它理解成：
+
+- `SessionState` = 当前快照
+- `events.jsonl` = 行为日志
+
+---
+
+## 10. 主线状态机：一次高风险任务如何被控制
+
+### 10.1 HITL 状态机
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Planning: 用户输入
+    Planning --> NeedsConfirmation: 命中高风险工具
+    Planning --> Completed: 低风险任务直接完成
+    NeedsConfirmation --> Cancelled: 用户拒绝
+    NeedsConfirmation --> Approved: 用户确认
+    Approved --> Planning: 继续执行后续步骤
+    Planning --> Completed: 全部完成
+    Cancelled --> [*]
+    Completed --> [*]
+```
+
+### 10.2 这张图说明什么？
+
+高风险流程不是：
+
+- 模型想调用就直接执行
+
+而是：
+
+1. 模型提出动作
+2. 系统识别是否高风险
+3. 如果高风险，就先暂停
+4. 用户确认后再继续
+
+这正是“Agent 工程里的控制权边界”。
+
+---
+
+### 10.3 训练任务生命周期图
+
+```mermaid
+stateDiagram-v2
+    [*] --> NotRunning
+    NotRunning --> Starting: start_training
+    Starting --> Running: 子进程启动成功
+    Starting --> FailedToStart: 校验失败/命令失败
+    Running --> Running: check_training_status
+    Running --> Stopping: stop_training
+    Running --> Reattached: MCP 重启后由 registry 接管
+    Reattached --> Running: fresh service 持续查询
+    Stopping --> NotRunning
+    Running --> Finished: 训练自然结束
+    Finished --> NotRunning
+    FailedToStart --> NotRunning
+```
+
+这张图对应的知识点是：
+
+> **训练不是一个函数调用，而是一个生命周期对象。**
+
+所以它需要：
+
+- 启动态
+- 运行态
+- 停止态
+- 重启接管态
+
+---
+
+## 11. 项目是怎么演化出来的：按提交看技术决策
+
+下面把主要提交串成一条技术演化路径。
+
+| 阶段 | 代表提交 | 主要变化 | 学到的知识 |
+|---|---|---|---|
+| 骨架阶段 | `86e8e8c` | Phase 1 骨架、最小 server/client | 先打通链路，再谈完整性 |
+| 基础联通 | `297f71e` | GPU隔离、MCP启动、Tool 验证、SSH 免密 | 原型必须先跑起来 |
+| 工具健壮化 | `8ce4cda` | 工具错误处理、前置校验、smoke test | Tool contract 比“能调用”更重要 |
+| GPU 动态策略 | `8d11b3d` | 按实际占用选设备 | 资源策略应看运行时而非写死 |
+| 上下文系统 | `3de7d06` | structured context memory + event retrieval | Agent 记忆必须结构化 |
+| 工具输出升级 | `1925381` | 改善训练和数据工具输出 | Tool 输出要给模型复用，而不只给人看 |
+| YAML / readiness | `2ded8bc` | generate_yaml + training_readiness | 训练前检查要工具化 |
+| Provider 抽象 | `76bc3f7` | model provider abstraction | 模型是可替换部件 |
+| root 语义 + prepare | `7acae6c` | dataset root resolver + preparation flow | 把复杂度从模型转移到系统 |
+| 状态与规则收口 | `6ed5214` / `f157bfb` / `1aee7be` | 状态纯净化、训练规则契约、双 provider 一致性 | 真正困难在“稳定性和一致性” |
+| 重启接管 | `a2e7a65` | run registry | durable state 是准生产分水岭 |
+| 大数据脏数据压力测试 | `d6fecd8` | zyb 大数据集 10 方法测试 | 真实数据比单元测试更能暴露边界 |
+```
+
+### 11.1 这条演化路径最值得学习的地方
+
+它说明了一个真实 Agent 项目不是“先把所有功能都想完再做”，而是：
+
+1. 先打通最小主线
+2. 再补工具契约
+3. 再补状态系统
+4. 再补抽象层
+5. 再补鲁棒性
+6. 再补接近投入使用的系统能力
+
+这和很多纯理论教程非常不一样。
+
+---
+
+## 12. 遇到的困难：问题、根因、解决方式
+
+下面这些是真实踩过的坑，不是理论问题。
+
+### 12.1 复杂提示词在 Gemma 下空白输出
+
+#### 表现
+
+用户说：
+
+> “数据在某个目录里，按默认比例划分，然后训练”
+
+Gemma 有时直接空白，没有后续动作。
+
+#### 根因
+
+- 模型需要自己规划太多步
+- dataset root 语义不明确
+- 缺少高层组合工具
+
+#### 解决方式
+
+- 加 `dataset_root resolver`
+- 加 `prepare_dataset_for_training`
+- 让复杂任务先收敛成两段式：
+  - prepare
+  - start_training
+
+#### 学到的知识
+
+> **当复杂任务失败时，先问“是不是系统给模型的任务空间太复杂了”，而不是先怪模型不聪明。**
+
+---
+
+### 12.2 DeepSeek 工具链报消息格式问题
+
+#### 表现
+
+切到 DeepSeek / OpenAI-compatible provider 后，tool 调用路径报消息格式错误。
+
+#### 根因
+
+- 模型对 tool message content 的格式要求更严格
+- 原始 MCP 返回不是字符串形态
+
+#### 解决方式
+
+- 引入 `tool_adapter.py`
+- 在 provider 边界做格式适配
+
+#### 学到的知识
+
+> **provider abstraction 不只是“构造不同模型对象”，还包括“处理 provider 协议细节差异”。**
+
+---
+
+### 12.3 长对话后模型越来越乱
+
+#### 表现
+
+会话长了以后：
+
+- 参数漂移
+- 状态记错
+- 历史太重
+
+#### 根因
+
+- 原始 `_messages` 一直堆
+- 关键业务状态没有结构化
+
+#### 解决方式
+
+- 加 `SessionState`
+- 加 `MemoryStore`
+- 加 `ContextBuilder`
+- 加 `EventRetriever`
+- history trim
+
+#### 学到的知识
+
+> **LLM 的长上下文能力不是无限免费的，必须用状态设计去减压。**
+
+---
+
+### 12.4 fresh session 会被旧训练信息污染
+
+#### 表现
+
+新 session 只是查状态，结果把最近一次训练的 model/data_yaml/device 带进来了。
+
+#### 根因
+
+- 状态回写逻辑过宽
+- “当前训练”和“最近一次训练”语义混在一起
+
+#### 解决方式
+
+- 收紧 `check_training_status` 的回写逻辑
+- 当前无训练时只更新 `last_status`
+
+#### 学到的知识
+
+> **状态系统里最怕的不是“记不住”，而是“把不该记成当前态的东西记成当前态”。**
+
+---
+
+### 12.5 MCP 重启后训练失联
+
+#### 表现
+
+训练还在跑，但 MCP 重启后 stop/status 无法继续接管。
+
+#### 根因
+
+- 训练状态只保存在内存 `_process` 句柄里
+
+#### 解决方式
+
+- 加 run registry
 - `active_train_job.json`
 - `last_train_job.json`
+- fresh service 自动 attach
 
-这个设计对应的知识点是：
+#### 学到的知识
 
-> **只要任务可能跨进程/跨重启存在，就不能只用内存态管理它。**
-
----
-
-## 6. 这个项目是怎么一步步演化出来的（按提交分阶段理解）
-
-下面不是把每个 commit 都逐字解释，而是把关键阶段串起来。
-
-### Phase 1：骨架打通
-
-代表提交：
-
-- `86e8e8c` `init: Phase 1 完成 + Phase 2 骨架代码`
-- `297f71e` `Phase 1+2 验收完成: GPU隔离/MCP启动/Tool验证/SSH免密`
-
-这一阶段解决的问题：
-
-- 最小 MCP server 能不能启动
-- 本地 CLI 能不能连远端
-- Gemma 工具调用能不能冒烟成功
-
-知识点：
-
-- 原型阶段先打通主链路，不要先求完美
+> **长任务系统必须把运行态持久化，否则一切重启都是“失忆”。**
 
 ---
 
-### Phase 2：工具层从“能调”变成“能用”
+### 12.6 数据集根目录被误当成图片目录
 
-代表提交：
+#### 表现
 
-- `8ce4cda` 统一错误处理、前置校验、smoke test
-- `1925381` 改善训练和数据工具输出
-- `2ded8bc` 加入 `generate_yaml` 和 `training_readiness`
+用户说的是：
 
-这一阶段解决的问题：
+- `/home/kly/test_dataset/`
 
-- 工具不只是 callable，还要：
-  - 输出结构稳定
-  - 错误好理解
-  - 能给 Agent 下一个动作提示
+系统却把它当成：
 
-知识点：
+- `img_dir`
 
-> Agent 工程里，tool 的“语义质量”往往比“数量”更重要。
+导致扫描结果失真。
 
----
+#### 根因
 
-### Phase 3：上下文系统成型
+- 用户语言和工具参数语义不一致
 
-代表提交：
+#### 解决方式
 
-- `3de7d06` `feat: add structured context memory and event retrieval`
+- 引入 `dataset_root.py`
+- 工具支持 root path 自动解析
 
-这一阶段解决的问题：
+#### 学到的知识
 
-- 不能只靠聊天记录记东西
-- 会话需要结构化状态
-- 工具结果要写回记忆
-
-知识点：
-
-> Agent 的记忆不是“聊天记录越多越好”，而是“状态和历史要分层”。 
+> **用户输入语义和程序语义之间，往往需要一个专门的翻译层。**
 
 ---
 
-### Phase 4：模型抽象与 GPU 策略升级
+### 12.7 GPU 规则一开始矫枉过正
 
-代表提交：
+#### 表现
 
-- `76bc3f7` `feat: add provider abstraction and adaptive gpu allocation`
+曾经默认把某张卡固定留给 LLM，把训练多卡直接拒掉。
 
-这一阶段解决的问题：
+#### 根因
 
-- 不再绑死 `Ollama + Gemma`
-- GPU 设备策略不再写死
+- 把某种部署方式误当成永久规则
 
-知识点：
+#### 解决方式
 
-- Provider abstraction
-- Runtime policy
-- 真实资源状态优先于拍脑袋配置
+- 改成按 `nvidia-smi` 实际占用 + policy 决策
 
----
+#### 学到的知识
 
-### Phase 5：数据准备主线增强
-
-代表提交：
-
-- `7acae6c` `feat: resolve dataset root paths and add preparation flow`
-- `6ed5214` `feat: harden dataset preparation and session state handling`
-- `1aee7be` `feat: tighten training intent consistency across providers`
-
-这一阶段解决的问题：
-
-- 用户说的是 dataset root，不是 `img_dir`
-- 复杂意图不能太依赖模型自己拆步骤
-- 两个 provider 对复杂训练主线要尽量走一致路径
-
-知识点：
-
-> 当模型规划能力不够稳定时，正确做法不是只换模型，而是抬高工具抽象层次。
+> **不要把某次部署的偶然条件写成系统永恒规则。**
 
 ---
 
-### Phase 6：系统稳定性补丁
+### 12.8 Gemma 的解释层比执行层更容易失真
 
-代表提交：
+#### 表现
 
-- `a2e7a65` `feat: persist training runs across MCP restarts`
+Gemma 常常：
 
-这一阶段解决的问题：
+- tool 调得对
+- 但总结时会说过头
+- 或把默认推断说成用户明确指定
 
-- 训练运行中 MCP 重启
-- fresh 进程重新接管训练状态
-- stop/query 不再依赖进程内句柄
+#### 根因
 
-知识点：
+- 语言模型天生倾向“给出完整说法”
+- 系统规则约束还不够强
 
-> 真正接近投入使用时，系统问题往往不再是“会不会调用工具”，而是“重启、恢复、状态一致性”。 
+#### 解决方式
 
----
+- 收紧 system prompt
+- 显式标注参数来源
+- 让工具返回 `recommended_start_training_args` / `argument_sources`
 
-## 7. 我们遇到过哪些困难，是怎么解决的
+#### 学到的知识
 
-下面这张表是“问题 → 根因 → 解决方案”的映射。
-
-| 问题 | 根因 | 解决方式 |
-|---|---|---|
-| 复杂提示词下 Gemma 空白输出 | 模型自己规划步骤过多，dataset root 语义又不清 | 加 `dataset_root resolver` 和 `prepare_dataset_for_training` |
-| DeepSeek/OpenAI 兼容模型调用 tool 报消息格式错 | tool message content 结构不兼容 | 加 `tool_adapter.py`，把工具输出适配成字符串 |
-| 长对话越来越乱 | 只靠原始消息列表记忆 | 引入 `SessionState + MemoryStore + EventRetriever + ContextBuilder` |
-| fresh session 会被旧训练污染 | 状态回写逻辑过宽 | 收紧 `check_training_status` 的状态写回规则 |
-| MCP 重启后训练失联 | 训练状态只保存在内存进程句柄里 | 引入 run registry 持久化 pid/log/args |
-| 数据集根目录被误当成 `img_dir` | tool 语义和用户语言不匹配 | 先做 root 解析，再让 scan/readiness/prepare 统一支持 root |
-| GPU 规则一开始写得太死 | 把部署方式误当成设备策略 | 改成按 `nvidia-smi` 真实占用 + policy 决策 |
-| 脏数据下解释层会说过头 | Gemma 自然语言解释强于事实约束 | 收紧 prompt、用工具返回字段约束表达 |
-| 工具很多但复杂任务还是不稳 | 只有低层工具，没有高层组合能力 | 加 combo tool，降低对模型规划能力的依赖 |
+> **Agent 的“解释层”要单独治理，不能以为工具调对了，最终表述就一定可靠。**
 
 ---
 
-## 8. 当前项目已经能做到什么
+## 13. 当前能力边界：已经能做什么，还不能做什么
 
-### 8.1 当前比较稳的能力
+### 13.1 当前比较稳的能力
 
-- 标准 YOLO 目录结构的 root 识别
-- 数据集扫描、校验、划分、增强、YAML 生成
-- 训练前 readiness 判断
-- 训练启动 / 状态查询 / 停止
-- 高风险动作人工确认
-- 双 provider（Ollama / DeepSeek）主链路运行
+- 标准 YOLO root 的识别
+- scan / validate / split / augment / generate_yaml
+- readiness 判断
+- start / status / stop training
+- 高风险动作确认
+- Ollama 与 DeepSeek 双 provider 主线
 - MCP 重启后训练接管
-- 较长上下文下的主线对话
+- 大数据集主线冒烟
 
-### 8.2 当前仍存在的边界
+### 13.2 当前明确还不够成熟的点
 
-- 非标准数据集结构虽然比以前好，但还没做到完全智能容错
-- 脏数据风险表达还不够强，例如“大量缺失标签”未必被提升成强 blocker
-- 生成 YAML 时，类名语义保留还不够稳
-- Gemma 的“执行链路”比“解释层”更可靠
-- durable checkpoint / production-grade persistence 还没完全做完
+- 非标准目录虽然变强了，但还不是“什么目录都能懂”
+- 大量缺失标签图片还没有稳定提升为强 blocker
+- 类名语义保留仍有改进空间
+- durable checkpoint 还没升到真正生产级
+- tracing / observability / eval 还不够系统化
 
----
+### 13.3 这意味着什么？
 
-## 9. 当前项目离“正式投入使用”还差什么
+如果按定位来说：
 
-如果按学习视角，可以把差距理解成 3 层：
+#### 现在已经像
 
-### 9.1 原型已经具备
+- 强工程原型
+- 单人内网工具
+- 有人值守的研发助手
 
-- 主链路闭环
-- 高风险确认
-- provider 可替换
-- 真实训练验证
+#### 还不像
 
-### 9.2 还差的“准生产能力”
-
-- durable checkpoint
-- 更完整的 tracing / observability
-- 更系统的 eval / regression 框架
-- 更成熟的任务生命周期治理
-
-### 9.3 还差的“共享系统能力”
-
-- 鉴权
-- 多用户并发
-- 资源调度
-- 审计
-- 隔离
-
-这也说明：
-
-> 当前项目已经很适合学习 Agent 工程，但还不是一个“可直接多人共享上线”的成品。
+- 多人共享生产系统
+- 长期无人值守平台
+- 具备完整审计与调度的服务
 
 ---
 
-## 10. 如果你想借这个项目学习 Agent，建议怎么读
+## 14. 当前系统与官方/主流实践的关系
 
-### 第一步：先看入口
+### 14.1 已经对齐的部分
 
-按这个顺序读最容易：
+#### 对齐 LangGraph 思路
+
+- Graph 编排
+- Interrupt / HITL
+- Persistence 思维
+- state + events 分层
+
+#### 对齐 MCP 思路
+
+- tool-first
+- streamable-http
+- client/server 分离
+
+#### 对齐主流 Agent 工程思路
+
+- 模型可替换
+- 工具契约化
+- 长任务服务化
+- 真实回归驱动
+
+### 14.2 还没完全对齐到生产级的部分
+
+#### 1. durable checkpoint
+
+当前还是 `MemorySaver()`，这更偏原型级。
+
+#### 2. 鉴权与共享服务能力
+
+当前主要依赖：
+
+- `127.0.0.1 + SSH Tunnel`
+
+这对单人很好，但不是共享服务级 auth。
+
+#### 3. tracing / observability
+
+现在更多是：
+
+- 本地测试脚本
+- 文档记录
+- json 产物
+
+还没上系统级 trace 平台。
+
+#### 4. eval 体系
+
+已经有很多真实 case，但还没完全平台化成持续评测框架。
+
+这部分不是“做错了”，而是“还没做到下一阶段”。
+
+---
+
+## 15. 如果你要把这个项目当成学习样板，应该怎么读代码
+
+### 第 1 步：看入口
+
+先看：
 
 1. `agent/client/cli.py`
 2. `agent/client/agent_client.py`
 3. `agent/server/mcp_server.py`
 
-你会先理解：
+目标：
 
-- 用户怎么进来
-- 模型怎么接入
-- 工具怎么被注册
-
----
-
-### 第二步：再看“为什么它能记住事”
-
-继续读：
-
-4. `agent/client/session_state.py`
-5. `agent/client/memory_store.py`
-6. `agent/client/context_builder.py`
-7. `agent/client/event_retriever.py`
-
-你会理解：
-
-- Agent 不是只靠聊天记录工作
-- 结构化记忆是怎么设计的
+- 理解用户输入从哪里进来
+- 理解工具是从哪里被注册出去的
 
 ---
 
-### 第三步：再看“为什么它能干活”
+### 第 2 步：看“模型和工具怎么连起来”
 
-继续读：
+继续看：
 
-8. `agent/server/tools/data_tools.py`
-9. `agent/server/tools/combo_tools.py`
-10. `agent/server/tools/train_tools.py`
+4. `agent/client/llm_factory.py`
+5. `agent/client/tool_adapter.py`
+6. `agent/client/tool_result_parser.py`
 
-你会理解：
+目标：
 
-- 工具如何被设计成适合 LLM 使用
-- 为什么高层组合工具很重要
-
----
-
-### 第四步：最后看“为什么它没那么脆”
-
-继续读：
-
-11. `agent/server/services/dataset_root.py`
-12. `agent/server/services/gpu_utils.py`
-13. `agent/server/services/train_service.py`
-14. `agent/server/services/train_log_parser.py`
-
-你会理解：
-
-- 资源策略
-- 训练状态治理
-- 目录解析
-- 重启恢复
+- 理解 provider abstraction
+- 理解 tool 调用结果如何被模型消费
 
 ---
 
-## 11. 适合初学者记住的 10 个核心认知
+### 第 3 步：看“为什么它能记住东西”
 
-1. **Agent 不等于聊天机器人。**  
-   真正的 Agent 要能调工具、管状态、处理流程。
+继续看：
 
-2. **模型聪明很重要，但系统设计更重要。**  
-   tool 抽象差，再强的模型也会翻车。
+7. `agent/client/session_state.py`
+8. `agent/client/memory_store.py`
+9. `agent/client/context_builder.py`
+10. `agent/client/event_retriever.py`
 
-3. **记忆不能只靠聊天记录。**  
-   关键业务状态要结构化保存。
+目标：
 
-4. **Tool 数量不是重点，Tool 语义才是重点。**
-
-5. **复杂任务要尽量做成高层组合工具。**
-
-6. **高风险动作必须做人审确认。**
-
-7. **资源策略要看真实运行状态，不要写死。**
-
-8. **只要任务可能跨重启存在，就不能只用内存保存状态。**
-
-9. **真实数据和真实训练比“写几个单元测试”更能暴露 Agent 问题。**
-
-10. **Agent 工程最终比拼的是“稳定可复用”，不是“偶尔演示成功”。**
+- 理解 state 和 events 分层
+- 理解 prompt 不是固定文本，而是动态上下文
 
 ---
 
-## 12. 延伸阅读（官方资料）
+### 第 4 步：看“工具层是怎么抽象的”
 
-> 下面这些资料不是当前系统必须联网才能工作，而是你想继续学习时很值得看。
+继续看：
+
+11. `agent/server/tools/data_tools.py`
+12. `agent/server/tools/combo_tools.py`
+13. `agent/server/tools/train_tools.py`
+
+目标：
+
+- 理解为什么有底层 tool 和高层 tool
+- 理解 tool contract 设计的重要性
+
+---
+
+### 第 5 步：看“为什么它能在真实环境里跑”
+
+继续看：
+
+14. `agent/server/services/dataset_root.py`
+15. `agent/server/services/gpu_utils.py`
+16. `agent/server/services/train_service.py`
+17. `agent/server/services/train_log_parser.py`
+
+目标：
+
+- 理解系统如何处理真实文件、真实 GPU、真实训练、真实重启恢复
+
+---
+
+## 16. 适合初学者记住的 15 个核心认知
+
+1. Agent 不等于聊天机器人。  
+2. 模型不是执行器，而是规划器。  
+3. Tool 设计比 Tool 数量重要。  
+4. 复杂任务应该被压缩成高层组合工具。  
+5. 用户语言和程序参数之间经常需要翻译层。  
+6. 关键业务状态必须结构化。  
+7. 历史事件和当前状态应该分开存。  
+8. 不同模型 provider 之间不仅模型不同，消息协议细节也不同。  
+9. 高风险动作必须有人审兜底。  
+10. 资源策略应依赖运行时真实状态。  
+11. 长任务必须有独立 service 层。  
+12. 跨重启任务必须有 durable registry。  
+13. 日志不仅是文本，也可以是状态输入。  
+14. 真实数据和真实训练比漂亮 demo 更能暴露问题。  
+15. Agent 工程最终比拼的是“稳定可复用”，而不是“偶尔成功”。
+
+---
+
+## 17. 你可以自己动手做的学习实验
+
+如果你想把这份项目当成跳板，我建议你自己做这些实验。
+
+### 实验 1：切换 provider
+
+目标：
+
+- 观察 DeepSeek 和 Ollama 在同一提示词下的行为差异
+
+学习点：
+
+- provider abstraction
+- 模型规划差异
+- tool message 兼容问题
+
+---
+
+### 实验 2：删掉 SessionState 再试一次
+
+目标：
+
+- 感受没有结构化状态时，多轮会话会多快失控
+
+学习点：
+
+- 为什么不能只靠聊天记录
+
+---
+
+### 实验 3：把组合工具拆回底层工具
+
+目标：
+
+- 对比“prepare_dataset_for_training”存在和不存在时复杂提示词的稳定性
+
+学习点：
+
+- 为什么组合工具能降低对模型规划能力的依赖
+
+---
+
+### 实验 4：模拟 MCP 重启
+
+目标：
+
+- 看 run registry 如何接管训练
+
+学习点：
+
+- durable state 的价值
+
+---
+
+### 实验 5：给一个非标准目录数据集
+
+目标：
+
+- 看 dataset root resolver 如何表现
+
+学习点：
+
+- Agent 的问题很多其实来自“语义翻译失败”，而不是模型智商不够
+
+---
+
+## 18. 术语表（给完全小白看的）
+
+| 术语 | 简单解释 |
+|---|---|
+| Agent | 能理解任务、调用工具、完成流程的系统 |
+| Tool | 模型可以调用的功能接口 |
+| MCP | 把工具标准化暴露给模型的协议 |
+| ReAct | 一边思考、一边调用工具、一边继续推理的模式 |
+| HITL | 高风险动作由人确认 |
+| SessionState | 当前会话的结构化状态 |
+| Event | 会话里的历史动作记录 |
+| Context | 每轮喂给模型的上下文组合 |
+| Provider | 模型来源，例如 Ollama、DeepSeek |
+| durable state | 跨重启仍然存在的状态 |
+| run registry | 记录长任务运行信息的持久化注册表 |
+| readiness | 训练前检查结果 |
+| dataset root | 数据集根目录，而不是 images 子目录 |
+| combo tool | 高层组合工具，用来减少模型拆步骤负担 |
+
+---
+
+## 19. 延伸阅读（官方资料）
+
+这些链接能帮你把当前项目和更大的技术生态对应起来：
 
 - LangGraph Persistence  
   <https://docs.langchain.com/oss/python/langgraph/persistence>
@@ -751,14 +1639,14 @@ LangGraph 的价值是：
   <https://modelcontextprotocol.io/specification/draft/basic/authorization>
 - DeepSeek Function Calling  
   <https://api-docs.deepseek.com/guides/function_calling>
-- NVIDIA NVML / nvidia-smi 相关文档  
+- NVIDIA NVML / nvidia-smi 文档  
   <https://docs.nvidia.com/deploy/nvidia-smi/index.html>
 
 ---
 
-## 13. 最后一段总结
+## 20. 最后一段总结
 
-如果你把这个项目当成一个“Agent 学习样板”，它最有价值的地方不是某一个函数写得多漂亮，而是它完整地展示了：
+如果你把这个项目当成一个“Agent 学习样板”，它最有价值的地方不是某一个函数写得多漂亮，而是它完整展示了这一条链：
 
 ```text
 自然语言
@@ -767,11 +1655,12 @@ LangGraph 的价值是：
   -> 服务执行
   -> 状态回写
   -> 风险确认
+  -> 长任务管理
   -> 重启恢复
   -> 真实训练闭环
 ```
 
-这条链一旦真的跑通，你对 Agent 的理解就会从：
+一旦这条链真的跑通，你对 Agent 的理解就会从：
 
 - “大模型会不会回答”
 
@@ -779,4 +1668,4 @@ LangGraph 的价值是：
 
 - “一个 Agent 系统如何把模型、工具、状态、执行和风险控制拼成可工作的软件”
 
-这正是这个项目目前最适合作为跳板去学习的地方。
+这正是这个项目最值得学习的地方。
