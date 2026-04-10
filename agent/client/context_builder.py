@@ -35,6 +35,7 @@ class ContextBuilder:
         ds = state.active_dataset
         tr = state.active_training
         pc = state.pending_confirmation
+        pred = state.active_prediction
         pref = state.preferences
         digest_text = digest.to_text() if digest else '无历史摘要'
         return (
@@ -58,6 +59,12 @@ class ContextBuilder:
             f'  pid: {tr.pid if tr.pid is not None else "无"}\n'
             f'  log_file: {tr.log_file or "无"}\n'
             f'  last_status: {_fmt_mapping(tr.last_status)}\n'
+            '预测:\n'
+            f'  source_path: {pred.source_path or "未设置"}\n'
+            f'  model: {pred.model or "未设置"}\n'
+            f'  output_dir: {pred.output_dir or "无"}\n'
+            f'  report_path: {pred.report_path or "无"}\n'
+            f'  last_result: {_fmt_mapping(pred.last_result)}\n'
             '待确认操作:\n'
             f'  tool: {pc.tool_name or "无"}\n'
             f'  args: {_fmt_mapping(pc.tool_args)}\n'

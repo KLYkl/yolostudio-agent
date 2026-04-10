@@ -1243,3 +1243,109 @@ Gemma 和 DeepSeek：
 短轮数训练只保留给：
 - 快速 smoke
 - 参数连通性验证
+
+## 23. 持久化 HITL / checkpoint 恢复测试（2026-04-11 增补）
+
+随着 `agent/client/file_checkpointer.py` 落地，第一主线已经不再只依赖进程内 `MemorySaver()`。
+现在每个 session 的 LangGraph checkpoint 会持久化到：
+
+- `memory/checkpoints/<session>.pkl`
+
+这意味着测试时，除了“能不能进入确认态”，还要补一类新的恢复测试：
+
+### 23.1 这类测试在测什么
+- 高风险动作进入 HITL 后，client/CLI 重启，是否还能继续恢复
+- checkpoint 文件损坏时，是否能安全降级而不是直接崩掉
+- session 粒度的 checkpoint 是否互相隔离
+
+### 23.2 推荐测试动作
+1. 使用唯一 session 触发一次高风险主线请求
+   - 例如：
+     - `数据在 /home/kly/test_dataset/，按默认划分比例，然后用 yolov8n 模型进行训练`
+2. 在第一次或第二次确认出现后，主动结束当前 client
+3. 重新创建同 session 的 client / CLI
+4. 检查：
+   - `memory/checkpoints/<session>.pkl` 是否存在
+   - session state 中的 pending_confirmation 是否仍在
+5. 继续 confirm，确认后主线是否还能继续执行
+
+### 23.3 当前最小回归基线
+当前至少要保证下面两种验证成立：
+
+#### A. Checkpointer 单元验证
+- 脚本：`agent/tests/test_file_checkpointer.py`
+- 覆盖：
+  - checkpoint 落盘
+  - writes 恢复
+  - delete_thread
+  - 损坏文件自动转存 `.corrupt`
+
+#### B. 主线恢复验证
+- 至少在一个高风险主线 case 中，验证：
+  - pending confirmation 已写入 session state
+  - CLI/client 重建后，继续 confirm 不会直接丢流程
+
+### 23.4 要注意的边界
+当前这套持久化仍然是：
+- 单人
+- 本地文件级
+- workspace 内 durable
+
+它解决的是：
+- 本地 client/CLI 重启后的主线恢复基础
+
+它还没有解决的是：
+- 多用户共享
+- 远程数据库级 checkpoint
+- 跨机器共享恢复
+## 24. 第二主线 Phase 1：图片预测回归（2026-04-11 增补）
+
+随着 `predict_images` 落地，第二主线已经从“规划阶段”进入“可回归阶段”。
+当前先不碰 RTSP / 摄像头 / 视频流，而是固定收口：
+
+- 单张图片预测
+- 图片目录批量预测
+- grounded 结果总结
+- 旧工具名 / 旧参数名兼容
+
+### 24.1 推荐测试层次
+1. **Tool 层**
+   - 成功目录预测
+   - 缺少模型失败
+   - 输入路径不存在失败
+2. **Agent 路由层**
+   - 同一句话里同时出现模型路径和图片目录路径
+   - 预测结果二次总结
+3. **兼容层**
+   - `predict_directory`
+   - `batch_predict_images`
+   - `predict_images_in_dir`
+   - `path/source/input_path -> source_path`
+
+### 24.2 推荐话术
+#### A. 标准图片目录预测
+- `请用 /models/yolov8n.pt 预测 /data/images 这个目录里的图片。`
+- 预期路径：`predict_images(source_path=/data/images, model=/models/yolov8n.pt)`
+
+#### B. 只总结预测结果
+- `总结一下刚才预测结果。`
+- 预期路径：优先从 `SessionState.active_prediction` 做 grounded 总结，而不是重新发起预测。
+
+#### C. 兼容旧风格表达
+- `请批量识别 /data/images 目录里的图片，模型用 /models/yolov8n.pt。`
+- 重点检查：即使模型幻觉出 `predict_directory` 这类旧名字，也能被兼容层收口到 `predict_images`。
+
+### 24.3 当前回归脚本
+- `D:\yolodo2.0\agent_plan\agent\tests\test_predict_tools.py`
+- `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_route.py`
+- `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_regression_suite.py`
+
+### 24.4 当前输出产物
+- JSON：`D:\yolodo2.0\agent_plan\agent\tests\test_prediction_regression_suite_output.json`
+- 报告：`D:\yolodo2.0\agent_plan\doc\prediction_regression_report_2026-04-11.md`
+
+### 24.5 当前最该盯住的问题
+- 预测工具是否会误把模型路径当成 `source_path`
+- grounded 回复是否会把“无检测”说成“失败”
+- 是否会编造不存在的视频 / 摄像头能力
+- 兼容层是否足够覆盖旧桌面风格工具名

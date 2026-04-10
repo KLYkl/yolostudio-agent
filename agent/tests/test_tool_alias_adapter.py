@@ -3,16 +3,23 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from langchain_core.tools import StructuredTool
+
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from agent_plan.agent.client.tool_adapter import canonical_tool_name, normalize_tool_args
+from agent_plan.agent.client.tool_adapter import adapt_tools_for_chat_model, canonical_tool_name, normalize_tool_args
+
+
+def _noop(**kwargs):
+    return kwargs
 
 
 def main() -> None:
     assert canonical_tool_name('detect_duplicates') == 'detect_duplicate_images'
     assert canonical_tool_name('detect_corrupted_images') == 'run_dataset_health_check'
     assert canonical_tool_name('dataset_manager.prepare_dataset') == 'prepare_dataset_for_training'
+    assert canonical_tool_name('predict_directory') == 'predict_images'
 
     health_args = normalize_tool_args('detect_corrupted_images', {'path': '/data/set'})
     assert health_args['dataset_path'] == '/data/set'
@@ -29,6 +36,29 @@ def main() -> None:
 
     scan_args = normalize_tool_args('scan_dataset', {'dataset_path': '/data/set'})
     assert scan_args['img_dir'] == '/data/set'
+
+    predict_args = normalize_tool_args('predict_directory', {'path': '/data/images', 'model': 'yolov8n.pt'})
+    assert predict_args['source_path'] == '/data/images'
+    assert predict_args['model'] == 'yolov8n.pt'
+
+    tools = [
+        StructuredTool.from_function(func=_noop, name='detect_duplicate_images', description='dup'),
+        StructuredTool.from_function(func=_noop, name='run_dataset_health_check', description='health'),
+        StructuredTool.from_function(func=_noop, name='prepare_dataset_for_training', description='prepare'),
+        StructuredTool.from_function(func=_noop, name='predict_images', description='predict'),
+    ]
+    adapted = adapt_tools_for_chat_model(tools)
+    names = {tool.name for tool in adapted}
+    for alias in (
+        'detect_duplicates',
+        'detect_corrupted_images',
+        'prepare_dataset',
+        'dataset_manager.prepare_dataset',
+        'predict_directory',
+        'batch_predict_images',
+        'predict_images_in_dir',
+    ):
+        assert alias in names, names
 
     print('tool alias adapter ok')
 

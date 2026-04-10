@@ -22,6 +22,15 @@ class DatasetContext:
     last_duplicate_check: dict[str, Any] = field(default_factory=dict)
 
 
+
+@dataclass(slots=True)
+class PredictionContext:
+    source_path: str = ""
+    model: str = ""
+    output_dir: str = ""
+    report_path: str = ""
+    last_result: dict[str, Any] = field(default_factory=dict)
+
 @dataclass(slots=True)
 class TrainingContext:
     running: bool = False
@@ -57,6 +66,7 @@ class SessionState:
     updated_at: str = field(default_factory=utc_now)
     active_dataset: DatasetContext = field(default_factory=DatasetContext)
     active_training: TrainingContext = field(default_factory=TrainingContext)
+    active_prediction: PredictionContext = field(default_factory=PredictionContext)
     pending_confirmation: PendingConfirmation = field(default_factory=PendingConfirmation)
     preferences: UserPreferences = field(default_factory=UserPreferences)
 
@@ -74,6 +84,8 @@ class SessionState:
             updated_at=data.get('updated_at', utc_now()),
             active_dataset=DatasetContext(**data.get('active_dataset', {})),
             active_training=TrainingContext(**data.get('active_training', {})),
+            active_prediction=PredictionContext(**data.get('active_prediction', {})),
             pending_confirmation=PendingConfirmation(**data.get('pending_confirmation', {})),
             preferences=UserPreferences(**data.get('preferences', {})),
         )
+

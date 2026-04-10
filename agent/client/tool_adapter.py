@@ -12,6 +12,9 @@ TOOL_NAME_ALIASES: dict[str, str] = {
     'detect_corrupted_images': 'run_dataset_health_check',
     'prepare_dataset': 'prepare_dataset_for_training',
     'dataset_manager.prepare_dataset': 'prepare_dataset_for_training',
+    'predict_directory': 'predict_images',
+    'batch_predict_images': 'predict_images',
+    'predict_images_in_dir': 'predict_images',
 }
 
 _ARG_ALIASES: dict[str, dict[str, str]] = {
@@ -50,6 +53,13 @@ _ARG_ALIASES: dict[str, dict[str, str]] = {
         'dataset_path': 'img_dir',
         'dataset': 'img_dir',
         'root': 'img_dir',
+    },
+    'predict_images': {
+        'path': 'source_path',
+        'source': 'source_path',
+        'input_path': 'source_path',
+        'dir_path': 'source_path',
+        'folder': 'source_path',
     },
 }
 
@@ -125,6 +135,23 @@ class _PrepareAliasArgs(BaseModel):
     force_split: bool = Field(default=False, description='是否按默认比例强制划分')
 
 
+class _PredictAliasArgs(BaseModel):
+    source_path: str = Field(default='' , description='图片文件路径或图片目录路径')
+    path: str = Field(default='' , description='旧参数兼容；等价于 source_path')
+    source: str = Field(default='' , description='旧参数兼容；等价于 source_path')
+    input_path: str = Field(default='' , description='旧参数兼容；等价于 source_path')
+    dir_path: str = Field(default='' , description='旧参数兼容；等价于 source_path')
+    folder: str = Field(default='' , description='旧参数兼容；等价于 source_path')
+    model: str = Field(default='' , description='预测模型路径或模型名')
+    conf: float = Field(default=0.25, description='置信度阈值')
+    iou: float = Field(default=0.45, description='NMS IoU 阈值')
+    output_dir: str = Field(default='' , description='输出目录')
+    save_annotated: bool = Field(default=True, description='是否保存标注图')
+    save_labels: bool = Field(default=False, description='是否保存 YOLO 标签')
+    save_original: bool = Field(default=False, description='是否复制原图')
+    generate_report: bool = Field(default=True, description='是否生成 JSON 报告')
+    max_images: int = Field(default=0, description='最多处理图片数，0 表示不限制')
+
 def _build_alias_tool(alias_name: str, target_tool: BaseTool, *, description: str, args_schema: type[BaseModel]) -> BaseTool:
     async def _arun(**kwargs: Any) -> str:
         result = await target_tool.ainvoke(normalize_tool_args(alias_name, kwargs))
@@ -176,5 +203,27 @@ def adapt_tools_for_chat_model(tools: list[BaseTool]) -> list[BaseTool]:
                 args_schema=_PrepareAliasArgs,
             )
         )
+        alias_tools.append(
+            _build_alias_tool(
+                'dataset_manager.prepare_dataset',
+                tool_map['prepare_dataset_for_training'],
+                description='兼容旧桌面风格工具名 dataset_manager.prepare_dataset。用于把数据集准备到可训练状态。',
+                args_schema=_PrepareAliasArgs,
+            )
+        )
+    if 'predict_images' in tool_map:
+        for alias_name, description in (
+            ('predict_directory', '兼容旧工具名 predict_directory。用于对图片目录做批量预测。'),
+            ('batch_predict_images', '兼容旧工具名 batch_predict_images。用于对图片目录做批量预测。'),
+            ('predict_images_in_dir', '兼容旧工具名 predict_images_in_dir。用于对图片目录做批量预测。'),
+        ):
+            alias_tools.append(
+                _build_alias_tool(
+                    alias_name,
+                    tool_map['predict_images'],
+                    description=description,
+                    args_schema=_PredictAliasArgs,
+                )
+            )
 
     return adapted + alias_tools

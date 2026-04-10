@@ -68,6 +68,32 @@ def main() -> None:
     assert '已准备好的 YAML: /data/dirty/images_split/data.yaml' in prepare_text
     assert '如要训练，可直接复用上面的 data_yaml' in prepare_text
 
+    predict_text = YoloStudioAgentClient._build_grounded_tool_reply(
+        client,
+        [(
+            'predict_images',
+            {
+                'ok': True,
+                'summary': '预测完成: 已处理 3 张图片, 有检测 2, 无检测 1，主要类别 Excavator=1, bulldozer=2',
+                'processed_images': 3,
+                'detected_images': 2,
+                'empty_images': 1,
+                'class_counts': {'Excavator': 1, 'bulldozer': 2},
+                'detected_samples': ['/data/predict/a.jpg', '/data/predict/c.jpg'],
+                'empty_samples': ['/data/predict/b.jpg'],
+                'annotated_dir': '/data/predict/out/annotated',
+                'report_path': '/data/predict/out/prediction_report.json',
+                'next_actions': ['可查看标注结果目录: /data/predict/out/annotated'],
+            },
+        )],
+    )
+    assert '预测完成' in predict_text
+    assert '已处理 3 张' in predict_text
+    assert '主要类别: Excavator=1，bulldozer=2' in predict_text
+    assert '/data/predict/a.jpg' in predict_text
+    assert '标注结果目录: /data/predict/out/annotated' in predict_text
+    assert '预测报告: /data/predict/out/prediction_report.json' in predict_text
+
     dup_text = YoloStudioAgentClient._build_grounded_tool_reply(
         client,
         [(

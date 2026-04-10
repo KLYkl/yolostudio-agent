@@ -9,11 +9,13 @@
 
 - 第一主线继续加强：新增 **旧工具名/旧参数名兼容层**、**主线意图路由**、**更多 grounded reply**。
 - 主线回归矩阵最新得分：**0.955**。
-- 当前第一主线已经非常接近“单人、内网、有人值守”的稳定使用状态。
+- 当前第一主线已经达到“单人、内网、有人值守”的稳定可用门槛。
+- 第二主线本地预测回归基线已建立：图片 / 图片目录 headless 预测、旧工具名兼容、grounded 总结都已有自动化验证。
+- 第二主线当前本地预测回归分数：**1.0**。
 - 目前最主要剩余差距：
-  - durable checkpoint / persistent HITL
+  - 本地文件级 durable checkpoint 已落地，但还不是共享服务级持久化
   - 解释层继续 grounded 化
-  - 第二主线（预测 / 批处理推理）正式开启前的最后一轮收口
+  - 第二主线已正式开启第一步：headless 图片 / 图片目录预测（当前已完成本地回归，尚未远端部署验证）
 
 ---
 
@@ -46,14 +48,15 @@
   ┌─────────────────────┐    SSH Tunnel    ┌──────────────────────────┐
   │  cli.py             │   :8080/:11434   │  MCP Server (:8080)      │
   │  agent_client.py    │◄════════════════►│  FastMCP + streamable-http│
-  │  LangGraph ReAct    │                  │  10 个 Tool              │
+  │  LangGraph ReAct    │                  │  14 个 Tool              │
   │  langchain-mcp      │                  │  ├─ scan_dataset    ─┐   │
   │                     │                  │  ├─ split_dataset    │   │
   │                     │                  │  ├─ validate_dataset │直接│
   │                     │                  │  ├─ augment_dataset  │调用│
   │                     │                  │  ├─ generate_yaml    │   │
   │                     │                  │  ├─ training_readiness┘   │
-  │                     │                  │  ├─ start_training  ─┐   │
+  │                     │                  │  ├─ predict_images   ─┐   │
+  │                     │                  │  ├─ start_training    │   │
   │                     │                  │  ├─ check_status     │wrap│
   │                     │                  │  ├─ stop_training    │    │
   │                     │                  │  └─ check_gpu_status ─┘   │
@@ -83,10 +86,11 @@ D:\yolodo2.0\agent_plan\               ← Git 仓库 (4 commits)
 │
 ├── agent/
 │   ├── server/                            # 部署到服务器
-│   │   ├── mcp_server.py                  # FastMCP 入口, 10个 Tool 注册
+│   │   ├── mcp_server.py                  # FastMCP 入口, 14个 Tool 注册
 │   │   ├── tools/
 │   │   │   ├── data_tools.py              # scan/split/validate/augment/generate_yaml/training_readiness (~460行)
 │   │   │   └── train_tools.py             # start/status/stop/gpu_status (~50行)
+│   │   │   └── predict_tools.py           # predict_images（图片/图片目录 headless 预测）
 │   │   └── services/
 │   │       ├── train_service.py           # subprocess + 设备校验 (~264行)
 │   │       ├── gpu_utils.py               # GPU 动态检测（进程检查+UUID映射, ~101行）
@@ -126,8 +130,8 @@ D:\yolodo2.0\agent_plan\               ← Git 仓库 (4 commits)
 ### Phase 2: MCP Server ✅ 核心完成
 
 - [x] FastMCP 启动（host/port 在构造函数中）
-- [x] 10 个 Tool 注册并对齐真实 API
-- [x] data_tools 6 工具：scan/split/validate/augment/generate_yaml/training_readiness
+- [x] 14 个 Tool 注册并对齐真实 API
+- [x] data_tools 8 工具：scan/split/validate/augment/generate_yaml/training_readiness/health_check/duplicate_check
 - [x] train_tools 4 工具：start/status/stop/gpu_status
 - [x] TrainService subprocess wrapper + 日志解析器
 - [x] **GPU 动态检测**：gpu_utils.py（查 compute 进程 + UUID→index 映射）
@@ -145,6 +149,8 @@ D:\yolodo2.0\agent_plan\               ← Git 仓库 (4 commits)
 - [x] 端到端冒烟：低风险 check_status ✅ + 高风险 start_training 确认/取消 ✅
 
 ### Phase 4: 集成优化 ⏳ 大部分完成
+
+- [x] **第二主线 Phase 1**：`predict_images`（图片/图片目录 headless 预测 + grounded reply + 输出工件）
 
 - [x] **完整场景测试**：scan → validate → split → augment → start_training → check_status 全流程
 - [x] **错误处理**：data_tools / train_tools 已加 try-except + _error_payload 统一包装
@@ -176,7 +182,7 @@ D:\yolodo2.0\agent_plan\               ← Git 仓库 (4 commits)
 | ~~CLI 崩溃 INVALID_CHAT_HISTORY~~ | ~~🔴~~ | ~~agent_client~~ | ✅ **已修**：`_trim_history` 保持配对完整性 |
 | ~~latest_metrics 始终 null~~ | ~~🟡~~ | ~~train_log_parser~~ | ✅ **已修**：ANSI 去转义 + epoch 行精确正则匹配 |
 | ~~generate_yaml 未暴露~~ | ~~🟡~~ | ~~data_tools~~ | ✅ **已修**：已注册为 MCP Tool，同时新增 `training_readiness` |
-| **MCP 重启后训练丢失** | 🟡 | train_service | 进程引用是内存级的，MCP 重启后无法恢复 |
+| ~~MCP 重启后训练丢失~~ | ~~🟡~~ | ~~train_service~~ | ✅ **已修**：run registry + reattach 已落地，fresh 进程可继续 status/stop |
 | **split 只支持 train/val** | 🟡 | core API | 现有 `split_dataset()` 只做二分 |
 | **MCP Server 没有重启脚本** | 🟢 | 运维 | 目前手动启动 |
 | ~~模型权重损坏~~ | ~~🔴~~ | ~~服务器~~ | ✅ **已修**：`yolov8n.pt`(380K→6.3M) 和 `yolo26n.pt`(496K→5.3M) 均被损坏文件覆盖，从 `/home/kly/` 正确副本恢复 |
@@ -545,7 +551,7 @@ afab4c1  test: comprehensive validation + log parser fix
 ### 剩余主线重点
 
 如果继续保持“先稳再扩”，当前主线剩余最值得做的只剩：
-1. durable checkpoint / persistent HITL（替换 `MemorySaver()`）
+1. 共享级 durable checkpoint / persistent HITL（本地文件级第一版已完成）
 2. provider 在复杂训练意图上的剩余解释差异再收一轮
 3. CLI 恢复与故障提示收口
 
