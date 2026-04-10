@@ -1086,3 +1086,53 @@ Gemma 和 DeepSeek：
   - 模型把“检测重复”误说成“已经去重”
   - 回答中编造不存在的重复组或路径
   - 将 `auto` 或默认参数误描述成用户显式指定
+
+## 21. 主线回归矩阵（2026-04-11 增补）
+
+当系统复杂度继续上升后，建议每轮主线开发完成后，不再只跑零散 smoke，而是固定跑一轮“主线回归矩阵”。
+
+### 21.1 推荐矩阵覆盖
+至少覆盖 4 层：
+
+1. **Tool 层**
+   - 标准 root 解析
+   - unknown 目录早失败
+   - 非标准目录容错
+   - dirty dataset 健康检查
+   - dirty dataset readiness 风险表达
+
+2. **Gemma Agent 层**
+   - 标准 root + 只检查不训练
+   - 标准 root + 复杂训练意图
+   - dirty dataset 风险总结
+   - 健康检查 grounded 回复
+   - 重复检测 grounded 回复
+   - fresh session 状态纯净性
+
+3. **DeepSeek Agent 层**
+   - 与 Gemma 跑同一组高价值 case，用于对照系统问题与 provider 问题
+
+4. **补充回归**
+   - `test_prepare_dataset_flow.py`
+   - `test_training_state_purity.py`
+   - `test_train_run_registry.py`
+
+### 21.2 当前矩阵脚本
+- `D:\yolodo2.0\agent_plan\agent\tests\test_mainline_regression_matrix.py`
+
+### 21.3 当前矩阵输出
+- JSON：`D:\yolodo2.0\agent_plan\agent\tests\test_mainline_regression_matrix_output.json`
+- 报告：`D:\yolodo2.0\agent_plan\doc\mainline_regression_matrix_report_2026-04-11.md`
+
+### 21.4 为什么这个矩阵有价值
+它不是只看“会不会调用 tool”，而是同时检查：
+- 执行层是否完成
+- 状态层是否被污染
+- 解释层是否 grounded
+- provider 是否存在一致性分叉
+
+### 21.5 当前矩阵最典型暴露的问题
+- Gemma 在“只检查不训练”“脏数据总结”“健康检查/重复检测”上的解释层仍明显弱于执行层
+- Gemma 仍会尝试调用不存在的桌面风格旧工具名（如 `detect_duplicates`、`detect_corrupted_images`、`dataset_manager.prepare_dataset`）
+- DeepSeek 主线执行更稳，但在 dirty summary / health grounded 上仍有少量未满分项
+- unknown 目录早失败行为已经正确，但错误语义还可以继续收紧
