@@ -85,3 +85,24 @@
 - `missing_label_ratio=0.737`
 - `risk_level=critical`
 - `prepare_dataset_for_training(...).ready=true` 且 `summary` 会明确指出存在数据质量风险
+
+## zyb 10 方法测试新增结论（2026-04-10 晚）
+
+本轮 10 方法测试确认：
+
+### 已证明较稳的范围
+- large dirty dataset 下的 `scan / validate / readiness / prepare`
+- `prepare -> start_training` 两段式主链路
+- 真实训练 `start / status / stop`
+- DeepSeek 在复杂训练链和风险解释上的整体稳定性
+
+### 新确认的边界
+1. **Gemma 的解释层仍不够 grounded**
+   - 会把计数说虚
+   - 会把类别名说错
+   - 会把路径说成不存在的路径
+2. **Gemma 的取消后参数回忆不够精确**
+   - 能记住大意
+   - 但具体 `data_yaml / epochs` 容易漂移
+3. **执行链路已经强于解释链路**
+   - 这说明当前主线的下一步重点，应是“解释层 grounded 化”和“待确认参数摘要结构化”
