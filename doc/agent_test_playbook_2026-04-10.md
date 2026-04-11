@@ -1785,3 +1785,16 @@ extract_images -> scan_dataset -> validate_dataset -> prepare_dataset_for_traini
 - video prediction_report.json 摘要构建
 - 缺失 report 的失败语义
 - 与聊天层 summary 路由的兼容性（结合 `test_prediction_route.py` 与 `test_extreme_chat_regression.py` 共同验证）
+
+
+### 28.7 prediction 运行期 helper 回归
+
+新增固定脚本：
+- `agent/tests/test_prediction_runtime_helpers.py`
+
+覆盖点：
+- 模型推理结果标准化
+- 检测框绘制
+- 图片读取失败兜底
+- PIL -> BGR 转换
+- 与 `test_predict_tools.py` / `test_predict_video_tools.py` / 聊天层回归共同验证结构整理后外部行为不变

@@ -1147,3 +1147,46 @@ Gemma 这轮测试很清楚地说明：
 
 - prediction 汇总 helper 拆分后，对聊天层 summary 路由没有造成回退
 - 长上下文极端对话里，`summarize_prediction_results` 仍能正确落到最近一次 prediction report
+
+
+### 4.12 2026-04-11 深夜新增推进（十一）
+
+结构整理继续推进第三刀，这轮开始把 `predict_service.py` 中“预测执行期的通用运行逻辑”拆出去：
+
+- 新增：`agent/server/services/prediction_runtime_helpers.py`
+
+当前拆出的能力包括：
+
+- 模型加载
+- batch inference 结果标准化
+- 检测框绘制
+- PIL -> BGR 转换
+- 图片读取
+
+为了保持外部行为不变，`PredictService` 仍然保留原有私有方法名：
+
+- `_load_model`
+- `_run_batch_inference`
+- `_draw_detections`
+- `_pil_to_bgr`
+- `_read_image`
+
+但这些方法现在都改为委托给 helper 模块，因此：
+
+- 现有测试里的 monkeypatch 入口没有破坏
+- 后续还可以继续把 image / video 执行逻辑往更清晰的结构拆
+
+#### 本轮验证
+
+本轮新增并通过了：
+
+- `agent/tests/test_prediction_runtime_helpers.py`
+- `agent/tests/test_predict_tools.py`
+- `agent/tests/test_predict_video_tools.py`
+- `agent/tests/test_prediction_route.py`
+- `agent/tests/test_extreme_chat_regression.py`
+
+这说明：
+
+- prediction 执行期 helper 拆分后，图片/视频预测工具级行为未回退
+- 聊天层预测路由和长上下文回归也没有被这轮结构整理破坏
