@@ -16,6 +16,7 @@ from agent_plan.agent.server.services.prediction_runtime_helpers import (
     read_image,
     run_batch_inference,
 )
+from agent_plan.agent.server.services.prediction_video_helpers import predict_single_video
 
 try:
     import cv2  # type: ignore
@@ -509,92 +510,22 @@ class PredictService:
         save_keyframes_raw: bool,
         max_frames: int,
     ) -> dict[str, Any]:
-        cap = cv2.VideoCapture(str(video_path))
-        if not cap.isOpened():
-            cap.release()
-            return {'ok': False, 'error': '无法打开视频'}
-
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 0
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 0
-        video_dir = output_root / video_path.stem
-        video_dir.mkdir(parents=True, exist_ok=True)
-
-        annotated_dir = video_dir / 'keyframes' / 'annotated'
-        raw_dir = video_dir / 'keyframes' / 'raw'
-        if save_keyframes_annotated:
-            annotated_dir.mkdir(parents=True, exist_ok=True)
-        if save_keyframes_raw:
-            raw_dir.mkdir(parents=True, exist_ok=True)
-
-        writer: cv2.VideoWriter | None = None
-        video_output_path = ''
-        if save_video and width > 0 and height > 0:
-            video_output_path = str((video_dir / f'{video_path.stem}_result.mp4').resolve())
-            writer = cv2.VideoWriter(
-                video_output_path,
-                cv2.VideoWriter_fourcc(*'mp4v'),
-                float(fps or 30.0),
-                (width, height),
-            )
-            if not writer.isOpened():
-                writer.release()
-                writer = None
-                video_output_path = ''
-
-        processed_frames = 0
-        detected_frames = 0
-        total_detections = 0
-        class_counter: Counter[str] = Counter()
-        frame_results: list[dict[str, Any]] = []
-
-        while True:
-            ok, frame = cap.read()
-            if not ok:
-                break
-            if max_frames > 0 and processed_frames >= max_frames:
-                break
-            processed_frames += 1
-
-            pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            detections = self._run_batch_inference(predictor, [pil], conf=conf, iou=iou)[0]
-            if detections:
-                detected_frames += 1
-                total_detections += len(detections)
-                for det in detections:
-                    class_counter[str(det.get('class_name', 'unknown'))] += 1
-                if save_keyframes_annotated:
-                    annotated_path = annotated_dir / f'frame_{processed_frames:06d}.jpg'
-                    self._draw_detections(pil, detections).save(annotated_path)
-                if save_keyframes_raw:
-                    raw_path = raw_dir / f'frame_{processed_frames:06d}.jpg'
-                    cv2.imwrite(str(raw_path), frame)
-            if writer is not None:
-                annotated_frame = self._pil_to_bgr(self._draw_detections(pil, detections))
-                writer.write(annotated_frame)
-            frame_results.append({
-                'frame_index': processed_frames,
-                'detections': len(detections),
-                'classes': sorted({str(det.get('class_name', 'unknown')) for det in detections}),
-            })
-
-        cap.release()
-        if writer is not None:
-            writer.release()
-
-        return {
-            'ok': True,
-            'video_path': str(video_path.resolve()),
-            'output_dir': str(video_dir.resolve()),
-            'annotated_video': video_output_path,
-            'annotated_keyframes_dir': str(annotated_dir.resolve()) if save_keyframes_annotated else '',
-            'raw_keyframes_dir': str(raw_dir.resolve()) if save_keyframes_raw else '',
-            'processed_frames': processed_frames,
-            'detected_frames': detected_frames,
-            'total_detections': total_detections,
-            'class_counts': dict(sorted(class_counter.items(), key=lambda item: (-item[1], item[0]))),
-            'frame_results': frame_results[:50],
-        }
+        return predict_single_video(
+            predictor,
+            video_path=video_path,
+            output_root=output_root,
+            conf=conf,
+            iou=iou,
+            save_video=save_video,
+            save_keyframes_annotated=save_keyframes_annotated,
+            save_keyframes_raw=save_keyframes_raw,
+            max_frames=max_frames,
+            cv2_module=cv2,
+            image_fromarray=Image.fromarray,
+            run_batch_inference_fn=self._run_batch_inference,
+            draw_detections_fn=self._draw_detections,
+            pil_to_bgr_fn=self._pil_to_bgr,
+        )
 
     @staticmethod
     def _pil_to_bgr(image: Image.Image) -> Any:

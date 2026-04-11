@@ -1798,3 +1798,15 @@ extract_images -> scan_dataset -> validate_dataset -> prepare_dataset_for_traini
 - 图片读取失败兜底
 - PIL -> BGR 转换
 - 与 `test_predict_tools.py` / `test_predict_video_tools.py` / 聊天层回归共同验证结构整理后外部行为不变
+
+
+### 28.8 prediction 单视频 helper 回归
+
+新增固定脚本：
+- `agent/tests/test_prediction_video_helpers.py`
+
+覆盖点：
+- 单视频预测循环
+- 关键帧输出目录与产物
+- 帧级统计汇总
+- 与 `test_predict_video_tools.py` / `test_predict_tools.py` / 聊天层回归共同验证结构整理后外部行为不变

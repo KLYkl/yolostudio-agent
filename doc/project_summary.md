@@ -27,6 +27,7 @@
 - 第一刀：`agent/client/intent_parsing.py` 拆出意图解析
 - 第二刀：`agent/server/services/prediction_report_helpers.py` 拆出 prediction 汇总逻辑
 - 第三刀：`agent/server/services/prediction_runtime_helpers.py` 拆出 prediction 运行期公共逻辑
+- 第四刀：`agent/server/services/prediction_video_helpers.py` 拆出单视频执行逻辑
 
 当前整理策略仍然保持不变：
 > **先拆职责，不改对外行为；所有整理都必须有回归保护。**

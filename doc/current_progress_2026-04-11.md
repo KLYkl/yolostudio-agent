@@ -1190,3 +1190,51 @@ Gemma 这轮测试很清楚地说明：
 
 - prediction 执行期 helper 拆分后，图片/视频预测工具级行为未回退
 - 聊天层预测路由和长上下文回归也没有被这轮结构整理破坏
+
+
+### 4.13 2026-04-11 深夜新增推进（十二）
+
+结构整理继续推进第四刀，这轮把 `predict_service.py` 里最厚的视频执行单元拆了出去：
+
+- 新增：`agent/server/services/prediction_video_helpers.py`
+
+当前拆出的能力包括：
+
+- 单视频预测循环
+- 视频 writer 生命周期管理
+- 关键帧保存
+- 视频级 frame 统计汇总
+
+为了保持外部行为不变，`PredictService` 仍保留：
+
+- `_predict_single_video(...)`
+
+但它现在改为把以下依赖显式传入 helper：
+
+- `cv2`
+- `Image.fromarray`
+- `_run_batch_inference`
+- `_draw_detections`
+- `_pil_to_bgr`
+
+这样做的好处是：
+
+- 现有工具层与聊天层行为不变
+- 原有 monkeypatch 测试入口不变
+- 视频执行逻辑不再挤在 `predict_service.py` 里
+- 后续继续拆 image / video 路径时边界更清楚
+
+#### 本轮验证
+
+本轮新增并通过了：
+
+- `agent/tests/test_prediction_video_helpers.py`
+- `agent/tests/test_predict_video_tools.py`
+- `agent/tests/test_predict_tools.py`
+- `agent/tests/test_prediction_route.py`
+- `agent/tests/test_extreme_chat_regression.py`
+
+这说明：
+
+- 单视频执行 helper 拆分后，视频预测工具级行为没有回退
+- 图片预测与聊天层长上下文链路也没有被这轮整理破坏
