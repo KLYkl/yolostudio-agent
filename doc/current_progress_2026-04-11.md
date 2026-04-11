@@ -23,6 +23,61 @@
 
 ---
 
+## 1.1 2026-04-11 晚间纠偏：本地完成 ≠ 远端已同步
+
+这一条是这轮协作里必须明确记录的事实，避免后续再次混淆：
+
+### 结论
+
+- **训练/数据准备主线**：远端确实长期存在可运行代码，并且多次做过真实远端验证。
+- **prediction 主线**：在 2026-04-11 晚上这轮手动 `scp/ssh` 之前，绝大多数新增能力主要停留在**本地实现 + 本地回归 + 本地真实素材验证**，并**没有持续同步到远端同版本代码**。
+
+### 换句话说
+
+之前“项目已完成/已验证”的很多表述里：
+
+- 对 **第一主线** 来说，大多数说法是站得住的；
+- 对 **第二主线** 来说，必须区分：
+  1. **本地代码已经完成**
+  2. **远端服务器同版本代码已部署并验证**
+
+这两件事不是一回事。
+
+### 当前应该如何理解状态
+
+| 方向 | 本地代码 | 本地测试 | 远端代码 | 远端实测 |
+|---|---|---|---|---|
+| 数据准备 / 训练 | ✅ | ✅ | ✅ | ✅ |
+| prediction（截至本次上传前） | ✅ | ✅ | ❌/部分旧版本 | ❌ |
+| prediction（本次上传后） | ✅ | ✅ | ✅（代码与素材已上传） | ⏳ 正在补远端环境与真实执行 |
+
+### 当前阶段的新事实
+
+本次你手动执行远端 roundtrip 之后，以下内容已经**明确上传到远端**：
+
+- `/home/kly/yolostudio_agent_proto/agent_plan/agent/server/services/predict_service.py`
+- `/home/kly/yolostudio_agent_proto/agent_plan/agent/server/tools/predict_tools.py`
+- `/home/kly/yolostudio_agent_proto/agent_plan/agent/tests/test_prediction_remote_real_media.py`
+- `/home/kly/prediction_real_media_stage/manifest.json`
+- `/home/kly/prediction_real_media_stage/weights/*.pt`
+- `/home/kly/prediction_real_media_stage/videos/*.mp4`
+
+因此，从这一刻开始，prediction 主线才真正进入：
+
+> **“远端同版本代码 + 远端真实素材” 已就位，接下来只差远端环境确认与真实执行。**
+
+### 后续约束
+
+从这里开始，凡是提“完成”“已验证”“已上线一半”之类表述，必须显式区分：
+
+- **本地完成**
+- **远端已同步**
+- **远端已实测**
+
+如果没有远端同步和远端实测，不能再用容易误导成“服务器上也已经是最新版本”的说法。
+
+---
+
 ## 2. 当前主线是什么
 
 当前**第一主线**不是“把所有桌面功能 Agent 化”，而是：

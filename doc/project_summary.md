@@ -19,6 +19,55 @@
 
 ---
 
+## 0.1 2026-04-11 晚间补充：关于“到底有没有把代码同步到远端”的纠偏说明
+
+这条必须单独说明，避免把“本地完成”和“远端已部署”混在一起。
+
+### 真实情况
+
+- **第一主线（数据准备 / 训练）**：
+  - 远端服务器上的代码此前确实多次同步过；
+  - 否则不可能完成真实远端训练、状态查询、停止、MCP 重启后 reattach 等验证。
+- **第二主线（prediction）**：
+  - 在 2026-04-11 晚上这轮手动 `scp/ssh` 之前，新增能力大多停留在：
+    - 本地实现
+    - 本地自动化回归
+    - 本地真实素材验证
+  - **并没有做到“每次修改后都同步到远端同版本代码”。**
+
+### 因此必须这样理解
+
+| 项目部分 | 本地最新代码 | 远端是否长期同步到同版 | 是否已做远端真实验证 |
+|---|---|---|---|
+| 数据准备 / 训练主线 | ✅ | ✅ | ✅ |
+| prediction（本次手动上传前） | ✅ | ❌ | ❌ |
+| prediction（本次手动上传后） | ✅ | ✅（代码和素材已上传） | ⏳ 还差远端环境确认与真实执行 |
+
+### 这轮已经明确完成的远端同步
+
+已上传到远端：
+
+- `/home/kly/yolostudio_agent_proto/agent_plan/agent/server/services/predict_service.py`
+- `/home/kly/yolostudio_agent_proto/agent_plan/agent/server/tools/predict_tools.py`
+- `/home/kly/yolostudio_agent_proto/agent_plan/agent/tests/test_prediction_remote_real_media.py`
+- `/home/kly/prediction_real_media_stage/manifest.json`
+- `/home/kly/prediction_real_media_stage/weights/*.pt`
+- `/home/kly/prediction_real_media_stage/videos/*.mp4`
+
+所以从这一刻起，prediction 主线才算真正进入“远端同版部署开始补齐”的阶段。
+
+### 这条纠偏对后续的要求
+
+后续文档和汇报必须显式区分：
+
+1. **本地代码完成**
+2. **远端代码已同步**
+3. **远端真实验证通过**
+
+如果只完成前两项，不能再用容易让人误解成“远端已经验证完了”的说法。
+
+---
+
 ## 一、项目目标
 
 将 YoloStudio（PySide6 桌面 YOLO 工具）改造为 **LLM Agent 驱动的智能系统**。
