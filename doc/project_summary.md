@@ -1,7 +1,7 @@
 # YoloStudio Agent 项目总结（2026-04-09 更新）
 
 > 本文档是项目交接文档，新会话直接读此文件即可续上。
-> 2026-04-11 最新连续进展请优先结合 `doc/conversation_context_handoff.md` 与 `doc/current_progress_2026-04-11.md` 一起阅读；前者用于快速续接，后者用于查看完整连续进展。
+> 2026-04-11 最新连续进展请优先结合 `doc/new_conversation_handoff_2026-04-11.md`、`doc/conversation_context_handoff.md` 与 `doc/current_progress_2026-04-11.md` 一起阅读；第一份用于精简续接，第二份用于详细 handoff，第三份用于查看完整连续进展。
 
 ---
 
