@@ -33,11 +33,13 @@ def main() -> None:
         'summary': '下一步建议: 先修数据，再谈调参。',
         'recommended_action': 'fix_data_quality',
         'basis': ['缺失标签比例=0.35', '重复组=2'],
+        'source_summary': {'official': 1, 'workflow': 1},
         'why': '当前更像数据问题。',
         'next_actions': ['先补标签', '清理重复图片'],
     })])
     assert '优先动作: fix_data_quality' in knowledge
     assert '原因: 当前更像数据问题。' in knowledge
+    assert '来源: official=1，workflow=1' in knowledge
 
     empty = build_grounded_tool_reply([('predict_images', {'ok': False, 'error': 'boom'})])
     assert empty == ''

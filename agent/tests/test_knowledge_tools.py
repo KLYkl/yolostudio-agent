@@ -23,6 +23,7 @@ def main() -> None:
     )
     assert result['ok'] is True
     assert 'generic_post_high_precision_low_recall' in result['matched_rule_ids']
+    assert result['source_summary']
 
     outcome = analyze_training_outcome(
         metrics={'precision': 0.84, 'recall': 0.38, 'map50': 0.42},
@@ -33,6 +34,7 @@ def main() -> None:
     assert outcome['ok'] is True
     assert 'high_precision_low_recall' in outcome['signals']
     assert outcome['next_actions']
+    assert outcome['source_summary']
 
     next_step = recommend_next_training_step(
         readiness={'missing_label_ratio': 0.31, 'ready': False},
@@ -42,6 +44,7 @@ def main() -> None:
     assert next_step['ok'] is True
     assert next_step['recommended_action'] == 'fix_data_quality'
     assert next_step['next_actions']
+    assert next_step['source_summary']
     print('knowledge tools ok')
 
 

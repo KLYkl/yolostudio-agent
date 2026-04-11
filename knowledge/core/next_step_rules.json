@@ -38,7 +38,9 @@
         "title": "Model Training Tips",
         "url": "https://docs.ultralytics.com/guides/model-training-tips/"
       }
-    ]
+    ],
+    "origin": "official_docs",
+    "evidence_level": "seed_rule"
   },
   {
     "id": "generic_next_collect_metrics_first",
@@ -76,7 +78,9 @@
         "title": "YoloStudio training status workflow",
         "url": "agent_plan workflow"
       }
-    ]
+    ],
+    "origin": "project_workflow",
+    "evidence_level": "system_rule"
   },
   {
     "id": "generic_next_continue_observing",
@@ -115,7 +119,9 @@
         "title": "Model Training Tips",
         "url": "https://docs.ultralytics.com/guides/model-training-tips/"
       }
-    ]
+    ],
+    "origin": "official_docs",
+    "evidence_level": "seed_rule"
   },
   {
     "id": "generic_next_inspect_missed_samples",
@@ -153,7 +159,9 @@
         "title": "Performance Metrics Deep Dive",
         "url": "https://docs.ultralytics.com/guides/yolo-performance-metrics/"
       }
-    ]
+    ],
+    "origin": "official_docs",
+    "evidence_level": "seed_rule"
   },
   {
     "id": "generic_next_inspect_false_positives",
@@ -191,7 +199,9 @@
         "title": "Performance Metrics Deep Dive",
         "url": "https://docs.ultralytics.com/guides/yolo-performance-metrics/"
       }
-    ]
+    ],
+    "origin": "official_docs",
+    "evidence_level": "seed_rule"
   },
   {
     "id": "generic_next_prediction_no_detections",
@@ -229,7 +239,9 @@
         "title": "YoloStudio prediction workflow",
         "url": "agent_plan workflow"
       }
-    ]
+    ],
+    "origin": "project_workflow",
+    "evidence_level": "system_rule"
   },
   {
     "id": "generic_next_small_dataset_fast_iteration",
@@ -267,6 +279,8 @@
         "title": "Model Training Tips",
         "url": "https://docs.ultralytics.com/guides/model-training-tips/"
       }
-    ]
+    ],
+    "origin": "official_docs",
+    "evidence_level": "seed_rule"
   }
 ]

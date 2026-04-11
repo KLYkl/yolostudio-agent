@@ -35,7 +35,9 @@
         "title": "YoloStudio check_training_status contract",
         "url": "agent_plan workflow"
       }
-    ]
+    ],
+    "origin": "project_workflow",
+    "evidence_level": "system_rule"
   },
   {
     "id": "generic_post_loss_only_metrics",
@@ -73,7 +75,9 @@
         "title": "Performance Metrics Deep Dive",
         "url": "https://docs.ultralytics.com/guides/yolo-performance-metrics/"
       }
-    ]
+    ],
+    "origin": "official_docs",
+    "evidence_level": "seed_rule"
   },
   {
     "id": "generic_post_early_training_observation",
@@ -111,7 +115,9 @@
         "title": "Model Training Tips",
         "url": "https://docs.ultralytics.com/guides/model-training-tips/"
       }
-    ]
+    ],
+    "origin": "official_docs",
+    "evidence_level": "seed_rule"
   },
   {
     "id": "generic_post_high_precision_low_recall",
@@ -150,7 +156,9 @@
         "title": "Performance Metrics Deep Dive",
         "url": "https://docs.ultralytics.com/guides/yolo-performance-metrics/"
       }
-    ]
+    ],
+    "origin": "official_docs",
+    "evidence_level": "seed_rule"
   },
   {
     "id": "generic_post_low_precision_high_recall",
@@ -189,7 +197,9 @@
         "title": "Performance Metrics Deep Dive",
         "url": "https://docs.ultralytics.com/guides/yolo-performance-metrics/"
       }
-    ]
+    ],
+    "origin": "official_docs",
+    "evidence_level": "seed_rule"
   },
   {
     "id": "generic_post_low_map_overall",
@@ -227,6 +237,8 @@
         "title": "Performance Metrics Deep Dive",
         "url": "https://docs.ultralytics.com/guides/yolo-performance-metrics/"
       }
-    ]
+    ],
+    "origin": "official_docs",
+    "evidence_level": "seed_rule"
   }
 ]

@@ -22,6 +22,7 @@ def main() -> None:
     assert retrieved['ok'] is True
     assert 'generic_pre_high_missing_labels' in retrieved['matched_rule_ids']
     assert retrieved['playbooks']
+    assert retrieved['source_summary'].get('official', 0) >= 1
 
     analyzed = service.analyze_training_outcome(
         metrics={
@@ -42,6 +43,7 @@ def main() -> None:
     assert 'high_precision_low_recall' in analyzed['signals']
     assert analyzed['matched_rule_ids']
     assert analyzed['interpretation']
+    assert analyzed['source_summary']
 
     recommended = service.recommend_next_training_step(
         readiness={
@@ -55,6 +57,7 @@ def main() -> None:
     assert recommended['ok'] is True
     assert recommended['recommended_action'] == 'fix_data_quality'
     assert recommended['matched_rule_ids']
+    assert recommended['source_summary']
     print('knowledge service ok')
 
 

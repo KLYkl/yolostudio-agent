@@ -47,6 +47,43 @@ class KnowledgeService:
             raise FileNotFoundError(f'knowledge index not found: {self.index_path}')
         return json.loads(self.index_path.read_text(encoding='utf-8'))
 
+    def _source_policy(self) -> dict[str, Any]:
+        return dict(self._load_index().get('source_policy') or {})
+
+    @staticmethod
+    def _normalize_source_type(value: Any) -> str:
+        text = str(value or 'workflow').strip().lower()
+        return text or 'workflow'
+
+    @classmethod
+    def _default_origin(cls, source_type: str) -> str:
+        mapping = {
+            'official': 'official_docs',
+            'workflow': 'project_workflow',
+            'case': 'real_training_case',
+            'test': 'test_fixture',
+        }
+        return mapping.get(source_type, 'project_workflow')
+
+    @classmethod
+    def _default_evidence_level(cls, source_type: str) -> str:
+        mapping = {
+            'official': 'seed_rule',
+            'workflow': 'system_rule',
+            'case': 'validated_case',
+            'test': 'non_prod',
+        }
+        return mapping.get(source_type, 'system_rule')
+
+    def _normalize_rule(self, rule: dict[str, Any], *, path: Path) -> dict[str, Any]:
+        merged = dict(rule)
+        source_type = self._normalize_source_type(merged.get('source_type'))
+        merged['source_type'] = source_type
+        merged.setdefault('origin', self._default_origin(source_type))
+        merged.setdefault('evidence_level', self._default_evidence_level(source_type))
+        merged.setdefault('_file', str(path))
+        return merged
+
     @lru_cache(maxsize=1)
     def _load_rules(self) -> list[dict[str, Any]]:
         rules: list[dict[str, Any]] = []
@@ -54,10 +91,36 @@ class KnowledgeService:
             path = self.project_root / item['path']
             payload = json.loads(path.read_text(encoding='utf-8'))
             for rule in payload:
-                merged = dict(rule)
-                merged.setdefault('_file', str(path))
-                rules.append(merged)
+                rules.append(self._normalize_rule(rule, path=path))
         return rules
+
+    def _resolve_allowed_source_types(
+        self,
+        *,
+        allowed_source_types: list[str] | None = None,
+        include_case_sources: bool = False,
+        include_test_sources: bool = False,
+    ) -> set[str]:
+        policy = self._source_policy()
+        defaults = [self._normalize_source_type(item) for item in policy.get('default_allowed_source_types') or ['official', 'workflow']]
+        allowed = set(self._normalize_source_type(item) for item in (allowed_source_types or defaults))
+        if include_case_sources:
+            allowed.add('case')
+        if include_test_sources:
+            allowed.add('test')
+        if not include_test_sources:
+            for item in policy.get('default_blocked_source_types') or ['test']:
+                if self._normalize_source_type(item) == 'test':
+                    allowed.discard('test')
+        return allowed or {'official', 'workflow'}
+
+    @staticmethod
+    def _summarize_sources(rules: list[dict[str, Any]]) -> dict[str, int]:
+        summary: dict[str, int] = {}
+        for rule in rules:
+            source_type = str(rule.get('source_type', 'workflow')).strip().lower() or 'workflow'
+            summary[source_type] = summary.get(source_type, 0) + 1
+        return dict(sorted(summary.items(), key=lambda item: item[0]))
 
     def _match_playbooks(self, *, topic: str, stage: str, model_family: str, task_type: str, limit: int = 2) -> list[dict[str, Any]]:
         del task_type
@@ -127,14 +190,25 @@ class KnowledgeService:
         task_type: str = 'detection',
         signals: list[str] | None = None,
         max_rules: int = 5,
+        allowed_source_types: list[str] | None = None,
+        include_case_sources: bool = False,
+        include_test_sources: bool = False,
     ) -> list[dict[str, Any]]:
         requested_family = (model_family or 'generic').strip().lower()
         requested_stage = (stage or '').strip().lower()
         requested_task_type = (task_type or '').strip().lower()
         requested_signals = [str(item).strip().lower() for item in signals or [] if str(item).strip()]
+        allowed_sources = self._resolve_allowed_source_types(
+            allowed_source_types=allowed_source_types,
+            include_case_sources=include_case_sources,
+            include_test_sources=include_test_sources,
+        )
 
         candidates: list[tuple[float, dict[str, Any]]] = []
         for rule in self._load_rules():
+            source_type = self._normalize_source_type(rule.get('source_type'))
+            if source_type not in allowed_sources:
+                continue
             family = str(rule.get('family', 'generic')).strip().lower()
             if family not in {'generic', requested_family}:
                 continue
@@ -317,6 +391,8 @@ class KnowledgeService:
         task_type: str = 'detection',
         signals: list[str] | None = None,
         max_rules: int = 5,
+        include_case_sources: bool = False,
+        include_test_sources: bool = False,
     ) -> dict[str, Any]:
         matched_rules = self.match_rules(
             topic=topic,
@@ -325,10 +401,13 @@ class KnowledgeService:
             task_type=task_type,
             signals=signals or [],
             max_rules=max_rules,
+            include_case_sources=include_case_sources,
+            include_test_sources=include_test_sources,
         )
         playbooks = self._match_playbooks(topic=topic, stage=stage, model_family=model_family, task_type=task_type)
         matched_ids = [rule['id'] for rule in matched_rules]
         next_actions = self._dedupe([item for rule in matched_rules for item in rule.get('next_actions') or []])
+        source_summary = self._summarize_sources(matched_rules)
         summary = (
             f"知识检索完成: 命中 {len(matched_rules)} 条规则"
             if matched_rules
@@ -345,6 +424,12 @@ class KnowledgeService:
             'matched_rule_ids': matched_ids,
             'matched_rules': matched_rules,
             'playbooks': playbooks,
+            'source_summary': source_summary,
+            'source_types_used': list(source_summary.keys()),
+            'knowledge_policy': {
+                'case_sources_included': include_case_sources,
+                'test_sources_included': include_test_sources,
+            },
             'next_actions': next_actions[:3],
         }
 
@@ -356,6 +441,8 @@ class KnowledgeService:
         prediction_summary: dict[str, Any] | None = None,
         model_family: str = 'yolo',
         task_type: str = 'detection',
+        include_case_sources: bool = False,
+        include_test_sources: bool = False,
     ) -> dict[str, Any]:
         metric_signals, metric_facts = self._derive_metric_signals(metrics)
         data_signals, data_facts = self._derive_data_quality_signals(data_quality)
@@ -370,6 +457,8 @@ class KnowledgeService:
             task_type=task_type,
             signals=signals,
             max_rules=4,
+            include_case_sources=include_case_sources,
+            include_test_sources=include_test_sources,
         )
         if not matched_rules:
             matched_rules = self.match_rules(
@@ -379,10 +468,13 @@ class KnowledgeService:
                 task_type=task_type,
                 signals=signals,
                 max_rules=4,
+                include_case_sources=include_case_sources,
+                include_test_sources=include_test_sources,
             )
         top = matched_rules[0] if matched_rules else None
         next_actions = self._dedupe([item for rule in matched_rules for item in rule.get('next_actions') or []])
         playbooks = self._match_playbooks(topic='training_metrics', stage='post_training', model_family=model_family, task_type=task_type)
+        source_summary = self._summarize_sources(matched_rules)
         if top:
             summary = f"训练结果分析: {top['interpretation']}"
         elif signals:
@@ -402,6 +494,12 @@ class KnowledgeService:
             'matched_rule_ids': [rule['id'] for rule in matched_rules],
             'matched_rules': matched_rules,
             'playbooks': playbooks,
+            'source_summary': source_summary,
+            'source_types_used': list(source_summary.keys()),
+            'knowledge_policy': {
+                'case_sources_included': include_case_sources,
+                'test_sources_included': include_test_sources,
+            },
             'next_actions': next_actions[:3] or ['先收集更完整的训练指标'],
         }
 
@@ -414,6 +512,8 @@ class KnowledgeService:
         prediction_summary: dict[str, Any] | None = None,
         model_family: str = 'yolo',
         task_type: str = 'detection',
+        include_case_sources: bool = False,
+        include_test_sources: bool = False,
     ) -> dict[str, Any]:
         readiness_signals, readiness_facts = self._derive_data_quality_signals(readiness)
         health_signals, health_facts = self._derive_data_quality_signals(health)
@@ -431,6 +531,8 @@ class KnowledgeService:
             task_type=task_type,
             signals=signals,
             max_rules=4,
+            include_case_sources=include_case_sources,
+            include_test_sources=include_test_sources,
         )
         if not matched_rules:
             matched_rules = self.match_rules(
@@ -440,10 +542,13 @@ class KnowledgeService:
                 task_type=task_type,
                 signals=signals,
                 max_rules=4,
+                include_case_sources=include_case_sources,
+                include_test_sources=include_test_sources,
             )
         top = matched_rules[0] if matched_rules else None
         next_actions = self._dedupe([item for rule in matched_rules for item in rule.get('next_actions') or []])
         playbooks = self._match_playbooks(topic='next_step', stage='next_step', model_family=model_family, task_type=task_type)
+        source_summary = self._summarize_sources(matched_rules)
         if top:
             summary = f"下一步建议: {top['recommendation']}"
         else:
@@ -461,5 +566,11 @@ class KnowledgeService:
             'matched_rule_ids': [rule['id'] for rule in matched_rules],
             'matched_rules': matched_rules,
             'playbooks': playbooks,
+            'source_summary': source_summary,
+            'source_types_used': list(source_summary.keys()),
+            'knowledge_policy': {
+                'case_sources_included': include_case_sources,
+                'test_sources_included': include_test_sources,
+            },
             'next_actions': next_actions[:3] or ['先补齐更多训练事实'],
         }

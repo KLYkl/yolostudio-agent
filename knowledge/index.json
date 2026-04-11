@@ -92,5 +92,19 @@
       ],
       "summary": "YOLO detection 第一阶段适配说明，包括 epochs/batch/imgsz/patience 与预测辅助判断。"
     }
-  ]
+  ],
+  "source_policy": {
+    "default_allowed_source_types": [
+      "official",
+      "workflow"
+    ],
+    "default_blocked_source_types": [
+      "test"
+    ],
+    "promotion_rules": [
+      "测试结果默认不得直接升格为 case 经验",
+      "case 规则只允许来自人工确认后的真实训练案例",
+      "official 与 workflow 规则可以直接参与默认建议"
+    ]
+  }
 }

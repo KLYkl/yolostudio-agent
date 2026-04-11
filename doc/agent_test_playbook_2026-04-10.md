@@ -1916,3 +1916,17 @@ extract_images -> scan_dataset -> validate_dataset -> prepare_dataset_for_traini
 - 只先覆盖 YOLO + detection
 - 当前 workflow / system 知识可直接使用
 - 真实训练案例知识仍待后续逐步沉淀
+
+
+### 29.5 知识来源隔离与防污染回归
+
+固定脚本：
+
+- `agent/tests/test_knowledge_source_policy.py`
+
+覆盖点：
+
+- 默认只允许 `official + workflow` 规则进入建议
+- `case` 规则只有显式启用时才会参与匹配
+- `test` 规则默认禁止进入正式建议
+- 知识工具输出必须带 `source_summary` / `knowledge_policy`

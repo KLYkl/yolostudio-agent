@@ -36,7 +36,9 @@
         "title": "Ultralytics Train Mode",
         "url": "https://docs.ultralytics.com/modes/train/"
       }
-    ]
+    ],
+    "origin": "project_workflow",
+    "evidence_level": "system_rule"
   },
   {
     "id": "yolo_hparam_epochs",
@@ -73,7 +75,9 @@
         "title": "Model Training Tips",
         "url": "https://docs.ultralytics.com/guides/model-training-tips/"
       }
-    ]
+    ],
+    "origin": "official_docs",
+    "evidence_level": "seed_rule"
   },
   {
     "id": "yolo_hparam_batch",
@@ -111,7 +115,9 @@
         "title": "Model Training Tips",
         "url": "https://docs.ultralytics.com/guides/model-training-tips/"
       }
-    ]
+    ],
+    "origin": "official_docs",
+    "evidence_level": "seed_rule"
   },
   {
     "id": "yolo_hparam_imgsz",
@@ -149,7 +155,9 @@
         "title": "Ultralytics Train Mode",
         "url": "https://docs.ultralytics.com/modes/train/"
       }
-    ]
+    ],
+    "origin": "official_docs",
+    "evidence_level": "seed_rule"
   },
   {
     "id": "yolo_hparam_patience",
@@ -186,7 +194,9 @@
         "title": "Model Training Tips",
         "url": "https://docs.ultralytics.com/guides/model-training-tips/"
       }
-    ]
+    ],
+    "origin": "official_docs",
+    "evidence_level": "seed_rule"
   },
   {
     "id": "yolo_post_prediction_not_training",
@@ -224,6 +234,8 @@
         "title": "YoloStudio prediction workflow",
         "url": "agent_plan workflow"
       }
-    ]
+    ],
+    "origin": "project_workflow",
+    "evidence_level": "system_rule"
   }
 ]

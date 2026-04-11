@@ -291,6 +291,10 @@ def build_grounded_tool_reply(applied_results: list[tuple[str, dict[str, Any]]])
             lines.append('命中规则:')
             for item in matched_rules[:2]:
                 lines.append(f"- {item.get('id')}: {item.get('interpretation')}")
+        source_summary = result.get('source_summary') or {}
+        if source_summary:
+            preview = '，'.join(f"{k}={v}" for k, v in source_summary.items())
+            lines.append(f"来源: {preview}")
         playbooks = result.get('playbooks') or []
         if playbooks:
             lines.append('参考资料:')
@@ -309,6 +313,10 @@ def build_grounded_tool_reply(applied_results: list[tuple[str, dict[str, Any]]])
             lines.extend(f'- {item}' for item in facts[:4])
         if result.get('interpretation'):
             lines.append(f"解释: {result.get('interpretation')}")
+        source_summary = result.get('source_summary') or {}
+        if source_summary:
+            preview = '，'.join(f"{k}={v}" for k, v in source_summary.items())
+            lines.append(f"来源: {preview}")
         if result.get('recommendation'):
             lines.append(f"建议动作: {result.get('recommendation')}")
         next_actions = result.get('next_actions') or []
@@ -324,6 +332,10 @@ def build_grounded_tool_reply(applied_results: list[tuple[str, dict[str, Any]]])
         if basis:
             lines.append('依据:')
             lines.extend(f'- {item}' for item in basis[:4])
+        source_summary = result.get('source_summary') or {}
+        if source_summary:
+            preview = '，'.join(f"{k}={v}" for k, v in source_summary.items())
+            lines.append(f"来源: {preview}")
         if result.get('why'):
             lines.append(f"原因: {result.get('why')}")
         next_actions = result.get('next_actions') or []

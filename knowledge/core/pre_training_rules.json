@@ -37,7 +37,9 @@
         "title": "Ultralytics Detect Datasets",
         "url": "https://docs.ultralytics.com/datasets/detect/"
       }
-    ]
+    ],
+    "origin": "official_docs",
+    "evidence_level": "seed_rule"
   },
   {
     "id": "generic_pre_duplicate_images_present",
@@ -75,7 +77,9 @@
         "title": "Model Training Tips",
         "url": "https://docs.ultralytics.com/guides/model-training-tips/"
       }
-    ]
+    ],
+    "origin": "official_docs",
+    "evidence_level": "seed_rule"
   },
   {
     "id": "generic_pre_corrupted_images_present",
@@ -114,7 +118,9 @@
         "title": "Model Training Tips",
         "url": "https://docs.ultralytics.com/guides/model-training-tips/"
       }
-    ]
+    ],
+    "origin": "official_docs",
+    "evidence_level": "seed_rule"
   },
   {
     "id": "generic_pre_small_dataset",
@@ -152,7 +158,9 @@
         "title": "Model Training Tips",
         "url": "https://docs.ultralytics.com/guides/model-training-tips/"
       }
-    ]
+    ],
+    "origin": "official_docs",
+    "evidence_level": "seed_rule"
   },
   {
     "id": "generic_pre_dataset_not_ready",
@@ -191,7 +199,9 @@
         "title": "YoloStudio training workflow",
         "url": "agent_plan workflow"
       }
-    ]
+    ],
+    "origin": "project_workflow",
+    "evidence_level": "system_rule"
   },
   {
     "id": "generic_pre_validation_issues_present",
@@ -229,6 +239,8 @@
         "title": "YoloStudio validate workflow",
         "url": "agent_plan workflow"
       }
-    ]
+    ],
+    "origin": "project_workflow",
+    "evidence_level": "system_rule"
   }
 ]
