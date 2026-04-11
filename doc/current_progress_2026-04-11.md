@@ -36,7 +36,7 @@
 ### 当前边界
 
 - 远端 `yolostudio-agent-server` 环境当前缺少 `cv2` / `numpy`
-- 因此 **远端 `extract_video_frames` 目前会优雅失败，不会把 MCP server 再次打挂**
+- 随后已为远端 `yolostudio-agent-server` 环境补齐 `cv2 / numpy`，并完成真实视频目录抽帧 smoke；当前 `extract_video_frames` 已可在远端实际执行
 - 图片抽取和视频扫描已经同步到远端并可用；视频抽帧的远端可用性还差运行环境依赖补齐
 
 ### 本轮直接验证结果
@@ -1062,3 +1062,52 @@ Gemma 这轮测试很清楚地说明：
 - 状态不污染
 - history trim 后仍能续接
 - prepare / cancel 这类确认流在长上下文中仍然稳定
+
+
+### 4.10 2026-04-11 深夜新增推进（九）
+
+这轮把数据提取链最后一个明显缺口补掉了：
+
+- 远端 `yolostudio-agent-server` 环境补齐了 `numpy` 和 `opencv-python-headless`
+- `extract_video_frames` 已在远端真实视频目录上做 smoke
+- 远端抽帧输出已成功落到：
+  - `/home/kly/prediction_real_media_output/frame_extract_smoke`
+
+#### 远端真实结果
+
+本轮远端抽帧 smoke 使用：
+
+- 输入目录：`/home/kly/prediction_real_media_stage/videos`
+- 模式：`interval`
+- 参数：`frame_interval=10`，`max_frames=6`
+
+结果：
+
+- `ok=true`
+- `total_frames=933`
+- `extracted=18`
+- `final_count=18`
+- `warnings=[]`
+
+这意味着：
+
+> 数据提取链现在不再是“图片抽取可用、视频抽帧远端待补”，而是**图片抽取 / 视频扫描 / 视频抽帧都已经具备远端工具级可用性**。
+
+#### 同步开始的结构整理
+
+为了避免继续把行为堆回 `agent_client.py`，这轮顺手开始拆第一刀：
+
+- 新增：`agent/client/intent_parsing.py`
+
+当前已把这些解析职责从 `agent_client.py` 中拆出并复用：
+
+- 路径提取
+- 模型路径判断
+- 视频路径判断
+- 输出目录提取
+- 抽图参数解析
+- 抽帧参数解析
+- epoch 提取
+- prediction summary 路由所需的目标路径判断
+
+这是结构整理阶段的第一步，目标是先把“意图解析/参数抽取”与“主 agent 协调逻辑”分开，而不改变外部行为。

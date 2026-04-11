@@ -1688,7 +1688,8 @@ ssh -n -T ...
   - 嵌套目录统计正常
 - `extract_video_frames`
   - 本地环境工具级通过
-  - 若远端缺少 `cv2 / numpy`，应 **优雅失败**，而不是打挂 MCP server
+  - 远端 `yolostudio-agent-server` 环境补齐 `cv2 / numpy` 后，应完成真实视频目录抽帧 smoke
+  - 若未来远端再次缺少依赖，也应 **优雅失败**，而不是打挂 MCP server
 
 ### 28.2 Agent 级验证
 
@@ -1744,7 +1745,7 @@ extract_images -> scan_dataset -> validate_dataset -> prepare_dataset_for_traini
 截至 2026-04-11：
 - 图片抽取链：本地通过，且服务器代码已同步
 - `scan_videos`：本地通过，且服务器 smoke 通过
-- `extract_video_frames`：本地通过；远端如果 `yolostudio-agent-server` 环境仍缺 `cv2 / numpy`，当前应返回工具级错误，不应影响整个 MCP server 启动
+- `extract_video_frames`：本地通过；远端 `yolostudio-agent-server` 环境已补齐 `cv2 / numpy` 并完成真实视频目录抽帧 smoke；若未来依赖再次缺失，也应返回工具级错误，不应影响整个 MCP server 启动
 
 ### 28.5 长上下文 / 极端聊天回归
 

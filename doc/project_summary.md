@@ -19,7 +19,7 @@
 - 图片抽取支持预览 / 实际执行两段式
 - 抽取结果会返回 `workflow_ready_path`，可直接接 `scan_dataset / validate_dataset / prepare_dataset_for_training`
 - `scan_videos` 已同步到远端并完成 smoke
-- `extract_video_frames` 已在本地工具级跑通，但远端 `yolostudio-agent-server` 环境仍缺 `cv2 / numpy`，当前会优雅返回错误，不再影响 MCP server 启动
+- `extract_video_frames` 已在本地与远端工具级跑通；远端 `yolostudio-agent-server` 环境已补齐 `cv2 / numpy`，并完成真实视频抽帧 smoke
 
 这意味着当前项目已经不只是训练链 + prediction 链，还新增了一条可用的数据提取链入口。
 
