@@ -1111,3 +1111,39 @@ Gemma 这轮测试很清楚地说明：
 - prediction summary 路由所需的目标路径判断
 
 这是结构整理阶段的第一步，目标是先把“意图解析/参数抽取”与“主 agent 协调逻辑”分开，而不改变外部行为。
+
+
+### 4.11 2026-04-11 深夜新增推进（十）
+
+结构整理继续推进了第二刀，这轮不再碰意图解析，而是开始从 prediction 服务里拆“结果汇总”职责：
+
+- 新增：`agent/server/services/prediction_report_helpers.py`
+- `predict_service.py` 中的 `summarize_prediction_results(...)` 现在改为委托给独立 helper 模块
+
+当前拆出的能力包括：
+
+- 预测报告文件定位与加载
+- image 模式摘要构建
+- video 模式摘要构建
+- 缺失报告 / 报告不可解析的统一错误返回
+
+这样做的目标不是改行为，而是把：
+
+- 图片预测执行
+- 视频预测执行
+- 预测结果汇总
+
+这三类职责继续拆开，为后续进一步整理 `predict_service.py` 做准备。
+
+#### 本轮验证
+
+本轮新增并通过了：
+
+- `agent/tests/test_prediction_report_helpers.py`
+- `agent/tests/test_prediction_route.py`
+- `agent/tests/test_extreme_chat_regression.py`
+
+这说明：
+
+- prediction 汇总 helper 拆分后，对聊天层 summary 路由没有造成回退
+- 长上下文极端对话里，`summarize_prediction_results` 仍能正确落到最近一次 prediction report

@@ -1773,3 +1773,15 @@ extract_images -> scan_dataset -> validate_dataset -> prepare_dataset_for_traini
 - `D:\yolodo2.0\agent_plan\agent\tests\test_video_extract_tools.py`
 - `D:\yolodo2.0\agent_plan\agent\tests\test_extract_route.py`
 - `D:\yolodo2.0\agent_plan\agent\tests\test_extreme_chat_regression.py`
+
+
+### 28.6 prediction 汇总 helper 回归
+
+新增固定脚本：
+- `agent/tests/test_prediction_report_helpers.py`
+
+覆盖点：
+- image prediction_report.json 摘要构建
+- video prediction_report.json 摘要构建
+- 缺失 report 的失败语义
+- 与聊天层 summary 路由的兼容性（结合 `test_prediction_route.py` 与 `test_extreme_chat_regression.py` 共同验证）

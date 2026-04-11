@@ -23,6 +23,13 @@
 
 这意味着当前项目已经不只是训练链 + prediction 链，还新增了一条可用的数据提取链入口。
 
+同时，结构整理已经进入第二刀：
+- 第一刀：`agent/client/intent_parsing.py` 拆出意图解析
+- 第二刀：`agent/server/services/prediction_report_helpers.py` 拆出 prediction 汇总逻辑
+
+当前整理策略仍然保持不变：
+> **先拆职责，不改对外行为；所有整理都必须有回归保护。**
+
 ## 0.2 2026-04-11 晚间新增：prediction 远端真实执行完成一轮闭环
 
 这轮已经不是只上传素材或只做本地验证，而是完成了完整的远端 prediction 闭环：
