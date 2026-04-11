@@ -197,9 +197,12 @@
 
 ### 7.2 第二主线
 - `D:\yolodo2.0\agent_plan\agent\tests\test_predict_tools.py`
+- `D:\yolodo2.0\agent_plan\agent\tests\test_predict_video_tools.py`
 - `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_route.py`
 - `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_regression_suite.py`
 - `D:\yolodo2.0\agent_plan\doc\prediction_regression_report_2026-04-11.md`
+- `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_real_media_local_suite.py`
+- `D:\yolodo2.0\agent_plan\doc\prediction_real_media_validation_2026-04-11.md`
 
 ### 7.3 测试手册
 - `D:\yolodo2.0\agent_plan\doc\agent_test_playbook_2026-04-10.md`
@@ -248,6 +251,15 @@
 用途：
 - 本地 health / duplicate 只读压力测试
 
+### 8.6 本地真实预测素材
+- 权重池：`C:\Users\29615\OneDrive\桌面\yuntian`
+- 视频池：`H:\foto`
+
+用途：
+- 第二主线真实本地权重 / 视频验证
+- 本机预测环境探测
+- 真实素材 Mock 链路验证
+
 ---
 
 ## 9. 当前协作约定（重要）
@@ -290,16 +302,21 @@ D:\yolodo2.0\agent_plan\doc\agent_test_playbook_2026-04-10.md
 
 如果不再征询用户，最合理的下一步顺序是：
 
-1. **远端部署 prediction Phase 1**
+1. **处理第二主线真实推理环境问题或切到远端预测环境**
+   - 当前本机真实素材接入已验证
+   - 但 `ultralytics / torch` 导入被 `WinError 10106` 阻塞
+2. **远端部署 prediction Phase 2**
    - 同步 `predict_service.py` / `predict_tools.py`
    - 重启远端 MCP
-2. **做远端真实预测验证**
+3. **做远端真实预测验证**
    - 单图
    - 图片目录
+   - 单视频
+   - 视频目录
    - 输出工件
    - grounded 回答
-3. **把第二主线也建立成远端回归基线**
-4. **然后继续做 prediction 结果汇总**
+4. **把第二主线也建立成远端回归基线**
+5. **然后继续做 prediction 结果汇总 / 批处理增强**
 
 ---
 

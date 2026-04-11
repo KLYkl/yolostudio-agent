@@ -33,5 +33,6 @@ agent/tests/test_long_context_smoke_output.json
 agent/tests/_v2ray_config.json
 agent/tests/_train_log.txt
 agent/tests/.tmp_*/
+agent/tests/_tmp_*/
 .tmp_*/
 agent/tests/*_output.json

@@ -8,6 +8,18 @@
 > - route / alias / grounded 代码集成
 >
 > 受本地 `asyncio/_overlapped` 环境异常影响，依赖 LangChain 的第二轮 prediction route/regression 脚本尚待补跑。
+>
+> 2026-04-11 进一步补充：
+> - 已新增真实本地素材验证：
+>   - 权重池：`C:\Users\29615\OneDrive\桌面\yuntian`
+>   - 视频池：`H:\foto`
+> - 对应脚本：
+>   - `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_real_media_local_suite.py`
+> - 对应报告：
+>   - `D:\yolodo2.0\agent_plan\doc\prediction_real_media_validation_2026-04-11.md`
+> - 当前结论：
+>   - 真实素材 Mock 链路通过
+>   - 本机真实推理被 `WinError 10106` 环境问题阻塞
 
 - Case 数量: `6`
 - 检查项通过: `20/20`

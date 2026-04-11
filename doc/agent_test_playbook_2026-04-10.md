@@ -1385,3 +1385,104 @@ Gemma 和 DeepSeek：
 - 预测结果汇总是否优先走 `prediction_report.json`，而不是重复跑一次预测
 - 是否会编造不存在的视频 / 摄像头能力
 - 兼容层是否足够覆盖旧桌面风格工具名
+
+## 25. 第二主线真实素材测试法（2026-04-11 增补）
+
+当进入“真实本地权重 + 真实本地视频”验证阶段后，测试方法不能再只看 toy data 或纯 monkeypatch case。  
+当前推荐的固定流程是 **四段式**：
+
+1. **素材盘点**
+2. **本机推理环境探测**
+3. **真实素材 Mock 链路验证**
+4. **有条件真实推理**
+
+### 25.1 为什么要改成四段式
+第二主线现在面对的是：
+- 真实 `.pt` 权重池
+- 真实 `.mp4` 视频池
+- 本机 Python / torch / ultralytics 运行环境差异
+
+如果还是只跑纯单元测试，很容易出现：
+- 工具代码没问题，但本机环境坏了
+- 环境可用，但素材路径/输出目录管理不稳
+- 真实视频读取、报告生成、汇总链路没验证到
+
+所以测试要拆开：
+- **代码正确性**
+- **素材可用性**
+- **运行环境可用性**
+- **真实链路可用性**
+
+### 25.2 当前推荐素材池
+#### 权重池
+- `C:\Users\29615\OneDrive\桌面\yuntian`
+
+#### 视频池
+- `H:\foto`
+
+### 25.3 当前推荐执行脚本
+- `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_real_media_local_suite.py`
+
+这个脚本会做：
+1. 从权重池中选最新的若干 `.pt`
+2. 从视频池中选较小的视频做代表样本
+3. 复制视频到 workspace 内临时目录，避免动原始视频
+4. 探测：
+   - `D:\Anaconda\envs\yolo\python.exe`
+   - `ultralytics + torch` 是否可导入
+5. 在环境不可用时，仍执行：
+   - `predict_videos`
+   - `summarize_prediction_results`
+   的 **真实素材 Mock 验证**
+6. 若环境可用，再补真实推理
+
+### 25.4 当前产物
+- JSON：`D:\yolodo2.0\agent_plan\agent\tests\test_prediction_real_media_local_output.json`
+- 报告：`D:\yolodo2.0\agent_plan\doc\prediction_real_media_validation_2026-04-11.md`
+
+### 25.5 当前这套方法重点在测什么
+#### A. 素材接入是否可靠
+- 权重路径是否存在
+- 视频路径是否存在
+- 选出来的样本是否足够小、足够快，适合回归
+
+#### B. 工具链是否能处理真实媒体
+- 视频目录发现
+- 视频读取
+- 输出目录创建
+- `video_prediction_report.json` 生成
+- `summarize_prediction_results` 读取视频报告
+
+#### C. 环境阻塞是不是被明确识别
+如果真实推理做不了，报告里必须能说清：
+- 不是工具逻辑坏了
+- 而是本机 runtime 出了问题
+
+### 25.6 当前已知本机边界
+在本机上，当前真实推理环境探测结果是：
+- `D:\Anaconda\envs\yolo\python.exe` 存在
+- 但导入 `ultralytics / torch` 时会失败
+- 典型错误：
+  - `WinError 10106`
+  - `_overlapped / winsock 提供程序异常`
+
+所以：
+> 当前“真实本地素材测试”已经可做，但必须接受“代码链路验证通过、真实推理因本机环境阻塞而跳过”的结果。
+
+### 25.7 当前推荐判定标准
+#### 通过
+- 权重和视频素材成功盘点
+- 真实素材 Mock 链路通过
+- 报告和摘要都生成
+- 环境阻塞被明确识别并写进报告
+
+#### 更高一级通过
+- 在环境可用时，真实推理也通过
+
+### 25.8 推荐执行顺序
+1. `python -m py_compile ...`
+2. `python D:\yolodo2.0\agent_plan\agent\tests\test_predict_video_tools.py`
+3. `python D:\yolodo2.0\agent_plan\agent\tests\test_prediction_real_media_local_suite.py`
+4. 查看：
+   - `test_prediction_real_media_local_output.json`
+   - `prediction_real_media_validation_2026-04-11.md`

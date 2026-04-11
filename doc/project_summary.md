@@ -624,3 +624,63 @@ afab4c1  test: comprehensive validation + log parser fix
 - 解释更准
 - 风险更早暴露
 - 训练前判断更像一个工程系统，而不是只靠模型猜测
+
+## 18. 2026-04-11 第二主线真实素材验证升级
+
+第二主线在完成 `predict_images / predict_videos / summarize_prediction_results` 后，这轮不再只用 toy data 做本地验证，而是正式引入：
+
+- 本地真实权重池：`C:\Users\29615\OneDrive\桌面\yuntian`
+- 本地真实视频池：`H:\foto`
+
+### 新的测试方法
+当前第二主线推荐固定使用四段式验证：
+1. 素材盘点
+2. 本机推理环境探测
+3. 真实素材 Mock 验证
+4. 有条件真实推理
+
+对应脚本与报告：
+- `agent/tests/test_prediction_real_media_local_suite.py`
+- `agent/tests/test_prediction_real_media_local_output.json`
+- `doc/prediction_real_media_validation_2026-04-11.md`
+
+### 已验证
+#### 真实素材接入
+- 已稳定发现本地权重：
+  - `zq-4-06-qcar.pt`
+  - `zq-4-3.pt`
+  - `zq-4-2.pt`
+- 已稳定发现并挑选小体量视频样本：
+  - `fyb2026-03-06_094015_491.mp4`
+  - `fyb2026-03-06_094125_133.mp4`
+  - `zyb_2026-03-03_125605_456.mp4`
+
+#### 真实素材 Mock 链路
+在不修改原始视频的前提下，以下链路已跑通：
+- 视频目录输入
+- 视频读取
+- 输出目录创建
+- `video_prediction_report.json`
+- `summarize_prediction_results`
+
+当前结果：
+- `processed_videos=2`
+- `total_frames=16`
+- `detected_frames=16`
+- `total_detections=16`
+- `assessment=1.0`
+
+### 当前阻塞
+本轮没有掩盖真实问题，而是明确暴露出：
+- 本机 `D:\Anaconda\envs\yolo\python.exe` 在导入 `ultralytics / torch` 时失败
+- 典型错误：
+  - `WinError 10106`
+  - `_overlapped / winsock 提供程序异常`
+
+这说明：
+> 当前第二主线的 Agent 代码链路已能承接真实素材，但本机真实 YOLO 推理暂时被运行环境阻塞。
+
+### 当前意义
+到这一步，第二主线已经不再只是“本地工具层玩具验证”，而是进入了：
+
+> **真实素材接入已验证，真实推理环境问题已显式定位** 的阶段。
