@@ -705,3 +705,51 @@ Gemma 这轮测试很清楚地说明：
 
 也就是说：
 > 第二主线现在不只是“知道该怎么测”，而是已经把 **本地 `yolo / yolodo` conda 环境执行** 作为默认路径准备好了，同时保留了 **打包 → 上传 → 远端执行** 的备选链路。
+
+
+---
+
+## 4.6 2026-04-11 深夜新增推进（五）
+
+这轮尝试把第二主线继续推进到**远端真实预测验证**，目标是：
+
+- 把本地挑选好的权重与视频样本传到服务器
+- 在服务器真实环境里执行 prediction tool
+- 建立远端 prediction 回归基线
+
+当前结论是：
+
+> **代码和脚本链路已经准备好，但当前这台控制端运行环境的 TCP 连接被系统策略拦住了，因此本轮没能真正完成上传与远端实测。**
+
+### 已经补齐的东西
+
+- 本地素材 staging：`deploy/scripts/stage_prediction_real_media.py`
+- 远端上传脚本：`deploy/scripts/upload_prediction_real_media.ps1`
+- 远端执行脚本：`deploy/scripts/run_prediction_remote_validation.sh`
+- 远端测试脚本：`agent/tests/test_prediction_remote_real_media.py`
+- 新增远端预检查脚本：`deploy/scripts/check_remote_prediction_prereqs.ps1`
+
+### 已经验证到的事实
+
+运行：
+
+- `D:\yolodo2.0gent_plan\deploy\scripts\check_remote_prediction_prereqs.ps1`
+
+得到：
+
+- 到 `192.168.0.163:22` 的 TCP 连接被拒绝（访问权限不允许）
+- 到 `192.168.0.163:8080` 的 TCP 连接被拒绝（访问权限不允许）
+- 到 `192.168.0.163:11434` 的 TCP 连接被拒绝（访问权限不允许）
+- `ssh` 可执行文件存在，但 `ssh_exit=255`
+
+这说明：
+
+> 当前阻塞点不是 `agent_plan` 代码，也不是远端脚本没准备好，
+> 而是**当前这个 Codex / PowerShell 运行环境没有能力对服务器发起 TCP 连接**。
+
+### 对主线的影响
+
+- 第一主线不受影响（训练远端链路之前已验证较深）
+- 第二主线当前仍然以**本地真实 conda 环境验证**为主
+- 一旦换到允许出站 TCP 的终端，会立刻优先恢复“远端 prediction 真实验证”
+

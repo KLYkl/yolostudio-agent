@@ -1532,3 +1532,31 @@ Gemma 和 DeepSeek：
 
 所以当前工程策略是：
 > **先把本地 `yolo / yolodo` 环境作为默认真实验证目标；同时把远端备选链路准备好，等网络条件允许时再启用。**
+
+
+## 25. 第二主线远端 prediction 预检查（2026-04-11 增补）
+
+在执行以下动作前：
+- `deploy/scripts/upload_prediction_real_media.ps1`
+- `deploy/scripts/run_prediction_remote_validation.sh`
+
+先运行：
+
+```powershell
+D:\yolodo2.0gent_plan\deploy\scripts\check_remote_prediction_prereqs.ps1
+```
+
+### 通过标准
+- 能建立到服务器 `22` 端口的 TCP 连接
+- `ssh` 调用不再直接返回 `255`
+
+### 当前已知阻塞现象
+如果输出类似：
+- `以一种访问权限不允许的方式做了一个访问套接字的尝试。`
+- `ssh_exit=255`
+
+则说明：
+
+> 当前终端运行环境不能对远端服务器发起 TCP / SSH 连接，
+> 此时不要继续重试上传脚本，应切回本地 `yolo / yolodo` conda 环境完成 prediction 真实验证。
+

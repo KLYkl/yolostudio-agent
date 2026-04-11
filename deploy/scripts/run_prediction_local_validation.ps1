@@ -28,7 +28,12 @@ if (!(Test-Path -LiteralPath $PythonExe)) {
 
 New-Item -ItemType Directory -Force -Path $OutputRoot | Out-Null
 
-& $PythonExe "D:\yolodo2.0\agent_plan\agent\tests\test_prediction_remote_real_media.py" `
+$env:PYTHONHASHSEED = "1"
+if (-not $env:YOLO_CONFIG_DIR) {
+    $env:YOLO_CONFIG_DIR = "D:\yolodo2.0\agent_plan\.tmp_prediction_local_config"
+}
+
+& $PythonExe "D:\yolodo2.0\agent_plan\deploy\scripts\run_prediction_local_validation.py" `
   --weights-dir $WeightsDir `
   --videos-dir $VideosDir `
   --output-dir $OutputRoot

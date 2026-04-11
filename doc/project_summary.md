@@ -701,3 +701,26 @@ afab4c1  test: comprehensive validation + log parser fix
 - 受限于本机 winsock / Python 运行环境
 - 当前还未跑通本地 `yolo / yolodo` 环境下的真实推理
 - 若要走远端备选方案，本轮也无法直接完成远端上传和远端执行
+
+
+## 2026-04-11 远端 prediction 验证阻塞说明
+
+第二主线的远端 prediction 验证链路已经具备：
+
+- `deploy/scripts/stage_prediction_real_media.py`
+- `deploy/scripts/upload_prediction_real_media.ps1`
+- `deploy/scripts/run_prediction_remote_validation.sh`
+- `agent/tests/test_prediction_remote_real_media.py`
+- `deploy/scripts/check_remote_prediction_prereqs.ps1`
+
+但当前 Codex 所在的 PowerShell / Python 运行环境，对服务器 `192.168.0.163` 的 TCP 出站连接被系统策略拦截：
+
+- `22` 端口：拒绝访问
+- `8080` 端口：拒绝访问
+- `11434` 端口：拒绝访问
+- `ssh` 直接调用返回 `255`
+
+因此：
+
+> 当前第二主线的**远端真实 prediction 实测还没完成**，不是因为代码或脚本没准备好，而是因为当前控制端运行环境不具备对远端发起 TCP/SSH 连接的能力。
+

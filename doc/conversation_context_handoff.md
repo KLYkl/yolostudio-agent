@@ -328,3 +328,19 @@ D:\yolodo2.0\agent_plan\doc\agent_test_playbook_2026-04-10.md
 ## 12. 一句话收尾
 
 > 如果只记住一件事：**第一主线已经基本收稳，第二主线已经在本地起线成功；下一步最值钱的事，是把第二主线真正落到本地 `yolo / yolodo` 环境并做真实验证。**
+
+
+## 11. 第二主线远端验证当前阻塞点
+
+远端 prediction 验证脚本和素材 staging 已经准备好，但当前会话所在运行环境对服务器 `192.168.0.163` 的 TCP 连接被系统策略拦截。
+
+关键证据：
+- `deploy/scripts/check_remote_prediction_prereqs.ps1`
+- 结果：`22 / 8080 / 11434` 端口均为“访问权限不允许”
+- `ssh` 可执行文件存在，但 `ssh_exit=255`
+
+因此，如果新会话要继续推进第二主线远端验证，优先顺序应是：
+1. 先运行 `deploy/scripts/check_remote_prediction_prereqs.ps1`
+2. 若 TCP/SSH 仍被拦截，则继续沿用本地 `yolo / yolodo` conda 环境完成 prediction 真实验证
+3. 一旦换到允许出站 TCP 的终端，再恢复远端 prediction 实测
+
