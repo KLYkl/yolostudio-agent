@@ -3,7 +3,7 @@ param(
     [string]$Server,
 
     [string]$StageDir = "D:\yolodo2.0\agent_plan\.tmp_prediction_real_media_stage",
-    [string]$RemoteRoot = "~/prediction_real_media_stage"
+    [string]$RemoteRoot = "/home/kly/prediction_real_media_stage"
 )
 
 $ErrorActionPreference = "Stop"
@@ -35,12 +35,14 @@ function Invoke-NativeChecked {
 }
 
 Write-Host "==> ensure remote root"
+$ensureRemoteRootCommand = "mkdir -p $RemoteRoot/weights $RemoteRoot/videos && echo __REMOTE_READY__"
 Invoke-NativeChecked -Exe "ssh" -Args @(
     "-o", "BatchMode=yes",
     "-o", "ConnectTimeout=10",
     $Server,
-    "mkdir -p $RemoteRoot/weights $RemoteRoot/videos"
+    $ensureRemoteRootCommand
 )
+Write-Host "==> remote root ready: $RemoteRoot"
 
 Write-Host "==> upload manifest"
 Invoke-NativeChecked -Exe "scp" -Args @(
