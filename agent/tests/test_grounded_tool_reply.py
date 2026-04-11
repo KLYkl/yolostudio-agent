@@ -6,14 +6,11 @@ from pathlib import Path
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from agent_plan.agent.client.agent_client import YoloStudioAgentClient
+from agent_plan.agent.client.grounded_reply_builder import build_grounded_tool_reply
 
 
 def main() -> None:
-    client = object.__new__(YoloStudioAgentClient)
-
-    health_text = YoloStudioAgentClient._build_grounded_tool_reply(
-        client,
+    health_text = build_grounded_tool_reply(
         [(
             'run_dataset_health_check',
             {
@@ -33,8 +30,7 @@ def main() -> None:
     assert '重复图片: 83 组' in health_text
     assert '建议先处理损坏/异常图片' in health_text
 
-    readiness_text = YoloStudioAgentClient._build_grounded_tool_reply(
-        client,
+    readiness_text = build_grounded_tool_reply(
         [(
             'training_readiness',
             {
@@ -51,8 +47,7 @@ def main() -> None:
     assert '当前可用 YAML: /data/dirty/data.yaml' in readiness_text
     assert '当前 auto 设备策略会解析到: 1' in readiness_text
 
-    prepare_text = YoloStudioAgentClient._build_grounded_tool_reply(
-        client,
+    prepare_text = build_grounded_tool_reply(
         [(
             'prepare_dataset_for_training',
             {
@@ -68,8 +63,7 @@ def main() -> None:
     assert '已准备好的 YAML: /data/dirty/images_split/data.yaml' in prepare_text
     assert '如要训练，可直接复用上面的 data_yaml' in prepare_text
 
-    predict_text = YoloStudioAgentClient._build_grounded_tool_reply(
-        client,
+    predict_text = build_grounded_tool_reply(
         [(
             'predict_images',
             {
@@ -94,8 +88,7 @@ def main() -> None:
     assert '标注结果目录: /data/predict/out/annotated' in predict_text
     assert '预测报告: /data/predict/out/prediction_report.json' in predict_text
 
-    predict_video_text = YoloStudioAgentClient._build_grounded_tool_reply(
-        client,
+    predict_video_text = build_grounded_tool_reply(
         [(
             'predict_videos',
             {
@@ -119,8 +112,7 @@ def main() -> None:
     assert '主要类别: Excavator=1，bulldozer=2' in predict_video_text
     assert '视频预测输出目录: /data/videos/out' in predict_video_text
 
-    summary_text = YoloStudioAgentClient._build_grounded_tool_reply(
-        client,
+    summary_text = build_grounded_tool_reply(
         [(
             'summarize_prediction_results',
             {
@@ -144,8 +136,7 @@ def main() -> None:
     assert '主要类别: Excavator=1，bulldozer=2' in summary_text
     assert '预测报告: /data/predict/out/prediction_report.json' in summary_text
 
-    video_summary_text = YoloStudioAgentClient._build_grounded_tool_reply(
-        client,
+    video_summary_text = build_grounded_tool_reply(
         [(
             'summarize_prediction_results',
             {
@@ -168,8 +159,7 @@ def main() -> None:
     assert '有检测帧 2' in video_summary_text
     assert '预测报告: /data/videos/out/video_prediction_report.json' in video_summary_text
 
-    dup_text = YoloStudioAgentClient._build_grounded_tool_reply(
-        client,
+    dup_text = build_grounded_tool_reply(
         [(
             'detect_duplicate_images',
             {
