@@ -56,6 +56,7 @@ $ensureCommands = @(
     "mkdir -p $RemoteAppRoot/agent_plan/agent/server/services && echo __REMOTE_READY__ services",
     "mkdir -p $RemoteAppRoot/agent_plan/agent/server/tools && echo __REMOTE_READY__ tools",
     "mkdir -p $RemoteAppRoot/agent_plan/agent/tests && echo __REMOTE_READY__ tests",
+    "mkdir -p $RemoteAppRoot/deploy/scripts && echo __REMOTE_READY__ deploy_scripts",
     "mkdir -p $RemoteStageRoot/weights && echo __REMOTE_READY__ weights",
     "mkdir -p $RemoteStageRoot/videos && echo __REMOTE_READY__ videos",
     "mkdir -p $RemoteOutputRoot && echo __REMOTE_READY__ output"
@@ -83,6 +84,10 @@ $syncItems = @(
     @{
         Local = "D:\yolodo2.0\agent_plan\agent\tests\test_prediction_remote_real_media.py"
         Remote = "$Server`:$RemoteAppRoot/agent_plan/agent/tests/test_prediction_remote_real_media.py"
+    },
+    @{
+        Local = "D:\yolodo2.0\agent_plan\deploy\scripts\run_prediction_remote_validation.sh"
+        Remote = "$Server`:$RemoteAppRoot/deploy/scripts/run_prediction_remote_validation.sh"
     }
 )
 
@@ -126,13 +131,7 @@ Get-ChildItem -LiteralPath (Join-Path $LocalStageRoot "videos") -File | ForEach-
 }
 
 Write-Host "==> run remote prediction validation"
-$remoteCommand = @"
-set -euo pipefail
-source \$HOME/miniconda3/etc/profile.d/conda.sh
-conda activate $EnvName
-cd $RemoteAppRoot
-python -m agent_plan.agent.tests.test_prediction_remote_real_media --weights-dir $RemoteStageRoot/weights --videos-dir $RemoteStageRoot/videos --output-dir $RemoteOutputRoot
-"@
+$remoteCommand = "bash $RemoteAppRoot/deploy/scripts/run_prediction_remote_validation.sh $EnvName $RemoteStageRoot $RemoteOutputRoot"
 Invoke-NativeChecked -Exe "ssh" -Args @(
     "-n",
     "-T",
