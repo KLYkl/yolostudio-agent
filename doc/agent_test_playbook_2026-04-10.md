@@ -1560,3 +1560,32 @@ D:\yolodo2.0gent_plan\deploy\scripts\check_remote_prediction_prereqs.ps1
 > 当前终端运行环境不能对远端服务器发起 TCP / SSH 连接，
 > 此时不要继续重试上传脚本，应切回本地 `yolo / yolodo` conda 环境完成 prediction 真实验证。
 
+
+## 26. 当 Codex 进程无法直接复用 SSH 认证时的高效远端验证方式（2026-04-11 增补）
+
+如果出现下面这种情况：
+- 用户自己的 PowerShell 可以 `ssh yolostudio`
+- 但 Codex 所在进程无法直接读私钥或无法连接 `ssh-agent`
+
+不要继续低效地分步试错，直接改用**用户终端一键 roundtrip 脚本**：
+
+```powershell
+D:\yolodo2.0\agent_plan\deploy\scripts\run_prediction_remote_roundtrip.ps1 -Server yolostudio -EnvName yolo
+```
+
+这个脚本会一次完成：
+1. 本地 staging 素材检查
+2. 同步远端 prediction 相关代码
+3. 上传 manifest / weights / videos
+4. 在远端 conda 环境执行真实 prediction 验证
+5. 把 `remote_prediction_validation.json` 拉回本地
+
+### 适用场景
+- 当前 Codex 进程无法直接使用 `ssh-agent`
+- 但用户自己的终端已经证明：
+  - `ssh yolostudio` 可用
+
+### 验收标准
+本地应生成：
+- `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_remote_real_media_output.json`
+
