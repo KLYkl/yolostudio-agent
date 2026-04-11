@@ -36,11 +36,17 @@
 
 ## 2. 当前项目的测试对象是什么
 
-当前主线测试对象不是整个产品的所有功能，而是：
+当前测试对象已经不再只是训练主链路，而是 3 条已经落地的 Agent 业务链：
 
-> **数据准备 → 训练准备 → 训练控制** 这条 Agent 主链路
+1. **数据准备 / 训练链**
+2. **数据提取链**
+3. **静态媒体 prediction 链**
 
-也就是围绕以下业务闭环：
+### 2.1 数据准备 / 训练链
+
+> **数据准备 → 训练准备 → 训练控制**
+
+围绕以下业务闭环：
 
 1. 用户给出自然语言任务
 2. Agent 理解数据集路径和意图
@@ -51,6 +57,39 @@
 7. 训练状态可查
 8. 训练可停止
 9. 训练在 MCP 重启后可重新接管
+
+### 2.2 数据提取链
+
+> **图片抽取预览 / 图片抽取执行 / 视频扫描 / 视频抽帧**
+
+当前已接入的工具：
+
+- `preview_extract_images`
+- `extract_images`
+- `scan_videos`
+- `extract_video_frames`
+
+其中图片抽取的 flat 输出，应该可以直接继续进入：
+
+- `scan_dataset`
+- `validate_dataset`
+- `prepare_dataset_for_training`
+
+### 2.3 静态媒体 prediction 链
+
+> **图片 / 视频 prediction → report summarize → 远端真实回归**
+
+当前已接入的工具：
+
+- `predict_images`
+- `predict_videos`
+- `summarize_prediction_results`
+
+因此，这份测试手册现在必须同时覆盖：
+
+- 训练链稳定性
+- 数据提取链可用性
+- prediction 链本地 / 远端回归
 
 ---
 
@@ -1498,9 +1537,10 @@ Gemma 和 DeepSeek：
 #### B. 在本地 `yolo / yolodo` conda 环境中执行（默认）
 - 脚本：`D:\yolodo2.0\agent_plan\deploy\scripts\run_prediction_local_validation.ps1`
 - 默认环境：
-  - `yolo`
-- 可切换：
+  - `auto`（优先 `yolodo`，其次 `yolo`）
+- 可显式切换：
   - `yolodo`
+  - `yolo`
 
 #### C. 上传到远端（备选）
 - 脚本：`D:\yolodo2.0\agent_plan\deploy\scripts\upload_prediction_real_media.ps1`
@@ -1511,9 +1551,10 @@ Gemma 和 DeepSeek：
 #### D. 在远端 conda 环境中执行（备选）
 - 脚本：`D:\yolodo2.0\agent_plan\deploy\scripts\run_prediction_remote_validation.sh`
 - 默认环境：
-  - `yolo`
-- 可切换：
+  - `auto`（优先 `yolodo`，其次 `yolo`）
+- 可显式切换：
   - `yolodo`
+  - `yolo`
 
 #### E. 预测验证脚本
 - `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_remote_real_media.py`
@@ -1570,7 +1611,7 @@ D:\yolodo2.0gent_plan\deploy\scripts\check_remote_prediction_prereqs.ps1
 不要继续低效地分步试错，直接改用**用户终端一键 roundtrip 脚本**：
 
 ```powershell
-D:\yolodo2.0\agent_plan\deploy\scripts\run_prediction_remote_roundtrip.ps1 -Server yolostudio -EnvName yolo
+D:\yolodo2.0\agent_plan\deploy\scripts\run_prediction_remote_roundtrip.ps1 -Server yolostudio -EnvName auto
 ```
 
 这个脚本会一次完成：
@@ -1622,3 +1663,91 @@ ssh -n -T ...
 ### 27.4 经验结论
 > 如果手动 ssh 能跑，脚本里 ssh 卡住，不要先继续拆远端命令，先把 `-n -T` 加上。 
 
+
+
+## 28. 数据提取链专项回归（2026-04-11 增补）
+
+当前新增的数据提取链，不应只做一次 smoke，而应作为固定回归项保留。
+
+### 28.1 工具级验证
+
+#### 图片抽取
+- `preview_extract_images`
+  - 标准数据集预览正常
+  - `count / ratio / all` 三种选择方式至少覆盖两种
+  - `global / per_directory` 至少覆盖一种
+  - 输出目录冲突能提前暴露
+- `extract_images`
+  - 真执行正常
+  - `flat` 输出可被 `scan_dataset / validate_dataset` 正常继续使用
+  - 标签复制数量与预期一致
+
+#### 视频处理
+- `scan_videos`
+  - 单目录扫描正常
+  - 嵌套目录统计正常
+- `extract_video_frames`
+  - 本地环境工具级通过
+  - 若远端缺少 `cv2 / numpy`，应 **优雅失败**，而不是打挂 MCP server
+
+### 28.2 Agent 级验证
+
+至少保留以下自然语言话术：
+
+#### 图片抽取预览
+```text
+先预览一下从某目录抽 20 张图片到某输出目录，不要真的执行。
+```
+
+#### 图片抽取执行
+```text
+从某目录抽 10% 的图片到某输出目录。
+```
+
+#### 视频扫描
+```text
+扫描一下某目录里有多少视频。
+```
+
+#### 视频抽帧
+```text
+从某目录/某视频抽帧，每 10 帧抽 1 帧，输出到某目录。
+```
+
+重点验证：
+- 路由是否命中正确工具
+- 参数是否抽取正确
+- grounded reply 是否复述了：
+  - 抽取数量 / 视频数量 / 输出目录 / warnings / next_actions
+- `SessionState` 是否写回了：
+  - `last_extract_preview`
+  - `last_extract_result`
+  - `last_video_scan`
+  - `last_frame_extract`
+
+### 28.3 与主链联动验证
+
+图片抽取不是独立玩具功能，至少要验证这一条：
+
+```text
+extract_images -> scan_dataset -> validate_dataset -> prepare_dataset_for_training
+```
+
+验收标准：
+- `workflow_ready_path` 存在
+- `scan_dataset` 成功
+- `validate_dataset` 成功
+- 后续能继续接训练准备链
+
+### 28.4 当前边界
+
+截至 2026-04-11：
+- 图片抽取链：本地通过，且服务器代码已同步
+- `scan_videos`：本地通过，且服务器 smoke 通过
+- `extract_video_frames`：本地通过；远端如果 `yolostudio-agent-server` 环境仍缺 `cv2 / numpy`，当前应返回工具级错误，不应影响整个 MCP server 启动
+
+### 28.5 当前固定回归脚本
+
+- `D:\yolodo2.0\agent_plan\agent\tests\test_extract_tools.py`
+- `D:\yolodo2.0\agent_plan\agent\tests\test_video_extract_tools.py`
+- `D:\yolodo2.0\agent_plan\agent\tests\test_extract_route.py`
