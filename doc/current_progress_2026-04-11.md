@@ -759,3 +759,29 @@ Gemma 这轮测试很清楚地说明：
 - `ssh` 在禁用 host key 校验后，已能走到认证阶段
 - 但会报：`Load key "C:\Users\29615\.ssh\id_ed25519": Permission denied`
 - 同时 `ssh-add -l` 在当前进程里返回：`Error connecting to agent: Permission denied`
+
+
+### 4.7 2026-04-11 深夜新增推进（六）
+
+这轮还沉淀了一条**可跨项目复用的工程经验**：
+
+> 在 Windows 上，如果 `ssh` 在脚本里看起来“卡住”，但手动执行同一条命令是正常的，优先检查 stdin / pty 问题，而不是先怀疑网络或远端命令本身。
+
+#### 本次真实现象
+- 用户手动执行：
+  - `ssh yolostudio "echo ok && pwd"` ✅
+  - `ssh yolostudio "mkdir -p ... && echo __READY__"` ✅
+- 但脚本里跑同类命令时，表面上一直不返回
+- 按 `Ctrl + C` 后，远端输出才刷出来
+
+#### 最终处理
+已在项目里固定采用：
+- `ssh -n -T ...`
+
+#### 价值
+这条经验后面不只对 `prediction` 远端 roundtrip 有用，对：
+- MCP 管理脚本
+- 远端训练辅助脚本
+- 远端部署/上传脚本
+都具有复用价值。
+

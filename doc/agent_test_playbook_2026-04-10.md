@@ -1589,3 +1589,36 @@ D:\yolodo2.0\agent_plan\deploy\scripts\run_prediction_remote_roundtrip.ps1 -Serv
 本地应生成：
 - `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_remote_real_media_output.json`
 
+
+## 27. Windows OpenSSH 脚本挂住排查规则（2026-04-11 增补）
+
+如果出现下面这种情况：
+- 手动 `ssh yolostudio "echo ok && pwd"` 能正常返回
+- 但 PowerShell 脚本里调用 `ssh` 时无输出、像卡住一样
+- 按 `Ctrl + C` 后才看到远端输出
+
+优先按下面规则处理：
+
+### 27.1 根因优先级
+1. **先怀疑 stdin / pty 挂住**
+2. 再怀疑 host key / 认证交互
+3. 再怀疑远端目录或命令语义
+
+### 27.2 默认修复方法
+脚本里的 `ssh` 命令统一加：
+
+```powershell
+ssh -n -T ...
+```
+
+含义：
+- `-n`：把 stdin 指到空输入，避免 ssh 等待终端输入
+- `-T`：禁用伪终端分配
+
+### 27.3 当前项目已落地的位置
+- `deploy/scripts/upload_prediction_real_media.ps1`
+- `deploy/scripts/run_prediction_remote_roundtrip.ps1`
+
+### 27.4 经验结论
+> 如果手动 ssh 能跑，脚本里 ssh 卡住，不要先继续拆远端命令，先把 `-n -T` 加上。 
+

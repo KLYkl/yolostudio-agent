@@ -350,3 +350,33 @@ D:\yolodo2.0\agent_plan\doc\agent_test_playbook_2026-04-10.md
 - `ssh` 在禁用 host key 校验后，已能走到认证阶段
 - 但会报：`Load key "C:\Users\29615\.ssh\id_ed25519": Permission denied`
 - 同时 `ssh-add -l` 在当前进程里返回：`Error connecting to agent: Permission denied`
+
+
+## 12. Windows + OpenSSH 脚本挂住经验（全局复用价值高）
+
+这次验证里又确认了一个**以后大概率还会用到**的经验：
+
+### 现象
+- 用户在自己的 PowerShell 里手动执行 `ssh yolostudio "..."` 可以成功返回
+- 但脚本里调用 `ssh` 时，经常出现：
+  - 远端命令实际已经执行
+  - 本地终端却一直不退出
+  - 按 `Ctrl + C` 后才看到远端输出
+
+### 根因判断
+这更像是 **Windows OpenSSH 在脚本里仍然占着 stdin / pty**，导致命令完成后本地进程没有及时退出。
+
+### 当前项目里的固定处理方式
+对所有脚本内的 `ssh` 调用，默认加：
+- `-n`：不要从 stdin 读输入
+- `-T`：不要分配伪终端
+
+也就是优先使用：
+
+```powershell
+ssh -n -T ...
+```
+
+### 当前工程经验
+以后再遇到这种“脚本里 ssh 挂住、手动单跑正常”的情况，**优先先检查 stdin / pty 问题，不要一开始就怀疑服务器、网络或目录命令本身。**
+
