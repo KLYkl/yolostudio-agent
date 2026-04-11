@@ -35,13 +35,19 @@ function Invoke-NativeChecked {
 }
 
 Write-Host "==> ensure remote root"
-$ensureRemoteRootCommand = "mkdir -p $RemoteRoot/weights $RemoteRoot/videos && echo __REMOTE_READY__"
-Invoke-NativeChecked -Exe "ssh" -Args @(
-    "-o", "BatchMode=yes",
-    "-o", "ConnectTimeout=10",
-    $Server,
-    $ensureRemoteRootCommand
+$ensureRootCommands = @(
+    "mkdir -p $RemoteRoot && echo __REMOTE_READY__ root",
+    "mkdir -p $RemoteRoot/weights && echo __REMOTE_READY__ weights",
+    "mkdir -p $RemoteRoot/videos && echo __REMOTE_READY__ videos"
 )
+foreach ($remoteCommand in $ensureRootCommands) {
+    Invoke-NativeChecked -Exe "ssh" -Args @(
+        "-o", "BatchMode=yes",
+        "-o", "ConnectTimeout=10",
+        $Server,
+        $remoteCommand
+    )
+}
 Write-Host "==> remote root ready: $RemoteRoot"
 
 Write-Host "==> upload manifest"

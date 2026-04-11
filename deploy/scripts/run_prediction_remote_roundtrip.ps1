@@ -39,13 +39,22 @@ if (!(Test-Path -LiteralPath (Join-Path $LocalStageRoot "manifest.json"))) {
 }
 
 Write-Host "==> ensure remote directories"
-$ensureRemoteCommand = "mkdir -p $RemoteAppRoot/agent_plan/agent/server/services $RemoteAppRoot/agent_plan/agent/server/tools $RemoteAppRoot/agent_plan/agent/tests $RemoteStageRoot/weights $RemoteStageRoot/videos $RemoteOutputRoot && echo __REMOTE_READY__"
-Invoke-NativeChecked -Exe "ssh" -Args @(
-    "-o", "BatchMode=yes",
-    "-o", "ConnectTimeout=10",
-    $Server,
-    $ensureRemoteCommand
+$ensureCommands = @(
+    "mkdir -p $RemoteAppRoot/agent_plan/agent/server/services && echo __REMOTE_READY__ services",
+    "mkdir -p $RemoteAppRoot/agent_plan/agent/server/tools && echo __REMOTE_READY__ tools",
+    "mkdir -p $RemoteAppRoot/agent_plan/agent/tests && echo __REMOTE_READY__ tests",
+    "mkdir -p $RemoteStageRoot/weights && echo __REMOTE_READY__ weights",
+    "mkdir -p $RemoteStageRoot/videos && echo __REMOTE_READY__ videos",
+    "mkdir -p $RemoteOutputRoot && echo __REMOTE_READY__ output"
 )
+foreach ($remoteCommand in $ensureCommands) {
+    Invoke-NativeChecked -Exe "ssh" -Args @(
+        "-o", "BatchMode=yes",
+        "-o", "ConnectTimeout=10",
+        $Server,
+        $remoteCommand
+    )
+}
 
 $syncItems = @(
     @{
