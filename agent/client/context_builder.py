@@ -36,6 +36,7 @@ class ContextBuilder:
         tr = state.active_training
         pc = state.pending_confirmation
         pred = state.active_prediction
+        kn = state.active_knowledge
         pref = state.preferences
         digest_text = digest.to_text() if digest else '无历史摘要'
         return (
@@ -48,6 +49,7 @@ class ContextBuilder:
             f'  data_yaml: {ds.data_yaml or "未设置"}\n'
             f'  last_scan: {_fmt_mapping(ds.last_scan)}\n'
             f'  last_validate: {_fmt_mapping(ds.last_validate)}\n'
+            f'  last_readiness: {_fmt_mapping(ds.last_readiness)}\n'
             f'  last_split: {_fmt_mapping(ds.last_split)}\n'
             f'  last_health_check: {_fmt_mapping(ds.last_health_check)}\n'
             f'  last_duplicate_check: {_fmt_mapping(ds.last_duplicate_check)}\n'
@@ -69,6 +71,10 @@ class ContextBuilder:
             f'  output_dir: {pred.output_dir or "无"}\n'
             f'  report_path: {pred.report_path or "无"}\n'
             f'  last_result: {_fmt_mapping(pred.last_result)}\n'
+            '知识:\n'
+            f'  last_retrieval: {_fmt_mapping(kn.last_retrieval)}\n'
+            f'  last_analysis: {_fmt_mapping(kn.last_analysis)}\n'
+            f'  last_recommendation: {_fmt_mapping(kn.last_recommendation)}\n'
             '待确认操作:\n'
             f'  tool: {pc.tool_name or "无"}\n'
             f'  args: {_fmt_mapping(pc.tool_args)}\n'

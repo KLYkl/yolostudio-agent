@@ -14,6 +14,7 @@ def apply_tool_result_to_state(
     ds = session_state.active_dataset
     tr = session_state.active_training
     pred = session_state.active_prediction
+    kn = session_state.active_knowledge
 
     tool_args = tool_args or {}
     if tool_name == 'scan_dataset' and result.get('ok'):
@@ -118,6 +119,14 @@ def apply_tool_result_to_state(
         resolved_yaml = result.get('resolved_data_yaml') or ''
         if resolved_yaml:
             ds.data_yaml = str(resolved_yaml)
+        ds.last_readiness = {
+            'ready': result.get('ready'),
+            'risk_level': result.get('risk_level'),
+            'warnings': result.get('warnings'),
+            'blockers': result.get('blockers'),
+            'resolved_data_yaml': resolved_yaml,
+            'summary': result.get('summary'),
+        }
     elif tool_name == 'prepare_dataset_for_training' and result.get('ok'):
         ds.dataset_root = str(result.get('dataset_root') or ds.dataset_root)
         ds.img_dir = str(result.get('img_dir') or ds.img_dir)
@@ -250,4 +259,26 @@ def apply_tool_result_to_state(
             'total_frames': result.get('total_frames'),
             'detected_frames': result.get('detected_frames'),
             'mode': result.get('mode') or 'images',
+        }
+    elif tool_name == 'retrieve_training_knowledge' and result.get('ok'):
+        kn.last_retrieval = {
+            'topic': result.get('topic'),
+            'stage': result.get('stage'),
+            'model_family': result.get('model_family'),
+            'matched_rule_ids': result.get('matched_rule_ids'),
+            'summary': result.get('summary'),
+        }
+    elif tool_name == 'analyze_training_outcome' and result.get('ok'):
+        kn.last_analysis = {
+            'summary': result.get('summary'),
+            'assessment': result.get('assessment'),
+            'matched_rule_ids': result.get('matched_rule_ids'),
+            'signals': result.get('signals'),
+        }
+    elif tool_name == 'recommend_next_training_step' and result.get('ok'):
+        kn.last_recommendation = {
+            'summary': result.get('summary'),
+            'recommended_action': result.get('recommended_action'),
+            'matched_rule_ids': result.get('matched_rule_ids'),
+            'signals': result.get('signals'),
         }

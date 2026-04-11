@@ -1,0 +1,229 @@
+[
+  {
+    "id": "yolo_pre_prepare_before_train",
+    "family": "yolo",
+    "task_type": "detection",
+    "stage": "pre_training",
+    "topic": "workflow",
+    "keywords": [
+      "prepare_dataset_for_training",
+      "data.yaml",
+      "split"
+    ],
+    "signals": [
+      "dataset_not_ready"
+    ],
+    "conditions": [
+      "YOLO training requires resolved data.yaml and train/val structure"
+    ],
+    "interpretation": "YOLO 训练入口依赖明确的 data.yaml 和可解析的 train/val 结构。",
+    "recommendation": "在 YoloStudio 里优先走 prepare_dataset_for_training，再 start_training。",
+    "next_actions": [
+      "先准备数据",
+      "确认 data_yaml",
+      "再启动训练"
+    ],
+    "priority": 10,
+    "source_type": "workflow",
+    "confidence": 0.98,
+    "action_type": "fix_readiness_blockers",
+    "tags": [
+      "yolo",
+      "workflow"
+    ],
+    "sources": [
+      {
+        "title": "Ultralytics Train Mode",
+        "url": "https://docs.ultralytics.com/modes/train/"
+      }
+    ]
+  },
+  {
+    "id": "yolo_hparam_epochs",
+    "family": "yolo",
+    "task_type": "detection",
+    "stage": "pre_training",
+    "topic": "hyperparameters",
+    "keywords": [
+      "epochs",
+      "轮数",
+      "训练多少轮"
+    ],
+    "signals": [],
+    "conditions": [
+      "topic asks about epochs"
+    ],
+    "interpretation": "epochs 决定训练时长，但不应脱离数据规模和指标观察单独决定。",
+    "recommendation": "先给一个可观察窗口，再根据指标和样本问题决定是否继续。",
+    "next_actions": [
+      "先选一个能观察中途状态的轮数",
+      "结合 patience/验证指标判断是否继续"
+    ],
+    "priority": 6,
+    "source_type": "official",
+    "confidence": 0.88,
+    "action_type": "plan_epochs",
+    "tags": [
+      "yolo",
+      "epochs",
+      "hyperparameters"
+    ],
+    "sources": [
+      {
+        "title": "Model Training Tips",
+        "url": "https://docs.ultralytics.com/guides/model-training-tips/"
+      }
+    ]
+  },
+  {
+    "id": "yolo_hparam_batch",
+    "family": "yolo",
+    "task_type": "detection",
+    "stage": "pre_training",
+    "topic": "hyperparameters",
+    "keywords": [
+      "batch",
+      "batch size",
+      "批大小"
+    ],
+    "signals": [],
+    "conditions": [
+      "topic asks about batch"
+    ],
+    "interpretation": "batch 主要受显存约束，过大可能 OOM，过小则吞吐受限。",
+    "recommendation": "优先让 batch 适配显存，再观察训练稳定性。",
+    "next_actions": [
+      "先确认 GPU 容量",
+      "必要时减小 batch",
+      "不要只为了速度盲目增大 batch"
+    ],
+    "priority": 6,
+    "source_type": "official",
+    "confidence": 0.9,
+    "action_type": "tune_batch",
+    "tags": [
+      "yolo",
+      "batch",
+      "gpu"
+    ],
+    "sources": [
+      {
+        "title": "Model Training Tips",
+        "url": "https://docs.ultralytics.com/guides/model-training-tips/"
+      }
+    ]
+  },
+  {
+    "id": "yolo_hparam_imgsz",
+    "family": "yolo",
+    "task_type": "detection",
+    "stage": "pre_training",
+    "topic": "hyperparameters",
+    "keywords": [
+      "imgsz",
+      "image size",
+      "分辨率"
+    ],
+    "signals": [],
+    "conditions": [
+      "topic asks about imgsz"
+    ],
+    "interpretation": "imgsz 影响小目标可见性、显存占用和训练速度，需要结合目标尺度权衡。",
+    "recommendation": "如果主要问题是小目标漏检，可优先评估更高 imgsz；否则先保持常规设置并控制变量。",
+    "next_actions": [
+      "确认主要目标尺度",
+      "一次只改 imgsz 这一项",
+      "观察显存和速度影响"
+    ],
+    "priority": 6,
+    "source_type": "official",
+    "confidence": 0.86,
+    "action_type": "tune_imgsz",
+    "tags": [
+      "yolo",
+      "imgsz",
+      "small-object"
+    ],
+    "sources": [
+      {
+        "title": "Ultralytics Train Mode",
+        "url": "https://docs.ultralytics.com/modes/train/"
+      }
+    ]
+  },
+  {
+    "id": "yolo_hparam_patience",
+    "family": "yolo",
+    "task_type": "detection",
+    "stage": "next_step",
+    "topic": "hyperparameters",
+    "keywords": [
+      "patience",
+      "early stopping",
+      "早停"
+    ],
+    "signals": [],
+    "conditions": [
+      "topic asks about patience or early stopping"
+    ],
+    "interpretation": "patience 用于限制长时间无改进训练，不适合拿来替代数据和指标分析。",
+    "recommendation": "把 patience 当作训练控制参数，而不是效果优化主手段。",
+    "next_actions": [
+      "先看是否真的长期无改进",
+      "不要仅靠调 patience 解决数据问题"
+    ],
+    "priority": 5,
+    "source_type": "official",
+    "confidence": 0.84,
+    "action_type": "tune_early_stopping",
+    "tags": [
+      "yolo",
+      "patience",
+      "early-stopping"
+    ],
+    "sources": [
+      {
+        "title": "Model Training Tips",
+        "url": "https://docs.ultralytics.com/guides/model-training-tips/"
+      }
+    ]
+  },
+  {
+    "id": "yolo_post_prediction_not_training",
+    "family": "yolo",
+    "task_type": "detection",
+    "stage": "post_training",
+    "topic": "workflow",
+    "keywords": [
+      "prediction summary",
+      "训练结果评估"
+    ],
+    "signals": [
+      "prediction_no_detections"
+    ],
+    "conditions": [
+      "prediction signals may support diagnosis but do not replace validation metrics"
+    ],
+    "interpretation": "预测结果能帮助定位样本问题，但不能替代训练指标本身。",
+    "recommendation": "把 prediction 当辅助证据，与训练指标一起判断。",
+    "next_actions": [
+      "先区分训练指标结论和预测现象",
+      "用 prediction 去定位失败样本"
+    ],
+    "priority": 7,
+    "source_type": "workflow",
+    "confidence": 0.9,
+    "action_type": "use_prediction_as_supporting_signal",
+    "tags": [
+      "yolo",
+      "prediction",
+      "workflow"
+    ],
+    "sources": [
+      {
+        "title": "YoloStudio prediction workflow",
+        "url": "agent_plan workflow"
+      }
+    ]
+  }
+]

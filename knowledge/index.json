@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "families": [
+    "generic",
+    "yolo"
+  ],
+  "task_types": [
+    "detection"
+  ],
+  "rule_files": [
+    {
+      "id": "core-pre",
+      "path": "knowledge/core/pre_training_rules.json",
+      "family": "generic",
+      "stage": "pre_training",
+      "task_type": "detection"
+    },
+    {
+      "id": "core-post",
+      "path": "knowledge/core/post_training_rules.json",
+      "family": "generic",
+      "stage": "post_training",
+      "task_type": "detection"
+    },
+    {
+      "id": "core-next",
+      "path": "knowledge/core/next_step_rules.json",
+      "family": "generic",
+      "stage": "next_step",
+      "task_type": "detection"
+    },
+    {
+      "id": "yolo-detect",
+      "path": "knowledge/families/yolo/detection_rules.json",
+      "family": "yolo",
+      "stage": "mixed",
+      "task_type": "detection"
+    }
+  ],
+  "playbooks": [
+    {
+      "id": "training-preflight-basics",
+      "path": "knowledge/playbooks/training_preflight_basics.md",
+      "title": "训练前基础检查",
+      "families": [
+        "generic",
+        "yolo"
+      ],
+      "stages": [
+        "pre_training",
+        "next_step"
+      ],
+      "topics": [
+        "data_quality",
+        "workflow"
+      ],
+      "summary": "训练前优先检查数据质量、划分、标签覆盖和 readiness 阻塞项。"
+    },
+    {
+      "id": "training-metrics-basics",
+      "path": "knowledge/playbooks/training_metrics_basics.md",
+      "title": "训练指标解释基础",
+      "families": [
+        "generic",
+        "yolo"
+      ],
+      "stages": [
+        "post_training",
+        "next_step"
+      ],
+      "topics": [
+        "training_metrics",
+        "next_step"
+      ],
+      "summary": "解释 precision/recall/mAP 与 loss 观察边界，强调先看事实再下结论。"
+    },
+    {
+      "id": "yolo-detection-guidance",
+      "path": "knowledge/playbooks/yolo_detection_guidance.md",
+      "title": "YOLO Detection 调参与流程建议",
+      "families": [
+        "yolo"
+      ],
+      "stages": [
+        "pre_training",
+        "post_training",
+        "next_step"
+      ],
+      "topics": [
+        "hyperparameters",
+        "workflow"
+      ],
+      "summary": "YOLO detection 第一阶段适配说明，包括 epochs/batch/imgsz/patience 与预测辅助判断。"
+    }
+  ]
+}

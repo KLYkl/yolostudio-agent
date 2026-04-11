@@ -44,10 +44,20 @@ class EventRetriever:
             lines.append(
                 f"最近校验: issue_count={validate.get('issue_count', '未知')}, has_issues={validate.get('has_issues', '未知')}"
             )
+        if state.active_dataset.last_readiness:
+            readiness = state.active_dataset.last_readiness
+            lines.append(
+                f"最近 readiness: ready={readiness.get('ready', '未知')}, risk_level={readiness.get('risk_level', '未知')}, blockers={len(readiness.get('blockers') or [])}"
+            )
         if state.active_training.model or state.active_training.data_yaml or state.active_training.last_status:
             status = state.active_training.last_status or {}
             lines.append(
                 f"最近训练状态: running={status.get('running', state.active_training.running)}, model={state.active_training.model or '未设置'}, data={state.active_training.data_yaml or '未设置'}, device={state.active_training.device or '未设置'}"
+            )
+        if state.active_knowledge.last_recommendation:
+            recommendation = state.active_knowledge.last_recommendation
+            lines.append(
+                f"最近训练建议: action={recommendation.get('recommended_action', '未知')}, summary={recommendation.get('summary', '无')}"
             )
 
         latest_tools: dict[str, dict[str, Any]] = {}
@@ -94,6 +104,10 @@ class EventRetriever:
                 recent_lines.append(f"已取消: {event.get('tool', 'unknown_tool')}")
             elif event_type == 'confirmation_approved':
                 recent_lines.append(f"已批准: {event.get('tool', 'unknown_tool')}")
+            elif event_type == 'knowledge_recommendation':
+                recent_lines.append(f"知识建议: {event.get('recommended_action', 'unknown')} / {event.get('summary', '无摘要')}")
+            elif event_type == 'training_analysis':
+                recent_lines.append(f"训练分析: {event.get('summary', '无摘要')}")
 
         if recent_lines:
             lines.append('近期事件: ' + ' | '.join(recent_lines[-4:]))

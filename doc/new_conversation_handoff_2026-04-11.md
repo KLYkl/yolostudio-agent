@@ -270,3 +270,32 @@ D:\yolodo2.0\agent_plan\doc\agent_test_playbook_2026-04-10.md
 ## 9. 最后一句话
 
 > **当前项目不是“没做出东西”，而是“训练链已经实用，预测链已经完成远端真实验证，接下来该做的是整理结构并把基线固化得更稳”。**
+
+
+## 10. 最新阶段补充：训练知识库 Phase 1 已落地
+
+当前新会话不应再把项目理解为“只有训练链 / prediction 链 / 数据提取链”，因为知识解释层已经开始工作。
+
+已新增：
+
+- `knowledge/core/`
+- `knowledge/families/yolo/`
+- `knowledge/playbooks/`
+- `agent/server/services/knowledge_service.py`
+- `agent/server/tools/knowledge_tools.py`
+
+已接入工具：
+
+- `retrieve_training_knowledge`
+- `analyze_training_outcome`
+- `recommend_next_training_step`
+
+当前默认理解应为：
+
+> 项目已经进入“工具执行层 + 知识解释层”并行阶段。
+
+当前最自然的下一步，不再是继续大规模拆分厚文件，而是：
+
+1. 扩首批训练规则覆盖面
+2. 把训练结果汇总能力再补强，给知识分析更多事实输入
+3. 再逐步为未来多模型族预留更清晰接口

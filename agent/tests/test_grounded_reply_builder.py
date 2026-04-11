@@ -28,6 +28,17 @@ def main() -> None:
     assert '主要类别: Excavator=1，bulldozer=2' in text
     assert '视频预测输出目录: /data/videos/out' in text
 
+    knowledge = build_grounded_tool_reply([('recommend_next_training_step', {
+        'ok': True,
+        'summary': '下一步建议: 先修数据，再谈调参。',
+        'recommended_action': 'fix_data_quality',
+        'basis': ['缺失标签比例=0.35', '重复组=2'],
+        'why': '当前更像数据问题。',
+        'next_actions': ['先补标签', '清理重复图片'],
+    })])
+    assert '优先动作: fix_data_quality' in knowledge
+    assert '原因: 当前更像数据问题。' in knowledge
+
     empty = build_grounded_tool_reply([('predict_images', {'ok': False, 'error': 'boom'})])
     assert empty == ''
     print('grounded reply builder ok')

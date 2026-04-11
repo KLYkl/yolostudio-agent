@@ -871,3 +871,55 @@ afab4c1  test: comprehensive validation + log parser fix
 当前判断：
 
 > prediction / 聊天 / 状态写回三条核心厚路径已经明显变薄，后续进入训练知识库前的结构收口风险已显著下降。
+
+
+## 2026-04-11 训练知识库 Phase 1
+
+当前项目已经不只是“能检查数据 / 能训练 / 能预测”，还开始具备 **训练知识解释层**。
+
+这一阶段的设计不是纯官方 YOLO 知识库，也不是纯项目私有经验库，而是：
+
+- 通用训练规则骨架
+- YOLO detection 第一层适配
+- playbook 说明文档
+- Agent 可直接调用的知识工具
+
+### 结构
+
+- `knowledge/core/`：模型无关规则
+- `knowledge/families/yolo/`：YOLO detection 规则
+- `knowledge/playbooks/`：说明文档
+- `knowledge/index.json`：索引
+
+### 新增工具
+
+- `retrieve_training_knowledge`
+- `analyze_training_outcome`
+- `recommend_next_training_step`
+
+### 当前可回答的问题
+
+- 这个数据集现在适不适合训练
+- 这次训练效果更像什么问题
+- 下一步先补数据还是先调参数
+- `precision / recall / mAP / loss` 的基础解释
+
+### 当前边界
+
+这一版知识库仍然有明确边界：
+
+- 不做向量库
+- 不做 embedding 检索
+- 不做泛化多模型智能调参
+- 只先落 YOLO + detection 规则
+- 当前测试沉淀只进入 workflow/system 层，不直接当作领域训练真理
+
+### 当前意义
+
+这意味着当前 agent 已经从：
+
+> **只会调用工具拿结果**
+
+继续推进到：
+
+> **能基于真实工具结果，给出第一层训练解释和下一步建议**

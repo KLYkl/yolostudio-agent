@@ -80,6 +80,37 @@ def main() -> None:
     assert tr.pid is None
     assert tr.log_file == ''
     assert tr.started_at is None
+
+    apply_tool_result_to_state(
+        state,
+        'training_readiness',
+        {
+            'ok': True,
+            'summary': '训练前检查完成',
+            'ready': True,
+            'risk_level': 'low',
+            'warnings': [],
+            'blockers': [],
+            'resolved_data_yaml': '/tmp/data.yaml',
+            'resolved_img_dir': '/tmp/images',
+            'resolved_label_dir': '/tmp/labels',
+        },
+    )
+    assert state.active_dataset.last_readiness['ready'] is True
+    assert state.active_dataset.data_yaml == '/tmp/data.yaml'
+
+    apply_tool_result_to_state(
+        state,
+        'recommend_next_training_step',
+        {
+            'ok': True,
+            'summary': '下一步建议: 继续短周期观察。',
+            'recommended_action': 'continue_observing',
+            'matched_rule_ids': ['generic_next_continue_observing'],
+            'signals': ['training_running'],
+        },
+    )
+    assert state.active_knowledge.last_recommendation['recommended_action'] == 'continue_observing'
     print('state applier ok')
 
 

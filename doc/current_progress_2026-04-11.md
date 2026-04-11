@@ -1374,3 +1374,71 @@ Gemma 这轮测试很清楚地说明：
 
 - 状态写回从 `agent_client.py` 拆出后，训练状态纯净性没有回退
 - prediction 路由与长上下文多链路聊天仍然稳定
+
+
+### 4.18 2026-04-11 深夜新增推进（十七）
+
+训练知识库 Phase 1 已正式落地，当前不是做泛 RAG，而是先做 **通用规则骨架 + YOLO detection 适配层**。
+
+#### 新增内容
+
+- `knowledge/core/`
+- `knowledge/families/yolo/`
+- `knowledge/playbooks/`
+- `knowledge/index.json`
+- `agent/server/services/knowledge_service.py`
+- `agent/server/tools/knowledge_tools.py`
+
+新增 Agent 工具：
+
+- `retrieve_training_knowledge`
+- `analyze_training_outcome`
+- `recommend_next_training_step`
+
+#### 当前能力
+
+知识层现在已经能稳定回答这几类问题：
+
+- 这个数据集现在适不适合训练
+- 这次训练效果更像什么问题
+- 下一步先补数据还是先调参数
+- `precision / recall / mAP / loss` 的基础解释
+
+#### 主链接入
+
+这轮已把知识工具接进当前主链：
+
+- `training_readiness` 后可继续给出下一步建议
+- 可直接解释训练指标信号
+- 可结合 `check_training_status` / prediction 摘要做训练结果解释
+- `SessionState` 新增知识上下文写回
+
+#### 本轮验证
+
+本轮新增并通过：
+
+- `agent/tests/test_knowledge_service.py`
+- `agent/tests/test_knowledge_tools.py`
+- `agent/tests/test_knowledge_route.py`
+
+同时确认以下旧回归仍然成立：
+
+- `agent/tests/test_training_rules_contract.py`
+- `agent/tests/test_grounded_reply_builder.py`
+- `agent/tests/test_state_applier.py`
+- `agent/tests/test_extract_route.py`
+- `agent/tests/test_prediction_route.py`
+- `agent/tests/test_extreme_chat_regression.py`
+
+#### 当前阶段判断
+
+到这一步，项目主线已经从“训练 / prediction / 数据提取链”继续推进到：
+
+> **训练知识解释层已具备第一版可用形态**
+
+但它当前仍然是：
+
+- 规则优先
+- 官方知识为种子
+- 只先覆盖 YOLO + detection
+- 暂不引入向量库和 embedding 检索

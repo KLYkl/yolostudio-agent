@@ -19,6 +19,11 @@ from agent_plan.agent.server.tools.extract_tools import (
     preview_extract_images,
     scan_videos,
 )
+from agent_plan.agent.server.tools.knowledge_tools import (
+    analyze_training_outcome,
+    recommend_next_training_step,
+    retrieve_training_knowledge,
+)
 from agent_plan.agent.server.tools.predict_tools import predict_images, predict_videos, summarize_prediction_results
 from agent_plan.agent.server.tools.train_tools import (
     check_gpu_status,
@@ -42,6 +47,9 @@ mcp.tool()(preview_extract_images)
 mcp.tool()(extract_images)
 mcp.tool()(scan_videos)
 mcp.tool()(extract_video_frames)
+mcp.tool()(retrieve_training_knowledge)
+mcp.tool()(analyze_training_outcome)
+mcp.tool()(recommend_next_training_step)
 mcp.tool()(predict_images)
 mcp.tool()(predict_videos)
 mcp.tool()(summarize_prediction_results)

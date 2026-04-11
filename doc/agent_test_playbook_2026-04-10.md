@@ -1859,3 +1859,60 @@ extract_images -> scan_dataset -> validate_dataset -> prepare_dataset_for_traini
 - prediction 上下文写回
 - 训练状态纯净性
 - 与 `test_prediction_route.py` / `test_extreme_chat_regression.py` 共同验证结构整理后状态行为不变
+
+
+### 29. 训练知识库 Phase 1 回归
+
+#### 29.1 工具级
+
+固定脚本：
+
+- `agent/tests/test_knowledge_service.py`
+- `agent/tests/test_knowledge_tools.py`
+
+覆盖点：
+
+- 规则文件加载成功
+- `generic + yolo` 规则合并成功
+- `signals` 能命中对应规则
+- 无向量库前提下仍能稳定返回结构化建议
+- `matched_rule_ids / playbooks / next_actions` 可追溯
+
+#### 29.2 Agent 级
+
+固定脚本：
+
+- `agent/tests/test_knowledge_route.py`
+
+覆盖点：
+
+- “这个数据集现在适合训练吗”
+- “precision 高 recall 低说明什么”
+- “这次训练效果怎么样”
+- “下一步先补数据还是先调参数”
+
+验收重点：
+
+- 必须先拿真实工具结果，再给知识解释
+- 不能把纯测试沉淀误当成通用训练事实
+- grounded reply 必须包含事实 / 解释 / 建议 / next_actions 中至少两类
+
+#### 29.3 与旧链路回归
+
+知识库接入后，至少要继续确认以下回归不退化：
+
+- `agent/tests/test_training_rules_contract.py`
+- `agent/tests/test_grounded_reply_builder.py`
+- `agent/tests/test_state_applier.py`
+- `agent/tests/test_extract_route.py`
+- `agent/tests/test_prediction_route.py`
+- `agent/tests/test_extreme_chat_regression.py`
+
+#### 29.4 当前边界
+
+截至当前阶段：
+
+- 知识库采用规则优先，不是向量检索
+- 只先覆盖 YOLO + detection
+- 当前 workflow / system 知识可直接使用
+- 真实训练案例知识仍待后续逐步沉淀

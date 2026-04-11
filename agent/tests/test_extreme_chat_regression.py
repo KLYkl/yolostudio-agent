@@ -96,6 +96,17 @@ def _install_fake_tools(client: YoloStudioAgentClient, calls: list[tuple[str, di
                 "blockers": [],
                 "next_actions": ["可继续 prepare_dataset_for_training 或 start_training"],
             }
+        elif tool_name == "recommend_next_training_step":
+            result = {
+                "ok": True,
+                "summary": "下一步建议: 优先保持小步迭代。",
+                "recommended_action": "quick_iteration",
+                "basis": ["样本量=180"],
+                "why": "当前样本量仍偏小，更适合先做短周期验证。",
+                "matched_rule_ids": ["generic_next_small_dataset_fast_iteration"],
+                "signals": ["small_dataset"],
+                "next_actions": ["先做一次短周期训练", "记录失败样本后再补数据"],
+            }
         elif tool_name == "run_dataset_health_check":
             assert kwargs["dataset_path"] == "/tmp/extract_run"
             assert kwargs["include_duplicates"] is True
@@ -305,6 +316,7 @@ async def _run() -> None:
             "preview_extract_images",
             "extract_images",
             "training_readiness",
+            "recommend_next_training_step",
             "run_dataset_health_check",
             "scan_videos",
             "extract_video_frames",
@@ -312,6 +324,7 @@ async def _run() -> None:
             "summarize_prediction_results",
             "prepare_dataset_for_training",
             "training_readiness",
+            "recommend_next_training_step",
             "summarize_prediction_results",
         ]
         assert [name for name, _ in calls] == expected_order, calls

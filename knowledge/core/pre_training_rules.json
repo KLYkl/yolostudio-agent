@@ -1,0 +1,234 @@
+[
+  {
+    "id": "generic_pre_high_missing_labels",
+    "family": "generic",
+    "task_type": "detection",
+    "stage": "pre_training",
+    "topic": "data_quality",
+    "keywords": [
+      "缺失标签",
+      "missing labels",
+      "label coverage"
+    ],
+    "signals": [
+      "high_missing_labels"
+    ],
+    "conditions": [
+      "missing_label_ratio >= 0.30"
+    ],
+    "interpretation": "标签覆盖明显不足，训练结果更可能被数据问题主导。",
+    "recommendation": "优先补标签或缩小到高质量子集后再训练，不建议先靠调参掩盖数据问题。",
+    "next_actions": [
+      "先统计缺失标签来源目录",
+      "优先补齐高频类别和核心场景标签",
+      "补标签后重新做 training_readiness"
+    ],
+    "priority": 10,
+    "source_type": "official",
+    "confidence": 0.95,
+    "action_type": "fix_data_quality",
+    "tags": [
+      "data",
+      "labels",
+      "preflight"
+    ],
+    "sources": [
+      {
+        "title": "Ultralytics Detect Datasets",
+        "url": "https://docs.ultralytics.com/datasets/detect/"
+      }
+    ]
+  },
+  {
+    "id": "generic_pre_duplicate_images_present",
+    "family": "generic",
+    "task_type": "detection",
+    "stage": "pre_training",
+    "topic": "data_quality",
+    "keywords": [
+      "重复图片",
+      "duplicates"
+    ],
+    "signals": [
+      "duplicate_images_present"
+    ],
+    "conditions": [
+      "duplicate_groups > 0"
+    ],
+    "interpretation": "重复样本会放大局部模式，降低验证结论可信度。",
+    "recommendation": "先人工筛查或去重，再做正式训练与效果判断。",
+    "next_actions": [
+      "查看重复组样例",
+      "保留最清晰或标签最完整的样本",
+      "重新运行健康检查"
+    ],
+    "priority": 8,
+    "source_type": "official",
+    "confidence": 0.88,
+    "action_type": "fix_data_quality",
+    "tags": [
+      "duplicates",
+      "data"
+    ],
+    "sources": [
+      {
+        "title": "Model Training Tips",
+        "url": "https://docs.ultralytics.com/guides/model-training-tips/"
+      }
+    ]
+  },
+  {
+    "id": "generic_pre_corrupted_images_present",
+    "family": "generic",
+    "task_type": "detection",
+    "stage": "pre_training",
+    "topic": "data_quality",
+    "keywords": [
+      "坏图",
+      "损坏图片",
+      "corrupt images"
+    ],
+    "signals": [
+      "corrupted_images_present"
+    ],
+    "conditions": [
+      "corrupted_count > 0 or format_mismatch_count > 0"
+    ],
+    "interpretation": "损坏图或格式异常图会直接污染训练过程和抽样验证。",
+    "recommendation": "先清理坏图和格式异常样本，再进入正式训练。",
+    "next_actions": [
+      "移除损坏文件",
+      "统一异常格式",
+      "重新验证数据集"
+    ],
+    "priority": 9,
+    "source_type": "official",
+    "confidence": 0.92,
+    "action_type": "fix_data_quality",
+    "tags": [
+      "corruption",
+      "data"
+    ],
+    "sources": [
+      {
+        "title": "Model Training Tips",
+        "url": "https://docs.ultralytics.com/guides/model-training-tips/"
+      }
+    ]
+  },
+  {
+    "id": "generic_pre_small_dataset",
+    "family": "generic",
+    "task_type": "detection",
+    "stage": "pre_training",
+    "topic": "dataset_scale",
+    "keywords": [
+      "小样本",
+      "small dataset"
+    ],
+    "signals": [
+      "small_dataset"
+    ],
+    "conditions": [
+      "total_images < 200"
+    ],
+    "interpretation": "样本量偏小，训练波动和偶然性会更明显。",
+    "recommendation": "先做小步快跑验证，优先保证样本质量和覆盖，再决定是否继续扩数据。",
+    "next_actions": [
+      "先跑短周期验证训练",
+      "人工抽查高价值样本",
+      "记录失败样本后再补数据"
+    ],
+    "priority": 7,
+    "source_type": "official",
+    "confidence": 0.82,
+    "action_type": "quick_iteration",
+    "tags": [
+      "small-data",
+      "preflight"
+    ],
+    "sources": [
+      {
+        "title": "Model Training Tips",
+        "url": "https://docs.ultralytics.com/guides/model-training-tips/"
+      }
+    ]
+  },
+  {
+    "id": "generic_pre_dataset_not_ready",
+    "family": "generic",
+    "task_type": "detection",
+    "stage": "pre_training",
+    "topic": "workflow",
+    "keywords": [
+      "data yaml",
+      "split",
+      "ready"
+    ],
+    "signals": [
+      "dataset_not_ready"
+    ],
+    "conditions": [
+      "readiness.ready == false or blockers present"
+    ],
+    "interpretation": "当前还没有满足可训练前提，继续直接启动训练会把流程问题误当成模型问题。",
+    "recommendation": "先补齐 readiness 阻塞项，再开始训练。",
+    "next_actions": [
+      "先解决 blockers",
+      "必要时调用 prepare_dataset_for_training",
+      "准备完成后再 start_training"
+    ],
+    "priority": 10,
+    "source_type": "workflow",
+    "confidence": 0.97,
+    "action_type": "fix_readiness_blockers",
+    "tags": [
+      "workflow",
+      "readiness"
+    ],
+    "sources": [
+      {
+        "title": "YoloStudio training workflow",
+        "url": "agent_plan workflow"
+      }
+    ]
+  },
+  {
+    "id": "generic_pre_validation_issues_present",
+    "family": "generic",
+    "task_type": "detection",
+    "stage": "pre_training",
+    "topic": "data_quality",
+    "keywords": [
+      "validate",
+      "issues"
+    ],
+    "signals": [
+      "validation_issues_present"
+    ],
+    "conditions": [
+      "issue_count > 0 or has_issues == true"
+    ],
+    "interpretation": "标签合法性或目录结构存在问题，训练结果可能缺乏可解释性。",
+    "recommendation": "优先修复 validate 发现的问题，再做训练效果判断。",
+    "next_actions": [
+      "查看问题样例",
+      "修复格式/路径问题",
+      "重新 validate_dataset"
+    ],
+    "priority": 8,
+    "source_type": "workflow",
+    "confidence": 0.9,
+    "action_type": "fix_data_quality",
+    "tags": [
+      "validate",
+      "preflight"
+    ],
+    "sources": [
+      {
+        "title": "YoloStudio validate workflow",
+        "url": "agent_plan workflow"
+      }
+    ]
+  }
+]

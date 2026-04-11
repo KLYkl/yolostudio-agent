@@ -135,3 +135,18 @@ def extract_epochs_from_text(text: str) -> int | None:
     if match:
         return int(match.group(1))
     return None
+
+
+def extract_metric_signals_from_text(text: str) -> list[str]:
+    normalized = text.lower()
+    signals: list[str] = []
+    if ((("precision" in normalized) or ('精确率' in text)) and ((("recall" in normalized) or ('召回' in text)))):
+        if re.search(r'(precision|精确率).{0,8}(高|偏高).{0,12}(recall|召回).{0,8}(低|偏低)', text, flags=re.I):
+            signals.append('high_precision_low_recall')
+        if re.search(r'(precision|精确率).{0,8}(低|偏低).{0,12}(recall|召回).{0,8}(高|偏高)', text, flags=re.I):
+            signals.append('low_precision_high_recall')
+    if re.search(r'(map50|mAP50|mAP).{0,8}(低|偏低)', text, flags=re.I) or 'map低' in normalized:
+        signals.append('low_map_overall')
+    if '只有loss' in normalized or '只看loss' in normalized or '只有 loss' in text:
+        signals.append('loss_only_metrics')
+    return signals

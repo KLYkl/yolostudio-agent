@@ -24,6 +24,9 @@ TOOL_NAME_ALIASES: dict[str, str] = {
     'preview_extract': 'preview_extract_images',
     'extract_frames': 'extract_video_frames',
     'scan_video_directory': 'scan_videos',
+    'search_training_knowledge': 'retrieve_training_knowledge',
+    'explain_training_metrics': 'analyze_training_outcome',
+    'recommend_training_next_step': 'recommend_next_training_step',
 }
 
 _ARG_ALIASES: dict[str, dict[str, str]] = {

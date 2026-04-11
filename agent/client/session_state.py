@@ -17,6 +17,7 @@ class DatasetContext:
     data_yaml: str = ""
     last_scan: dict[str, Any] = field(default_factory=dict)
     last_validate: dict[str, Any] = field(default_factory=dict)
+    last_readiness: dict[str, Any] = field(default_factory=dict)
     last_split: dict[str, Any] = field(default_factory=dict)
     last_health_check: dict[str, Any] = field(default_factory=dict)
     last_duplicate_check: dict[str, Any] = field(default_factory=dict)
@@ -34,6 +35,14 @@ class PredictionContext:
     output_dir: str = ""
     report_path: str = ""
     last_result: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class KnowledgeContext:
+    last_retrieval: dict[str, Any] = field(default_factory=dict)
+    last_analysis: dict[str, Any] = field(default_factory=dict)
+    last_recommendation: dict[str, Any] = field(default_factory=dict)
+
 
 @dataclass(slots=True)
 class TrainingContext:
@@ -71,6 +80,7 @@ class SessionState:
     active_dataset: DatasetContext = field(default_factory=DatasetContext)
     active_training: TrainingContext = field(default_factory=TrainingContext)
     active_prediction: PredictionContext = field(default_factory=PredictionContext)
+    active_knowledge: KnowledgeContext = field(default_factory=KnowledgeContext)
     pending_confirmation: PendingConfirmation = field(default_factory=PendingConfirmation)
     preferences: UserPreferences = field(default_factory=UserPreferences)
 
@@ -89,6 +99,7 @@ class SessionState:
             active_dataset=DatasetContext(**data.get('active_dataset', {})),
             active_training=TrainingContext(**data.get('active_training', {})),
             active_prediction=PredictionContext(**data.get('active_prediction', {})),
+            active_knowledge=KnowledgeContext(**data.get('active_knowledge', {})),
             pending_confirmation=PendingConfirmation(**data.get('pending_confirmation', {})),
             preferences=UserPreferences(**data.get('preferences', {})),
         )

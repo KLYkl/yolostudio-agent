@@ -284,4 +284,51 @@ def build_grounded_tool_reply(applied_results: list[tuple[str, dict[str, Any]]])
             lines.append('建议:')
             lines.extend(f'- {item}' for item in next_actions[:2])
         return _join(lines)
+    if tool_name == 'retrieve_training_knowledge':
+        lines = [result.get('summary', '知识检索完成')]
+        matched_rules = result.get('matched_rules') or []
+        if matched_rules:
+            lines.append('命中规则:')
+            for item in matched_rules[:2]:
+                lines.append(f"- {item.get('id')}: {item.get('interpretation')}")
+        playbooks = result.get('playbooks') or []
+        if playbooks:
+            lines.append('参考资料:')
+            for item in playbooks[:2]:
+                lines.append(f"- {item.get('title')}: {item.get('path')}")
+        next_actions = result.get('next_actions') or []
+        if next_actions:
+            lines.append('建议:')
+            lines.extend(f'- {item}' for item in next_actions[:2])
+        return _join(lines)
+    if tool_name == 'analyze_training_outcome':
+        lines = [result.get('summary', '训练结果分析完成')]
+        facts = result.get('facts') or []
+        if facts:
+            lines.append('事实:')
+            lines.extend(f'- {item}' for item in facts[:4])
+        if result.get('interpretation'):
+            lines.append(f"解释: {result.get('interpretation')}")
+        if result.get('recommendation'):
+            lines.append(f"建议动作: {result.get('recommendation')}")
+        next_actions = result.get('next_actions') or []
+        if next_actions:
+            lines.append('下一步:')
+            lines.extend(f'- {item}' for item in next_actions[:2])
+        return _join(lines)
+    if tool_name == 'recommend_next_training_step':
+        lines = [result.get('summary', '下一步建议生成完成')]
+        if result.get('recommended_action'):
+            lines.append(f"优先动作: {result.get('recommended_action')}")
+        basis = result.get('basis') or []
+        if basis:
+            lines.append('依据:')
+            lines.extend(f'- {item}' for item in basis[:4])
+        if result.get('why'):
+            lines.append(f"原因: {result.get('why')}")
+        next_actions = result.get('next_actions') or []
+        if next_actions:
+            lines.append('建议:')
+            lines.extend(f'- {item}' for item in next_actions[:3])
+        return _join(lines)
     return ''

@@ -24,6 +24,7 @@ from agent_plan.agent.client.intent_parsing import (
     extract_count_from_text,
     extract_dataset_path_from_text,
     extract_epochs_from_text,
+    extract_metric_signals_from_text,
     extract_model_from_text,
     extract_output_path_from_text,
     extract_ratio_from_text,
@@ -148,6 +149,7 @@ class YoloStudioAgentClient:
         parsed = self._normalize_tool_output(payload)
         self.memory.append_event(self.session_state.session_id, "tool_result", {"tool": canonical_name, "args": normalized_args, "result": parsed})
         self._apply_to_state(canonical_name, parsed, normalized_args)
+        self._record_secondary_event(canonical_name, parsed)
         self.memory.save_state(self.session_state)
         return parsed
 
@@ -305,12 +307,13 @@ class YoloStudioAgentClient:
         dataset_path = self._extract_dataset_path_from_text(user_text) or self.session_state.active_dataset.dataset_root or self.session_state.active_dataset.img_dir
         prediction_path = self._extract_dataset_path_from_text(user_text) or self.session_state.active_prediction.source_path
         normalized_text = user_text.lower()
+        metric_signals = self._extract_metric_signals_from_text(user_text)
         wants_train = any(token in normalized_text for token in ('train', 'fine-tune', 'fit')) or ('训练' in user_text)
         no_train = any(token in user_text for token in ('不要训练', '不训练', '只检查', '仅检查', '不要启动'))
         wants_duplicates = ('重复' in user_text) or ('duplicate' in normalized_text)
         wants_health = any(token in user_text for token in ('损坏', '尺寸异常', '健康检查', '健康状况', '图片质量'))
-        wants_quality = any(token in user_text for token in ('质量问题', '质量风险', '数据集质量', '分析', '总结'))
-        wants_readiness = any(token in user_text for token in ('能不能直接训练', '是否可以直接训练', '可不可以直接训练', '直接训练', '训练前检查'))
+        wants_quality = any(token in user_text for token in ('质量问题', '质量风险', '数据集质量'))
+        wants_readiness = any(token in user_text for token in ('能不能直接训练', '是否可以直接训练', '可不可以直接训练', '直接训练', '训练前检查', '适合训练吗', '适不适合训练'))
         wants_split = any(token in user_text for token in ('默认划分', '划分比例', '先划分', 'split'))
         has_image_extract_verb = any(token in user_text for token in ('抽取', '提取', '抽样', '采样', '抽图', '抽一些图')) or (
             '抽' in user_text and '图片' in user_text
@@ -325,6 +328,15 @@ class YoloStudioAgentClient:
         wants_extract_frames = any(token in user_text for token in ('抽帧', '提帧')) or ('extract frames' in normalized_text)
         wants_predict = any(token in normalized_text for token in ('predict', 'infer')) or any(token in user_text for token in ('预测', '推理', '识别'))
         wants_prediction_summary = any(token in user_text for token in ('预测结果', '预测摘要', '总结一下预测', '刚才预测'))
+        asks_metric_terms = any(token in normalized_text for token in ('precision', 'recall', 'map', 'loss', 'epoch', 'epochs', 'batch', 'imgsz', 'patience', 'lr')) or any(token in user_text for token in ('精确率', '召回', '损失', '学习率', '轮数', '批大小'))
+        wants_training_outcome_analysis = (
+            any(token in user_text for token in ('训练效果怎么样', '这次训练效果怎么样', '训练结果怎么样', '训练效果如何', '结果更像', '训练效果'))
+            or (asks_metric_terms and any(token in user_text for token in ('怎么看', '说明什么', '意味着什么', '结果如何')))
+        )
+        wants_next_step_guidance = any(token in user_text for token in ('下一步', '先补数据还是先调参数', '先补数据', '先调参数', '怎么优化', '如何优化下一步训练', '下一轮怎么做'))
+        wants_training_knowledge = bool(metric_signals) or (asks_metric_terms and any(token in user_text for token in ('说明什么', '什么意思', '意味着什么', '怎么看')))
+        readiness_only_query = wants_readiness and (no_train or any(token in user_text for token in ('吗', '是否', '能不能', '可不可以')))
+        training_command_like = any(token in user_text for token in ('开始训练', '启动训练', '训练这个数据', '用这个数据训练', '直接开训', 'start_training'))
 
         if wants_prediction_summary:
             summary_kwargs: dict[str, Any] = {}
@@ -363,8 +375,21 @@ class YoloStudioAgentClient:
                 include_duplicates=wants_duplicates,
             )
 
-        if dataset_path and wants_readiness and no_train:
-            return await self._complete_direct_tool_reply('training_readiness', img_dir=dataset_path)
+        if dataset_path and readiness_only_query:
+            return await self._complete_readiness_knowledge_reply(dataset_path)
+
+        if not wants_predict and not training_command_like and wants_next_step_guidance:
+            return await self._complete_next_training_step_reply(dataset_path if dataset_path else '')
+
+        if not wants_predict and not training_command_like and wants_training_knowledge:
+            return await self._complete_knowledge_retrieval_reply(
+                topic='training_metrics' if asks_metric_terms else 'workflow',
+                stage='post_training',
+                signals=metric_signals,
+            )
+
+        if not wants_predict and not training_command_like and wants_training_outcome_analysis:
+            return await self._complete_training_outcome_analysis_reply()
 
         if dataset_path and wants_extract_preview and not wants_train:
             return await self._complete_direct_tool_reply('preview_extract_images', **self._build_image_extract_args_from_text(user_text, dataset_path))
@@ -383,7 +408,7 @@ class YoloStudioAgentClient:
             predict_tool = 'predict_videos' if self._should_use_video_prediction(user_text, prediction_path) else 'predict_images'
             return await self._complete_direct_tool_reply(predict_tool, source_path=prediction_path, model=model)
 
-        if dataset_path and wants_train and not no_train:
+        if dataset_path and wants_train and not no_train and not readiness_only_query and not wants_training_outcome_analysis and not wants_next_step_guidance and not wants_training_knowledge:
             args: dict[str, Any] = {'dataset_path': dataset_path}
             if wants_split:
                 args['force_split'] = True
@@ -442,6 +467,126 @@ class YoloStudioAgentClient:
             'tool_call': None,
         }
 
+    async def _complete_readiness_knowledge_reply(self, dataset_path: str) -> dict[str, Any]:
+        readiness = await self.direct_tool('training_readiness', img_dir=dataset_path)
+        recommendation = await self.direct_tool(
+            'recommend_next_training_step',
+            readiness=readiness,
+            health=self.session_state.active_dataset.last_health_check,
+            status=self.session_state.active_training.last_status,
+            prediction_summary=self.session_state.active_prediction.last_result,
+        )
+        reply = self._merge_grounded_sections([
+            self._build_grounded_tool_reply([('training_readiness', readiness)]),
+            self._build_grounded_tool_reply([('recommend_next_training_step', recommendation)]),
+        ])
+        if not reply:
+            reply = readiness.get('summary') or recommendation.get('summary') or readiness.get('error') or recommendation.get('error') or '训练前知识分析已完成'
+        self._messages.append(AIMessage(content=reply))
+        return {
+            'status': 'completed' if readiness.get('ok', True) and recommendation.get('ok', True) else 'error',
+            'message': reply,
+            'tool_call': None,
+        }
+
+    async def _complete_knowledge_retrieval_reply(self, *, topic: str, stage: str, signals: list[str] | None = None) -> dict[str, Any]:
+        result = await self.direct_tool(
+            'retrieve_training_knowledge',
+            topic=topic,
+            stage=stage,
+            model_family='yolo',
+            task_type='detection',
+            signals=signals or [],
+        )
+        reply = self._build_grounded_tool_reply([('retrieve_training_knowledge', result)])
+        if not reply:
+            reply = result.get('summary') or result.get('error') or '知识检索已完成'
+        self._messages.append(AIMessage(content=reply))
+        return {
+            'status': 'completed' if result.get('ok', True) else 'error',
+            'message': reply,
+            'tool_call': None,
+        }
+
+    async def _complete_training_outcome_analysis_reply(self) -> dict[str, Any]:
+        result = await self.direct_tool(
+            'analyze_training_outcome',
+            metrics=self.session_state.active_training.last_status,
+            data_quality=self.session_state.active_dataset.last_health_check or self.session_state.active_dataset.last_validate,
+            prediction_summary=self.session_state.active_prediction.last_result,
+            model_family='yolo',
+            task_type='detection',
+        )
+        reply = self._build_grounded_tool_reply([('analyze_training_outcome', result)])
+        if not reply:
+            reply = result.get('summary') or result.get('error') or '训练结果分析已完成'
+        self._messages.append(AIMessage(content=reply))
+        return {
+            'status': 'completed' if result.get('ok', True) else 'error',
+            'message': reply,
+            'tool_call': None,
+        }
+
+    async def _complete_next_training_step_reply(self, dataset_path: str = '') -> dict[str, Any]:
+        readiness: dict[str, Any] | None = None
+        if dataset_path:
+            readiness = await self.direct_tool('training_readiness', img_dir=dataset_path)
+        result = await self.direct_tool(
+            'recommend_next_training_step',
+            readiness=readiness or self.session_state.active_dataset.last_readiness,
+            health=self.session_state.active_dataset.last_health_check,
+            status=self.session_state.active_training.last_status,
+            prediction_summary=self.session_state.active_prediction.last_result,
+            model_family='yolo',
+            task_type='detection',
+        )
+        sections = []
+        if readiness is not None:
+            sections.append(self._build_grounded_tool_reply([('training_readiness', readiness)]))
+        sections.append(self._build_grounded_tool_reply([('recommend_next_training_step', result)]))
+        reply = self._merge_grounded_sections(sections)
+        if not reply:
+            reply = result.get('summary') or result.get('error') or '下一步建议已生成'
+        self._messages.append(AIMessage(content=reply))
+        return {
+            'status': 'completed' if result.get('ok', True) else 'error',
+            'message': reply,
+            'tool_call': None,
+        }
+
+    @staticmethod
+    def _merge_grounded_sections(sections: list[str]) -> str:
+        cleaned: list[str] = []
+        for section in sections:
+            text = str(section or '').strip()
+            if text and text not in cleaned:
+                cleaned.append(text)
+        return '\n\n'.join(cleaned)
+
+    def _record_secondary_event(self, tool_name: str, result: dict[str, Any]) -> None:
+        if not result.get('ok'):
+            return
+        if tool_name == 'analyze_training_outcome':
+            self.memory.append_event(
+                self.session_state.session_id,
+                'training_analysis',
+                {
+                    'summary': result.get('summary', ''),
+                    'assessment': result.get('assessment', ''),
+                    'matched_rule_ids': result.get('matched_rule_ids', []),
+                },
+            )
+        elif tool_name == 'recommend_next_training_step':
+            self.memory.append_event(
+                self.session_state.session_id,
+                'knowledge_recommendation',
+                {
+                    'summary': result.get('summary', ''),
+                    'recommended_action': result.get('recommended_action', ''),
+                    'matched_rule_ids': result.get('matched_rule_ids', []),
+                },
+            )
+
     def _extract_dataset_path_from_text(self, text: str) -> str:
         return extract_dataset_path_from_text(text)
 
@@ -493,6 +638,7 @@ class YoloStudioAgentClient:
             tool_args = normalize_tool_args(tool_name, tool_args_by_id.get(message.tool_call_id or '', {}))
             self.memory.append_event(self.session_state.session_id, "tool_result", {"tool": tool_name, "args": tool_args, "result": parsed})
             self._apply_to_state(tool_name, parsed, tool_args)
+            self._record_secondary_event(tool_name, parsed)
             applied_results.append((tool_name, parsed))
             if message.tool_call_id:
                 self._applied_tool_call_ids.add(message.tool_call_id)
@@ -606,6 +752,10 @@ class YoloStudioAgentClient:
     @staticmethod
     def _extract_epochs_from_text(text: str) -> int | None:
         return extract_epochs_from_text(text)
+
+    @staticmethod
+    def _extract_metric_signals_from_text(text: str) -> list[str]:
+        return extract_metric_signals_from_text(text)
 
     @staticmethod
     def _build_confirmation_prompt(tool_call: dict[str, Any]) -> str:
