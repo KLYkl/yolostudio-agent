@@ -21,8 +21,21 @@ function Invoke-NativeChecked {
         [string[]]$Args
     )
 
-    Write-Host ("> " + $Exe + " " + ($Args -join " "))
-    & $Exe @Args
+    $display = "> " + $Exe + " " + ($Args -join " ")
+    Write-Host $display
+
+    if ($Exe -in @("ssh", "scp")) {
+        $quotedArgs = $Args | ForEach-Object {
+            '"' + (($_ -replace '"', '\"')) + '"'
+        }
+        $cmdLine = '"' + $Exe + '" ' + ($quotedArgs -join " ") + ' < NUL'
+        $cmdExe = if ($env:ComSpec) { $env:ComSpec } else { "C:\Windows\System32\cmd.exe" }
+        & $cmdExe /c $cmdLine
+    }
+    else {
+        & $Exe @Args
+    }
+
     if ($LASTEXITCODE -ne 0) {
         throw "$Exe 执行失败，exit code=$LASTEXITCODE"
     }
@@ -49,6 +62,8 @@ $ensureCommands = @(
 )
 foreach ($remoteCommand in $ensureCommands) {
     Invoke-NativeChecked -Exe "ssh" -Args @(
+        "-n",
+        "-T",
         "-o", "BatchMode=yes",
         "-o", "ConnectTimeout=10",
         $Server,
@@ -119,6 +134,8 @@ cd $RemoteAppRoot
 python -m agent_plan.agent.tests.test_prediction_remote_real_media --weights-dir $RemoteStageRoot/weights --videos-dir $RemoteStageRoot/videos --output-dir $RemoteOutputRoot
 "@
 Invoke-NativeChecked -Exe "ssh" -Args @(
+    "-n",
+    "-T",
     "-o", "BatchMode=yes",
     "-o", "ConnectTimeout=10",
     $Server,
