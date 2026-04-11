@@ -753,3 +753,9 @@ Gemma 这轮测试很清楚地说明：
 - 第二主线当前仍然以**本地真实 conda 环境验证**为主
 - 一旦换到允许出站 TCP 的终端，会立刻优先恢复“远端 prediction 真实验证”
 
+
+
+补充定位：
+- `ssh` 在禁用 host key 校验后，已能走到认证阶段
+- 但会报：`Load key "C:\Users\29615\.ssh\id_ed25519": Permission denied`
+- 同时 `ssh-add -l` 在当前进程里返回：`Error connecting to agent: Permission denied`

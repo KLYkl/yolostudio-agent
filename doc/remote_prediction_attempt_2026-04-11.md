@@ -40,7 +40,7 @@ D:\yolodo2.0\agent_plan\deploy\scripts\check_remote_prediction_prereqs.ps1
 
 ## 结论
 
-> 当前阻塞点不在 `agent_plan` 代码，也不在远端验证脚本，而在当前 Codex / PowerShell 运行环境的 TCP 出站能力。
+> 当前阻塞点已经进一步收敛：TCP 22 端口已通，但当前 Codex 进程既不能读取 `C:\Users\29615\.ssh\id_ed25519` 私钥文件，也不能连接到 Windows `ssh-agent`（`ssh-add -l` 返回 `Error connecting to agent: Permission denied`），因此仍无法完成 SSH/SCP 认证。
 
 因此本轮**未能真正完成**：
 - 上传 staged 权重 / 视频到服务器
@@ -64,3 +64,9 @@ D:\yolodo2.0\agent_plan\deploy\scripts\check_remote_prediction_prereqs.ps1
 - 本地 `yolo / yolodo` conda 环境真实验证
 
 作为主验证路径。
+
+
+补充定位：
+- `ssh` 在禁用 host key 校验后，已能走到认证阶段
+- 但会报：`Load key "C:\Users\29615\.ssh\id_ed25519": Permission denied`
+- 同时 `ssh-add -l` 在当前进程里返回：`Error connecting to agent: Permission denied`
