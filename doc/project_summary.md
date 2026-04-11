@@ -5,6 +5,31 @@
 
 ---
 
+## 0.2 2026-04-11 晚间新增：prediction 远端真实执行完成一轮闭环
+
+这轮已经不是只上传素材或只做本地验证，而是完成了完整的远端 prediction 闭环：
+
+- 真实权重、真实视频已上传到远端
+- `predict_service.py` / `predict_tools.py` / `test_prediction_remote_real_media.py` 已同步到远端
+- 已在远端 `yolodo` conda 环境执行 prediction
+- 已把结果拉回本地
+
+关键结果：
+
+- 处理视频：`2`
+- 总帧数：`24`
+- 有检测帧：`13`
+- 总检测框：`15`
+- 主要类别：`two_wheeler=15`
+
+结果文件：
+- `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_remote_real_media_output.json`
+- `D:\yolodo2.0\agent_plan\doc\prediction_remote_validation_2026-04-11.md`
+
+这意味着 prediction 这条线已经不再只是“本地完成”，而是已经完成了第一轮远端真实执行。
+
+---
+
 ## 0. 2026-04-11 最新补充
 
 - 第一主线继续加强：新增 **旧工具名/旧参数名兼容层**、**主线意图路由**、**更多 grounded reply**。
@@ -12,10 +37,12 @@
 - 当前第一主线已经达到“单人、内网、有人值守”的稳定可用门槛。
 - 第二主线本地预测回归基线已建立：图片 / 图片目录 / 视频 / 视频目录 headless 预测、预测结果汇总、旧工具名兼容、grounded 总结都已有自动化验证。
 - 第二主线当前本地预测回归分数：**1.0**（现有报告基线）；另已补 `summarize_prediction_results` 的工具级验证。
+- 第二主线已完成第一份**远端真实 prediction** 验证，结果归档在 `agent/tests/test_prediction_remote_real_media_output.json`，当前基线为：2 个视频、24 帧、13 个检测帧、15 个检测框、`two_wheeler=15`。
+- 远端验证同时修复了两个真实阻塞：`predict_service.py` 对 `utils.label_writer` 的硬依赖，以及远端按上传 mtime 选错权重的问题。
 - 目前最主要剩余差距：
   - 本地文件级 durable checkpoint 已落地，但还不是共享服务级持久化
   - 解释层继续 grounded 化
-  - 第二主线已正式开启 Phase 2：headless 图片 / 图片目录 / 视频 / 视频目录预测 + 结果汇总（当前已完成本地工具级验证，尚未远端部署验证）
+  - prediction 相关结构开始变厚，下一步应优先做结构整理与回归脚本收口
 
 ---
 
@@ -41,7 +68,7 @@
 |---|---|---|---|
 | 数据准备 / 训练主线 | ✅ | ✅ | ✅ |
 | prediction（本次手动上传前） | ✅ | ❌ | ❌ |
-| prediction（本次手动上传后） | ✅ | ✅（代码和素材已上传） | ⏳ 还差远端环境确认与真实执行 |
+| prediction（本次手动上传后、远端实测前） | ✅ | ✅（代码和素材已上传） | ⏳ 还差远端环境确认与真实执行 |
 
 ### 这轮已经明确完成的远端同步
 
@@ -65,6 +92,30 @@
 3. **远端真实验证通过**
 
 如果只完成前两项，不能再用容易让人误解成“远端已经验证完了”的说法。
+
+---
+
+## 0.2 2026-04-11 深夜补充：第二主线远端真实验证已完成
+
+在完成一次真实远端 roundtrip 后，现在应把第二主线理解为：
+
+- 本地最新代码：✅
+- 远端同版本代码：✅
+- 远端真实 prediction 验证：✅
+
+这次远端实测的关键结论是：
+
+- 使用 `manifest.json` 固定到了 `zq-4-06-qcar.pt`
+- 真实跑了 2 个视频，共 24 帧
+- 检出 13 个目标帧、15 个检测框
+- 主要类别为 `two_wheeler`
+
+归档与说明：
+
+- 结果 JSON：`agent/tests/test_prediction_remote_real_media_output.json`
+- 报告：`doc/prediction_remote_real_media_validation_2026-04-11.md`
+
+因此，prediction 主线的主要矛盾已经从“远端有没有跑过”转成了“如何整理结构并固化回归基线”。
 
 ---
 

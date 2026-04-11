@@ -5,6 +5,32 @@
 
 ---
 
+## 1.2 2026-04-11 晚间新增：prediction 远端真实验证已打通
+
+这轮已经在远端 `yolostudio` 上完成一轮真实视频 prediction 验证，验证链路包括：
+
+- 上传真实权重与真实视频样本
+- 同步 prediction 相关代码
+- 在远端 `yolodo` conda 环境执行 `test_prediction_remote_real_media`
+- 拉回 `remote_prediction_validation.json` 到本地
+
+关键结果：
+
+- 处理视频数：`2`
+- 总帧数：`24`
+- 有检测帧：`13`
+- 总检测框：`15`
+- 主要类别：`two_wheeler=15`
+
+本地结果文件：
+- `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_remote_real_media_output.json`
+
+这意味着 prediction 这条线已经从“仅本地可用”推进到了：
+
+> **远端真实执行已完成第一轮闭环验证。**
+
+---
+
 ## 1. 当前项目状态一句话总结
 
 截至 2026-04-11，项目已经从“能不能做”推进到：
@@ -19,7 +45,7 @@
 - 当前主要矛盾从“没有能力”转成了：
   - 极少数解释层 grounded 细节仍需继续收口
   - 本地文件级 durable checkpoint 已落地，但还不是共享服务级持久化
-  - 第二主线 Phase 2（图片/视频预测 + 结果汇总）的 headless Agent 化与测试基线
+  - prediction 相关结构与回归入口需要进一步收口
 
 ---
 
@@ -49,7 +75,7 @@
 |---|---|---|---|---|
 | 数据准备 / 训练 | ✅ | ✅ | ✅ | ✅ |
 | prediction（截至本次上传前） | ✅ | ✅ | ❌/部分旧版本 | ❌ |
-| prediction（本次上传后） | ✅ | ✅ | ✅（代码与素材已上传） | ⏳ 正在补远端环境与真实执行 |
+| prediction（本次上传后、远端实测前） | ✅ | ✅ | ✅（代码与素材已上传） | ⏳ 正在补远端环境与真实执行 |
 
 ### 当前阶段的新事实
 
@@ -75,6 +101,36 @@
 - **远端已实测**
 
 如果没有远端同步和远端实测，不能再用容易误导成“服务器上也已经是最新版本”的说法。
+
+---
+
+## 1.2 2026-04-11 深夜补充：第二主线远端真实验证已完成
+
+这一条是对 1.1 的续写，不是推翻 1.1。
+
+1.1 说的是：
+
+> 在那一轮手动 `scp/ssh` 之前，prediction 还没有完成远端真实验证。
+
+而现在的新事实是：
+
+- 远端真实 prediction 已经跑通
+- 结果已拉回本地
+- 第二主线已经有了第一份远端真实 regression baseline
+
+本次远端基线结果：
+
+- 选中权重：`zq-4-06-qcar.pt`
+- 视频数：2
+- 总帧数：24
+- 有检测帧：13
+- 总检测框：15
+- 类别统计：`two_wheeler=15`
+
+归档位置：
+
+- `agent/tests/test_prediction_remote_real_media_output.json`
+- `doc/prediction_remote_real_media_validation_2026-04-11.md`
 
 ---
 
@@ -839,4 +895,65 @@ Gemma 这轮测试很清楚地说明：
 - 远端训练辅助脚本
 - 远端部署/上传脚本
 都具有复用价值。
+
+
+### 4.8 2026-04-11 深夜新增推进（七）
+
+这轮最终把第二主线真正补到了**远端真实 prediction 已验证**的状态。
+
+#### 本次先撞到的真实问题
+
+第一次远端真实执行时，没有卡在 YOLO 推理本身，而是卡在两个更底层的工程问题：
+
+1. `predict_service.py` 在模块导入阶段硬依赖 `utils.label_writer`
+   - 即使当前调用路径是 `predict_videos(save_labels=False)`，也会先因为远端没有该模块而直接报错
+2. 远端测试脚本按远端文件 mtime 选权重
+   - staged 权重上传到服务器后，mtime 会被上传顺序污染
+   - 导致远端实际跑到的是 `zq-4-3.pt`，而不是 stage 时原本排在首位的 `zq-4-06-qcar.pt`
+
+#### 这轮实际修复
+
+- `agent/server/services/predict_service.py`
+  - 对 `write_yolo_txt_from_xyxy` 增加 fallback，去掉“无标签导出场景也必须依赖 label_writer”的硬耦合
+- `agent/tests/test_prediction_remote_real_media.py`
+  - 远端测试优先读取 `manifest.json`
+  - 按 manifest 固定权重顺序，避免远端跑偏到错误模型
+- `deploy/scripts/run_prediction_remote_validation.sh`
+  - 自动解析 `yolodo` / `yolo` conda 环境
+- `deploy/scripts/run_prediction_local_validation.ps1`
+- `deploy/scripts/run_prediction_remote_roundtrip.ps1`
+  - 新增 `auto` 环境模式
+
+#### 远端真实结果
+
+最终远端真实执行成功，结果如下：
+
+- 选中权重：`zq-4-06-qcar.pt`
+- 处理视频：2 个
+- 总帧数：24
+- 有检测帧：13
+- 总检测框：15
+- 类别统计：`two_wheeler=15`
+
+分视频结果：
+
+- `fyb2026-03-06_094015_491.mp4`
+  - 12 帧
+  - 4 个检测帧
+  - 4 个检测框
+- `fyb2026-03-06_094125_133.mp4`
+  - 12 帧
+  - 9 个检测帧
+  - 11 个检测框
+
+#### 当前意义
+
+这一步之后，第二主线的状态应该更新为：
+
+> **不是“远端链路准备好了”，而是“远端真实 prediction 已经跑通，并且结果已经落成基线 artifact”。**
+
+本地归档：
+
+- `agent/tests/test_prediction_remote_real_media_output.json`
+- `doc/prediction_remote_real_media_validation_2026-04-11.md`
 

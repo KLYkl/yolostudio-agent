@@ -9,7 +9,7 @@
 
 截至 2026-04-11，`D:\yolodo2.0\agent_plan` 已经从“Agent 原型”推进到：
 
-> **训练主链路已进入可实用状态；预测主链路已完成本地能力建设与本地回归，正在补远端部署与真实验证。**
+> **训练主链路已进入可实用状态；预测主链路已完成本地能力建设、本地回归与远端真实验证。**
 
 ---
 
@@ -56,6 +56,7 @@
 - prediction 别名兼容层
 - prediction 会话状态写回
 - 本地真实权重 / 真实视频测试链路
+- 远端真实视频 prediction 回归基线
 
 ---
 
@@ -82,12 +83,12 @@
 - 视频目录批量预测
 - 预测结果汇总
 
-### 需要继续补齐的
+### 已经补齐的远端 prediction
 
-#### 预测相关（远端）
-- 远端环境确认
+- 远端环境自动识别（`yolodo` / `yolo`）
 - 远端真实 prediction 执行
 - 远端 prediction 回归基线
+- 远端输出结果拉回本地归档
 
 ---
 
@@ -149,14 +150,18 @@
 - 本地路由测试
 - 本地 regression
 - 本地真实素材验证
+- 远端真实 prediction 验证
 
-并且已经准备好：
+其中远端真实验证已确认：
 
-- 远端上传脚本
-- 远端执行脚本
-- 远端 prediction 测试脚本
+- 输出归档：`agent/tests/test_prediction_remote_real_media_output.json`
+- 真实结果：2 个视频、24 帧、13 个检测帧、15 个检测框
+- 主要类别：`two_wheeler=15`
 
-但**不要把“已准备好远端链路”理解成“远端 prediction 已经完整验证通过”。**
+同时补了两个远端阻塞修复：
+
+- `predict_service.py` 去掉对 `utils.label_writer` 的硬依赖
+- 远端验证脚本按 `manifest.json` 固定权重选择，不再被上传时间戳误导
 
 ---
 
@@ -164,20 +169,19 @@
 
 ### 第一优先
 
-把 prediction 这条线真正补到远端可验证状态：
+做一轮 prediction 结构整理与回归固化：
 
-1. 确认远端真实可用环境
-2. 运行远端 prediction 验证
-3. 拉回结果
-4. 固化远端 prediction 回归基线
+1. 拆 `predict_service.py`
+2. 统一本地 / 远端 prediction 验证入口
+3. 把当前远端回归结果沉淀成更稳定的回归基线
 
 ### 第二优先
 
-在 prediction 远端跑通后，做一轮结构整理：
+继续整理变厚文件：
 
 1. 拆 `agent_client.py`
 2. 拆 `data_tools.py`
-3. 拆 `predict_service.py`
+3. 收口 prediction 相关脚本与测试资产组织
 
 ### 第三优先
 
@@ -189,6 +193,30 @@
 
 ---
 
+
+## 6.1 补充：prediction 远端真实验证已经完成第一轮
+
+在这份交接文档创建之后，项目又往前推进了一步：
+
+- 已完成真实权重/视频上传
+- 已同步 prediction 相关代码到远端
+- 已在远端 `yolodo` conda 环境完成一轮真实视频 prediction
+- 已拉回本地结果文件
+
+关键结果：
+- 处理视频：`2`
+- 总帧数：`24`
+- 有检测帧：`13`
+- 总检测框：`15`
+- 主要类别：`two_wheeler=15`
+
+本地结果文件：
+- `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_remote_real_media_output.json`
+
+因此新会话不应再把 prediction 理解为“只有本地验证”，而应理解为：
+
+> **prediction 已完成第一轮远端真实执行，下一步是把它收成固定回归基线，并继续补图片 prediction 的远端验证。**
+
 ## 7. 当前最重要的测试/文档文件
 
 ### 文档
@@ -198,6 +226,7 @@
 - `D:\yolodo2.0\agent_plan\doc\agent_test_playbook_2026-04-10.md`
 - `D:\yolodo2.0\agent_plan\doc\prediction_regression_report_2026-04-11.md`
 - `D:\yolodo2.0\agent_plan\doc\prediction_real_media_validation_2026-04-11.md`
+- `D:\yolodo2.0\agent_plan\doc\prediction_remote_real_media_validation_2026-04-11.md`
 
 ### 测试
 
@@ -223,11 +252,11 @@ D:\yolodo2.0\agent_plan\doc\project_summary.md
 D:\yolodo2.0\agent_plan\doc\agent_test_playbook_2026-04-10.md
 
 然后直接继续推进，不用先问我。
-当前优先补 prediction 这条线的远端真实验证，并在必要时做结构整理。
+当前优先做 prediction 这条线的结构整理，并继续固化远端真实验证基线。
 ```
 
 ---
 
 ## 9. 最后一句话
 
-> **当前项目不是“没做出东西”，而是“训练链已经实用，预测链本地已成形，远端 prediction 还差最后一段验证闭环”。**
+> **当前项目不是“没做出东西”，而是“训练链已经实用，预测链已经完成远端真实验证，接下来该做的是整理结构并把基线固化得更稳”。**
