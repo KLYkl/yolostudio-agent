@@ -690,3 +690,16 @@ Gemma 这轮测试很清楚地说明：
 2. **环境主线**
    - 解决本机 `ultralytics / torch` 运行环境阻塞
    - 或转向远端环境做真实预测验证
+
+### 为了转向远端验证，本轮已经补好的东西
+- 本地素材 staging 脚本：
+  - `deploy/scripts/stage_prediction_real_media.py`
+- 上传脚本：
+  - `deploy/scripts/upload_prediction_real_media.ps1`
+- 远端执行脚本：
+  - `deploy/scripts/run_prediction_remote_validation.sh`
+- 远端真实素材测试脚本：
+  - `agent/tests/test_prediction_remote_real_media.py`
+
+也就是说：
+> 第二主线现在不只是“知道该怎么远端测”，而是已经把 **本地打包 → 上传 → 远端 conda 环境执行** 这条链准备好了，只差网络条件允许时真正跑通。

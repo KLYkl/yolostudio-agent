@@ -260,6 +260,12 @@
 - 本机预测环境探测
 - 真实素材 Mock 链路验证
 
+当前已准备好的远端链路脚本：
+- `D:\yolodo2.0\agent_plan\deploy\scripts\stage_prediction_real_media.py`
+- `D:\yolodo2.0\agent_plan\deploy\scripts\upload_prediction_real_media.ps1`
+- `D:\yolodo2.0\agent_plan\deploy\scripts\run_prediction_remote_validation.sh`
+- `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_remote_real_media.py`
+
 ---
 
 ## 9. 当前协作约定（重要）

@@ -684,3 +684,18 @@ afab4c1  test: comprehensive validation + log parser fix
 到这一步，第二主线已经不再只是“本地工具层玩具验证”，而是进入了：
 
 > **真实素材接入已验证，真实推理环境问题已显式定位** 的阶段。
+
+### 远端验证准备度
+为了继续把第二主线推进到远端，这轮已经补齐：
+- 本地 staging：`deploy/scripts/stage_prediction_real_media.py`
+- 远端上传：`deploy/scripts/upload_prediction_real_media.ps1`
+- 远端执行：`deploy/scripts/run_prediction_remote_validation.sh`
+- 远端测试脚本：`agent/tests/test_prediction_remote_real_media.py`
+
+也就是说，第二主线已经具备：
+
+> **把本地真实权重和视频样本打包、上传到远端，并在 `yolo` / `yolodo` conda 环境中执行真实预测验证** 的脚本基础。
+
+当前未完成的不是脚本链，而是：
+- 受限于本机网络 / winsock 环境
+- 本轮无法直接完成远端上传和远端执行
