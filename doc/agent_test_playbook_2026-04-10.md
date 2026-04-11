@@ -1495,34 +1495,40 @@ Gemma 和 DeepSeek：
   - 复制到 workspace 内临时 stage 目录
   - 生成 `manifest.json`
 
-#### B. 上传到远端
+#### B. 在本地 `yolo / yolodo` conda 环境中执行（默认）
+- 脚本：`D:\yolodo2.0\agent_plan\deploy\scripts\run_prediction_local_validation.ps1`
+- 默认环境：
+  - `yolo`
+- 可切换：
+  - `yolodo`
+
+#### C. 上传到远端（备选）
 - 脚本：`D:\yolodo2.0\agent_plan\deploy\scripts\upload_prediction_real_media.ps1`
 - 说明：
   - 接收远端主机别名/地址
   - 把 stage 内的权重、视频、manifest 上传到远端
 
-#### C. 在远端 conda 环境中执行
+#### D. 在远端 conda 环境中执行（备选）
 - 脚本：`D:\yolodo2.0\agent_plan\deploy\scripts\run_prediction_remote_validation.sh`
 - 默认环境：
   - `yolo`
 - 可切换：
   - `yolodo`
 
-#### D. 远端测试脚本
+#### E. 预测验证脚本
 - `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_remote_real_media.py`
 - 作用：
-  - 用远端真实权重 + 远端真实视频执行 `predict_videos`
+  - 用真实权重 + 真实视频执行 `predict_videos`
   - 自动生成 `remote_prediction_validation.json`
 
-### 25.10 当前远端验证的真实阻塞
-目前从这台机器直接继续走“上传 → 远端执行”还存在两层外部阻塞：
+### 25.10 当前真实验证的阻塞与默认策略
+目前从这台机器继续做“本地真实推理”时，主要阻塞是：
 
-1. **本机网络 / winsock 异常**
+1. **本机 winsock / Python 运行环境异常**
    - 已影响：
      - `torch / ultralytics`
-     - 本机部分网络能力
 2. **当前会话的网络限制**
-   - 无法在本轮里直接完成远端传输与远端执行验证
+   - 如果要走远端备选方案，本轮里无法直接完成远端传输与远端执行验证
 
 所以当前工程策略是：
-> **先把远端验证脚本链准备好并本地验证到可交付，再在网络条件允许时执行真正的远端上传与验证。**
+> **先把本地 `yolo / yolodo` 环境作为默认真实验证目标；同时把远端备选链路准备好，等网络条件允许时再启用。**

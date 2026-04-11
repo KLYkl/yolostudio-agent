@@ -688,10 +688,12 @@ Gemma 这轮测试很清楚地说明：
 1. **代码主线**
    - 继续保持图片/视频预测工具和汇总工具可回归
 2. **环境主线**
-   - 解决本机 `ultralytics / torch` 运行环境阻塞
-   - 或转向远端环境做真实预测验证
+   - 优先解决本地 `yolo / yolodo` conda 环境里的 `ultralytics / torch` 运行环境阻塞
+   - 远端预测环境改为备选路径，而不是默认路径
 
-### 为了转向远端验证，本轮已经补好的东西
+### 为了继续推进真实预测验证，本轮已经补好的东西
+- 本地 conda 运行入口：
+  - `deploy/scripts/run_prediction_local_validation.ps1`
 - 本地素材 staging 脚本：
   - `deploy/scripts/stage_prediction_real_media.py`
 - 上传脚本：
@@ -702,4 +704,4 @@ Gemma 这轮测试很清楚地说明：
   - `agent/tests/test_prediction_remote_real_media.py`
 
 也就是说：
-> 第二主线现在不只是“知道该怎么远端测”，而是已经把 **本地打包 → 上传 → 远端 conda 环境执行** 这条链准备好了，只差网络条件允许时真正跑通。
+> 第二主线现在不只是“知道该怎么测”，而是已经把 **本地 `yolo / yolodo` conda 环境执行** 作为默认路径准备好了，同时保留了 **打包 → 上传 → 远端执行** 的备选链路。
