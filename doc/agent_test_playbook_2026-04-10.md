@@ -1810,3 +1810,15 @@ extract_images -> scan_dataset -> validate_dataset -> prepare_dataset_for_traini
 - 关键帧输出目录与产物
 - 帧级统计汇总
 - 与 `test_predict_video_tools.py` / `test_predict_tools.py` / 聊天层回归共同验证结构整理后外部行为不变
+
+
+### 28.9 prediction 图片批处理 helper 回归
+
+新增固定脚本：
+- `agent/tests/test_prediction_image_helpers.py`
+
+覆盖点：
+- 图片批量读取与坏图过滤
+- 标注图 / 标签 / 原图副本输出
+- image prediction_report.json 生成
+- 与 `test_predict_tools.py` / `test_predict_video_tools.py` / 聊天层回归共同验证结构整理后外部行为不变

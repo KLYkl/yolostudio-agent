@@ -1238,3 +1238,42 @@ Gemma 这轮测试很清楚地说明：
 
 - 单视频执行 helper 拆分后，视频预测工具级行为没有回退
 - 图片预测与聊天层长上下文链路也没有被这轮整理破坏
+
+
+### 4.14 2026-04-11 深夜新增推进（十三）
+
+结构整理继续推进第五刀，这轮把 `predict_service.py` 中图片批处理执行逻辑也拆了出去：
+
+- 新增：`agent/server/services/prediction_image_helpers.py`
+
+当前拆出的能力包括：
+
+- 图片批量读取与坏图过滤
+- batch inference 结果分发
+- 标注图 / YOLO 标签 / 原图副本输出
+- image prediction_report.json 生成
+- 图片级摘要统计字段构建
+
+为了保持外部行为不变，`predict_images(...)` 仍然保留在 `PredictService` 中，
+但现在主要负责：
+
+- 输入校验
+- 模型加载
+- 输出目录解析
+- 将执行阶段委托给 helper
+- 把最终 `model` / `source_path` 回填到结果与 report
+
+#### 本轮验证
+
+本轮新增并通过了：
+
+- `agent/tests/test_prediction_image_helpers.py`
+- `agent/tests/test_predict_tools.py`
+- `agent/tests/test_predict_video_tools.py`
+- `agent/tests/test_prediction_route.py`
+- `agent/tests/test_extreme_chat_regression.py`
+
+这说明：
+
+- 图片预测执行 helper 拆分后，image/video 工具级行为都没有回退
+- 聊天层 prediction 路由与长上下文回归仍然稳定
