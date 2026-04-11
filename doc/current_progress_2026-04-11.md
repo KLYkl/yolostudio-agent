@@ -1008,3 +1008,57 @@ Gemma 这轮测试很清楚地说明：
 - `agent/tests/test_prediction_remote_real_media_output.json`
 - `doc/prediction_remote_real_media_validation_2026-04-11.md`
 
+
+### 4.9 2026-04-11 深夜新增推进（八）
+
+这轮把“聊天层测试”从短话术 smoke，继续补成了**长上下文 / 极端多轮回归**。
+
+#### 本次补的不是普通 route smoke
+
+新增：
+
+- `agent/tests/test_extreme_chat_regression.py`
+
+它覆盖的是一条更长的真实会话链：
+
+- 图片抽取预览
+- 图片抽取真执行
+- readiness 跟进
+- 健康检查（含重复）
+- 视频扫描
+- 视频抽帧
+- 视频 prediction
+- prediction summarize
+- prepare 进入确认
+- 取消 `start_training`
+- 在 history trim 和 session reload 后继续接续
+
+#### 这轮顺手修掉的一个真实问题
+
+在聊天态下，如果用户说“总结一下刚才预测结果”，旧逻辑会优先拿 `active_prediction.source_path`，导致 `summarize_prediction_results` 可能拿错参数。
+
+这轮已修成：
+
+- 先用用户显式给出的报告路径/输出目录
+- 否则优先用 `active_prediction.report_path`
+- 再退到 `active_prediction.output_dir`
+- 最后才退到更弱的 source path 推断
+
+也就是说：
+
+> prediction summary 现在更符合“沿用最近一次真实 prediction 产物”的预期，而不是错误回落到输入源路径。
+
+#### 当前意义
+
+这一步之后，聊天层测试不再只覆盖：
+
+- 单句话术
+- 单工具路由
+
+而是开始覆盖：
+
+- 长对话
+- 多链路切换
+- 状态不污染
+- history trim 后仍能续接
+- prepare / cancel 这类确认流在长上下文中仍然稳定

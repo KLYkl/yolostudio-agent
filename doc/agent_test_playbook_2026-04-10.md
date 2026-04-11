@@ -1746,8 +1746,29 @@ extract_images -> scan_dataset -> validate_dataset -> prepare_dataset_for_traini
 - `scan_videos`：本地通过，且服务器 smoke 通过
 - `extract_video_frames`：本地通过；远端如果 `yolostudio-agent-server` 环境仍缺 `cv2 / numpy`，当前应返回工具级错误，不应影响整个 MCP server 启动
 
-### 28.5 当前固定回归脚本
+### 28.5 长上下文 / 极端聊天回归
+
+这轮新增一个更接近真实使用的**多轮长对话压力回归**，用于覆盖：
+
+- 抽取预览 → 真执行 → readiness
+- 健康检查 / 重复检查
+- 视频扫描 / 视频抽帧
+- 视频 prediction → summarize
+- prepare 进入确认 → 取消 start_training
+- 在长上下文与 history trim 之后，继续依赖 `SessionState` 正确接续
+
+重点验收：
+- 不能因为消息变长、上下文变厚就误选旧工具或旧状态
+- prediction summary 优先复用最近一次 `report_path / output_dir`，而不是错误回落到旧的 `source_path`
+- 训练准备链与 prediction 链不能互相污染
+- `max_history_messages` 收缩后，关键状态仍应可续接
+
+固定脚本：
+- `D:\yolodo2.0\agent_plan\agent\tests\test_extreme_chat_regression.py`
+
+### 28.6 当前固定回归脚本
 
 - `D:\yolodo2.0\agent_plan\agent\tests\test_extract_tools.py`
 - `D:\yolodo2.0\agent_plan\agent\tests\test_video_extract_tools.py`
 - `D:\yolodo2.0\agent_plan\agent\tests\test_extract_route.py`
+- `D:\yolodo2.0\agent_plan\agent\tests\test_extreme_chat_regression.py`

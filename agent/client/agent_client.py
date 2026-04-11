@@ -312,15 +312,18 @@ class YoloStudioAgentClient:
 
         if wants_prediction_summary:
             summary_kwargs: dict[str, Any] = {}
-            if prediction_path:
-                if prediction_path.lower().endswith('.json'):
-                    summary_kwargs['report_path'] = prediction_path
+            explicit_summary_target = self._extract_dataset_path_from_text(user_text)
+            if explicit_summary_target:
+                if explicit_summary_target.lower().endswith('.json'):
+                    summary_kwargs['report_path'] = explicit_summary_target
                 else:
-                    summary_kwargs['output_dir'] = prediction_path
+                    summary_kwargs['output_dir'] = explicit_summary_target
             elif self.session_state.active_prediction.report_path:
                 summary_kwargs['report_path'] = self.session_state.active_prediction.report_path
             elif self.session_state.active_prediction.output_dir:
                 summary_kwargs['output_dir'] = self.session_state.active_prediction.output_dir
+            elif prediction_path:
+                summary_kwargs['output_dir'] = prediction_path
 
             if summary_kwargs:
                 return await self._complete_direct_tool_reply('summarize_prediction_results', **summary_kwargs)
