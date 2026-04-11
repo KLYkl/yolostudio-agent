@@ -36,6 +36,8 @@ SYSTEM_PROMPT = """你是 YoloStudio Agent，负责帮助用户完成数据准�
 - 当用户表达“用这个数据训练”“按默认比例划分再训练”这类需求时，优先使用 prepare_dataset_for_training 先把数据准备到可训练状态。
 - 如果用户明确表达了“按默认比例划分 / 先划分再训练 / split 后训练”，调用 prepare_dataset_for_training 时应传 force_split=true。
 - 当用户明确要求检查图片损坏、尺寸异常、重复图片或导出检查报告时，必须先调用对应工具，不要直接凭经验总结：综合检查优先用 run_dataset_health_check；如果用户只关心重复图片，再用 detect_duplicate_images；这些是只读检查，不会修改原始数据。
+- 当用户明确要求对目录做图片抽取 / 抽样 / 采样 / 提取时，优先使用 preview_extract_images 或 extract_images；输入路径参数名是 source_path，默认使用 flat 输出布局，这样后续可直接接 scan_dataset / validate_dataset / prepare_dataset_for_training。
+- 当用户明确要求对目录做视频扫描 / 抽帧时，优先使用 scan_videos 或 extract_video_frames；输入路径参数名同样是 source_path。
 - 当用户明确要求对单张图片或图片目录做预测 / 推理 / 识别时，优先使用 predict_images；输入路径参数名是 source_path，模型参数名是 model。
 - 当用户明确要求对单个视频或视频目录做预测 / 推理 / 识别时，优先使用 predict_videos；同样使用 source_path 和 model。
 - 当前第二主线只支持图片、图片目录、单视频和视频目录，不支持 RTSP、摄像头或屏幕实时流。
@@ -294,6 +296,17 @@ class YoloStudioAgentClient:
         wants_quality = any(token in user_text for token in ('质量问题', '质量风险', '数据集质量', '分析', '总结'))
         wants_readiness = any(token in user_text for token in ('能不能直接训练', '是否可以直接训练', '可不可以直接训练', '直接训练', '训练前检查'))
         wants_split = any(token in user_text for token in ('默认划分', '划分比例', '先划分', 'split'))
+        has_image_extract_verb = any(token in user_text for token in ('抽取', '提取', '抽样', '采样', '抽图', '抽一些图')) or (
+            '抽' in user_text and '图片' in user_text
+        )
+        wants_extract_preview = ('预览' in user_text or 'preview' in normalized_text or 'dry-run' in normalized_text) and has_image_extract_verb
+        wants_extract_images = any(token in user_text for token in ('抽取图片', '提取图片', '抽样图片', '采样图片', '抽图', '抽一些图')) or (
+            has_image_extract_verb and '图片' in user_text
+        ) or ('extract images' in normalized_text)
+        wants_scan_videos = any(token in user_text for token in ('扫描视频', '视频扫描', '统计视频')) or (
+            '视频' in user_text and any(token in user_text for token in ('扫描', '统计', '多少'))
+        ) or ('scan videos' in normalized_text)
+        wants_extract_frames = any(token in user_text for token in ('抽帧', '提帧')) or ('extract frames' in normalized_text)
         wants_predict = any(token in normalized_text for token in ('predict', 'infer')) or any(token in user_text for token in ('预测', '推理', '识别'))
         wants_prediction_summary = any(token in user_text for token in ('预测结果', '预测摘要', '总结一下预测', '刚才预测'))
 
@@ -333,6 +346,18 @@ class YoloStudioAgentClient:
 
         if dataset_path and wants_readiness and no_train:
             return await self._complete_direct_tool_reply('training_readiness', img_dir=dataset_path)
+
+        if dataset_path and wants_extract_preview and not wants_train:
+            return await self._complete_direct_tool_reply('preview_extract_images', **self._build_image_extract_args_from_text(user_text, dataset_path))
+
+        if dataset_path and wants_extract_images and not wants_train and not wants_extract_preview:
+            return await self._complete_direct_tool_reply('extract_images', **self._build_image_extract_args_from_text(user_text, dataset_path))
+
+        if prediction_path and wants_scan_videos and not wants_predict and not wants_train:
+            return await self._complete_direct_tool_reply('scan_videos', source_path=prediction_path)
+
+        if prediction_path and wants_extract_frames and not wants_predict and not wants_train:
+            return await self._complete_direct_tool_reply('extract_video_frames', **self._build_video_extract_args_from_text(user_text, prediction_path))
 
         if prediction_path and wants_predict and not wants_train:
             model = self._extract_model_from_text(user_text) or self.session_state.active_prediction.model or self.session_state.active_training.model
@@ -573,6 +598,72 @@ class YoloStudioAgentClient:
                 lines.append('建议:')
                 lines.extend(f'- {item}' for item in next_actions[:2])
             return '\n'.join(lines)
+        if tool_name == 'preview_extract_images':
+            lines = [result.get('summary', '图片抽取预览完成')]
+            lines.append(
+                f"统计: 可用 {result.get('available_images', 0)} 张 / 计划抽取 {result.get('planned_extract_count', 0)} 张"
+            )
+            if result.get('selected_dirs'):
+                lines.append(f"目录过滤: {', '.join(result.get('selected_dirs', [])[:4])}")
+            if result.get('sample_images'):
+                lines.append('样例图片:')
+                lines.extend(f'- {item}' for item in (result.get('sample_images') or [])[:2])
+            if result.get('output_dir'):
+                lines.append(f"计划输出目录: {result.get('output_dir')}")
+            if result.get('warnings'):
+                lines.append('提示:')
+                lines.extend(f'- {item}' for item in (result.get('warnings') or [])[:2])
+            next_actions = result.get('next_actions') or []
+            if next_actions:
+                lines.append('建议:')
+                lines.extend(f'- {item}' for item in next_actions[:2])
+            return '\n'.join(lines)
+        if tool_name == 'extract_images':
+            lines = [result.get('summary', '图片抽取完成')]
+            lines.append(
+                f"统计: 已抽取 {result.get('extracted', 0)} 张 / 复制标签 {result.get('labels_copied', 0)} / 冲突 {result.get('conflict_count', 0)}"
+            )
+            if result.get('sample_images'):
+                lines.append('抽取样例:')
+                lines.extend(f'- {item}' for item in (result.get('sample_images') or [])[:2])
+            if result.get('output_dir'):
+                lines.append(f"输出目录: {result.get('output_dir')}")
+            if result.get('workflow_ready_path'):
+                lines.append(f"可继续接主链的目录: {result.get('workflow_ready_path')}")
+            if result.get('warnings'):
+                lines.append('提示:')
+                lines.extend(f'- {item}' for item in (result.get('warnings') or [])[:2])
+            next_actions = result.get('next_actions') or []
+            if next_actions:
+                lines.append('建议:')
+                lines.extend(f'- {item}' for item in next_actions[:2])
+            return '\n'.join(lines)
+        if tool_name == 'scan_videos':
+            lines = [result.get('summary', '视频扫描完成')]
+            lines.append(f"统计: 发现 {result.get('total_videos', 0)} 个视频")
+            if result.get('sample_videos'):
+                lines.append('视频样例:')
+                lines.extend(f'- {item}' for item in (result.get('sample_videos') or [])[:2])
+            next_actions = result.get('next_actions') or []
+            if next_actions:
+                lines.append('建议:')
+                lines.extend(f'- {item}' for item in next_actions[:2])
+            return '\n'.join(lines)
+        if tool_name == 'extract_video_frames':
+            lines = [result.get('summary', '视频抽帧完成')]
+            lines.append(
+                f"统计: 总帧数 {result.get('total_frames', 0)} / 原始抽取 {result.get('extracted', 0)} / 最终保留 {result.get('final_count', 0)}"
+            )
+            if result.get('output_dir'):
+                lines.append(f"输出目录: {result.get('output_dir')}")
+            if result.get('warnings'):
+                lines.append('提示:')
+                lines.extend(f'- {item}' for item in (result.get('warnings') or [])[:2])
+            next_actions = result.get('next_actions') or []
+            if next_actions:
+                lines.append('建议:')
+                lines.extend(f'- {item}' for item in next_actions[:2])
+            return '\n'.join(lines)
         if tool_name == 'check_training_status':
             lines = [result.get('summary', '训练状态已更新')]
             metrics = ((result.get('latest_metrics') or {}).get('metrics') or {})
@@ -729,6 +820,43 @@ class YoloStudioAgentClient:
                 "method": result.get("method"),
                 "duplicate_groups": result.get("duplicate_groups"),
                 "duplicate_extra_files": result.get("duplicate_extra_files"),
+                "summary": result.get("summary"),
+            }
+        elif tool_name == "preview_extract_images" and result.get("ok"):
+            ds.dataset_root = str(result.get('dataset_root') or ds.dataset_root)
+            ds.img_dir = str(result.get('resolved_img_dir') or tool_args.get('source_path', ds.img_dir))
+            ds.label_dir = str(result.get('resolved_label_dir') or ds.label_dir)
+            ds.last_extract_preview = {
+                "available_images": result.get("available_images"),
+                "planned_extract_count": result.get("planned_extract_count"),
+                "output_dir": result.get("output_dir"),
+                "workflow_ready_path": result.get("workflow_ready_path"),
+                "summary": result.get("summary"),
+            }
+        elif tool_name == "extract_images" and result.get("ok"):
+            ds.last_extract_result = {
+                "extracted": result.get("extracted"),
+                "labels_copied": result.get("labels_copied"),
+                "output_dir": result.get("output_dir"),
+                "workflow_ready_path": result.get("workflow_ready_path"),
+                "summary": result.get("summary"),
+            }
+            if result.get("workflow_ready_path"):
+                ds.dataset_root = str(result.get("workflow_ready_path"))
+                ds.img_dir = str(result.get("output_img_dir") or ds.img_dir)
+                ds.label_dir = str(result.get("output_label_dir") or '')
+                ds.data_yaml = ""
+        elif tool_name == "scan_videos" and result.get("ok"):
+            ds.last_video_scan = {
+                "total_videos": result.get("total_videos"),
+                "source_path": result.get("source_path"),
+                "summary": result.get("summary"),
+            }
+        elif tool_name == "extract_video_frames" and result.get("ok"):
+            ds.last_frame_extract = {
+                "source_path": result.get("source_path"),
+                "output_dir": result.get("output_dir"),
+                "final_count": result.get("final_count"),
                 "summary": result.get("summary"),
             }
         elif tool_name == "split_dataset" and result.get("ok"):
@@ -978,7 +1106,75 @@ class YoloStudioAgentClient:
         if self._looks_like_video_path(path):
             return True
         return any(token in user_text for token in ('视频', '录像')) or 'video' in normalized
-        return ""
+
+    def _extract_output_path_from_text(self, text: str, source_path: str = '') -> str:
+        paths = self._extract_all_paths_from_text(text)
+        source_key = str(source_path or '')
+        candidates = [item for item in paths if not self._looks_like_model_path(item) and item != source_key]
+        return candidates[0] if candidates else ''
+
+    @staticmethod
+    def _extract_count_from_text(text: str) -> int | None:
+        match = re.search(r'(\d+)\s*(张|个|images?)', text, flags=re.I)
+        if match:
+            return int(match.group(1))
+        return None
+
+    @staticmethod
+    def _extract_ratio_from_text(text: str) -> float | None:
+        match = re.search(r'(\d+(?:\.\d+)?)\s*%', text)
+        if match:
+            return float(match.group(1)) / 100.0
+        match = re.search(r'比例\s*[:=]?\s*(0?\.\d+|1(?:\.0+)?)', text)
+        if match:
+            return float(match.group(1))
+        return None
+
+    def _build_image_extract_args_from_text(self, user_text: str, source_path: str) -> dict[str, Any]:
+        args: dict[str, Any] = {'source_path': source_path}
+        output_path = self._extract_output_path_from_text(user_text, source_path)
+        if output_path:
+            args['output_dir'] = output_path
+        ratio = self._extract_ratio_from_text(user_text)
+        count = self._extract_count_from_text(user_text)
+        if '全部' in user_text or 'all' in user_text.lower():
+            args['selection_mode'] = 'all'
+        elif ratio is not None:
+            args['selection_mode'] = 'ratio'
+            args['ratio'] = ratio
+        else:
+            args['selection_mode'] = 'count'
+            args['count'] = count if count is not None else 100
+        args['grouping_mode'] = 'per_directory' if any(token in user_text for token in ('每个目录', '按目录', '各目录')) else 'global'
+        args['copy_labels'] = not any(token in user_text for token in ('不复制标签', '不要标签', 'labels false'))
+        if '保持目录结构' in user_text:
+            args['output_layout'] = 'keep'
+        else:
+            args['output_layout'] = 'flat'
+        return args
+
+    def _build_video_extract_args_from_text(self, user_text: str, source_path: str) -> dict[str, Any]:
+        args: dict[str, Any] = {'source_path': source_path}
+        output_path = self._extract_output_path_from_text(user_text, source_path)
+        if output_path:
+            args['output_dir'] = output_path
+        normalized = user_text.lower()
+        if '场景' in user_text or 'scene' in normalized:
+            args['mode'] = 'scene'
+        else:
+            time_match = re.search(r'每\s*(\d+(?:\.\d+)?)\s*秒', user_text)
+            frame_match = re.search(r'每\s*(\d+)\s*帧', user_text)
+            if time_match:
+                args['mode'] = 'time'
+                args['time_interval'] = float(time_match.group(1))
+            else:
+                args['mode'] = 'interval'
+                if frame_match:
+                    args['frame_interval'] = int(frame_match.group(1))
+        max_frames = re.search(r'最多\s*(\d+)\s*帧', user_text)
+        if max_frames:
+            args['max_frames'] = int(max_frames.group(1))
+        return args
 
     @staticmethod
     def _extract_epochs_from_text(text: str) -> int | None:

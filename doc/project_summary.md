@@ -5,6 +5,24 @@
 
 ---
 
+## 0.3 2026-04-11 深夜新增：数据提取链第一批完成并同步到远端
+
+按 Agent-first 路线，当前已经把 `D:\yolodo2.0` 中最值得先接的提取能力落成了第一批工具：
+
+- `preview_extract_images`
+- `extract_images`
+- `scan_videos`
+- `extract_video_frames`
+
+其中：
+
+- 图片抽取支持预览 / 实际执行两段式
+- 抽取结果会返回 `workflow_ready_path`，可直接接 `scan_dataset / validate_dataset / prepare_dataset_for_training`
+- `scan_videos` 已同步到远端并完成 smoke
+- `extract_video_frames` 已在本地工具级跑通，但远端 `yolostudio-agent-server` 环境仍缺 `cv2 / numpy`，当前会优雅返回错误，不再影响 MCP server 启动
+
+这意味着当前项目已经不只是训练链 + prediction 链，还新增了一条可用的数据提取链入口。
+
 ## 0.2 2026-04-11 晚间新增：prediction 远端真实执行完成一轮闭环
 
 这轮已经不是只上传素材或只做本地验证，而是完成了完整的远端 prediction 闭环：

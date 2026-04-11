@@ -13,6 +13,12 @@ from agent_plan.agent.server.tools.data_tools import (
     training_readiness,
     validate_dataset,
 )
+from agent_plan.agent.server.tools.extract_tools import (
+    extract_images,
+    extract_video_frames,
+    preview_extract_images,
+    scan_videos,
+)
 from agent_plan.agent.server.tools.predict_tools import predict_images, predict_videos, summarize_prediction_results
 from agent_plan.agent.server.tools.train_tools import (
     check_gpu_status,
@@ -32,6 +38,10 @@ mcp.tool()(augment_dataset)
 mcp.tool()(generate_yaml)
 mcp.tool()(training_readiness)
 mcp.tool()(prepare_dataset_for_training)
+mcp.tool()(preview_extract_images)
+mcp.tool()(extract_images)
+mcp.tool()(scan_videos)
+mcp.tool()(extract_video_frames)
 mcp.tool()(predict_images)
 mcp.tool()(predict_videos)
 mcp.tool()(summarize_prediction_results)

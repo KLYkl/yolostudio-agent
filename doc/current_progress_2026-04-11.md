@@ -5,6 +5,57 @@
 
 ---
 
+## 1.3 2026-04-11 深夜新增：数据提取链第一批已落地
+
+这轮没有再横向堆功能，而是按 Agent-first 路线把 `D:\yolodo2.0` 里高价值的数据提取能力接进来了。
+
+### 已新增的 Agent 工具
+
+- `preview_extract_images`
+- `extract_images`
+- `scan_videos`
+- `extract_video_frames`
+
+### 当前已验证的能力
+
+- 图片抽取支持 **预览 / 真执行** 两段式
+- 输入参数已改成 Agent 友好的 `source_path / output_dir / selection_mode / count / ratio / grouping_mode`
+- 输出已结构化，且会返回：
+  - `summary`
+  - `warnings`
+  - `artifacts`
+  - `workflow_ready_path`
+  - `next_actions`
+- `extract_images` 的 flat 输出可直接接：
+  - `scan_dataset`
+  - `validate_dataset`
+  - `prepare_dataset_for_training`
+- `scan_videos` 已完成本地与远端 smoke
+- `extract_video_frames` 已完成本地工具级验证
+
+### 当前边界
+
+- 远端 `yolostudio-agent-server` 环境当前缺少 `cv2` / `numpy`
+- 因此 **远端 `extract_video_frames` 目前会优雅失败，不会把 MCP server 再次打挂**
+- 图片抽取和视频扫描已经同步到远端并可用；视频抽帧的远端可用性还差运行环境依赖补齐
+
+### 本轮直接验证结果
+
+本地通过：
+- `agent/tests/test_extract_tools.py`
+- `agent/tests/test_video_extract_tools.py`
+- `agent/tests/test_extract_route.py`
+- `agent/tests/test_prepare_dataset_flow.py`
+- `agent/tests/test_predict_tools.py`
+
+远端通过：
+- `preview_extract_images` smoke
+- `extract_images` smoke
+- `scan_videos` smoke
+- 远端 MCP server 已重新启动成功
+
+---
+
 ## 1.2 2026-04-11 晚间新增：prediction 远端真实验证已打通
 
 这轮已经在远端 `yolostudio` 上完成一轮真实视频 prediction 验证，验证链路包括：

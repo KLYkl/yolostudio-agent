@@ -21,6 +21,9 @@ TOOL_NAME_ALIASES: dict[str, str] = {
     'summarize_predictions': 'summarize_prediction_results',
     'summarize_prediction_report': 'summarize_prediction_results',
     'analyze_prediction_report': 'summarize_prediction_results',
+    'preview_extract': 'preview_extract_images',
+    'extract_frames': 'extract_video_frames',
+    'scan_video_directory': 'scan_videos',
 }
 
 _ARG_ALIASES: dict[str, dict[str, str]] = {
@@ -82,6 +85,37 @@ _ARG_ALIASES: dict[str, dict[str, str]] = {
         'dir_path': 'output_dir',
         'folder': 'output_dir',
         'output': 'output_dir',
+    },
+    'preview_extract_images': {
+        'path': 'source_path',
+        'source': 'source_path',
+        'input_path': 'source_path',
+        'dir_path': 'source_path',
+        'folder': 'source_path',
+        'out_dir': 'output_dir',
+    },
+    'extract_images': {
+        'path': 'source_path',
+        'source': 'source_path',
+        'input_path': 'source_path',
+        'dir_path': 'source_path',
+        'folder': 'source_path',
+        'out_dir': 'output_dir',
+    },
+    'scan_videos': {
+        'path': 'source_path',
+        'source': 'source_path',
+        'input_path': 'source_path',
+        'dir_path': 'source_path',
+        'folder': 'source_path',
+    },
+    'extract_video_frames': {
+        'path': 'source_path',
+        'source': 'source_path',
+        'input_path': 'source_path',
+        'dir_path': 'source_path',
+        'folder': 'source_path',
+        'out_dir': 'output_dir',
     },
 }
 

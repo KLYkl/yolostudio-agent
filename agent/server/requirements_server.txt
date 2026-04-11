@@ -2,3 +2,6 @@ mcp[cli]
 Pillow
 PyYAML
 PySide6
+numpy
+opencv-python-headless
+ultralytics

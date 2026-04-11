@@ -41,22 +41,32 @@
 - MCP 重启后的 run registry / reattach
 - file checkpoint / durable HITL 第一版
 
-### 2.2 预测链路
+### 2.2 数据提取 / 预测链路
 
 已经完成并接入 Agent 的核心能力：
 
+- `preview_extract_images`
+- `extract_images`
+- `scan_videos`
+- `extract_video_frames`
 - `predict_images`
 - `predict_videos`
 - `summarize_prediction_results`
 
 并且已经补齐：
 
-- 预测结果 grounded reply
+- 图片抽取预览 / 真执行两段式
+- 抽取结果可直接接 `scan_dataset / validate_dataset / prepare_dataset_for_training`
+- prediction 结果 grounded reply
 - prediction 路由
 - prediction 别名兼容层
 - prediction 会话状态写回
 - 本地真实权重 / 真实视频测试链路
 - 远端真实视频 prediction 回归基线
+
+当前远端边界：
+- `scan_videos`、图片抽取相关工具已同步可用
+- `extract_video_frames` 远端仍依赖 `cv2 / numpy`，服务端现在会优雅报错，不再影响 MCP server 启动
 
 ---
 

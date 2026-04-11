@@ -8,19 +8,61 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import cv2
-import numpy as np
+try:
+    import cv2  # type: ignore
+except Exception:  # pragma: no cover - optional runtime dependency for video prediction
+    cv2 = None
+
+try:
+    import numpy as np  # type: ignore
+except Exception:  # pragma: no cover - optional runtime dependency for video prediction
+    np = None
+
 from PIL import Image, ImageDraw, UnidentifiedImageError
 
 from utils.constants import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 from utils.file_utils import discover_files, get_unique_dir
-from utils.label_writer import write_yolo_txt_from_xyxy
+
+try:
+    from utils.label_writer import write_yolo_txt_from_xyxy as _write_yolo_txt_from_xyxy
+except (ImportError, ModuleNotFoundError):
+    def _write_yolo_txt_from_xyxy(
+        txt_path: Path,
+        detections: list[dict[str, Any]],
+        frame_width: int,
+        frame_height: int,
+    ) -> None:
+        txt_path.parent.mkdir(parents=True, exist_ok=True)
+        with txt_path.open('w', encoding='utf-8') as handle:
+            for detection in detections:
+                class_id = int(detection.get('class_id', 0))
+                x1, y1, x2, y2 = [float(value) for value in detection.get('xyxy', [0.0, 0.0, 0.0, 0.0])]
+                xc = (x1 + x2) / 2 / frame_width
+                yc = (y1 + y2) / 2 / frame_height
+                bw = (x2 - x1) / frame_width
+                bh = (y2 - y1) / frame_height
+                handle.write(f'{class_id} {xc:.6f} {yc:.6f} {bw:.6f} {bh:.6f}\n')
 
 _DETECTION_COLORS: list[tuple[int, int, int]] = [
     (255, 56, 56), (255, 157, 151), (255, 112, 31), (255, 178, 29),
     (207, 210, 49), (72, 249, 10), (146, 204, 23), (61, 219, 134),
     (26, 147, 52), (0, 212, 187), (44, 153, 168), (0, 194, 255),
 ]
+
+
+def _missing_video_runtime() -> dict[str, Any]:
+    missing: list[str] = []
+    if cv2 is None:
+        missing.append('cv2')
+    if np is None:
+        missing.append('numpy')
+    modules = ', '.join(missing) if missing else '视频推理依赖'
+    return {
+        'ok': False,
+        'error': f'当前运行环境缺少视频处理依赖: {modules}',
+        'summary': '视频预测未启动：缺少视频处理依赖',
+        'next_actions': ['请在当前运行环境安装 opencv-python 和 numpy，或切换到已具备视频依赖的环境'],
+    }
 
 
 class PredictService:
@@ -155,7 +197,7 @@ class PredictService:
                     artifact_paths['annotated'] = str(annotated_path.resolve())
                 if save_labels:
                     label_path = labels_dir / f'{image_path.stem}.txt'
-                    write_yolo_txt_from_xyxy(label_path, detections, int(frame.size[0]), int(frame.size[1]))
+                    _write_yolo_txt_from_xyxy(label_path, detections, int(frame.size[0]), int(frame.size[1]))
                     artifact_paths['label_yolo'] = str(label_path.resolve())
                 if save_original:
                     original_path = originals_dir / image_path.name
@@ -386,6 +428,9 @@ class PredictService:
         max_videos: int = 0,
         max_frames: int = 0,
     ) -> dict[str, Any]:
+        if cv2 is None or np is None:
+            return _missing_video_runtime()
+
         if not model.strip():
             return {
                 'ok': False,

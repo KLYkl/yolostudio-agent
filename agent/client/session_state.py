@@ -20,6 +20,10 @@ class DatasetContext:
     last_split: dict[str, Any] = field(default_factory=dict)
     last_health_check: dict[str, Any] = field(default_factory=dict)
     last_duplicate_check: dict[str, Any] = field(default_factory=dict)
+    last_extract_preview: dict[str, Any] = field(default_factory=dict)
+    last_extract_result: dict[str, Any] = field(default_factory=dict)
+    last_video_scan: dict[str, Any] = field(default_factory=dict)
+    last_frame_extract: dict[str, Any] = field(default_factory=dict)
 
 
 
