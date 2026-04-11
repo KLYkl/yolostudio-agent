@@ -1277,3 +1277,100 @@ Gemma 这轮测试很清楚地说明：
 
 - 图片预测执行 helper 拆分后，image/video 工具级行为都没有回退
 - 聊天层 prediction 路由与长上下文回归仍然稳定
+
+
+### 4.15 2026-04-11 深夜新增推进（十四）
+
+结构整理继续推进第六刀，这轮把 `predict_service.py` 中**多视频批处理编排**也拆了出去：
+
+- 新增：`agent/server/services/prediction_video_batch_helpers.py`
+
+当前拆出的能力包括：
+
+- 多视频循环处理
+- 视频级失败收集
+- `video_prediction_report.json` 生成
+- 视频批处理统计与告警构建
+
+这样 `predict_videos(...)` 现在主要只负责：
+
+- 输入校验
+- 模型加载
+- 输出目录解析
+- 调用批处理 helper
+- 将 `model / source_path` 回填到最终结果与 report
+
+#### 本轮验证
+
+本轮新增并通过了：
+
+- `agent/tests/test_prediction_video_batch_helpers.py`
+- `agent/tests/test_predict_video_tools.py`
+- `agent/tests/test_prediction_route.py`
+- `agent/tests/test_extreme_chat_regression.py`
+
+这说明：
+
+- 多视频批处理拆分后，prediction 工具级行为没有回退
+- 聊天层 route 与长上下文回归仍然稳定
+
+
+### 4.16 2026-04-11 深夜新增推进（十五）
+
+结构整理继续推进第七刀，这轮把 `agent_client.py` 中**grounded 回复渲染**独立成模块：
+
+- 新增：`agent/client/grounded_reply_builder.py`
+
+当前拆出的能力包括：
+
+- 数据治理 grounded 回复
+- 抽取链 grounded 回复
+- 训练状态 grounded 回复
+- image / video prediction grounded 回复
+- summarize grounded 回复
+
+这样 `agent_client.py` 中的 `_build_grounded_tool_reply(...)` 现在只保留协调入口。
+
+#### 本轮验证
+
+本轮新增并通过了：
+
+- `agent/tests/test_grounded_reply_builder.py`
+- `agent/tests/test_grounded_tool_reply.py`
+- `agent/tests/test_prediction_route.py`
+- `agent/tests/test_extreme_chat_regression.py`
+
+这说明：
+
+- grounded reply 逻辑从 `agent_client.py` 拆出后，聊天层行为没有回退
+- 预测 summary / 长上下文回归仍然稳定
+
+
+### 4.17 2026-04-11 深夜新增推进（十六）
+
+结构整理继续推进第八刀，这轮把 `agent_client.py` 中**SessionState 状态写回**独立成模块：
+
+- 新增：`agent/client/state_applier.py`
+
+当前拆出的能力包括：
+
+- 数据集上下文写回
+- 训练上下文写回
+- prediction 上下文写回
+- 抽取链结果写回
+
+这样 `agent_client.py` 中的 `_apply_to_state(...)` 现在只保留协调入口。
+
+#### 本轮验证
+
+本轮新增并通过了：
+
+- `agent/tests/test_state_applier.py`
+- `agent/tests/test_training_state_purity.py`
+- `agent/tests/test_prediction_route.py`
+- `agent/tests/test_extreme_chat_regression.py`
+
+这说明：
+
+- 状态写回从 `agent_client.py` 拆出后，训练状态纯净性没有回退
+- prediction 路由与长上下文多链路聊天仍然稳定

@@ -1822,3 +1822,40 @@ extract_images -> scan_dataset -> validate_dataset -> prepare_dataset_for_traini
 - 标注图 / 标签 / 原图副本输出
 - image prediction_report.json 生成
 - 与 `test_predict_tools.py` / `test_predict_video_tools.py` / 聊天层回归共同验证结构整理后外部行为不变
+
+
+### 28.10 prediction 多视频批处理 helper 回归
+
+新增固定脚本：
+- `agent/tests/test_prediction_video_batch_helpers.py`
+
+覆盖点：
+- 多视频循环处理
+- `video_prediction_report.json` 生成
+- 失败视频收集与批处理告警
+- 与 `test_predict_video_tools.py` / 聊天层回归共同验证结构整理后外部行为不变
+
+
+### 28.11 grounded reply builder 回归
+
+新增固定脚本：
+- `agent/tests/test_grounded_reply_builder.py`
+- `agent/tests/test_grounded_tool_reply.py`
+
+覆盖点：
+- 数据治理 / 抽取 / 训练 / prediction grounded 回复渲染
+- 失败结果不应误渲染为成功总结
+- 与 `test_prediction_route.py` / `test_extreme_chat_regression.py` 共同验证聊天层行为不变
+
+
+### 28.12 SessionState 写回 helper 回归
+
+新增固定脚本：
+- `agent/tests/test_state_applier.py`
+- `agent/tests/test_training_state_purity.py`
+
+覆盖点：
+- 数据集上下文写回
+- prediction 上下文写回
+- 训练状态纯净性
+- 与 `test_prediction_route.py` / `test_extreme_chat_regression.py` 共同验证结构整理后状态行为不变

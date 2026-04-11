@@ -3,9 +3,23 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 import sys
+import types
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+
+try:
+    import langchain_openai  # type: ignore  # noqa: F401
+except Exception:
+    fake_mod = types.ModuleType('langchain_openai')
+
+    class _FakeChatOpenAI:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+    fake_mod.ChatOpenAI = _FakeChatOpenAI
+    sys.modules['langchain_openai'] = fake_mod
 
 from agent_plan.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
 

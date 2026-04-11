@@ -852,3 +852,22 @@ afab4c1  test: comprehensive validation + log parser fix
 
 > 当前第二主线的**远端真实 prediction 实测还没完成**，不是因为代码或脚本没准备好，而是因为当前控制端运行环境不具备对远端发起 TCP/SSH 连接的能力。
 
+
+
+## 2026-04-11 结构整理阶段进展
+
+当前结构整理已连续推进到第八刀，已从核心厚文件中拆出：
+
+- `agent/client/intent_parsing.py`
+- `agent/client/grounded_reply_builder.py`
+- `agent/client/state_applier.py`
+- `agent/server/tools/data_tool_helpers.py`
+- `agent/server/services/prediction_report_helpers.py`
+- `agent/server/services/prediction_runtime_helpers.py`
+- `agent/server/services/prediction_video_helpers.py`
+- `agent/server/services/prediction_video_batch_helpers.py`
+- `agent/server/services/prediction_image_helpers.py`
+
+当前判断：
+
+> prediction / 聊天 / 状态写回三条核心厚路径已经明显变薄，后续进入训练知识库前的结构收口风险已显著下降。
