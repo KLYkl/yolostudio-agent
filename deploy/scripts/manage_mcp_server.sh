@@ -1,9 +1,49 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_ROOT="${APP_ROOT:-/opt/yolostudio-agent}"
-CONDA_BIN="${CONDA_BIN:-/opt/conda/bin/conda}"
-ENV_NAME="${ENV_NAME:-agent-server}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+detect_app_root() {
+  if [[ -d "$SCRIPT_DIR/agent_plan/agent" && -d "$SCRIPT_DIR/agent_plan/yolostudio_agent" ]]; then
+    printf '%s\n' "$SCRIPT_DIR"
+    return 0
+  fi
+  if [[ -d "$SCRIPT_DIR/agent" && -d "$SCRIPT_DIR/yolostudio_agent" ]]; then
+    printf '%s\n' "$SCRIPT_DIR"
+    return 0
+  fi
+  local repo_root
+  repo_root="$(cd "$SCRIPT_DIR/../.." && pwd)"
+  if [[ -d "$repo_root/agent" && -d "$repo_root/yolostudio_agent" ]]; then
+    printf '%s\n' "$repo_root"
+    return 0
+  fi
+  printf '%s\n' "$repo_root"
+}
+
+detect_conda_bin() {
+  local candidates=(
+    "${HOME}/miniconda3/bin/conda"
+    "/home/kly/miniconda3/bin/conda"
+    "/opt/conda/bin/conda"
+  )
+  local candidate
+  for candidate in "${candidates[@]}"; do
+    if [[ -x "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  if command -v conda >/dev/null 2>&1; then
+    command -v conda
+    return 0
+  fi
+  printf '%s\n' "/opt/conda/bin/conda"
+}
+
+APP_ROOT="${APP_ROOT:-$(detect_app_root)}"
+CONDA_BIN="${CONDA_BIN:-$(detect_conda_bin)}"
+ENV_NAME="${ENV_NAME:-yolostudio-agent-server}"
 LOG_FILE="${LOG_FILE:-$HOME/outputs/yolostudio_mcp.log}"
 PID_PATTERN="yolostudio_agent.agent.server.mcp_server"
 
