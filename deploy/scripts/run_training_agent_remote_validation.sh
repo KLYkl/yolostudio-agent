@@ -1,12 +1,75 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_ROOT="${APP_ROOT:-/opt/yolostudio-agent}"
-CONDA_ROOT="${CONDA_ROOT:-/opt/conda}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+detect_app_root() {
+  local candidates=(
+    "$SCRIPT_DIR/../.."
+    "$HOME/yolostudio_agent_proto"
+    "/opt/yolostudio-agent"
+  )
+  local candidate
+  for candidate in "${candidates[@]}"; do
+    if [[ -d "$candidate/agent_plan/agent" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  printf '%s\n' "$HOME/yolostudio_agent_proto"
+}
+
+detect_conda_root() {
+  local candidates=(
+    "$HOME/miniconda3"
+    "/opt/conda"
+  )
+  local candidate
+  for candidate in "${candidates[@]}"; do
+    if [[ -f "$candidate/etc/profile.d/conda.sh" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  printf '%s\n' "/opt/conda"
+}
+
+detect_dataset_root() {
+  local candidates=(
+    "$HOME/agent_cap_tests/zyb"
+    "/data/example_dataset"
+  )
+  local candidate
+  for candidate in "${candidates[@]}"; do
+    if [[ -d "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  printf '%s\n' "/data/example_dataset"
+}
+
+detect_model_path() {
+  local candidates=(
+    "$HOME/yolov8n.pt"
+    "/models/yolov8n.pt"
+  )
+  local candidate
+  for candidate in "${candidates[@]}"; do
+    if [[ -f "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  printf '%s\n' "/models/yolov8n.pt"
+}
+
+APP_ROOT="${APP_ROOT:-$(detect_app_root)}"
+CONDA_ROOT="${CONDA_ROOT:-$(detect_conda_root)}"
 REQUESTED_ENV="${1:-auto}"
 OUTPUT_ROOT="${2:-/tmp/training_real_lifecycle_output/agent_mainline_roundtrip}"
-DATASET_ROOT="${3:-/data/example_dataset}"
-MODEL_PATH="${4:-/models/yolov8n.pt}"
+DATASET_ROOT="${3:-$(detect_dataset_root)}"
+MODEL_PATH="${4:-$(detect_model_path)}"
 EPOCHS="${5:-30}"
 TARGET_EPOCH="${6:-2}"
 STATUS_DELAYS="${7:-15,35,60}"
