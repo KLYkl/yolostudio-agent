@@ -655,11 +655,12 @@ async def _scenario_cancel_then_replan() -> None:
     turn3 = await client.confirm(turn2['thread_id'], approved=False)
     assert turn3['status'] == 'cancelled', turn3
     assert '已取消操作：start_training' in turn3['message']
+    assert '当前计划已保留' in turn3['message']
     assert client.session_state.pending_confirmation.tool_name == ''
-    assert client.session_state.active_training.training_plan_draft == {}
+    assert client.session_state.active_training.training_plan_draft != {}
     assert all(name != 'start_training' for name, _ in calls)
 
-    turn4 = await client.chat('刚才先取消。现在重新来：还是 /data/cancel-case 和 yolov8n.pt，训练 20轮，但改成 base 环境，project /runs/cancel-replan，name exp-retry，batch 24，imgsz 1280，fraction 0.6，先给我计划。')
+    turn4 = await client.chat('刚才先取消。为什么你默认建议 yolodo？先把环境改成 base，project /runs/cancel-replan，name exp-retry，batch 24，imgsz 1280，fraction 0.6，先给我计划。')
     assert turn4['status'] == 'completed', turn4
     assert '训练环境: base' in turn4['message']
     assert '输出组织: project=/runs/cancel-replan, name=exp-retry' in turn4['message']
@@ -772,11 +773,12 @@ async def _scenario_cancel_prepare_then_rebuild() -> None:
     turn3 = await client.confirm(turn2['thread_id'], approved=False)
     assert turn3['status'] == 'cancelled', turn3
     assert '已取消操作：prepare_dataset_for_training' in turn3['message']
+    assert '当前计划已保留' in turn3['message']
     assert client.session_state.pending_confirmation.tool_name == ''
-    assert client.session_state.active_training.training_plan_draft == {}
+    assert client.session_state.active_training.training_plan_draft != {}
     assert all(name != 'prepare_dataset_for_training' for name, _ in calls)
 
-    turn4 = await client.chat('重新来：数据还是 /data/cancel-prepare，模型还是 yolov8n.pt，训练 30轮。先只做准备，不要自动划分，为什么现在不能直接开训？先给我计划。')
+    turn4 = await client.chat('为什么现在不能直接开训？保留刚才的数据和模型，改成先只做准备，不要自动划分，先给我计划。')
     assert turn4['status'] == 'completed', turn4
     assert '执行方式: 只做准备，暂不启动训练' in turn4['message']
     assert '当前阻塞:' in turn4['message']

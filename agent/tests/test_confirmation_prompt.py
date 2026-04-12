@@ -319,14 +319,16 @@ def main() -> None:
             'args': {'model': 'yolov8n.pt', 'data_yaml': '/data/dataset/data.yaml'},
         })
         assert '已取消操作：start_training' in cancel_prompt
-        assert '调整参数后重新下达指令' in cancel_prompt
+        assert '当前计划已保留' in cancel_prompt
+        assert '调整参数后重新确认' in cancel_prompt
 
         prepare_cancel_prompt = client._build_cancel_message({
             'name': 'prepare_dataset_for_training',
             'args': {'dataset_path': '/data/raw-dataset'},
         })
         assert '已取消操作：prepare_dataset_for_training' in prepare_cancel_prompt
-        assert '调整参数后重新下达指令' in prepare_cancel_prompt
+        assert '当前计划已保留' in prepare_cancel_prompt
+        assert '调整参数后重新确认' in prepare_cancel_prompt
         print('confirmation prompt smoke ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)

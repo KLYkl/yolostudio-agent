@@ -259,8 +259,6 @@ class YoloStudioAgentClient:
             cancel_message = self._build_cancel_message(pending)
             self._messages.append(AIMessage(content=cancel_message))
             self._clear_pending_confirmation()
-            if pending.get('name') in {'start_training', 'prepare_dataset_for_training'}:
-                self._clear_training_plan_draft()
             self._trim_history()
             self.memory.append_event(self.session_state.session_id, "confirmation_cancelled", {"tool": pending["name"], "args": pending.get("args", {})})
             self.memory.save_state(self.session_state)
@@ -1484,15 +1482,13 @@ class YoloStudioAgentClient:
             self._clear_training_plan_draft()
             self.memory.save_state(self.session_state)
             return {'status': 'cancelled', 'message': '已取消当前训练计划草案。', 'tool_call': None}
-
-        if any(token in user_text for token in ('先别执行', '先不要执行', '先别启动', '先不要启动', '先讨论', '先看看计划', '先给我计划')):
-            if draft:
-                return {
-                    'status': 'completed' if not pending else 'needs_confirmation',
-                    'message': self._render_training_plan_draft(draft, pending=bool(pending)),
-                    'tool_call': {'name': pending['name'], 'args': pending.get('args', {})} if pending else None,
-                    'thread_id': thread_id if pending else None,
-                }
+        if (
+            not pending
+            and any(token in user_text for token in ('不要训练', '先不要训练', '不训练了'))
+            and any(token in user_text for token in ('重新检查', '检查一下', '能不能直接训练', '是否能直接训练'))
+        ):
+            self._clear_training_plan_draft()
+            self.memory.save_state(self.session_state)
             return None
 
         requested_execute = any(token in user_text for token in ('执行', '开始吧', '就这样', '确认', '可以开始', '开训', '启动吧')) or normalized.strip() in {'y', 'yes'}
@@ -1507,6 +1503,19 @@ class YoloStudioAgentClient:
                 '高级参数', '高级配置', '展开参数', '详细参数',
             )
         ) or bool(self._extract_custom_training_script_from_text(user_text))
+        if (
+            any(token in user_text for token in ('先别执行', '先不要执行', '先别启动', '先不要启动', '先讨论', '先看看计划', '先给我计划'))
+            and not has_revision
+            and not requested_execute
+        ):
+            if draft:
+                return {
+                    'status': 'completed' if not pending else 'needs_confirmation',
+                    'message': self._render_training_plan_draft(draft, pending=bool(pending)),
+                    'tool_call': {'name': pending['name'], 'args': pending.get('args', {})} if pending else None,
+                    'thread_id': thread_id if pending else None,
+                }
+            return None
 
         if requested_execute and not has_revision:
             if pending:
@@ -1791,7 +1800,7 @@ class YoloStudioAgentClient:
 
     @staticmethod
     def _build_cancel_message(tool_call: dict[str, Any]) -> str:
-        return f"已取消操作：{tool_call['name']}。如需继续，请调整参数后重新下达指令。"
+        return f"已取消操作：{tool_call['name']}。当前计划已保留，你可以继续追问原因、调整参数后重新确认。"
 
     def _build_empty_reply_fallback(self, messages: list[BaseMessage]) -> str:
         tool_calls: list[str] = []
