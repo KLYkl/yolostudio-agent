@@ -314,6 +314,66 @@ def main() -> None:
         assert '高级参数: fraction=0.5, classes=[1, 3], single_cls=False, optimizer=AdamW, freeze=8, resume=True, lr0=0.004, patience=15, workers=4, amp=False' in draft_prompt
         assert '你可以直接确认，也可以继续改参数、追问原因、改执行方式。' in draft_prompt
 
+        client.session_state.active_dataset.last_readiness = {
+            'summary': '数据准备完成：当前数据集已具备训练条件。',
+            'ready': True,
+            'preparable': False,
+            'resolved_data_yaml': '/data/dataset/data.yaml',
+        }
+        client.session_state.active_training.training_plan_draft = {
+            'dataset_path': '/data/raw-dataset',
+            'data_summary': '数据准备完成：当前数据集已具备训练条件。',
+            'execution_mode': 'direct_train',
+            'execution_backend': 'standard_yolo',
+            'training_environment': 'base',
+            'planned_training_args': {
+                'model': 'yolov8s.pt',
+                'data_yaml': '/data/raw-dataset/data.yaml',
+                'epochs': 45,
+                'device': 'auto',
+                'project': '/runs/prepare-review',
+                'name': 'exp-bridge',
+                'batch': 12,
+                'imgsz': 960,
+                'fraction': None,
+                'classes': None,
+                'optimizer': 'AdamW',
+                'workers': 6,
+                'amp': False,
+            },
+            'preflight_summary': '训练预检通过：将使用 base，device=auto',
+            'next_step_tool': 'start_training',
+            'next_step_args': {
+                'model': 'yolov8s.pt',
+                'data_yaml': '/data/raw-dataset/data.yaml',
+                'epochs': 45,
+                'device': 'auto',
+                'training_environment': 'base',
+                'project': '/runs/prepare-review',
+                'name': 'exp-bridge',
+                'batch': 12,
+                'imgsz': 960,
+                'fraction': None,
+                'classes': None,
+                'optimizer': 'AdamW',
+                'workers': 6,
+                'amp': False,
+            },
+            'warnings': ['prepare 完成后的首轮训练，建议先确认参数再启动'],
+            'advanced_details_requested': True,
+        }
+        bridged_prompt = client._build_confirmation_prompt({
+            'name': 'start_training',
+            'args': {'model': 'yolov8s.pt', 'data_yaml': '/data/raw-dataset/data.yaml', 'epochs': 45},
+        })
+        assert '训练计划草案：' in bridged_prompt
+        assert '当前判断: 数据准备完成：当前数据集已具备训练条件。' in bridged_prompt
+        assert '训练环境: base' in bridged_prompt
+        assert '输出组织: project=/runs/prepare-review, name=exp-bridge' in bridged_prompt
+        assert '高级参数: optimizer=AdamW, workers=6, amp=False' in bridged_prompt
+        assert '当前阻塞:' not in bridged_prompt
+        assert '你可以直接确认，也可以继续改参数、追问原因、改执行方式。' in bridged_prompt
+
         cancel_prompt = client._build_cancel_message({
             'name': 'start_training',
             'args': {'model': 'yolov8n.pt', 'data_yaml': '/data/dataset/data.yaml'},

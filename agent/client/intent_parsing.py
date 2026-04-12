@@ -383,7 +383,10 @@ def extract_training_execution_backend_from_text(text: str) -> str:
     script_path = extract_custom_training_script_from_text(text)
     if script_path or any(token in text for token in ('自定义训练脚本', 'python脚本训练', '脚本训练')):
         return 'custom_script'
-    if 'trainer' in lowered or '自定义trainer' in lowered or '自定义训练器' in text:
+    trainer_explicit = any(token in text for token in ('自定义 trainer', '自定义trainer', '自定义训练器'))
+    trainer_context = any(token in text for token in ('trainer 讨论', 'trainer方案', 'trainer 先讨论', 'trainer 先不管'))
+    trainer_switch = re.search(r'(?:改成|切到|换成|用|讨论)\s*(?:自定义\s*)?trainer\b', lowered) is not None
+    if trainer_explicit or trainer_context or trainer_switch:
         return 'custom_trainer'
     return 'standard_yolo'
 
