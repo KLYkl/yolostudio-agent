@@ -198,8 +198,13 @@ def main() -> None:
                 'data_yaml': '/data/dataset/data.yaml',
                 'epochs': 30,
                 'device': '1',
+                'project': '/runs/ablation',
+                'name': 'exp-blue',
                 'batch': 16,
                 'imgsz': 960,
+                'fraction': 0.5,
+                'classes': [1, 3],
+                'single_cls': False,
                 'optimizer': 'AdamW',
                 'freeze': 8,
                 'resume': True,
@@ -214,7 +219,7 @@ def main() -> None:
             'summary': '训练前检查完成：数据已具备训练条件。',
         }
         client.session_state.active_dataset.data_yaml = '/data/dataset/data.yaml'
-        client._messages.append(HumanMessage('数据在 /data/dataset，用 yolodo 环境跑 yolov8n.pt 训练，80轮，batch 16，imgsz 960，device 1，optimizer AdamW，freeze 8，resume，lr0 0.004，patience 15，workers 4，关闭 amp'))
+        client._messages.append(HumanMessage('数据在 /data/dataset，用 yolodo 环境跑 yolov8n.pt 训练，80轮，project /runs/ablation，name exp-blue，fraction 0.5，只训练类别 1,3，关闭 single_cls，batch 16，imgsz 960，device 1，optimizer AdamW，freeze 8，resume，lr0 0.004，patience 15，workers 4，关闭 amp'))
 
         followup = client._build_followup_training_request()
         assert followup is not None
@@ -223,6 +228,11 @@ def main() -> None:
         assert followup['args']['imgsz'] == 960
         assert followup['args']['device'] == '1'
         assert followup['args']['training_environment'] == 'yolodo'
+        assert followup['args']['project'] == '/runs/ablation'
+        assert followup['args']['name'] == 'exp-blue'
+        assert followup['args']['fraction'] == 0.5
+        assert followup['args']['classes'] == [1, 3]
+        assert followup['args']['single_cls'] is False
         assert followup['args']['optimizer'] == 'AdamW'
         assert followup['args']['freeze'] == 8
         assert followup['args']['resume'] is True
@@ -239,6 +249,8 @@ def main() -> None:
         assert '数据理解: 训练前检查完成：数据已具备训练条件。' in start_prompt
         assert '训练环境: yolodo' in start_prompt
         assert '初步安排: model=yolov8n.pt, data=/data/dataset/data.yaml, epochs=30, device=1, batch=16, imgsz=960' in start_prompt
+        assert '输出组织: project=/runs/ablation, name=exp-blue' in start_prompt
+        assert '高级参数: fraction=0.5, classes=[1, 3], single_cls=False' in start_prompt
         assert '预检: 训练预检通过：将使用 yolodo，device=1' in start_prompt
 
         client.session_state.active_training.training_plan_draft = {
@@ -252,8 +264,13 @@ def main() -> None:
                 'data_yaml': '/data/dataset/data.yaml',
                 'epochs': 80,
                 'device': '1',
+                'project': '/runs/ablation',
+                'name': 'exp-blue',
                 'batch': 16,
                 'imgsz': 960,
+                'fraction': 0.5,
+                'classes': [1, 3],
+                'single_cls': False,
                 'optimizer': 'AdamW',
                 'freeze': 8,
                 'resume': True,
@@ -269,8 +286,13 @@ def main() -> None:
                 'data_yaml': '/data/dataset/data.yaml',
                 'epochs': 80,
                 'device': '1',
+                'project': '/runs/ablation',
+                'name': 'exp-blue',
                 'batch': 16,
                 'imgsz': 960,
+                'fraction': 0.5,
+                'classes': [1, 3],
+                'single_cls': False,
                 'optimizer': 'AdamW',
                 'freeze': 8,
                 'resume': True,
@@ -288,8 +310,16 @@ def main() -> None:
         })
         assert '训练计划草案：' in draft_prompt
         assert '执行方式: 直接训练' in draft_prompt
-        assert '高级参数: optimizer=AdamW, freeze=8, resume=True, lr0=0.004, patience=15, workers=4, amp=False' in draft_prompt
+        assert '输出组织: project=/runs/ablation, name=exp-blue' in draft_prompt
+        assert '高级参数: fraction=0.5, classes=[1, 3], single_cls=False, optimizer=AdamW, freeze=8, resume=True, lr0=0.004, patience=15, workers=4, amp=False' in draft_prompt
         assert '你可以直接确认，也可以继续改参数、追问原因、改执行方式。' in draft_prompt
+
+        cancel_prompt = client._build_cancel_message({
+            'name': 'start_training',
+            'args': {'model': 'yolov8n.pt', 'data_yaml': '/data/dataset/data.yaml'},
+        })
+        assert '已取消操作：start_training' in cancel_prompt
+        assert '调整参数后重新下达指令' in cancel_prompt
         print('confirmation prompt smoke ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)
