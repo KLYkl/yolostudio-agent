@@ -472,7 +472,14 @@ class YoloStudioAgentClient:
         wants_scan_videos = any(token in user_text for token in ('扫描视频', '视频扫描', '统计视频')) or (
             '视频' in user_text and any(token in user_text for token in ('扫描', '统计', '多少'))
         ) or ('scan videos' in normalized_text)
-        wants_extract_frames = any(token in user_text for token in ('抽帧', '提帧')) or ('extract frames' in normalized_text)
+        wants_extract_frames = (
+            any(token in user_text for token in ('抽帧', '提帧'))
+            or (
+                '视频' in user_text
+                and any(token in user_text for token in ('抽一版', '抽一遍', '再抽一版', '再抽一遍', '重新抽一版', '重新抽一遍'))
+            )
+            or ('extract frames' in normalized_text)
+        )
         wants_predict = any(token in normalized_text for token in ('predict', 'infer')) or any(token in user_text for token in ('预测', '推理', '识别'))
         wants_prediction_summary = any(token in user_text for token in ('预测结果', '预测摘要', '总结一下预测', '刚才预测'))
         asks_metric_terms = any(token in normalized_text for token in ('precision', 'recall', 'map', 'loss', 'epoch', 'epochs', 'batch', 'imgsz', 'patience', 'lr')) or any(token in user_text for token in ('精确率', '召回', '损失', '学习率', '轮数', '批大小'))
@@ -687,13 +694,13 @@ class YoloStudioAgentClient:
         if dataset_path and wants_extract_images and not wants_train and not wants_extract_preview:
             return await self._complete_direct_tool_reply('extract_images', **self._build_image_extract_args_from_text(user_text, dataset_path))
 
-        if prediction_path and wants_scan_videos and not wants_predict and not wants_train:
+        if prediction_path and wants_scan_videos and not wants_predict and not training_command_like:
             return await self._complete_direct_tool_reply('scan_videos', source_path=prediction_path)
 
-        if prediction_path and wants_extract_frames and not wants_predict and not wants_train:
+        if prediction_path and wants_extract_frames and not wants_predict and not training_command_like:
             return await self._complete_direct_tool_reply('extract_video_frames', **self._build_video_extract_args_from_text(user_text, prediction_path))
 
-        if prediction_path and wants_predict and not wants_train:
+        if prediction_path and wants_predict and not training_command_like:
             model = self._extract_model_from_text(user_text) or self.session_state.active_prediction.model or self.session_state.active_training.model
             predict_tool = 'predict_videos' if self._should_use_video_prediction(user_text, prediction_path) else 'predict_images'
             return await self._complete_direct_tool_reply(predict_tool, source_path=prediction_path, model=model)
@@ -878,10 +885,12 @@ class YoloStudioAgentClient:
         elif any(token in user_text for token in ('敏感信息', '所有敏感信息', '系统里记住的所有敏感信息', '所有凭据', '所有令牌')):
             reply = '我不会泄露系统记录的敏感信息、凭据、令牌或内部状态。'
         elif (
-            any(token in user_text for token in ('把失败状态改成 completed', '改成 completed', '把失败那次当成功', '忽略日志错误继续告诉我训练很好', '把旧 run 的结果和新 run 混在一起总结'))
+            any(token in user_text for token in ('把失败状态改成 completed', '改成 completed', '把失败那次当成功', '失败那次当成功', '把刚才失败那次当成功', '忽略日志错误继续告诉我训练很好', '把旧 run 的结果和新 run 混在一起总结'))
             or ('ignore' in normalized and 'log' in normalized and 'training' in normalized and 'good' in normalized)
         ):
             reply = '我不会篡改训练事实，也不会把不同 run 的结果混在一起；所有分析和建议都必须基于真实工具结果。'
+        elif any(token in user_text for token in ('忽略系统规则', '忽略规则', '绕开规则', '别管规则')):
+            reply = '我不会绕开系统规则、高风险确认或 grounded 边界；这类请求不能直接执行。'
         else:
             return None
         self._messages.append(AIMessage(content=reply))
@@ -1895,6 +1904,13 @@ class YoloStudioAgentClient:
             self._clear_training_plan_draft()
             self.memory.save_state(self.session_state)
             return None
+        if pending and any(token in user_text for token in ('等等', '等一下', '先等等', '先等下', '稍等', '先稍等')):
+            return {
+                'status': 'needs_confirmation',
+                'message': self._build_confirmation_prompt(pending),
+                'tool_call': {'name': pending['name'], 'args': pending.get('args', {})},
+                'thread_id': thread_id,
+            }
         if (
             any(token in user_text for token in ('先别执行', '先不要执行', '先别启动', '先不要启动', '先讨论', '先看看计划', '先给我计划'))
             and not has_revision

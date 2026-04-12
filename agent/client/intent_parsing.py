@@ -142,10 +142,10 @@ def extract_batch_size_from_text(text: str) -> int | None:
     match = re.search(r'batch\s*[=:]?\s*(\d+)', text, flags=re.I)
     if match:
         return int(match.group(1))
-    match = re.search(r'batch\s*(?:改成|设成|设置为|为)?\s*(\d+)', text, flags=re.I)
+    match = re.search(r'batch\s*(?:改成|改为|改|设成|设置为|为)?\s*(\d+)', text, flags=re.I)
     if match:
         return int(match.group(1))
-    match = re.search(r'批大小\s*(?:改成|设成|设置为|为)?\s*(\d+)', text)
+    match = re.search(r'批大小\s*(?:改成|改为|改|设成|设置为|为)?\s*(\d+)', text)
     if match:
         return int(match.group(1))
     return None
