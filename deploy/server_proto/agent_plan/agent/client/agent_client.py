@@ -2003,7 +2003,7 @@ class YoloStudioAgentClient:
                 '环境', '为什么', '原因', '依据', '先只做准备', '只做准备', '标准 yolo', '自定义脚本', 'trainer',
                 '高级参数', '高级配置', '展开参数', '详细参数',
             )
-        ) or bool(self._extract_custom_training_script_from_text(user_text))
+        ) or wants_retry_last_plan or wants_resume_recent_training or bool(self._extract_custom_training_script_from_text(user_text))
         if (
             any(token in user_text for token in ('取消', '算了', '先不做', '不用了', '先别开始训练', '先不要开始训练', '先别开训', '先不要开训'))
             and not clear_fields
@@ -2237,7 +2237,8 @@ class YoloStudioAgentClient:
                 revised_draft['next_step_tool'] = next_tool_name
             revised_draft['advanced_details_requested'] = advanced_requested
         self._save_training_plan_draft(revised_draft)
-        if pending and revised_draft.get('next_step_tool'):
+        force_confirmation = wants_retry_last_plan or wants_resume_recent_training
+        if revised_draft.get('next_step_tool') and (pending or force_confirmation):
             self._set_pending_confirmation(
                 thread_id,
                 {

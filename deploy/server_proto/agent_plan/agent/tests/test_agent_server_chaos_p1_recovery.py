@@ -110,6 +110,30 @@ def _seed_recent_run(client, *, run_state: str) -> None:
     client.memory.save_state(client.session_state)
 
 
+
+async def _scenario_c97_resume_cancel_resume_stays_stable() -> None:
+    client = _fresh_client('chaos-p1-c97')
+    calls = _install_recovery_tools(client)
+    _seed_recent_run(client, run_state='stopped')
+
+    first = await client.chat('从最近状态继续训练。')
+    assert first['status'] == 'needs_confirmation', first
+    assert first['tool_call']['name'] == 'start_training'
+    assert first['tool_call']['args']['resume'] is True
+
+    second = await client.chat('取消。')
+    assert second['status'] == 'cancelled', second
+    assert client.session_state.pending_confirmation.tool_name == ''
+
+    call_count = len(calls)
+    third = await client.chat('从最近状态继续训练。')
+    assert third['status'] == 'needs_confirmation', third
+    assert third['tool_call']['name'] == 'start_training'
+    assert third['tool_call']['args']['resume'] is True
+    assert len(calls) == call_count + 1
+    assert calls[-1][0] == 'training_preflight'
+
+
 async def _scenario_c98_retry_failed_run_rebuilds_plan() -> None:
     client = _fresh_client('chaos-p1-c98')
     calls = _install_recovery_tools(client)
@@ -150,6 +174,7 @@ async def _scenario_completed_run_cannot_resume_recent_state() -> None:
 
 
 async def _run() -> None:
+    await _scenario_c97_resume_cancel_resume_stays_stable()
     await _scenario_c98_retry_failed_run_rebuilds_plan()
     await _scenario_c99_resume_stopped_run_uses_resume_true()
     await _scenario_completed_run_cannot_resume_recent_state()
