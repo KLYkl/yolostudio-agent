@@ -202,31 +202,69 @@ async def _run() -> None:
                     'default_environment': {'name': 'base', 'display_name': 'base'},
                 }
             elif tool_name == 'training_preflight':
-                result = {
-                    'ok': True,
-                    'ready_to_start': True,
-                    'summary': f"训练预检通过：将使用 {kwargs.get('training_environment') or 'base'}，device={kwargs.get('device', 'auto') or 'auto'}",
-                    'training_environment': {'name': kwargs.get('training_environment') or 'base', 'display_name': kwargs.get('training_environment') or 'base'},
-                    'resolved_args': {
-                        'model': kwargs['model'],
-                        'data_yaml': kwargs['data_yaml'],
-                        'epochs': kwargs['epochs'],
-                        'device': kwargs.get('device', 'auto') or 'auto',
-                        'training_environment': kwargs.get('training_environment') or 'base',
-                        'batch': kwargs.get('batch'),
-                        'imgsz': kwargs.get('imgsz'),
-                        'optimizer': kwargs.get('optimizer') or None,
-                        'freeze': kwargs.get('freeze'),
-                        'resume': kwargs.get('resume'),
-                        'lr0': kwargs.get('lr0'),
-                        'patience': kwargs.get('patience'),
-                        'workers': kwargs.get('workers'),
-                        'amp': kwargs.get('amp'),
-                    },
-                    'command_preview': ['yolo', 'train'],
-                    'blockers': [],
-                    'warnings': [],
-                }
+                selected_environment = kwargs.get('training_environment') or 'base'
+                if selected_environment == 'missing-env':
+                    result = {
+                        'ok': True,
+                        'ready_to_start': False,
+                        'summary': '训练预检未通过：训练环境不存在: missing-env（可用: base, yolodo）',
+                        'training_environment': None,
+                        'resolved_args': {
+                            'model': kwargs['model'],
+                            'data_yaml': kwargs['data_yaml'],
+                            'epochs': kwargs['epochs'],
+                            'device': kwargs.get('device', 'auto') or 'auto',
+                            'training_environment': 'missing-env',
+                            'project': kwargs.get('project') or None,
+                            'name': kwargs.get('name') or None,
+                            'batch': kwargs.get('batch'),
+                            'imgsz': kwargs.get('imgsz'),
+                            'fraction': kwargs.get('fraction'),
+                            'classes': kwargs.get('classes'),
+                            'single_cls': kwargs.get('single_cls'),
+                            'optimizer': kwargs.get('optimizer') or None,
+                            'freeze': kwargs.get('freeze'),
+                            'resume': kwargs.get('resume'),
+                            'lr0': kwargs.get('lr0'),
+                            'patience': kwargs.get('patience'),
+                            'workers': kwargs.get('workers'),
+                            'amp': kwargs.get('amp'),
+                        },
+                        'command_preview': [],
+                        'blockers': ['训练环境不存在: missing-env（可用: base, yolodo）'],
+                        'warnings': [],
+                    }
+                else:
+                    result = {
+                        'ok': True,
+                        'ready_to_start': True,
+                        'summary': f"训练预检通过：将使用 {selected_environment}，device={kwargs.get('device', 'auto') or 'auto'}",
+                        'training_environment': {'name': selected_environment, 'display_name': selected_environment},
+                        'resolved_args': {
+                            'model': kwargs['model'],
+                            'data_yaml': kwargs['data_yaml'],
+                            'epochs': kwargs['epochs'],
+                            'device': kwargs.get('device', 'auto') or 'auto',
+                            'training_environment': selected_environment,
+                            'project': kwargs.get('project') or None,
+                            'name': kwargs.get('name') or None,
+                            'batch': kwargs.get('batch'),
+                            'imgsz': kwargs.get('imgsz'),
+                            'fraction': kwargs.get('fraction'),
+                            'classes': kwargs.get('classes'),
+                            'single_cls': kwargs.get('single_cls'),
+                            'optimizer': kwargs.get('optimizer') or None,
+                            'freeze': kwargs.get('freeze'),
+                            'resume': kwargs.get('resume'),
+                            'lr0': kwargs.get('lr0'),
+                            'patience': kwargs.get('patience'),
+                            'workers': kwargs.get('workers'),
+                            'amp': kwargs.get('amp'),
+                        },
+                        'command_preview': ['yolo', 'train'],
+                        'blockers': [],
+                        'warnings': [],
+                    }
             elif tool_name == 'start_training':
                 result = {
                     'ok': True,
@@ -253,13 +291,22 @@ async def _run() -> None:
         assert '当前自动执行链只支持标准 YOLO 训练' in turn1['message']
         assert client.session_state.pending_confirmation.tool_name == ''
 
-        turn2 = await client.chat('不用自定义脚本了，改成标准 yolo，用 yolodo 环境。展开高级参数，把 lr0 改成 0.005，patience 20，workers 4，关闭 amp。')
+        turn2 = await client.chat('不用自定义脚本了，改成标准 yolo，用 yolodo 环境。输出放到 project /runs/ablation，name exp-blue，只训练类别 1,3，fraction 0.5。展开高级参数，把 lr0 改成 0.005，patience 20，workers 4，关闭 amp。')
         assert turn2['status'] == 'completed', turn2
         assert '执行后端: 标准 YOLO 训练' in turn2['message']
+        assert '计划依据:' in turn2['message']
+        assert '已从默认环境 base 切换到 yolodo' in turn2['message']
+        assert '只计划使用约 50% 的训练数据' in turn2['message']
+        assert '只训练指定类别 [1, 3]' in turn2['message']
         assert '训练环境: yolodo' in turn2['message']
-        assert '高级参数: lr0=0.005, patience=20, workers=4, amp=False' in turn2['message']
+        assert '输出组织: project=/runs/ablation, name=exp-blue' in turn2['message']
+        assert '高级参数: fraction=0.5, classes=[1, 3], lr0=0.005, patience=20, workers=4, amp=False' in turn2['message']
         assert calls[-1][0] == 'training_preflight'
         assert calls[-1][1]['training_environment'] == 'yolodo'
+        assert calls[-1][1]['project'] == '/runs/ablation'
+        assert calls[-1][1]['name'] == 'exp-blue'
+        assert calls[-1][1]['fraction'] == 0.5
+        assert calls[-1][1]['classes'] == [1, 3]
         assert calls[-1][1]['lr0'] == 0.005
         assert calls[-1][1]['patience'] == 20
         assert calls[-1][1]['workers'] == 4
@@ -269,6 +316,10 @@ async def _run() -> None:
         assert turn3['status'] == 'needs_confirmation', turn3
         assert turn3['tool_call']['name'] == 'start_training'
         assert turn3['tool_call']['args']['training_environment'] == 'yolodo'
+        assert turn3['tool_call']['args']['project'] == '/runs/ablation'
+        assert turn3['tool_call']['args']['name'] == 'exp-blue'
+        assert turn3['tool_call']['args']['fraction'] == 0.5
+        assert turn3['tool_call']['args']['classes'] == [1, 3]
         assert turn3['tool_call']['args']['lr0'] == 0.005
         assert turn3['tool_call']['args']['patience'] == 20
         assert turn3['tool_call']['args']['workers'] == 4
@@ -278,11 +329,41 @@ async def _run() -> None:
         assert turn4['status'] == 'completed', turn4
         assert '训练已启动' in turn4['message']
         assert client.session_state.active_training.training_environment == 'yolodo'
+        assert client.session_state.active_training.project == '/runs/ablation'
+        assert client.session_state.active_training.run_name == 'exp-blue'
+        assert client.session_state.active_training.fraction == 0.5
+        assert client.session_state.active_training.classes == [1, 3]
         assert client.session_state.active_training.lr0 == 0.005
         assert client.session_state.active_training.patience == 20
         assert client.session_state.active_training.workers == 4
         assert client.session_state.active_training.amp is False
         assert client.session_state.active_training.training_plan_draft == {}
+
+        turn5 = await client.chat('数据在 /data/project，用 yolov8s.pt，先给我计划，不执行，训练环境先用 missing-env。')
+        assert turn5['status'] == 'completed', turn5
+        assert '训练环境: missing-env' in turn5['message']
+        assert '当前阻塞:' in turn5['message']
+        assert '训练环境不存在: missing-env' in turn5['message']
+
+        turn6 = await client.chat('为什么不行？那改成 yolodo，name exp-fix，只训练类别 0,2，开启 single_cls。')
+        assert turn6['status'] == 'completed', turn6
+        assert '已从默认环境 base 切换到 yolodo' in turn6['message']
+        assert '只训练指定类别 [0, 2]' in turn6['message']
+        assert '启用了 single_cls' in turn6['message']
+        assert '输出组织: name=exp-fix' in turn6['message']
+        assert '高级参数: classes=[0, 2], single_cls=True' in turn6['message']
+        assert calls[-1][0] == 'training_preflight'
+        assert calls[-1][1]['training_environment'] == 'yolodo'
+        assert calls[-1][1]['name'] == 'exp-fix'
+        assert calls[-1][1]['classes'] == [0, 2]
+        assert calls[-1][1]['single_cls'] is True
+
+        turn7 = await client.chat('执行。')
+        assert turn7['status'] == 'needs_confirmation', turn7
+        assert turn7['tool_call']['args']['training_environment'] == 'yolodo'
+        assert turn7['tool_call']['args']['name'] == 'exp-fix'
+        assert turn7['tool_call']['args']['classes'] == [0, 2]
+        assert turn7['tool_call']['args']['single_cls'] is True
         print('training plan advanced dialogue ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)

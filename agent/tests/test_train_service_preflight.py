@@ -57,8 +57,13 @@ def main() -> None:
             epochs=5,
             device='auto',
             training_environment='yolodo',
+            project='/runs/ablation',
+            name='exp-blue',
             batch=16,
             imgsz=960,
+            fraction=0.5,
+            classes=[1, 3],
+            single_cls=False,
             optimizer='AdamW',
             freeze=10,
             resume=True,
@@ -74,8 +79,13 @@ def main() -> None:
         assert preflight['resolved_args']['training_environment'] == 'yolodo'
         assert preflight['command_preview'][0].endswith('/bin/yolo')
         assert preflight['command_preview'][1] == 'train'
+        assert 'project=/runs/ablation' in preflight['command_preview']
+        assert 'name=exp-blue' in preflight['command_preview']
         assert 'batch=16' in preflight['command_preview']
         assert 'imgsz=960' in preflight['command_preview']
+        assert 'fraction=0.5' in preflight['command_preview']
+        assert 'classes=1,3' in preflight['command_preview']
+        assert 'single_cls=False' in preflight['command_preview']
         assert 'optimizer=AdamW' in preflight['command_preview']
         assert 'freeze=10' in preflight['command_preview']
         assert 'resume=True' in preflight['command_preview']
@@ -83,8 +93,13 @@ def main() -> None:
         assert 'patience=20' in preflight['command_preview']
         assert 'workers=4' in preflight['command_preview']
         assert 'amp=False' in preflight['command_preview']
+        assert preflight['resolved_args']['project'] == '/runs/ablation'
+        assert preflight['resolved_args']['name'] == 'exp-blue'
         assert preflight['resolved_args']['batch'] == 16
         assert preflight['resolved_args']['imgsz'] == 960
+        assert preflight['resolved_args']['fraction'] == 0.5
+        assert preflight['resolved_args']['classes'] == [1, 3]
+        assert preflight['resolved_args']['single_cls'] is False
         assert preflight['resolved_args']['optimizer'] == 'AdamW'
         assert preflight['resolved_args']['freeze'] == 10
         assert preflight['resolved_args']['resume'] is True
@@ -110,6 +125,14 @@ def main() -> None:
         invalid_lr0 = service.training_preflight(model='yolov8n.pt', data_yaml=str(tmp_yaml), epochs=5, device='auto', lr0=0)
         assert invalid_lr0['ready_to_start'] is False
         assert any('lr0 必须大于 0' in blocker for blocker in invalid_lr0['blockers'])
+
+        invalid_fraction = service.training_preflight(model='yolov8n.pt', data_yaml=str(tmp_yaml), epochs=5, device='auto', fraction=1.5)
+        assert invalid_fraction['ready_to_start'] is False
+        assert any('fraction 必须在 (0, 1] 范围内' in blocker for blocker in invalid_fraction['blockers'])
+
+        invalid_classes = service.training_preflight(model='yolov8n.pt', data_yaml=str(tmp_yaml), epochs=5, device='auto', classes='a,b')
+        assert invalid_classes['ready_to_start'] is False
+        assert any('classes 必须是非负整数列表' in blocker for blocker in invalid_classes['blockers'])
 
         invalid_environment = service.training_preflight(
             model='yolov8n.pt',

@@ -27,16 +27,21 @@ from agent_plan.agent.client.intent_parsing import (
     extract_dataset_path_from_text,
     extract_device_from_text,
     extract_epochs_from_text,
+    extract_fraction_from_text,
     extract_image_size_from_text,
     extract_metric_signals_from_text,
     extract_model_from_text,
+    extract_project_from_text,
     extract_optimizer_from_text,
     extract_lr0_from_text,
     extract_output_path_from_text,
     extract_ratio_from_text,
     extract_resume_flag_from_text,
+    extract_run_name_from_text,
     extract_freeze_from_text,
+    extract_single_cls_flag_from_text,
     extract_patience_from_text,
+    extract_classes_from_text,
     extract_training_environment_from_text,
     extract_training_execution_backend_from_text,
     extract_workers_from_text,
@@ -279,8 +284,13 @@ class YoloStudioAgentClient:
                         epochs=int(synthetic_followup['args'].get('epochs', 100)),
                         device=str(synthetic_followup['args'].get('device', 'auto') or 'auto'),
                         training_environment=str(synthetic_followup['args'].get('training_environment', '') or ''),
+                        project=str(synthetic_followup['args'].get('project', '') or ''),
+                        name=str(synthetic_followup['args'].get('name', '') or ''),
                         batch=synthetic_followup['args'].get('batch'),
                         imgsz=synthetic_followup['args'].get('imgsz'),
+                        fraction=synthetic_followup['args'].get('fraction'),
+                        classes=synthetic_followup['args'].get('classes'),
+                        single_cls=synthetic_followup['args'].get('single_cls'),
                         optimizer=str(synthetic_followup['args'].get('optimizer', '') or ''),
                         freeze=synthetic_followup['args'].get('freeze'),
                         resume=synthetic_followup['args'].get('resume'),
@@ -358,8 +368,13 @@ class YoloStudioAgentClient:
                 epochs=int(synthetic_followup['args'].get('epochs', 100)),
                 device=str(synthetic_followup['args'].get('device', 'auto') or 'auto'),
                 training_environment=str(synthetic_followup['args'].get('training_environment', '') or ''),
+                project=str(synthetic_followup['args'].get('project', '') or ''),
+                name=str(synthetic_followup['args'].get('name', '') or ''),
                 batch=synthetic_followup['args'].get('batch'),
                 imgsz=synthetic_followup['args'].get('imgsz'),
+                fraction=synthetic_followup['args'].get('fraction'),
+                classes=synthetic_followup['args'].get('classes'),
+                single_cls=synthetic_followup['args'].get('single_cls'),
                 optimizer=str(synthetic_followup['args'].get('optimizer', '') or ''),
                 freeze=synthetic_followup['args'].get('freeze'),
                 resume=synthetic_followup['args'].get('resume'),
@@ -571,8 +586,13 @@ class YoloStudioAgentClient:
                     epochs=int(requested_args.get('epochs', 100)),
                     device=str(requested_args.get('device', 'auto') or 'auto'),
                     training_environment=str(requested_args.get('training_environment') or ''),
+                    project=str(requested_args.get('project') or ''),
+                    name=str(requested_args.get('name') or ''),
                     batch=requested_args.get('batch'),
                     imgsz=requested_args.get('imgsz'),
+                    fraction=requested_args.get('fraction'),
+                    classes=requested_args.get('classes'),
+                    single_cls=requested_args.get('single_cls'),
                     optimizer=str(requested_args.get('optimizer', '') or ''),
                     freeze=requested_args.get('freeze'),
                     resume=requested_args.get('resume'),
@@ -587,8 +607,13 @@ class YoloStudioAgentClient:
                     'epochs': int((preflight.get('resolved_args') or {}).get('epochs') or requested_args.get('epochs', 100)),
                     'device': str((preflight.get('resolved_args') or {}).get('device') or requested_args.get('device') or 'auto'),
                     'training_environment': str((preflight.get('resolved_args') or {}).get('training_environment') or requested_args.get('training_environment') or ''),
+                    'project': str((preflight.get('resolved_args') or {}).get('project') or requested_args.get('project') or ''),
+                    'name': str((preflight.get('resolved_args') or {}).get('name') or requested_args.get('name') or ''),
                     'batch': (preflight.get('resolved_args') or {}).get('batch', requested_args.get('batch')),
                     'imgsz': (preflight.get('resolved_args') or {}).get('imgsz', requested_args.get('imgsz')),
+                    'fraction': (preflight.get('resolved_args') or {}).get('fraction', requested_args.get('fraction')),
+                    'classes': (preflight.get('resolved_args') or {}).get('classes', requested_args.get('classes')),
+                    'single_cls': (preflight.get('resolved_args') or {}).get('single_cls', requested_args.get('single_cls')),
                     'optimizer': str((preflight.get('resolved_args') or {}).get('optimizer') or requested_args.get('optimizer') or ''),
                     'freeze': (preflight.get('resolved_args') or {}).get('freeze', requested_args.get('freeze')),
                     'resume': (preflight.get('resolved_args') or {}).get('resume', requested_args.get('resume')),
@@ -991,6 +1016,21 @@ class YoloStudioAgentClient:
         )
         if training_environment:
             args["training_environment"] = training_environment
+        project = self._extract_project_from_text(user_text)
+        if project:
+            args["project"] = project
+        run_name = self._extract_run_name_from_text(user_text)
+        if run_name:
+            args["name"] = run_name
+        fraction = self._extract_fraction_from_text(user_text)
+        if fraction is not None:
+            args["fraction"] = fraction
+        classes = self._extract_classes_from_text(user_text)
+        if classes is not None:
+            args["classes"] = classes
+        single_cls = self._extract_single_cls_flag_from_text(user_text)
+        if single_cls is not None:
+            args["single_cls"] = single_cls
         optimizer = self._extract_optimizer_from_text(user_text)
         if optimizer:
             args["optimizer"] = optimizer
@@ -1067,6 +1107,26 @@ class YoloStudioAgentClient:
         return extract_training_environment_from_text(text, known_environments)
 
     @staticmethod
+    def _extract_project_from_text(text: str) -> str:
+        return extract_project_from_text(text)
+
+    @staticmethod
+    def _extract_run_name_from_text(text: str) -> str:
+        return extract_run_name_from_text(text)
+
+    @staticmethod
+    def _extract_fraction_from_text(text: str) -> float | None:
+        return extract_fraction_from_text(text)
+
+    @staticmethod
+    def _extract_classes_from_text(text: str) -> list[int] | None:
+        return extract_classes_from_text(text)
+
+    @staticmethod
+    def _extract_single_cls_flag_from_text(text: str) -> bool | None:
+        return extract_single_cls_flag_from_text(text)
+
+    @staticmethod
     def _extract_optimizer_from_text(text: str) -> str:
         return extract_optimizer_from_text(text)
 
@@ -1110,7 +1170,7 @@ class YoloStudioAgentClient:
         tr = self.session_state.active_training
         args: dict[str, Any] = {}
         known_environments = list((tr.last_environment_probe or {}).get('environments') or [])
-        model = self._extract_model_from_text(user_text) or tr.model
+        model = self._extract_model_from_text(user_text)
         if model:
             args['model'] = model
         resolved_yaml = str(data_yaml or tr.data_yaml or self.session_state.active_dataset.data_yaml or '').strip()
@@ -1131,6 +1191,21 @@ class YoloStudioAgentClient:
         training_environment = self._extract_training_environment_from_text(user_text, known_environments)
         if training_environment:
             args['training_environment'] = training_environment
+        project = self._extract_project_from_text(user_text)
+        if project:
+            args['project'] = project
+        run_name = self._extract_run_name_from_text(user_text)
+        if run_name:
+            args['name'] = run_name
+        fraction = self._extract_fraction_from_text(user_text)
+        if fraction is not None:
+            args['fraction'] = fraction
+        classes = self._extract_classes_from_text(user_text)
+        if classes is not None:
+            args['classes'] = classes
+        single_cls = self._extract_single_cls_flag_from_text(user_text)
+        if single_cls is not None:
+            args['single_cls'] = single_cls
         optimizer = self._extract_optimizer_from_text(user_text)
         if optimizer:
             args['optimizer'] = optimizer
@@ -1198,6 +1273,17 @@ class YoloStudioAgentClient:
             risks.insert(0, str(readiness.get('primary_blocker_type')))
         if execution_backend != 'standard_yolo':
             blockers.insert(0, '当前自动执行链只支持标准 YOLO 训练；自定义训练后端先保留为计划草案')
+        reasoning_parts: list[str] = []
+        if execution_backend != 'standard_yolo':
+            reasoning_parts.append('当前检测到自定义训练后端，因此先保留为计划草案，不直接自动执行。')
+        elif preflight.get('ready_to_start'):
+            reasoning_parts.append('当前数据已具备训练条件，训练环境和参数预检都已通过；确认后即可启动。')
+        elif readiness.get('preparable'):
+            reasoning_parts.append('当前数据还不能直接训练，但可以先自动准备到可训练状态。')
+        elif blockers:
+            reasoning_parts.append(f"当前仍有阻塞，优先解决：{blockers[0]}")
+        elif self._is_training_discussion_only(user_text):
+            reasoning_parts.append('当前按讨论模式生成草案，不会直接执行。')
 
         data_yaml = str(
             planned_training_args.get('data_yaml')
@@ -1209,6 +1295,24 @@ class YoloStudioAgentClient:
             planned_training_args['data_yaml'] = data_yaml
         if env_name:
             planned_training_args['training_environment'] = env_name
+
+        default_environment = self.session_state.active_training.last_environment_probe.get('default_environment') or {}
+        default_env_name = str(default_environment.get('display_name') or default_environment.get('name') or '').strip()
+        if env_name and default_env_name and env_name != default_env_name:
+            reasoning_parts.append(f'当前计划已从默认环境 {default_env_name} 切换到 {env_name}。')
+        fraction_value = planned_training_args.get('fraction')
+        if fraction_value is not None:
+            try:
+                percent = float(fraction_value) * 100.0
+                reasoning_parts.append(f'当前只计划使用约 {percent:.0f}% 的训练数据。')
+            except (TypeError, ValueError):
+                pass
+        classes_value = planned_training_args.get('classes') or []
+        if classes_value:
+            reasoning_parts.append(f"当前只训练指定类别 {list(classes_value)}。")
+        if planned_training_args.get('single_cls') is True:
+            reasoning_parts.append('当前启用了 single_cls。')
+        reasoning_summary = ' '.join(reasoning_parts[:4]).strip()
 
         return {
             'stage': 'training_plan',
@@ -1228,9 +1332,10 @@ class YoloStudioAgentClient:
             'blockers': blockers,
             'warnings': warnings,
             'risks': risks,
+            'reasoning_summary': reasoning_summary,
             'next_step_tool': next_tool_name,
             'next_step_args': next_tool_args,
-            'editable_fields': ['model', 'epochs', 'batch', 'imgsz', 'device', 'training_environment', 'execution_mode', 'execution_backend'],
+            'editable_fields': ['model', 'epochs', 'batch', 'imgsz', 'device', 'training_environment', 'project', 'name', 'fraction', 'classes', 'single_cls', 'execution_mode', 'execution_backend'],
         }
 
     def _save_training_plan_draft(self, draft: dict[str, Any]) -> None:
@@ -1252,6 +1357,8 @@ class YoloStudioAgentClient:
             lines.append(f'- 数据集: {dataset_path}')
         if draft.get('data_summary'):
             lines.append(f"- 当前判断: {draft.get('data_summary')}")
+        if draft.get('reasoning_summary'):
+            lines.append(f"- 计划依据: {draft.get('reasoning_summary')}")
         execution_mode_map = {
             'prepare_then_train': '先准备再训练',
             'direct_train': '直接训练',
@@ -1277,8 +1384,16 @@ class YoloStudioAgentClient:
             core_bits.append(f'{display_key}={value}')
         if core_bits:
             lines.append(f"- 核心参数: {', '.join(core_bits)}")
+        output_bits: list[str] = []
+        for key in ('project', 'name'):
+            value = args.get(key)
+            if not _has_value(value):
+                continue
+            output_bits.append(f'{key}={value}')
+        if output_bits:
+            lines.append(f"- 输出组织: {', '.join(output_bits)}")
         advanced_bits: list[str] = []
-        for key in ('optimizer', 'freeze', 'resume', 'lr0', 'patience', 'workers', 'amp'):
+        for key in ('fraction', 'classes', 'single_cls', 'optimizer', 'freeze', 'resume', 'lr0', 'patience', 'workers', 'amp'):
             value = args.get(key)
             if not _has_value(value):
                 continue
@@ -1377,7 +1492,13 @@ class YoloStudioAgentClient:
             user_text,
             data_yaml=str(planned_args.get('data_yaml') or self.session_state.active_dataset.data_yaml or ''),
         )
-        planned_args.update({key: value for key, value in requested_args.items() if value not in {None, ''}})
+        planned_args.update(
+            {
+                key: value
+                for key, value in requested_args.items()
+                if value is not None and value != ''
+            }
+        )
         execution_backend = self._extract_training_execution_backend_from_text(user_text)
         advanced_requested = wants_training_advanced_details(user_text) or bool(revised_draft.get('advanced_details_requested'))
         if any(token in user_text for token in ('只做准备', '只准备', '先准备不要训练')):
@@ -1413,8 +1534,13 @@ class YoloStudioAgentClient:
                 epochs=int(planned_args.get('epochs', 100)),
                 device=str(planned_args.get('device', 'auto') or 'auto'),
                 training_environment=str(planned_args.get('training_environment') or ''),
+                project=str(planned_args.get('project') or ''),
+                name=str(planned_args.get('name') or ''),
                 batch=planned_args.get('batch'),
                 imgsz=planned_args.get('imgsz'),
+                fraction=planned_args.get('fraction'),
+                classes=planned_args.get('classes'),
+                single_cls=planned_args.get('single_cls'),
                 optimizer=str(planned_args.get('optimizer', '') or ''),
                 freeze=planned_args.get('freeze'),
                 resume=planned_args.get('resume'),
@@ -1435,8 +1561,13 @@ class YoloStudioAgentClient:
                     'epochs': int((preflight.get('resolved_args') or {}).get('epochs') or planned_args.get('epochs', 100)),
                     'device': str((preflight.get('resolved_args') or {}).get('device') or planned_args.get('device') or 'auto'),
                     'training_environment': str((preflight.get('resolved_args') or {}).get('training_environment') or planned_args.get('training_environment') or ''),
+                    'project': str((preflight.get('resolved_args') or {}).get('project') or planned_args.get('project') or ''),
+                    'name': str((preflight.get('resolved_args') or {}).get('name') or planned_args.get('name') or ''),
                     'batch': (preflight.get('resolved_args') or {}).get('batch', planned_args.get('batch')),
                     'imgsz': (preflight.get('resolved_args') or {}).get('imgsz', planned_args.get('imgsz')),
+                    'fraction': (preflight.get('resolved_args') or {}).get('fraction', planned_args.get('fraction')),
+                    'classes': (preflight.get('resolved_args') or {}).get('classes', planned_args.get('classes')),
+                    'single_cls': (preflight.get('resolved_args') or {}).get('single_cls', planned_args.get('single_cls')),
                     'optimizer': str((preflight.get('resolved_args') or {}).get('optimizer') or planned_args.get('optimizer') or ''),
                     'freeze': (preflight.get('resolved_args') or {}).get('freeze', planned_args.get('freeze')),
                     'resume': (preflight.get('resolved_args') or {}).get('resume', planned_args.get('resume')),
@@ -1451,8 +1582,13 @@ class YoloStudioAgentClient:
                     'epochs': int((preflight.get('resolved_args') or {}).get('epochs') or planned_args.get('epochs', 100)),
                     'device': str((preflight.get('resolved_args') or {}).get('device') or planned_args.get('device') or 'auto'),
                     'training_environment': str((preflight.get('resolved_args') or {}).get('training_environment') or planned_args.get('training_environment') or ''),
+                    'project': str((preflight.get('resolved_args') or {}).get('project') or planned_args.get('project') or ''),
+                    'name': str((preflight.get('resolved_args') or {}).get('name') or planned_args.get('name') or ''),
                     'batch': (preflight.get('resolved_args') or {}).get('batch', planned_args.get('batch')),
                     'imgsz': (preflight.get('resolved_args') or {}).get('imgsz', planned_args.get('imgsz')),
+                    'fraction': (preflight.get('resolved_args') or {}).get('fraction', planned_args.get('fraction')),
+                    'classes': (preflight.get('resolved_args') or {}).get('classes', planned_args.get('classes')),
+                    'single_cls': (preflight.get('resolved_args') or {}).get('single_cls', planned_args.get('single_cls')),
                     'optimizer': str((preflight.get('resolved_args') or {}).get('optimizer') or planned_args.get('optimizer') or ''),
                     'freeze': (preflight.get('resolved_args') or {}).get('freeze', planned_args.get('freeze')),
                     'resume': (preflight.get('resolved_args') or {}).get('resume', planned_args.get('resume')),
@@ -1556,12 +1692,40 @@ class YoloStudioAgentClient:
             imgsz = args.get('imgsz')
             if imgsz is None:
                 imgsz = (preflight.get('resolved_args') or {}).get('imgsz')
+            project = args.get('project')
+            if not project:
+                project = (preflight.get('resolved_args') or {}).get('project')
+            run_name = args.get('name')
+            if not run_name:
+                run_name = (preflight.get('resolved_args') or {}).get('name')
+            fraction = args.get('fraction')
+            if fraction is None:
+                fraction = (preflight.get('resolved_args') or {}).get('fraction')
+            classes = args.get('classes')
+            if classes is None:
+                classes = (preflight.get('resolved_args') or {}).get('classes')
+            single_cls = args.get('single_cls')
+            if single_cls is None:
+                single_cls = (preflight.get('resolved_args') or {}).get('single_cls')
             plan_bits = [f'model={model}', f'data={data_yaml}', f'epochs={epochs}', f'device={device}']
             if batch is not None:
                 plan_bits.append(f'batch={batch}')
             if imgsz is not None:
                 plan_bits.append(f'imgsz={imgsz}')
             lines.append(f"初步安排: {', '.join(str(item) for item in plan_bits)}")
+            output_bits = []
+            if project:
+                output_bits.append(f'project={project}')
+            if run_name:
+                output_bits.append(f'name={run_name}')
+            if output_bits:
+                lines.append(f"输出组织: {', '.join(output_bits)}")
+            advanced_bits = []
+            for key, value in (('fraction', fraction), ('classes', classes), ('single_cls', single_cls)):
+                if value is not None and value != '':
+                    advanced_bits.append(f'{key}={value}')
+            if advanced_bits:
+                lines.append(f"高级参数: {', '.join(advanced_bits)}")
             if preflight.get('summary'):
                 lines.append(f"预检: {preflight.get('summary')}")
             command_preview = preflight.get('command_preview') or []

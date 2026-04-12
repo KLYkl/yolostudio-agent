@@ -40,10 +40,11 @@ def extract_model_from_text(text: str) -> str:
     match = re.search(r'([A-Za-z0-9_./\-]+\.(?:pt|onnx|yaml))', text)
     if match:
         return match.group(1)
-    match = re.search(r'(yolo[a-zA-Z0-9._-]+)', text, flags=re.I)
+    match = re.search(r'\b(yolo[a-zA-Z0-9._-]+)\b', text, flags=re.I)
     if match:
         token = match.group(1)
-        return token if '.' in token else f'{token}.pt'
+        if '.' in token or re.search(r'\d', token):
+            return token if '.' in token else f'{token}.pt'
     return ''
 
 
@@ -196,7 +197,7 @@ def extract_training_environment_from_text(text: str, known_environments: list[d
 
     patterns = [
         r'(?:用|使用|切到|切换到|改成|换成)\s*([A-Za-z][A-Za-z0-9._-]*)\s*环境',
-        r'环境\s*(?:改成|设成|设置为|切到|切换到|为|用)?\s*([A-Za-z][A-Za-z0-9._-]*)',
+        r'环境\s*(?:先)?\s*(?:改成|设成|设置为|切到|切换到|为|用)?\s*([A-Za-z][A-Za-z0-9._-]*)',
         r'conda\s*环境\s*([A-Za-z][A-Za-z0-9._-]*)',
     ]
     for pattern in patterns:
@@ -204,6 +205,79 @@ def extract_training_environment_from_text(text: str, known_environments: list[d
         if match:
             return match.group(1)
     return ''
+
+
+def extract_project_from_text(text: str) -> str:
+    patterns = [
+        r'project\s*[=:]?\s*([A-Za-z]:\\[^\s，,。；;\"\']+)',
+        r'project\s*[=:]?\s*(/[^\s，,。；;\"\']+)',
+        r'project\s*(?:改成|改为|设成|设置为|为|用)?\s*([A-Za-z]:\\[^\s，,。；;\"\']+)',
+        r'project\s*(?:改成|改为|设成|设置为|为|用)?\s*(/[^\s，,。；;\"\']+)',
+        r'输出目录\s*(?:改成|改为|设成|设置为|为|用)?\s*([A-Za-z]:\\[^\s，,。；;\"\']+)',
+        r'输出目录\s*(?:改成|改为|设成|设置为|为|用)?\s*(/[^\s，,。；;\"\']+)',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.I)
+        if match:
+            return match.group(1).rstrip('。，“”,,;；')
+    return ''
+
+
+def extract_run_name_from_text(text: str) -> str:
+    patterns = [
+        r'name\s*[=:]?\s*([A-Za-z0-9._-]+)',
+        r'name\s*(?:改成|改为|设成|设置为|为|用)?\s*([A-Za-z0-9._-]+)',
+        r'(?:实验名|运行名|run名|任务名)\s*(?:改成|改为|设成|设置为|为|用)?\s*([A-Za-z0-9._-]+)',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.I)
+        if match:
+            return match.group(1)
+    return ''
+
+
+def extract_fraction_from_text(text: str) -> float | None:
+    match = re.search(r'fraction\s*[=:]?\s*(0?\.\d+|1(?:\.0+)?)', text, flags=re.I)
+    if match:
+        return float(match.group(1))
+    match = re.search(r'fraction\s*(?:改成|改为|设成|设置为|为|用)?\s*(0?\.\d+|1(?:\.0+)?)', text, flags=re.I)
+    if match:
+        return float(match.group(1))
+    match = re.search(r'只用\s*(\d+(?:\.\d+)?)\s*%\s*数据', text)
+    if match:
+        return float(match.group(1)) / 100.0
+    match = re.search(r'使用\s*(\d+(?:\.\d+)?)\s*%\s*数据', text)
+    if match:
+        return float(match.group(1)) / 100.0
+    return None
+
+
+def extract_classes_from_text(text: str) -> list[int] | None:
+    patterns = [
+        r'classes\s*[=:]?\s*([0-9,\s]+)',
+        r'classes\s*(?:改成|改为|设成|设置为|为|用)?\s*([0-9,\s]+)',
+        r'只训练类别\s*([0-9,\s和]+)',
+        r'只训\s*([0-9,\s和]+)\s*类',
+        r'类别限制\s*([0-9,\s和]+)',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.I)
+        if not match:
+            continue
+        raw = match.group(1).replace('和', ',')
+        values = [part.strip() for part in raw.split(',') if part.strip()]
+        if values and all(part.isdigit() for part in values):
+            return [int(part) for part in values]
+    return None
+
+
+def extract_single_cls_flag_from_text(text: str) -> bool | None:
+    lowered = text.lower()
+    if any(token in text for token in ('开启 single_cls', '启用 single_cls', '单类别训练', '单类训练')) or 'single_cls=true' in lowered or 'single-cls' in lowered:
+        return True
+    if any(token in text for token in ('关闭 single_cls', '禁用 single_cls', '不要单类别训练', '不要单类训练')) or 'single_cls=false' in lowered:
+        return False
+    return None
 
 
 def extract_optimizer_from_text(text: str) -> str:

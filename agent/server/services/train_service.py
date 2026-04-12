@@ -48,8 +48,13 @@ class TrainService:
         epochs: int = 100,
         device: str = 'auto',
         training_environment: str = '',
+        project: str = '',
+        name: str = '',
         batch: int | None = None,
         imgsz: int | None = None,
+        fraction: float | None = None,
+        classes: list[int] | str | None = None,
+        single_cls: bool | None = None,
         optimizer: str = '',
         freeze: int | None = None,
         resume: bool | None = None,
@@ -70,8 +75,12 @@ class TrainService:
             model=model,
             data_yaml=data_yaml,
             epochs=epochs,
+            project=project,
+            name=name,
             batch=batch,
             imgsz=imgsz,
+            fraction=fraction,
+            classes=classes,
             freeze=freeze,
             lr0=lr0,
             patience=patience,
@@ -90,6 +99,7 @@ class TrainService:
         if not selected_environment:
             return {'ok': False, 'error': '未找到 yolo 命令。请确认某个 conda 环境中已安装 ultralytics'}
         yolo_exe = str(selected_environment.get('yolo_executable') or '')
+        normalized_classes = _normalize_classes_arg(classes)
 
         runs_dir = self._state_dir
         runs_dir.mkdir(parents=True, exist_ok=True)
@@ -101,10 +111,20 @@ class TrainService:
             f'epochs={epochs}',
             f'device={resolved_device}',
         ]
+        if project:
+            self._command.append(f'project={project}')
+        if name:
+            self._command.append(f'name={name}')
         if batch is not None and int(batch) > 0:
             self._command.append(f'batch={int(batch)}')
         if imgsz is not None and int(imgsz) > 0:
             self._command.append(f'imgsz={int(imgsz)}')
+        if fraction is not None and 0 < float(fraction) <= 1:
+            self._command.append(f'fraction={float(fraction)}')
+        if normalized_classes:
+            self._command.append(f"classes={','.join(str(item) for item in normalized_classes)}")
+        if single_cls is not None:
+            self._command.append(f'single_cls={bool(single_cls)}')
         if optimizer:
             self._command.append(f'optimizer={optimizer}')
         if freeze is not None and int(freeze) >= 0:
@@ -129,8 +149,13 @@ class TrainService:
             'epochs': epochs,
             'device': resolved_device,
             'training_environment': str(selected_environment.get('display_name') or selected_environment.get('name') or ''),
+            'project': str(project or '').strip() or None,
+            'name': str(name or '').strip() or None,
             'batch': int(batch) if batch is not None and int(batch) > 0 else None,
             'imgsz': int(imgsz) if imgsz is not None and int(imgsz) > 0 else None,
+            'fraction': float(fraction) if fraction is not None and 0 < float(fraction) <= 1 else None,
+            'classes': normalized_classes,
+            'single_cls': bool(single_cls) if single_cls is not None else None,
             'optimizer': str(optimizer or '').strip() or None,
             'freeze': int(freeze) if freeze is not None and int(freeze) >= 0 else None,
             'resume': bool(resume) if resume is not None else None,
@@ -146,8 +171,13 @@ class TrainService:
             'epochs': 'request_or_default',
             'device': 'auto_resolved' if device.strip().lower() == 'auto' else 'manual_request',
             'training_environment': 'manual_request' if training_environment else 'default_environment',
+            'project': 'request_or_runtime_default' if project else 'runtime_default',
+            'name': 'request_or_runtime_default' if name else 'runtime_default',
             'batch': 'request_or_default' if batch is not None else 'tool_or_runtime_default',
             'imgsz': 'request_or_default' if imgsz is not None else 'tool_or_runtime_default',
+            'fraction': 'request_or_runtime_default' if fraction is not None else 'runtime_default',
+            'classes': 'request_or_runtime_default' if normalized_classes else 'runtime_default',
+            'single_cls': 'request_or_runtime_default' if single_cls is not None else 'runtime_default',
             'optimizer': 'request_or_runtime_default' if optimizer else 'runtime_default',
             'freeze': 'request_or_runtime_default' if freeze is not None else 'runtime_default',
             'resume': 'request_or_runtime_default' if resume is not None else 'runtime_default',
@@ -307,8 +337,13 @@ class TrainService:
         epochs: int = 100,
         device: str = 'auto',
         training_environment: str = '',
+        project: str = '',
+        name: str = '',
         batch: int | None = None,
         imgsz: int | None = None,
+        fraction: float | None = None,
+        classes: list[int] | str | None = None,
+        single_cls: bool | None = None,
         optimizer: str = '',
         freeze: int | None = None,
         resume: bool | None = None,
@@ -329,8 +364,12 @@ class TrainService:
             model=model,
             data_yaml=data_yaml,
             epochs=epochs,
+            project=project,
+            name=name,
             batch=batch,
             imgsz=imgsz,
+            fraction=fraction,
+            classes=classes,
             freeze=freeze,
             lr0=lr0,
             patience=patience,
@@ -345,6 +384,7 @@ class TrainService:
 
         environments = _discover_training_environments()
         selected_environment = _match_training_environment(environments, training_environment) if training_environment else (environments[0] if environments else None)
+        normalized_classes = _normalize_classes_arg(classes)
         if training_environment and not selected_environment:
             available_names = ', '.join(str(item.get('display_name') or item.get('name') or '') for item in environments if (item.get('display_name') or item.get('name')))
             blockers.append(f"训练环境不存在: {training_environment}" + (f"（可用: {available_names}）" if available_names else ''))
@@ -361,10 +401,20 @@ class TrainService:
                 f'epochs={epochs}',
                 f'device={resolved_device}',
             ]
+            if project:
+                command_preview.append(f'project={project}')
+            if name:
+                command_preview.append(f'name={name}')
             if batch is not None and int(batch) > 0:
                 command_preview.append(f'batch={int(batch)}')
             if imgsz is not None and int(imgsz) > 0:
                 command_preview.append(f'imgsz={int(imgsz)}')
+            if fraction is not None and 0 < float(fraction) <= 1:
+                command_preview.append(f'fraction={float(fraction)}')
+            if normalized_classes:
+                command_preview.append(f"classes={','.join(str(item) for item in normalized_classes)}")
+            if single_cls is not None:
+                command_preview.append(f'single_cls={bool(single_cls)}')
             if optimizer:
                 command_preview.append(f'optimizer={optimizer}')
             if freeze is not None and int(freeze) >= 0:
@@ -427,8 +477,13 @@ class TrainService:
                 'epochs': epochs,
                 'device': resolved_device if not device_error else None,
                 'training_environment': str(selected_environment.get('display_name') or selected_environment.get('name') or '') if selected_environment else (training_environment or None),
+                'project': str(project or '').strip() or None,
+                'name': str(name or '').strip() or None,
                 'batch': int(batch) if batch is not None and int(batch) > 0 else None,
                 'imgsz': int(imgsz) if imgsz is not None and int(imgsz) > 0 else None,
+                'fraction': float(fraction) if fraction is not None and 0 < float(fraction) <= 1 else None,
+                'classes': normalized_classes,
+                'single_cls': bool(single_cls) if single_cls is not None else None,
                 'optimizer': str(optimizer or '').strip() or None,
                 'freeze': int(freeze) if freeze is not None and int(freeze) >= 0 else None,
                 'resume': bool(resume) if resume is not None else None,
@@ -904,8 +959,12 @@ class TrainService:
         model: str,
         data_yaml: str,
         epochs: int,
+        project: str = '',
+        name: str = '',
         batch: int | None = None,
         imgsz: int | None = None,
+        fraction: float | None = None,
+        classes: list[int] | str | None = None,
         freeze: int | None = None,
         lr0: float | None = None,
         patience: int | None = None,
@@ -921,6 +980,15 @@ class TrainService:
             return 'batch 必须大于 0'
         if imgsz is not None and int(imgsz) <= 0:
             return 'imgsz 必须大于 0'
+        if project is not None and not str(project).strip() and project != '':
+            return 'project 不能为空字符串'
+        if name is not None and not str(name).strip() and name != '':
+            return 'name 不能为空字符串'
+        if fraction is not None and not (0 < float(fraction) <= 1):
+            return 'fraction 必须在 (0, 1] 范围内'
+        normalized_classes = _normalize_classes_arg(classes)
+        if classes is not None and classes != '' and normalized_classes is None:
+            return 'classes 必须是非负整数列表'
         if freeze is not None and int(freeze) < 0:
             return 'freeze 不能小于 0'
         if lr0 is not None and float(lr0) <= 0:
@@ -1161,4 +1229,31 @@ def _match_training_environment(environments: list[dict[str, Any]], requested_na
         }
         if requested in candidates:
             return item
+    return None
+
+
+def _normalize_classes_arg(classes: list[int] | str | None) -> list[int] | None:
+    if classes is None or classes == '':
+        return None
+    if isinstance(classes, str):
+        raw = classes.strip()
+        if not raw:
+            return None
+        parts = [part.strip() for part in raw.split(',') if part.strip()]
+        if not parts or not all(part.isdigit() for part in parts):
+            return None
+        return [int(part) for part in parts]
+    if isinstance(classes, (list, tuple)):
+        normalized: list[int] = []
+        for item in classes:
+            if isinstance(item, bool):
+                return None
+            try:
+                value = int(item)
+            except (TypeError, ValueError):
+                return None
+            if value < 0:
+                return None
+            normalized.append(value)
+        return normalized or None
     return None
