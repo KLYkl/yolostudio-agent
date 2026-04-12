@@ -1880,12 +1880,24 @@ class YoloStudioAgentClient:
     async def _try_handle_training_plan_dialogue(self, user_text: str, thread_id: str) -> dict[str, Any] | None:
         draft = dict(self.session_state.active_training.training_plan_draft or {})
         pending = self._pending_from_state()
-        if not draft and not pending:
-            return None
 
         normalized = user_text.lower()
         clear_fields = self._collect_training_clear_fields(user_text)
         requested_execute = any(token in user_text for token in ('执行', '开始吧', '就这样', '确认', '可以开始', '开训', '启动吧', '直接训练', '直接开始训练')) or normalized.strip() in {'y', 'yes'}
+        wants_repeat_prepare = any(token in user_text for token in ('再 prepare 一次', '再准备一次', '重新 prepare 一次', '重新准备一次', '再做一次准备', '重新准备一遍'))
+        if not draft and not pending:
+            if requested_execute and self.session_state.active_training.running:
+                reply = '当前训练已经在运行；如果要新开训练，请先停止当前训练，或明确给出新的数据集和模型。'
+                self._messages.append(AIMessage(content=reply))
+                return {'status': 'completed', 'message': reply, 'tool_call': None}
+            readiness = self.session_state.active_dataset.last_readiness or {}
+            data_yaml = str(self.session_state.active_dataset.data_yaml or '').strip()
+            if wants_repeat_prepare and readiness.get('ready') and data_yaml:
+                reply = f'当前数据集已经准备完成：{data_yaml}；不需要重复 prepare。你可以直接继续训练或重新规划。'
+                self._messages.append(AIMessage(content=reply))
+                return {'status': 'completed', 'message': reply, 'tool_call': None}
+            return None
+
         has_revision = any(
             token in normalized or token in user_text
             for token in (
@@ -1924,6 +1936,20 @@ class YoloStudioAgentClient:
                 'tool_call': {'name': pending['name'], 'args': pending.get('args', {})},
                 'thread_id': thread_id,
             }
+        if wants_repeat_prepare:
+            readiness = self.session_state.active_dataset.last_readiness or {}
+            data_yaml = str(self.session_state.active_dataset.data_yaml or '').strip()
+            if readiness.get('ready') and data_yaml:
+                if pending:
+                    return {
+                        'status': 'needs_confirmation',
+                        'message': self._build_confirmation_prompt(pending),
+                        'tool_call': {'name': pending['name'], 'args': pending.get('args', {})},
+                        'thread_id': thread_id,
+                    }
+                reply = f'当前数据集已经准备完成：{data_yaml}；不需要重复 prepare。你可以直接继续训练或重新规划。'
+                self._messages.append(AIMessage(content=reply))
+                return {'status': 'completed', 'message': reply, 'tool_call': None}
         if (
             any(token in user_text for token in ('先别执行', '先不要执行', '先别启动', '先不要启动', '先讨论', '先看看计划', '先给我计划'))
             and not has_revision
