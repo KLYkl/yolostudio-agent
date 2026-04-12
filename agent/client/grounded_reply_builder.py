@@ -197,6 +197,16 @@ def build_grounded_tool_reply(applied_results: list[tuple[str, dict[str, Any]]])
         return _join(lines)
     if tool_name == 'list_training_runs':
         lines = [result.get('summary', '训练历史查询完成')]
+        applied_filters = result.get('applied_filters') or {}
+        filter_bits: list[str] = []
+        if applied_filters.get('run_state'):
+            filter_bits.append(f"状态={applied_filters.get('run_state')}")
+        if applied_filters.get('analysis_ready') is True:
+            filter_bits.append('仅可分析训练')
+        elif applied_filters.get('analysis_ready') is False:
+            filter_bits.append('仅未具备分析条件')
+        if filter_bits:
+            lines.append(f"筛选: {', '.join(str(item) for item in filter_bits)}")
         runs = result.get('runs') or []
         if runs:
             lines.append('最近训练:')

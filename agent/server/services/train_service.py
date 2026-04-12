@@ -503,18 +503,53 @@ class TrainService:
             'next_actions': next_actions,
         }
 
-    def list_training_runs(self, limit: int = 5) -> dict[str, Any]:
+    def list_training_runs(
+        self,
+        limit: int = 5,
+        run_state: str = '',
+        analysis_ready: bool | None = None,
+        model_keyword: str = '',
+        data_keyword: str = '',
+    ) -> dict[str, Any]:
         self._sync_runtime_state()
         max_items = max(1, min(int(limit), 20))
-        runs = self._collect_training_run_summaries(limit=max_items)
+        runs = self._collect_training_run_summaries(limit=None)
+        runs = self._filter_training_run_summaries(
+            runs,
+            run_state=run_state,
+            analysis_ready=analysis_ready,
+            model_keyword=model_keyword,
+            data_keyword=data_keyword,
+        )[:max_items]
+        applied_filters = {
+            'run_state': str(run_state or '').strip().lower() or None,
+            'analysis_ready': analysis_ready if analysis_ready is not None else None,
+            'model_keyword': str(model_keyword or '').strip() or None,
+            'data_keyword': str(data_keyword or '').strip() or None,
+        }
+        filter_fragments: list[str] = []
+        if applied_filters['run_state']:
+            filter_fragments.append(f"状态={applied_filters['run_state']}")
+        if applied_filters['analysis_ready'] is True:
+            filter_fragments.append('可分析训练')
+        elif applied_filters['analysis_ready'] is False:
+            filter_fragments.append('仅未具备分析条件的训练')
+        if applied_filters['model_keyword']:
+            filter_fragments.append(f"模型包含 {applied_filters['model_keyword']}")
+        if applied_filters['data_keyword']:
+            filter_fragments.append(f"数据包含 {applied_filters['data_keyword']}")
         if runs:
             summary = f"找到 {len(runs)} 条最近训练记录"
+            if filter_fragments:
+                summary += f"（筛选: {'，'.join(filter_fragments)}）"
             next_actions = [
                 '如需看最近一次训练效果，可继续调用 summarize_training_run',
                 '如需判断下一步怎么做，可继续调用 analyze_training_outcome 或 recommend_next_training_step',
             ]
         else:
             summary = '当前没有可读训练记录'
+            if filter_fragments:
+                summary = f"未找到符合条件的训练记录（筛选: {'，'.join(filter_fragments)}）"
             next_actions = [
                 '可先调用 start_training 启动一次训练',
                 '如需先确认训练参数和环境，可调用 training_preflight',
@@ -524,6 +559,7 @@ class TrainService:
             'summary': summary,
             'count': len(runs),
             'limit': max_items,
+            'applied_filters': applied_filters,
             'runs': runs,
             'next_actions': next_actions,
         }
@@ -813,7 +849,7 @@ class TrainService:
             'updated_at': time.time(),
         }
 
-    def _collect_training_run_summaries(self, limit: int) -> list[dict[str, Any]]:
+    def _collect_training_run_summaries(self, limit: int | None) -> list[dict[str, Any]]:
         statuses = self._collect_training_run_statuses(limit=limit)
         summaries: list[dict[str, Any]] = []
         for status in statuses:
@@ -821,6 +857,34 @@ class TrainService:
             summary.pop('sort_key', None)
             summaries.append(summary)
         return summaries
+
+    @staticmethod
+    def _filter_training_run_summaries(
+        runs: list[dict[str, Any]],
+        *,
+        run_state: str = '',
+        analysis_ready: bool | None = None,
+        model_keyword: str = '',
+        data_keyword: str = '',
+    ) -> list[dict[str, Any]]:
+        expected_state = str(run_state or '').strip().lower()
+        model_token = str(model_keyword or '').strip().lower()
+        data_token = str(data_keyword or '').strip().lower()
+        filtered: list[dict[str, Any]] = []
+        for run in runs:
+            current_state = str(run.get('run_state') or '').strip().lower()
+            if expected_state and current_state != expected_state:
+                continue
+            if analysis_ready is not None and bool(run.get('analysis_ready')) is not bool(analysis_ready):
+                continue
+            model_text = str(run.get('model') or '').strip().lower()
+            if model_token and model_token not in model_text:
+                continue
+            data_text = str(run.get('data_yaml') or '').strip().lower()
+            if data_token and data_token not in data_text:
+                continue
+            filtered.append(run)
+        return filtered
 
     def _collect_training_run_statuses(self, limit: int | None) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []

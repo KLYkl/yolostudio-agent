@@ -128,6 +128,7 @@ def main() -> None:
     runs = build_grounded_tool_reply([('list_training_runs', {
         'ok': True,
         'summary': '找到 2 条最近训练记录',
+        'applied_filters': {'run_state': 'failed', 'analysis_ready': True},
         'runs': [
             {
                 'run_id': 'train_log_111',
@@ -143,6 +144,7 @@ def main() -> None:
             },
         ],
     })])
+    assert '筛选: 状态=failed, 仅可分析训练' in runs
     assert '最近训练:' in runs
     assert 'train_log_111: stopped / 最终状态，进度 2/30' in runs
 

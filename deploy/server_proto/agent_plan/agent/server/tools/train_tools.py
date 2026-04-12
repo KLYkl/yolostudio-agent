@@ -165,9 +165,23 @@ def training_preflight(
     return result
 
 
-def list_training_runs(limit: int = 5) -> dict[str, Any]:
+def list_training_runs(
+    limit: int = 5,
+    run_state: str = '',
+    analysis_ready: bool | None = None,
+    model_keyword: str = '',
+    data_keyword: str = '',
+) -> dict[str, Any]:
     """列出最近训练记录，便于查看最近一次训练、手动停止的训练或仅有日志的历史训练。"""
-    result = _wrap("查询训练历史", service.list_training_runs, limit=limit)
+    result = _wrap(
+        "查询训练历史",
+        service.list_training_runs,
+        limit=limit,
+        run_state=run_state,
+        analysis_ready=analysis_ready,
+        model_keyword=model_keyword,
+        data_keyword=data_keyword,
+    )
     if result.get('ok'):
         runs = result.get('runs') or []
         if runs:
