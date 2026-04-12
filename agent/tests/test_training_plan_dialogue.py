@@ -559,6 +559,148 @@ async def _scenario_prepare_then_replan_and_execute() -> None:
     assert client.session_state.active_training.training_plan_draft == {}
 
 
+async def _scenario_cancel_then_replan() -> None:
+    scenario_root = WORK / 'cancel_then_replan'
+    settings = AgentSettings(session_id='training-plan-dialogue-4', memory_root=str(scenario_root))
+    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((tool_name, dict(kwargs)))
+        if tool_name == 'training_readiness':
+            result = {
+                'ok': True,
+                'summary': '训练前检查完成：数据已具备训练条件。',
+                'dataset_root': '/data/cancel-case',
+                'resolved_img_dir': '/data/cancel-case/images',
+                'resolved_label_dir': '/data/cancel-case/labels',
+                'resolved_data_yaml': '/data/cancel-case/data.yaml',
+                'ready': True,
+                'preparable': False,
+                'warnings': ['当前是第一轮方案，建议确认输出目录后再开训'],
+                'blockers': [],
+            }
+        elif tool_name == 'list_training_environments':
+            result = {
+                'ok': True,
+                'summary': '发现 2 个可用训练环境，默认将使用 yolodo',
+                'environments': [
+                    {'name': 'yolodo', 'display_name': 'yolodo', 'selected_by_default': True},
+                    {'name': 'base', 'display_name': 'base', 'selected_by_default': False},
+                ],
+                'default_environment': {'name': 'yolodo', 'display_name': 'yolodo'},
+            }
+        elif tool_name == 'training_preflight':
+            selected_environment = kwargs.get('training_environment') or 'yolodo'
+            result = {
+                'ok': True,
+                'ready_to_start': True,
+                'summary': f"训练预检通过：将使用 {selected_environment}，device={kwargs.get('device', 'auto') or 'auto'}",
+                'training_environment': {'name': selected_environment, 'display_name': selected_environment},
+                'resolved_args': {
+                    'model': kwargs['model'],
+                    'data_yaml': kwargs['data_yaml'],
+                    'epochs': kwargs['epochs'],
+                    'device': kwargs.get('device', 'auto') or 'auto',
+                    'training_environment': selected_environment,
+                    'project': kwargs.get('project') or None,
+                    'name': kwargs.get('name') or None,
+                    'batch': kwargs.get('batch'),
+                    'imgsz': kwargs.get('imgsz'),
+                    'fraction': kwargs.get('fraction'),
+                    'classes': kwargs.get('classes'),
+                    'single_cls': kwargs.get('single_cls'),
+                    'optimizer': kwargs.get('optimizer') or None,
+                    'freeze': kwargs.get('freeze'),
+                    'resume': kwargs.get('resume'),
+                    'lr0': kwargs.get('lr0'),
+                    'patience': kwargs.get('patience'),
+                    'workers': kwargs.get('workers'),
+                    'amp': kwargs.get('amp'),
+                },
+                'command_preview': ['yolo', 'train'],
+                'blockers': [],
+                'warnings': ['当前方案尚未执行，确认后会正式启动训练'],
+            }
+        elif tool_name == 'start_training':
+            result = {
+                'ok': True,
+                'summary': f"训练已启动: model={kwargs['model']}, data={kwargs['data_yaml']}, device={kwargs.get('device', 'auto') or 'auto'}",
+                'device': kwargs.get('device', 'auto') or 'auto',
+                'pid': 2468,
+                'log_file': '/runs/cancel_case.txt',
+                'started_at': 789.0,
+                'resolved_args': dict(kwargs),
+            }
+        else:
+            raise AssertionError(f'unexpected tool call: {tool_name}')
+
+        client._apply_to_state(tool_name, result, kwargs)
+        if tool_name == 'start_training' and result.get('ok'):
+            client._clear_training_plan_draft()
+        return result
+
+    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+
+    turn1 = await client.chat('数据在 /data/cancel-case，用 yolov8n.pt 训练 20轮，batch 8，先给我计划，不要执行。')
+    assert turn1['status'] == 'completed', turn1
+    assert '训练环境: yolodo' in turn1['message']
+    assert 'batch=8' in turn1['message']
+
+    turn2 = await client.chat('执行。')
+    assert turn2['status'] == 'needs_confirmation', turn2
+    assert turn2['tool_call']['name'] == 'start_training'
+    assert turn2['tool_call']['args']['batch'] == 8
+
+    turn3 = await client.confirm(turn2['thread_id'], approved=False)
+    assert turn3['status'] == 'cancelled', turn3
+    assert '已取消操作：start_training' in turn3['message']
+    assert client.session_state.pending_confirmation.tool_name == ''
+    assert client.session_state.active_training.training_plan_draft == {}
+    assert all(name != 'start_training' for name, _ in calls)
+
+    turn4 = await client.chat('刚才先取消。现在重新来：还是 /data/cancel-case 和 yolov8n.pt，训练 20轮，但改成 base 环境，project /runs/cancel-replan，name exp-retry，batch 24，imgsz 1280，fraction 0.6，先给我计划。')
+    assert turn4['status'] == 'completed', turn4
+    assert '训练环境: base' in turn4['message']
+    assert '输出组织: project=/runs/cancel-replan, name=exp-retry' in turn4['message']
+    assert '高级参数: fraction=0.6' in turn4['message']
+    assert '已从默认环境 yolodo 切换到 base' in turn4['message']
+    assert calls[-1][0] == 'training_preflight'
+    assert calls[-1][1]['training_environment'] == 'base'
+    assert calls[-1][1]['project'] == '/runs/cancel-replan'
+    assert calls[-1][1]['name'] == 'exp-retry'
+    assert calls[-1][1]['batch'] == 24
+    assert calls[-1][1]['imgsz'] == 1280
+    assert calls[-1][1]['fraction'] == 0.6
+
+    turn5 = await client.chat('为什么这次改成 base？')
+    assert turn5['status'] == 'completed', turn5
+    assert '已从默认环境 yolodo 切换到 base' in turn5['message']
+    assert '训练环境: base' in turn5['message']
+
+    turn6 = await client.chat('那就保留这个方案，执行。')
+    assert turn6['status'] == 'needs_confirmation', turn6
+    assert turn6['tool_call']['name'] == 'start_training'
+    assert turn6['tool_call']['args']['training_environment'] == 'base'
+    assert turn6['tool_call']['args']['project'] == '/runs/cancel-replan'
+    assert turn6['tool_call']['args']['name'] == 'exp-retry'
+    assert turn6['tool_call']['args']['batch'] == 24
+    assert turn6['tool_call']['args']['imgsz'] == 1280
+    assert turn6['tool_call']['args']['fraction'] == 0.6
+
+    turn7 = await client.confirm(turn6['thread_id'], approved=True)
+    assert turn7['status'] == 'completed', turn7
+    assert '训练已启动' in turn7['message']
+    assert client.session_state.active_training.training_environment == 'base'
+    assert client.session_state.active_training.project == '/runs/cancel-replan'
+    assert client.session_state.active_training.run_name == 'exp-retry'
+    assert client.session_state.active_training.batch == 24
+    assert client.session_state.active_training.imgsz == 1280
+    assert client.session_state.active_training.fraction == 0.6
+    assert client.session_state.active_training.training_plan_draft == {}
+    assert [name for name, _ in calls].count('start_training') == 1
+
+
 async def _run() -> None:
     shutil.rmtree(WORK, ignore_errors=True)
     WORK.mkdir(parents=True, exist_ok=True)
@@ -566,6 +708,7 @@ async def _run() -> None:
         await _scenario_discussion_then_execute()
         await _scenario_prepare_only_revision()
         await _scenario_prepare_then_replan_and_execute()
+        await _scenario_cancel_then_replan()
         print('training plan dialogue ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)
