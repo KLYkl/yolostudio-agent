@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from agent_plan.agent.server.services.gpu_utils import get_effective_gpu_policy, get_gpu_status_summary, query_gpu_status, resolve_auto_device
-from agent_plan.agent.server.services.train_service import TrainService
+from yolostudio_agent.agent.server.services.gpu_utils import get_effective_gpu_policy, get_gpu_status_summary, query_gpu_status, resolve_auto_device
+from yolostudio_agent.agent.server.services.train_service import TrainService
 
 service = TrainService()
 
@@ -30,8 +30,13 @@ def start_training(
     epochs: int = 100,
     device: str = "auto",
     training_environment: str = "",
+    project: str = "",
+    name: str = "",
     batch: int | None = None,
     imgsz: int | None = None,
+    fraction: float | None = None,
+    classes: list[int] | str | None = None,
+    single_cls: bool | None = None,
     optimizer: str = "",
     freeze: int | None = None,
     resume: bool | None = None,
@@ -49,8 +54,13 @@ def start_training(
         epochs=epochs,
         device=device,
         training_environment=training_environment,
+        project=project,
+        name=name,
         batch=batch,
         imgsz=imgsz,
+        fraction=fraction,
+        classes=classes,
+        single_cls=single_cls,
         optimizer=optimizer,
         freeze=freeze,
         resume=resume,
@@ -103,8 +113,13 @@ def training_preflight(
     epochs: int = 100,
     device: str = "auto",
     training_environment: str = "",
+    project: str = "",
+    name: str = "",
     batch: int | None = None,
     imgsz: int | None = None,
+    fraction: float | None = None,
+    classes: list[int] | str | None = None,
+    single_cls: bool | None = None,
     optimizer: str = "",
     freeze: int | None = None,
     resume: bool | None = None,
@@ -122,8 +137,13 @@ def training_preflight(
         epochs=epochs,
         device=device,
         training_environment=training_environment,
+        project=project,
+        name=name,
         batch=batch,
         imgsz=imgsz,
+        fraction=fraction,
+        classes=classes,
+        single_cls=single_cls,
         optimizer=optimizer,
         freeze=freeze,
         resume=resume,
@@ -190,6 +210,23 @@ def inspect_training_run(run_id: str = '') -> dict[str, Any]:
         result.setdefault('next_actions', [
             '可先调用 list_training_runs 查看最近训练记录',
             '如果当前没有训练记录，可先调用 training_preflight 或 start_training',
+        ])
+    return result
+
+
+def compare_training_runs(left_run_id: str = '', right_run_id: str = '') -> dict[str, Any]:
+    """对比两次训练记录；默认对比最近两次，也可显式传 run_id 或日志路径。"""
+    result = _wrap("对比训练记录", service.compare_training_runs, left_run_id=left_run_id, right_run_id=right_run_id)
+    if result.get('ok'):
+        result.setdefault('next_actions', [
+            '如需查看其中某次训练详情，可继续调用 inspect_training_run',
+            '如需解释最新这次训练效果，可继续调用 analyze_training_outcome',
+            '如需判断下一步动作，可继续调用 recommend_next_training_step',
+        ])
+    else:
+        result.setdefault('next_actions', [
+            '可先调用 list_training_runs 查看最近训练记录',
+            '如记录不足，可先启动或完成至少两次训练再做对比',
         ])
     return result
 

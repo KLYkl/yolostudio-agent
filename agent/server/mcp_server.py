@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from mcp.server.fastmcp import FastMCP
 
-from agent_plan.agent.server.tools.combo_tools import prepare_dataset_for_training
-from agent_plan.agent.server.tools.data_tools import (
+from yolostudio_agent.agent.server.tools.combo_tools import prepare_dataset_for_training
+from yolostudio_agent.agent.server.tools.data_tools import (
     augment_dataset,
     detect_duplicate_images,
     generate_yaml,
@@ -13,23 +13,29 @@ from agent_plan.agent.server.tools.data_tools import (
     training_readiness,
     validate_dataset,
 )
-from agent_plan.agent.server.tools.extract_tools import (
+from yolostudio_agent.agent.server.tools.extract_tools import (
     extract_images,
     extract_video_frames,
     preview_extract_images,
     scan_videos,
 )
-from agent_plan.agent.server.tools.knowledge_tools import (
+from yolostudio_agent.agent.server.tools.knowledge_tools import (
     analyze_training_outcome,
     recommend_next_training_step,
     retrieve_training_knowledge,
 )
-from agent_plan.agent.server.tools.predict_tools import predict_images, predict_videos, summarize_prediction_results
-from agent_plan.agent.server.tools.train_tools import (
+from yolostudio_agent.agent.server.tools.predict_tools import predict_images, predict_videos, summarize_prediction_results
+from yolostudio_agent.agent.server.tools.train_tools import (
     check_gpu_status,
     check_training_status,
+    compare_training_runs,
+    inspect_training_run,
+    list_training_environments,
+    list_training_runs,
     start_training,
     stop_training,
+    summarize_training_run,
+    training_preflight,
 )
 
 mcp = FastMCP("yolostudio", host="127.0.0.1", port=8080)
@@ -53,13 +59,17 @@ mcp.tool()(recommend_next_training_step)
 mcp.tool()(predict_images)
 mcp.tool()(predict_videos)
 mcp.tool()(summarize_prediction_results)
+mcp.tool()(list_training_environments)
+mcp.tool()(training_preflight)
+mcp.tool()(list_training_runs)
+mcp.tool()(inspect_training_run)
+mcp.tool()(compare_training_runs)
 mcp.tool()(start_training)
 mcp.tool()(check_training_status)
+mcp.tool()(summarize_training_run)
 mcp.tool()(stop_training)
 mcp.tool()(check_gpu_status)
 
 
 if __name__ == "__main__":
     mcp.run(transport="streamable-http")
-
-

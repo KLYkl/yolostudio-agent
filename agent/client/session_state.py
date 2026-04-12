@@ -51,8 +51,13 @@ class TrainingContext:
     data_yaml: str = ""
     device: str = ""
     training_environment: str = ""
+    project: str = ""
+    run_name: str = ""
     batch: int | None = None
     imgsz: int | None = None
+    fraction: float | None = None
+    classes: list[int] = field(default_factory=list)
+    single_cls: bool | None = None
     optimizer: str = ""
     freeze: int | None = None
     resume: bool | None = None
@@ -71,6 +76,7 @@ class TrainingContext:
     last_preflight: dict[str, Any] = field(default_factory=dict)
     recent_runs: list[dict[str, Any]] = field(default_factory=list)
     last_run_inspection: dict[str, Any] = field(default_factory=dict)
+    last_run_comparison: dict[str, Any] = field(default_factory=dict)
     training_plan_draft: dict[str, Any] = field(default_factory=dict)
 
 

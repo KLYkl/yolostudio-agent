@@ -269,6 +269,8 @@ def apply_tool_result_to_state(
             )
             if matched is None:
                 tr.recent_runs = [result, *tr.recent_runs[:9]]
+    elif tool_name == 'compare_training_runs' and result.get('ok'):
+        tr.last_run_comparison = result
     elif tool_name == 'check_training_status':
         tr.last_status = result
         is_running = bool(result.get('running'))

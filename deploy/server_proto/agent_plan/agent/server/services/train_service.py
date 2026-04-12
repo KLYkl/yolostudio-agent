@@ -531,31 +531,8 @@ class TrainService:
     def inspect_training_run(self, run_id: str = '') -> dict[str, Any]:
         self._sync_runtime_state()
         requested = str(run_id or '').strip()
-        normalized = requested.lower()
-
         statuses = self._collect_training_run_statuses(limit=None)
-        selected_status: dict[str, Any] | None = None
-        found_by = 'latest'
-
-        if normalized in {'', 'latest', 'recent', 'last'}:
-            selected_status = statuses[0] if statuses else None
-        elif normalized == 'active':
-            selected_status = next(
-                (
-                    status for status in statuses
-                    if str(status.get('status_source_hint') or '').strip().lower() == 'active'
-                ),
-                None,
-            )
-            found_by = 'active'
-        else:
-            for status in statuses:
-                candidate_run_id = self._derive_run_id(status)
-                candidate_log = str(status.get('log_file') or '').strip()
-                if requested == candidate_run_id or requested == candidate_log:
-                    selected_status = status
-                    found_by = 'explicit'
-                    break
+        selected_status, found_by = self._resolve_training_run_status(requested, statuses=statuses)
 
         if not selected_status:
             return {
@@ -622,6 +599,78 @@ class TrainService:
             'signals': summary.get('signals'),
             'facts': summary.get('facts'),
             'latest_metrics': summary.get('latest_metrics'),
+            'next_actions': next_actions,
+        }
+
+    def compare_training_runs(self, left_run_id: str = '', right_run_id: str = '') -> dict[str, Any]:
+        self._sync_runtime_state()
+        left_requested = str(left_run_id or '').strip()
+        right_requested = str(right_run_id or '').strip()
+        statuses = self._collect_training_run_statuses(limit=None)
+
+        if len(statuses) < 2 and not (left_requested and right_requested):
+            return {
+                'ok': False,
+                'error': '当前可用于对比的训练记录不足 2 条',
+                'summary': '训练记录不足，暂时不能做对比',
+                'requested_left_run_id': left_requested or 'latest',
+                'requested_right_run_id': right_requested or 'previous',
+                'next_actions': [
+                    '可先调用 list_training_runs 查看最近训练记录',
+                    '如需先产生新训练记录，可继续调用 start_training',
+                ],
+            }
+
+        used_logs: set[str] = set()
+        left_status, left_found_by = self._resolve_training_run_status(left_requested, statuses=statuses, exclude_log_files=used_logs)
+        if left_status and left_status.get('log_file'):
+            used_logs.add(str(left_status.get('log_file')))
+        right_default = 'previous' if not right_requested else right_requested
+        right_status, right_found_by = self._resolve_training_run_status(right_requested or 'previous', statuses=statuses, exclude_log_files=used_logs)
+
+        if not left_status or not right_status:
+            return {
+                'ok': False,
+                'error': '未找到足够的训练记录用于对比',
+                'summary': '未找到可对比的训练记录',
+                'requested_left_run_id': left_requested or 'latest',
+                'requested_right_run_id': right_requested or 'previous',
+                'next_actions': [
+                    '可先调用 list_training_runs 查看最近训练记录',
+                    '如需查看某条训练详情，可调用 inspect_training_run',
+                ],
+            }
+
+        left_summary = self._build_run_summary_from_status(left_status)
+        right_summary = self._build_run_summary_from_status(right_status)
+        metric_deltas, highlights = self._build_training_run_comparison(left_summary, right_summary)
+
+        left_name = left_summary.get('run_id') or 'latest'
+        right_name = right_summary.get('run_id') or right_default
+        if highlights:
+            summary = f'训练对比完成: {left_name} 相比 {right_name}，' + '；'.join(highlights[:2])
+        else:
+            summary = f'训练对比完成: 已整理 {left_name} 与 {right_name} 的状态和关键指标差异'
+
+        next_actions = [
+            f'如需查看 {left_name} 的详情，可调用 inspect_training_run',
+            '如需解释最新这次训练效果，可继续调用 analyze_training_outcome',
+            '如需判断下一步动作，可继续调用 recommend_next_training_step',
+        ]
+
+        return {
+            'ok': True,
+            'summary': summary,
+            'requested_left_run_id': left_requested or 'latest',
+            'requested_right_run_id': right_requested or 'previous',
+            'left_run_id': left_name,
+            'right_run_id': right_name,
+            'left_found_by': left_found_by,
+            'right_found_by': right_found_by,
+            'left_run': left_summary,
+            'right_run': right_summary,
+            'metric_deltas': metric_deltas,
+            'highlights': highlights,
             'next_actions': next_actions,
         }
 
@@ -888,6 +937,93 @@ class TrainService:
         self._write_json(self._last_registry_path, base)
         if self._active_registry_path.exists():
             self._active_registry_path.unlink()
+
+    def _resolve_training_run_status(
+        self,
+        requested_run_id: str,
+        *,
+        statuses: list[dict[str, Any]] | None = None,
+        exclude_log_files: set[str] | None = None,
+    ) -> tuple[dict[str, Any] | None, str]:
+        requested = str(requested_run_id or '').strip()
+        normalized = requested.lower()
+        statuses = statuses or self._collect_training_run_statuses(limit=None)
+        excluded = {str(item) for item in (exclude_log_files or set()) if str(item)}
+
+        if normalized in {'', 'latest', 'recent', 'last'}:
+            for status in statuses:
+                log_file = str(status.get('log_file') or '')
+                if not log_file or log_file not in excluded:
+                    return status, 'latest'
+            return None, 'latest'
+        if normalized in {'previous', 'prev'}:
+            seen = 0
+            for status in statuses:
+                log_file = str(status.get('log_file') or '')
+                if log_file and log_file in excluded:
+                    continue
+                seen += 1
+                target_index = 1 if excluded else 2
+                if seen == target_index:
+                    return status, 'previous'
+            return None, 'previous'
+        if normalized == 'active':
+            for status in statuses:
+                log_file = str(status.get('log_file') or '')
+                if log_file and log_file in excluded:
+                    continue
+                if str(status.get('status_source_hint') or '').strip().lower() == 'active_run':
+                    return status, 'active'
+            return None, 'active'
+
+        for status in statuses:
+            candidate_run_id = self._derive_run_id(status)
+            candidate_log = str(status.get('log_file') or '').strip()
+            if candidate_log and candidate_log in excluded:
+                continue
+            if requested == candidate_run_id or requested == candidate_log:
+                return status, 'explicit'
+        return None, 'explicit'
+
+    @staticmethod
+    def _build_training_run_comparison(left_summary: dict[str, Any], right_summary: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+        metric_pairs = [
+            ('precision', 'precision', True),
+            ('recall', 'recall', True),
+            ('map50', 'mAP50', True),
+            ('map', 'mAP50-95', True),
+            ('box_loss', 'box_loss', False),
+            ('cls_loss', 'cls_loss', False),
+            ('dfl_loss', 'dfl_loss', False),
+        ]
+        left_metrics = left_summary.get('metrics') or {}
+        right_metrics = right_summary.get('metrics') or {}
+
+        deltas: dict[str, Any] = {}
+        highlights: list[str] = []
+        for key, label, higher_is_better in metric_pairs:
+            left_value = left_metrics.get(key)
+            right_value = right_metrics.get(key)
+            if not isinstance(left_value, (int, float)) or not isinstance(right_value, (int, float)):
+                continue
+            delta = round(float(left_value) - float(right_value), 4)
+            deltas[key] = {
+                'left': round(float(left_value), 4),
+                'right': round(float(right_value), 4),
+                'delta': delta,
+            }
+            if abs(delta) < 0.0001:
+                continue
+            direction = '提升' if (delta > 0 if higher_is_better else delta < 0) else '下降'
+            sign = '+' if delta > 0 else ''
+            highlights.append(f'{label}{direction} {sign}{delta:.4f}')
+
+        if left_summary.get('run_state') != right_summary.get('run_state'):
+            highlights.insert(
+                0,
+                f"状态变化: {right_summary.get('run_state')} -> {left_summary.get('run_state')}",
+            )
+        return deltas, highlights
 
     @staticmethod
     def _read_json(path: Path) -> dict[str, Any] | None:
