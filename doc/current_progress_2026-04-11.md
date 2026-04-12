@@ -2294,6 +2294,42 @@ Gemma 这轮测试很清楚地说明：
 - `deploy/server_proto` 通过
 - 远端 `/home/kly/yolostudio_agent_proto` 通过
 
+#### M. 已补“真实远端 Agent 训练主线 roundtrip”验证脚本
+
+这一轮继续把主线回归从“本地假工具链”推进到“远端真实 Agent roundtrip”。
+
+新增：
+
+- `agent/tests/test_zyb_training_mainline_agent_roundtrip.py`
+- `deploy/server_proto/agent_plan/agent/tests/test_zyb_training_mainline_agent_roundtrip.py`
+- `deploy/scripts/run_training_agent_remote_validation.sh`
+- `deploy/scripts/run_training_agent_remote_roundtrip.ps1`
+
+这条链实际覆盖：
+
+- 对话生成训练计划草案
+- `prepare_dataset_for_training` 确认
+- `training_preflight`
+- `start_training` 确认
+- 训练状态追踪
+- `summarize_training_run`
+- `analyze_training_outcome`
+- `recommend_next_training_step`
+
+这轮远端真实验证还顺手暴露出一个实际问题：
+
+- 远端服务端代码一度落后于当前本地主线，导致 `training_preflight` 参数签名不一致
+
+该问题已经通过重新同步当前 `client/`、`server/services/`、`server/tools/` 关键文件修复。
+
+当前验证结论：
+
+- 本地主线回归通过
+- Windows `.venv` 长对话回归通过
+- 远端真实 Agent roundtrip 通过
+- 远端输出已归档：
+  - `agent/tests/test_zyb_training_mainline_agent_roundtrip_output.json`
+
 #### K. 已补“preparable 数据集下切执行后端”的复杂测试
 
 这一轮继续补了另一类长链路：

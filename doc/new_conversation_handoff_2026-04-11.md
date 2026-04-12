@@ -879,3 +879,35 @@ D:\yolodo2.0\agent_plan\doc\agent_test_playbook_2026-04-10.md
 - 远端 `/home/kly/yolostudio_agent_proto`
 
 完成验证。
+
+### 最新补充：已补真实远端 Agent 训练主线 roundtrip
+
+这一轮继续往前推进，已经不只是本地假工具链回归，而是补上了：
+
+- `test_zyb_training_mainline_agent_roundtrip.py`
+
+它实际走的是：
+
+- 对话生成训练计划草案
+- `prepare_dataset_for_training`
+- `training_preflight`
+- `start_training`
+- 状态追踪
+- `summarize_training_run`
+- `analyze_training_outcome`
+- `recommend_next_training_step`
+
+并且新增了对应远端脚本：
+
+- `deploy/scripts/run_training_agent_remote_validation.sh`
+- `deploy/scripts/run_training_agent_remote_roundtrip.ps1`
+
+这轮远端真实补验时还暴露了一个问题：
+
+- 远端 `train_tools/train_service` 落后，导致 `training_preflight` 参数签名不一致
+
+该问题已通过重新同步当前 `client/`、`server/services/`、`server/tools/` 修复。
+
+最新远端真实结果已归档到：
+
+- `agent/tests/test_zyb_training_mainline_agent_roundtrip_output.json`

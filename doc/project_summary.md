@@ -1398,3 +1398,36 @@ afab4c1  test: comprehensive validation + log parser fix
 这说明当前项目已经不只是把训练确认层做完，而是开始把它重新接回：
 
 > **真实训练主线和主线级回归。**
+
+### 最新补充：已补真实远端 Agent 主线 roundtrip
+
+当前已经继续往前推进到：
+
+> **远端真实 Agent 训练主线 roundtrip**
+
+本轮新增：
+
+- `test_zyb_training_mainline_agent_roundtrip.py`
+- `run_training_agent_remote_validation.sh`
+- `run_training_agent_remote_roundtrip.ps1`
+
+它覆盖的真实链路是：
+
+- 对话生成训练计划草案
+- `prepare_dataset_for_training`
+- `training_preflight`
+- `start_training`
+- `check_training_status`
+- `summarize_training_run`
+- `analyze_training_outcome`
+- `recommend_next_training_step`
+
+这轮还验证出了一个真实问题：
+
+- 远端当前代码如果不同步到最新主线，会在 `training_preflight` 上出现参数签名不一致
+
+现在这点已经通过同步当前 `client/`、`server/services/`、`server/tools/` 收口。
+
+说明当前主线推进已经进入：
+
+> **不仅做本地回归，还在持续固化真实远端 roundtrip。**
