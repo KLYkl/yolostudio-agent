@@ -2266,6 +2266,34 @@ Gemma 这轮测试很清楚地说明：
 - `deploy/server_proto` 通过
 - 远端补同步后通过
 
+#### L. 已把训练计划草案重新接回训练主线回归
+
+这一轮开始从确认层回到第一主线本身，新增了主线级 roundtrip 回归：
+
+- 训练请求进入训练计划草案
+- `prepare_dataset_for_training` 确认
+- 自动桥接 `training_preflight`
+- `start_training` 确认
+- `check_training_status`
+- `summarize_training_run`
+- `analyze_training_outcome`
+- `recommend_next_training_step`
+
+并补了一个显式训练状态路由：
+
+- “现在训练到第几轮了 / 当前训练状态” 优先走 `check_training_status`
+
+对应新增测试：
+
+- `agent/tests/test_training_mainline_roundtrip.py`
+- `deploy/server_proto/agent_plan/agent/tests/test_training_mainline_roundtrip.py`
+
+当前验证结论：
+
+- 本地通过
+- `deploy/server_proto` 通过
+- 远端 `/home/kly/yolostudio_agent_proto` 通过
+
 #### K. 已补“preparable 数据集下切执行后端”的复杂测试
 
 这一轮继续补了另一类长链路：

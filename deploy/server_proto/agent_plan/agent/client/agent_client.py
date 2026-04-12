@@ -463,6 +463,10 @@ class YoloStudioAgentClient:
             any(token in user_text for token in ('训练效果怎么样', '这次训练效果怎么样', '训练结果怎么样', '训练效果如何', '结果更像', '训练效果'))
             or (asks_metric_terms and any(token in user_text for token in ('怎么看', '说明什么', '意味着什么', '结果如何')))
         )
+        wants_training_status = (
+            any(token in user_text for token in ('训练状态', '当前训练状态', '训练进度', '当前进度', '还在训练吗', '还在跑吗', '训练到哪了', '训练到第几轮', '跑到第几轮'))
+            or any(token in normalized_text for token in ('training status', 'training progress', 'check status'))
+        )
         wants_next_step_guidance = any(token in user_text for token in ('下一步', '先补数据还是先调参数', '先补数据', '先调参数', '怎么优化', '如何优化下一步训练', '下一轮怎么做'))
         wants_training_knowledge = bool(metric_signals) or (asks_metric_terms and any(token in user_text for token in ('说明什么', '什么意思', '意味着什么', '怎么看')))
         readiness_only_query = wants_readiness and (no_train or any(token in user_text for token in ('吗', '是否', '能不能', '可不可以')))
@@ -507,6 +511,9 @@ class YoloStudioAgentClient:
 
         if dataset_path and readiness_only_query:
             return await self._complete_readiness_knowledge_reply(dataset_path)
+
+        if wants_training_status and not wants_predict and not training_command_like:
+            return await self._complete_direct_tool_reply('check_training_status')
 
         if not wants_predict and not training_command_like and wants_next_step_guidance:
             return await self._complete_next_training_step_reply(dataset_path if dataset_path else '')

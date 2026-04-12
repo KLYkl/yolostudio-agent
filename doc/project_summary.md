@@ -1369,3 +1369,32 @@ afab4c1  test: comprehensive validation + log parser fix
 这说明当前训练计划草案已经开始覆盖：
 
 > **可训练数据和不可直接训练但可 prepare 的数据，两种执行链下的后端切换。**
+
+### 最新补充：当前已开始回到第一主线整链回归
+
+训练计划草案确认层这一段首轮完成后，当前推进重点已经回到：
+
+> **训练计划草案 → prepare / preflight → start_training → status → summarize / analyze / recommend**
+
+本轮新增并通过：
+
+- `test_training_mainline_roundtrip.py`
+
+它覆盖的主线是：
+
+- 训练请求
+- `prepare_dataset_for_training`
+- `training_preflight`
+- `start_training`
+- `check_training_status`
+- `summarize_training_run`
+- `analyze_training_outcome`
+- `recommend_next_training_step`
+
+同时补了一条显式状态查询路由：
+
+- “训练状态 / 当前进度 / 训练到第几轮” 优先进入 `check_training_status`
+
+这说明当前项目已经不只是把训练确认层做完，而是开始把它重新接回：
+
+> **真实训练主线和主线级回归。**

@@ -848,3 +848,34 @@ D:\yolodo2.0\agent_plan\doc\agent_test_playbook_2026-04-10.md
 同时修了一条解析问题：
 
 - `不用脚本了 / 切回标准 yolo` 现在会正确回到 `standard_yolo`
+
+### 最新补充：已回到第一主线并新增主线级 roundtrip 回归
+
+训练计划草案确认层首轮收口后，当前已经开始回到第一主线本身。
+
+新增并跑通了一条主线级回归：
+
+- 训练请求进入训练计划草案
+- 确认 `prepare_dataset_for_training`
+- 自动桥接 `training_preflight`
+- 确认 `start_training`
+- 查询训练状态
+- 汇总训练结果
+- 做训练效果解释
+- 给下一步建议
+
+同时补了显式状态路由：
+
+- “训练状态 / 训练进度 / 训练到第几轮” 会优先走 `check_training_status`
+
+对应测试：
+
+- `agent/tests/test_training_mainline_roundtrip.py`
+
+这批已在：
+
+- 本地
+- `deploy/server_proto`
+- 远端 `/home/kly/yolostudio_agent_proto`
+
+完成验证。
