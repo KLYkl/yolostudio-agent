@@ -431,8 +431,170 @@ async def _run() -> None:
         shutil.rmtree(WORK, ignore_errors=True)
 
 
+async def _run_backend_switch_followup() -> None:
+    work = Path(__file__).resolve().parent / '_tmp_training_plan_backend_switch'
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True, exist_ok=True)
+    try:
+        settings = AgentSettings(session_id='training-plan-backend-switch', memory_root=str(work))
+        client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+        calls: list[tuple[str, dict[str, Any]]] = []
+
+        async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+            calls.append((tool_name, dict(kwargs)))
+            if tool_name == 'training_readiness':
+                result = {
+                    'ok': True,
+                    'summary': '训练前检查完成：数据已具备训练条件。',
+                    'dataset_root': '/data/backend-switch',
+                    'resolved_img_dir': '/data/backend-switch/images',
+                    'resolved_label_dir': '/data/backend-switch/labels',
+                    'resolved_data_yaml': '/data/backend-switch/data.yaml',
+                    'ready': True,
+                    'preparable': False,
+                    'warnings': ['当前先以讨论方案为主，确认后再真正启动'],
+                    'blockers': [],
+                }
+            elif tool_name == 'list_training_environments':
+                result = {
+                    'ok': True,
+                    'summary': '发现 2 个可用训练环境，默认将使用 base',
+                    'environments': [
+                        {'name': 'base', 'display_name': 'base', 'selected_by_default': True},
+                        {'name': 'yolodo', 'display_name': 'yolodo', 'selected_by_default': False},
+                    ],
+                    'default_environment': {'name': 'base', 'display_name': 'base'},
+                }
+            elif tool_name == 'training_preflight':
+                selected_environment = kwargs.get('training_environment') or 'base'
+                result = {
+                    'ok': True,
+                    'ready_to_start': True,
+                    'summary': f"训练预检通过：将使用 {selected_environment}，device={kwargs.get('device', 'auto') or 'auto'}",
+                    'training_environment': {'name': selected_environment, 'display_name': selected_environment},
+                    'resolved_args': {
+                        'model': kwargs['model'],
+                        'data_yaml': kwargs['data_yaml'],
+                        'epochs': kwargs['epochs'],
+                        'device': kwargs.get('device', 'auto') or 'auto',
+                        'training_environment': selected_environment,
+                        'project': kwargs.get('project') or None,
+                        'name': kwargs.get('name') or None,
+                        'batch': kwargs.get('batch'),
+                        'imgsz': kwargs.get('imgsz'),
+                        'fraction': kwargs.get('fraction'),
+                        'classes': kwargs.get('classes'),
+                        'single_cls': kwargs.get('single_cls'),
+                        'optimizer': kwargs.get('optimizer') or None,
+                        'freeze': kwargs.get('freeze'),
+                        'resume': kwargs.get('resume'),
+                        'lr0': kwargs.get('lr0'),
+                        'patience': kwargs.get('patience'),
+                        'workers': kwargs.get('workers'),
+                        'amp': kwargs.get('amp'),
+                    },
+                    'command_preview': ['yolo', 'train'],
+                    'blockers': [],
+                    'warnings': [],
+                }
+            elif tool_name == 'start_training':
+                result = {
+                    'ok': True,
+                    'summary': '训练已启动: model=yolov8m.pt, data=/data/backend-switch/data.yaml, device=auto',
+                    'device': 'auto',
+                    'pid': 9999,
+                    'log_file': '/runs/backend_switch.txt',
+                    'started_at': 222.2,
+                    'resolved_args': dict(kwargs),
+                }
+            else:
+                raise AssertionError(f'unexpected tool call: {tool_name}')
+            client._apply_to_state(tool_name, result, kwargs)
+            if tool_name == 'start_training' and result.get('ok'):
+                client._clear_training_plan_draft()
+            return result
+
+        client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+
+        turn1 = await client.chat('数据在 /data/backend-switch，用 yolov8m.pt 训练 40轮，先用 yolodo 环境，project /runs/backend-switch，name exp-a，batch 8，先给我计划。')
+        assert turn1['status'] == 'completed', turn1
+        assert '执行后端: 标准 YOLO 训练' in turn1['message']
+        assert '训练环境: yolodo' in turn1['message']
+        assert '输出组织: project=/runs/backend-switch, name=exp-a' in turn1['message']
+        assert 'batch=8' in turn1['message']
+        assert calls[-1][0] == 'training_preflight'
+
+        turn2 = await client.chat('执行。')
+        assert turn2['status'] == 'needs_confirmation', turn2
+        assert turn2['tool_call']['name'] == 'start_training'
+        assert turn2['tool_call']['args']['training_environment'] == 'yolodo'
+
+        turn3 = await client.confirm(turn2['thread_id'], approved=False)
+        assert turn3['status'] == 'cancelled', turn3
+        assert '当前计划已保留' in turn3['message']
+        assert client.session_state.active_training.training_plan_draft != {}
+        call_count_before_backend_switch = len(calls)
+
+        turn4 = await client.chat('先别执行了，为什么还建议标准 yolo？改成用 /custom/research_train.py 跑，自定义 trainer 先不管，给我方案。')
+        assert turn4['status'] == 'completed', turn4
+        assert '执行方式: 先讨论方案，暂不执行' in turn4['message']
+        assert '执行后端: 自定义训练脚本' in turn4['message']
+        assert '自定义脚本: /custom/research_train.py' in turn4['message']
+        assert '当前自动执行链只支持标准 YOLO 训练' in turn4['message']
+        assert '输出组织: project=/runs/backend-switch, name=exp-a' in turn4['message']
+        assert client.session_state.pending_confirmation.tool_name == ''
+        assert len(calls) == call_count_before_backend_switch
+
+        turn5 = await client.chat('不用脚本了，切回标准 yolo，环境改成 base，project /runs/backend-final，name exp-b，optimizer 改成 SGD，freeze 4，batch 10，imgsz 736，执行前先给我计划。')
+        assert turn5['status'] == 'completed', turn5
+        assert '执行后端: 标准 YOLO 训练' in turn5['message']
+        assert '训练环境: base' in turn5['message']
+        assert '输出组织: project=/runs/backend-final, name=exp-b' in turn5['message']
+        assert '高级参数: optimizer=SGD, freeze=4' in turn5['message']
+        assert 'batch=10' in turn5['message']
+        assert 'imgsz=736' in turn5['message']
+        assert calls[-1][0] == 'training_preflight'
+        assert calls[-1][1]['training_environment'] == 'base'
+        assert calls[-1][1]['project'] == '/runs/backend-final'
+        assert calls[-1][1]['name'] == 'exp-b'
+        assert calls[-1][1]['optimizer'] == 'SGD'
+        assert calls[-1][1]['freeze'] == 4
+        assert calls[-1][1]['batch'] == 10
+        assert calls[-1][1]['imgsz'] == 736
+
+        turn6 = await client.chat('可以了，执行。')
+        assert turn6['status'] == 'needs_confirmation', turn6
+        assert turn6['tool_call']['args']['training_environment'] == 'base'
+        assert turn6['tool_call']['args']['project'] == '/runs/backend-final'
+        assert turn6['tool_call']['args']['name'] == 'exp-b'
+        assert turn6['tool_call']['args']['optimizer'] == 'SGD'
+        assert turn6['tool_call']['args']['freeze'] == 4
+        assert turn6['tool_call']['args']['batch'] == 10
+        assert turn6['tool_call']['args']['imgsz'] == 736
+
+        turn7 = await client.confirm(turn6['thread_id'], approved=True)
+        assert turn7['status'] == 'completed', turn7
+        assert '训练已启动' in turn7['message']
+        assert client.session_state.active_training.training_environment == 'base'
+        assert client.session_state.active_training.project == '/runs/backend-final'
+        assert client.session_state.active_training.run_name == 'exp-b'
+        assert client.session_state.active_training.optimizer == 'SGD'
+        assert client.session_state.active_training.freeze == 4
+        assert client.session_state.active_training.batch == 10
+        assert client.session_state.active_training.imgsz == 736
+        assert client.session_state.active_training.training_plan_draft == {}
+        print('training plan backend switch ok')
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+async def _main() -> None:
+    await _run()
+    await _run_backend_switch_followup()
+
+
 def main() -> None:
-    asyncio.run(_run())
+    asyncio.run(_main())
 
 
 if __name__ == '__main__':

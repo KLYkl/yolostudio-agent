@@ -2120,3 +2120,77 @@ Gemma 这轮测试很清楚地说明：
 - 本地通过
 - `deploy/server_proto` 同步后通过
 - 远端同步、重启 MCP 后通过
+
+#### H. 最近验证确实暴露出问题，并已回收到代码
+
+最近这几轮不是“全绿无问题”，而是通过测试和远端回归逼出了几类真实问题，并已修掉：
+
+- 取消 `start_training` / `prepare_dataset_for_training` 后，训练计划草案被清空
+- 一句话里既有“先给我计划”又有参数修订时，修订内容被吞掉
+- 一句话里同时出现旧环境名和新环境名时，训练环境解析会误判
+- `optimizer 改成 AdamW`、`类别限制改成 4,5` 这类高级参数表达没有完全吃进去
+- 长对话里“不要训练，重新检查能不能直接训练”缺少明确退出口
+
+当前已完成：
+
+- 取消确认后默认保留训练计划草案，允许继续追问原因、改参数、改环境
+- 增加“不要训练，重新检查能不能直接训练”的退出口，能回到数据检查主线
+- 训练环境解析改成优先识别显式切换的环境
+- 高级参数解析补齐 `optimizer 改成 ...` 与 `类别限制改成 ...`
+
+对应提交：
+
+- `f607e3b` `feat: preserve training plans across confirmation cancels`
+- `c9e00f3` `test: extend advanced training replanning coverage`
+
+当前验证结论：
+
+- 本地通过
+- `deploy/server_proto` 通过
+- Windows `.venv` 的 `test_extreme_chat_regression.py` 通过
+- 远端刚才已补同步并补验通过：
+  - `test_training_plan_dialogue.py`
+  - `test_training_plan_advanced_dialogue.py`
+  - `test_confirmation_prompt.py`
+
+#### I. 下一步计划
+
+下一批仍然围绕“训练计划草案确认层”推进，重点是：
+
+- 继续补更长链路的复杂对话测试：
+  - 先追问原因
+  - 多次修高级参数
+  - 中途切执行方式 / 环境
+  - 最终再执行
+- 继续用测试驱动把训练计划草案做稳，而不是盲目加新工具
+
+#### J. 已补“取消后切执行后端再回标准链”的复杂测试
+
+这一轮继续把训练计划草案的复杂对话往前推进，新增覆盖：
+
+- 先生成标准 YOLO 训练计划并进入确认
+- 取消 `start_training`
+- 保留计划后，切到 `custom_script` 作为讨论态方案
+- 再从自定义脚本切回标准 YOLO
+- 中途继续改环境 / 输出组织 / `optimizer` / `freeze` / `batch` / `imgsz`
+- 最终再次确认并真正执行
+
+对应补充：
+
+- `agent/tests/test_training_plan_advanced_dialogue.py`
+- `deploy/server_proto/agent_plan/agent/tests/test_training_plan_advanced_dialogue.py`
+
+顺手补的解析点：
+
+- `optimizer 改成 ...`
+- `类别限制改成 ...`
+
+对应提交：
+
+- `c9e00f3` `test: extend advanced training replanning coverage`
+
+当前验证结论：
+
+- 本地通过
+- `deploy/server_proto` 通过
+- 远端补同步后通过
