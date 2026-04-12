@@ -266,6 +266,7 @@ def extract_classes_from_text(text: str) -> list[int] | None:
         r'classes\s*(?:改成|改为|设成|设置为|为|用)?\s*([0-9,\s]+)',
         r'只训练类别\s*([0-9,\s和]+)',
         r'只训\s*([0-9,\s和]+)\s*类',
+        r'类别\s*(?:改成|改为|设成|设置为|为|用)\s*([0-9,\s和]+)',
         r'类别限制\s*([0-9,\s和]+)',
         r'类别限制\s*(?:改成|改为|设成|设置为|为|用)?\s*([0-9,\s和]+)',
     ]
@@ -350,7 +351,7 @@ def extract_workers_from_text(text: str) -> int | None:
 
 def extract_amp_flag_from_text(text: str) -> bool | None:
     lowered = text.lower()
-    if any(token in text for token in ('关闭 amp', '禁用 amp', '不要 amp', '不要混合精度', '关闭混合精度')) or 'amp off' in lowered or 'amp=false' in lowered:
+    if any(token in text for token in ('关闭 amp', 'amp 关闭', '禁用 amp', '不要 amp', '不要混合精度', '关闭混合精度')) or 'amp off' in lowered or 'amp=false' in lowered:
         return False
     if any(token in text for token in ('开启 amp', '启用 amp', '打开 amp', '开启混合精度', '启用混合精度')) or 'amp on' in lowered or 'amp=true' in lowered:
         return True
