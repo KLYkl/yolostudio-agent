@@ -11,7 +11,12 @@ from pathlib import Path
 from typing import Any
 
 if __package__ in {None, ''}:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    repo_root = Path(__file__).resolve().parents[2]
+    parent_root = repo_root.parent
+    for candidate in (repo_root, parent_root):
+        path = str(candidate)
+        if path not in sys.path:
+            sys.path.insert(0, path)
 
 try:
     import langchain_openai  # type: ignore  # noqa: F401
@@ -164,7 +169,7 @@ except Exception:
     sys.modules['langgraph.types'] = types_mod
     sys.modules['langgraph.checkpoint.memory'] = checkpoint_mod
 
-from agent_plan.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
 
 DEFAULT_OUT = str(Path(__file__).with_name('test_zyb_training_mainline_agent_roundtrip_output.json'))
 DEFAULT_DATASET_ROOT = '/data/example_dataset'
@@ -207,10 +212,10 @@ def _env_csv_ints(name: str, default: list[int]) -> list[int]:
 
 
 def _build_direct_tool_map() -> dict[str, Any]:
-    import agent_plan.agent.server.tools.combo_tools as combo_tools
-    import agent_plan.agent.server.tools.data_tools as data_tools
-    import agent_plan.agent.server.tools.knowledge_tools as knowledge_tools
-    import agent_plan.agent.server.tools.train_tools as train_tools
+    import yolostudio_agent.agent.server.tools.combo_tools as combo_tools
+    import yolostudio_agent.agent.server.tools.data_tools as data_tools
+    import yolostudio_agent.agent.server.tools.knowledge_tools as knowledge_tools
+    import yolostudio_agent.agent.server.tools.train_tools as train_tools
 
     return {
         'training_readiness': data_tools.training_readiness,

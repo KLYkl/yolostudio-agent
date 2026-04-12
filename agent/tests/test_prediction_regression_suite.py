@@ -13,11 +13,16 @@ from langchain_core.tools import StructuredTool
 from PIL import Image
 
 if __package__ in {None, ""}:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    repo_root = Path(__file__).resolve().parents[2]
+    parent_root = repo_root.parent
+    for candidate in (repo_root, parent_root):
+        path = str(candidate)
+        if path not in sys.path:
+            sys.path.insert(0, path)
 
-from agent_plan.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
-from agent_plan.agent.client.tool_adapter import adapt_tools_for_chat_model
-from agent_plan.agent.server.tools import predict_tools
+from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from yolostudio_agent.agent.client.tool_adapter import adapt_tools_for_chat_model
+from yolostudio_agent.agent.server.tools import predict_tools
 
 OUT_JSON = Path(r'C:\workspace\yolodo2.0\agent_plan\agent\tests\test_prediction_regression_suite_output.json')
 OUT_MD = Path(r'C:\workspace\yolodo2.0\agent_plan\doc\prediction_regression_report_2026-04-11.md')

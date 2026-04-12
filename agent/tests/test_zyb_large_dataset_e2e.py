@@ -10,11 +10,16 @@ from pathlib import Path
 from typing import Any
 
 if __package__ in {None, ""}:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    repo_root = Path(__file__).resolve().parents[2]
+    parent_root = repo_root.parent
+    for candidate in (repo_root, parent_root):
+        path = str(candidate)
+        if path not in sys.path:
+            sys.path.insert(0, path)
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
-from agent_plan.agent.client.agent_client import AgentSettings, build_agent_client
+from yolostudio_agent.agent.client.agent_client import AgentSettings, build_agent_client
 
 DATASET_ROOT = os.getenv('YOLOSTUDIO_TEST_DATASET_ROOT', '/data/agent_cap_tests/zyb')
 MCP_URL = os.getenv('YOLOSTUDIO_TEST_MCP_URL', 'http://127.0.0.1:18080/mcp')

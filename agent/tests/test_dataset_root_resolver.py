@@ -6,9 +6,14 @@ from pathlib import Path
 import sys
 
 if __package__ in {None, ""}:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    repo_root = Path(__file__).resolve().parents[2]
+    parent_root = repo_root.parent
+    for candidate in (repo_root, parent_root):
+        path = str(candidate)
+        if path not in sys.path:
+            sys.path.insert(0, path)
 
-from agent_plan.agent.server.services.dataset_root import resolve_dataset_inputs, resolve_dataset_root
+from yolostudio_agent.agent.server.services.dataset_root import resolve_dataset_inputs, resolve_dataset_root
 
 WORK = Path(r'C:\workspace\yolodo2.0\agent_plan\agent\tests\_tmp_dataset_root')
 

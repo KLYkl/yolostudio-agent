@@ -8,10 +8,15 @@ import time
 from pathlib import Path
 
 if __package__ in {None, ""}:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    repo_root = Path(__file__).resolve().parents[2]
+    parent_root = repo_root.parent
+    for candidate in (repo_root, parent_root):
+        path = str(candidate)
+        if path not in sys.path:
+            sys.path.insert(0, path)
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
-from agent_plan.agent.client.agent_client import AgentSettings, build_agent_client
+from yolostudio_agent.agent.client.agent_client import AgentSettings, build_agent_client
 
 OUTPUT_PATH = Path(__file__).with_name('test_comprehensive_validation_output.json')
 

@@ -6,11 +6,16 @@ import types
 from pathlib import Path
 
 if __package__ in {None, ""}:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    repo_root = Path(__file__).resolve().parents[2]
+    parent_root = repo_root.parent
+    for candidate in (repo_root, parent_root):
+        path = str(candidate)
+        if path not in sys.path:
+            sys.path.insert(0, path)
 
-from agent_plan.agent.server.services.gpu_utils import GpuInfo
-import agent_plan.agent.server.services.gpu_utils as gpu_utils
-import agent_plan.agent.server.tools.data_tools as data_tools
+from yolostudio_agent.agent.server.services.gpu_utils import GpuInfo
+import yolostudio_agent.agent.server.services.gpu_utils as gpu_utils
+import yolostudio_agent.agent.server.tools.data_tools as data_tools
 
 
 class _FakeScanResult:
