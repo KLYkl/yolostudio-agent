@@ -155,13 +155,13 @@ def extract_image_size_from_text(text: str) -> int | None:
     match = re.search(r'imgsz\s*[=:]?\s*(\d+)', text, flags=re.I)
     if match:
         return int(match.group(1))
-    match = re.search(r'imgsz\s*(?:改成|设成|设置为|为)?\s*(\d+)', text, flags=re.I)
+    match = re.search(r'imgsz\s*(?:改成|改为|改|设成|设置为|为)?\s*(\d+)', text, flags=re.I)
     if match:
         return int(match.group(1))
-    match = re.search(r'图像尺寸\s*(?:改成|设成|设置为|为)?\s*(\d+)', text)
+    match = re.search(r'图像尺寸\s*(?:改成|改为|改|设成|设置为|为)?\s*(\d+)', text)
     if match:
         return int(match.group(1))
-    match = re.search(r'输入尺寸\s*(?:改成|设成|设置为|为)?\s*(\d+)', text)
+    match = re.search(r'输入尺寸\s*(?:改成|改为|改|设成|设置为|为)?\s*(\d+)', text)
     if match:
         return int(match.group(1))
     return None
@@ -254,7 +254,7 @@ def extract_fraction_from_text(text: str) -> float | None:
     match = re.search(r'fraction\s*[=:]?\s*(0?\.\d+|1(?:\.0+)?)', text, flags=re.I)
     if match:
         return float(match.group(1))
-    match = re.search(r'fraction\s*(?:改成|改为|设成|设置为|为|用)?\s*(0?\.\d+|1(?:\.0+)?)', text, flags=re.I)
+    match = re.search(r'fraction\s*(?:改成|改为|改|设成|设置为|为|用)?\s*(0?\.\d+|1(?:\.0+)?)', text, flags=re.I)
     if match:
         return float(match.group(1))
     match = re.search(r'只用\s*(\d+(?:\.\d+)?)\s*%\s*数据', text)

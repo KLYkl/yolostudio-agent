@@ -119,6 +119,8 @@ def apply_tool_result_to_state(
         resolved_yaml = result.get('resolved_data_yaml') or ''
         if resolved_yaml:
             ds.data_yaml = str(resolved_yaml)
+        else:
+            ds.data_yaml = ''
         ds.last_readiness = {
             'ready': result.get('ready'),
             'preparable': result.get('preparable'),
