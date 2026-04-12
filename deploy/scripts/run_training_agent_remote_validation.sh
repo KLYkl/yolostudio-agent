@@ -70,5 +70,5 @@ export YOLO_AGENT_TRAIN_STATUS_DELAYS="$STATUS_DELAYS"
 export YOLO_AGENT_TRAIN_EXTRA_POLL_INTERVAL="$EXTRA_POLL_INTERVAL"
 export YOLO_AGENT_TRAIN_EXTRA_POLL_LIMIT="$EXTRA_POLL_LIMIT"
 
-python -m agent_plan.agent.tests.test_zyb_training_mainline_agent_roundtrip
+python -m yolostudio_agent.agent.tests.test_zyb_training_mainline_agent_roundtrip
 printf '%s\n' "$YOLO_AGENT_TRAIN_OUT"

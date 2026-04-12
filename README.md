@@ -45,7 +45,7 @@ pip install -r agent/server/requirements_server.txt
 ### 2. Start the MCP server
 
 ```bash
-python -m agent_plan.agent.server.mcp_server
+python -m yolostudio_agent.agent.server.mcp_server
 ```
 
 Or use the helper script on a remote Linux host:
