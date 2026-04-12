@@ -48,6 +48,11 @@ from agent_plan.agent.client.intent_parsing import (
     extract_amp_flag_from_text,
     is_training_discussion_only,
     wants_training_advanced_details,
+    wants_default_training_environment,
+    wants_clear_project,
+    wants_clear_run_name,
+    wants_clear_fraction,
+    wants_clear_classes,
     looks_like_model_path,
     looks_like_video_path,
     should_use_video_prediction,
@@ -1166,6 +1171,40 @@ class YoloStudioAgentClient:
     def _extract_amp_flag_from_text(text: str) -> bool | None:
         return extract_amp_flag_from_text(text)
 
+    @staticmethod
+    def _wants_default_training_environment(text: str) -> bool:
+        return wants_default_training_environment(text)
+
+    @staticmethod
+    def _wants_clear_project(text: str) -> bool:
+        return wants_clear_project(text)
+
+    @staticmethod
+    def _wants_clear_run_name(text: str) -> bool:
+        return wants_clear_run_name(text)
+
+    @staticmethod
+    def _wants_clear_fraction(text: str) -> bool:
+        return wants_clear_fraction(text)
+
+    @staticmethod
+    def _wants_clear_classes(text: str) -> bool:
+        return wants_clear_classes(text)
+
+    def _collect_training_clear_fields(self, user_text: str) -> set[str]:
+        clear_fields: set[str] = set()
+        if self._wants_default_training_environment(user_text):
+            clear_fields.add('training_environment')
+        if self._wants_clear_project(user_text):
+            clear_fields.add('project')
+        if self._wants_clear_run_name(user_text):
+            clear_fields.add('name')
+        if self._wants_clear_fraction(user_text):
+            clear_fields.add('fraction')
+        if self._wants_clear_classes(user_text):
+            clear_fields.add('classes')
+        return clear_fields
+
     def _collect_requested_training_args(self, user_text: str, *, data_yaml: str = '') -> dict[str, Any]:
         tr = self.session_state.active_training
         args: dict[str, Any] = {}
@@ -1312,7 +1351,7 @@ class YoloStudioAgentClient:
             reasoning_parts.append(f"当前只训练指定类别 {list(classes_value)}。")
         if planned_training_args.get('single_cls') is True:
             reasoning_parts.append('当前启用了 single_cls。')
-        reasoning_summary = ' '.join(reasoning_parts[:4]).strip()
+        reasoning_summary = ' '.join(reasoning_parts[:5]).strip()
 
         return {
             'stage': 'training_plan',
@@ -1460,7 +1499,9 @@ class YoloStudioAgentClient:
             for token in (
                 'batch', 'imgsz', 'device', 'epochs', '优化器', 'optimizer', '冻结', 'freeze', 'resume',
                 'lr0', '学习率', 'patience', '早停', 'workers', '线程数', 'amp', '混合精度',
-                '模型', '权重', '为什么', '原因', '依据', '先只做准备', '只做准备', '标准 yolo', '自定义脚本', 'trainer',
+                '模型', '权重', 'project', '输出目录', 'name', '实验名', '运行名',
+                'fraction', '全量数据', '抽样', 'classes', '类别', 'single_cls', '单类别',
+                '环境', '为什么', '原因', '依据', '先只做准备', '只做准备', '标准 yolo', '自定义脚本', 'trainer',
                 '高级参数', '高级配置', '展开参数', '详细参数',
             )
         ) or bool(self._extract_custom_training_script_from_text(user_text))
@@ -1492,6 +1533,9 @@ class YoloStudioAgentClient:
             user_text,
             data_yaml=str(planned_args.get('data_yaml') or self.session_state.active_dataset.data_yaml or ''),
         )
+        clear_fields = self._collect_training_clear_fields(user_text)
+        for field in clear_fields:
+            planned_args.pop(field, None)
         planned_args.update(
             {
                 key: value

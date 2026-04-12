@@ -273,10 +273,10 @@ def extract_classes_from_text(text: str) -> list[int] | None:
 
 def extract_single_cls_flag_from_text(text: str) -> bool | None:
     lowered = text.lower()
-    if any(token in text for token in ('开启 single_cls', '启用 single_cls', '单类别训练', '单类训练')) or 'single_cls=true' in lowered or 'single-cls' in lowered:
-        return True
     if any(token in text for token in ('关闭 single_cls', '禁用 single_cls', '不要单类别训练', '不要单类训练')) or 'single_cls=false' in lowered:
         return False
+    if any(token in text for token in ('开启 single_cls', '启用 single_cls', '单类别训练', '单类训练')) or 'single_cls=true' in lowered or 'single-cls' in lowered:
+        return True
     return None
 
 
@@ -369,6 +369,84 @@ def extract_training_execution_backend_from_text(text: str) -> str:
     if 'trainer' in lowered or '自定义trainer' in lowered or '自定义训练器' in text:
         return 'custom_trainer'
     return 'standard_yolo'
+
+
+def wants_default_training_environment(text: str) -> bool:
+    lowered = text.lower()
+    return any(
+        token in text or token in lowered
+        for token in (
+            '恢复默认环境',
+            '用默认环境',
+            '切回默认环境',
+            '环境恢复默认',
+            '不要指定环境',
+        )
+    )
+
+
+def wants_clear_project(text: str) -> bool:
+    lowered = text.lower()
+    return any(
+        token in text or token in lowered
+        for token in (
+            'project 不要了',
+            '不要 project',
+            '清空 project',
+            '恢复默认输出目录',
+            '输出目录用默认',
+            '不要输出目录',
+        )
+    )
+
+
+def wants_clear_run_name(text: str) -> bool:
+    lowered = text.lower()
+    return any(
+        token in text or token in lowered
+        for token in (
+            'name 不要了',
+            '不要 name',
+            '清空 name',
+            '运行名不要了',
+            '实验名不要了',
+            '不要输出名',
+        )
+    )
+
+
+def wants_clear_fraction(text: str) -> bool:
+    lowered = text.lower()
+    return any(
+        token in text or token in lowered
+        for token in (
+            '恢复全量数据',
+            '恢复全部数据',
+            '全部数据都训练',
+            '取消抽样',
+            '不做抽样',
+            '取消 fraction',
+            '不要 fraction',
+            '不限制数据比例',
+        )
+    )
+
+
+def wants_clear_classes(text: str) -> bool:
+    lowered = text.lower()
+    return any(
+        token in text or token in lowered
+        for token in (
+            '取消类别限制',
+            '不要类别限制',
+            '类别限制去掉',
+            '不限制类别',
+            '恢复全类别',
+            '全部类别都训练',
+            '不要 classes',
+            '取消 classes',
+        )
+    )
 
 
 def is_training_discussion_only(text: str) -> bool:

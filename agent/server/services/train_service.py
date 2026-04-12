@@ -987,7 +987,8 @@ class TrainService:
         if fraction is not None and not (0 < float(fraction) <= 1):
             return 'fraction 必须在 (0, 1] 范围内'
         normalized_classes = _normalize_classes_arg(classes)
-        if classes is not None and classes != '' and normalized_classes is None:
+        classes_explicitly_cleared = isinstance(classes, (list, tuple)) and len(classes) == 0
+        if classes is not None and classes != '' and not classes_explicitly_cleared and normalized_classes is None:
             return 'classes 必须是非负整数列表'
         if freeze is not None and int(freeze) < 0:
             return 'freeze 不能小于 0'

@@ -108,6 +108,30 @@ def main() -> None:
         assert preflight['resolved_args']['workers'] == 4
         assert preflight['resolved_args']['amp'] is False
 
+        cleared_overrides = service.training_preflight(
+            model='yolov8n.pt',
+            data_yaml=str(tmp_yaml),
+            epochs=5,
+            device='auto',
+            training_environment='',
+            project='',
+            name='',
+            classes=[],
+            single_cls=False,
+            resume=False,
+        )
+        assert cleared_overrides['ok'] is True
+        assert cleared_overrides['ready_to_start'] is True
+        assert cleared_overrides['training_environment']['name'] == 'base'
+        assert all(not item.startswith('project=') for item in cleared_overrides['command_preview'])
+        assert all(not item.startswith('name=') for item in cleared_overrides['command_preview'])
+        assert all(not item.startswith('classes=') for item in cleared_overrides['command_preview'])
+        assert cleared_overrides['resolved_args']['project'] is None
+        assert cleared_overrides['resolved_args']['name'] is None
+        assert cleared_overrides['resolved_args']['classes'] is None
+        assert cleared_overrides['resolved_args']['single_cls'] is False
+        assert cleared_overrides['resolved_args']['resume'] is False
+
         missing_yaml = service.training_preflight(model='yolov8n.pt', data_yaml='', epochs=5, device='auto')
         assert missing_yaml['ok'] is True
         assert missing_yaml['ready_to_start'] is False

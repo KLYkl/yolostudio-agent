@@ -345,25 +345,47 @@ async def _run() -> None:
         assert '当前阻塞:' in turn5['message']
         assert '训练环境不存在: missing-env' in turn5['message']
 
-        turn6 = await client.chat('为什么不行？那改成 yolodo，name exp-fix，只训练类别 0,2，开启 single_cls。')
+        turn6 = await client.chat('为什么不行？那改成 yolodo，project /runs/review，name exp-fix，只训练类别 0,2，fraction 0.4，开启 single_cls。')
         assert turn6['status'] == 'completed', turn6
         assert '已从默认环境 base 切换到 yolodo' in turn6['message']
         assert '只训练指定类别 [0, 2]' in turn6['message']
         assert '启用了 single_cls' in turn6['message']
-        assert '输出组织: name=exp-fix' in turn6['message']
-        assert '高级参数: classes=[0, 2], single_cls=True' in turn6['message']
+        assert '输出组织: project=/runs/review, name=exp-fix' in turn6['message']
+        assert '高级参数: fraction=0.4, classes=[0, 2], single_cls=True' in turn6['message']
         assert calls[-1][0] == 'training_preflight'
         assert calls[-1][1]['training_environment'] == 'yolodo'
+        assert calls[-1][1]['project'] == '/runs/review'
         assert calls[-1][1]['name'] == 'exp-fix'
+        assert calls[-1][1]['fraction'] == 0.4
         assert calls[-1][1]['classes'] == [0, 2]
         assert calls[-1][1]['single_cls'] is True
 
-        turn7 = await client.chat('执行。')
-        assert turn7['status'] == 'needs_confirmation', turn7
-        assert turn7['tool_call']['args']['training_environment'] == 'yolodo'
-        assert turn7['tool_call']['args']['name'] == 'exp-fix'
-        assert turn7['tool_call']['args']['classes'] == [0, 2]
-        assert turn7['tool_call']['args']['single_cls'] is True
+        turn7 = await client.chat('那把类别限制去掉，恢复全量数据，环境恢复默认，project 不要了，name 不要了，不要单类别训练，重新开始训练。')
+        assert turn7['status'] == 'completed', turn7
+        assert '训练环境: base' in turn7['message']
+        assert '已从默认环境 base 切换到' not in turn7['message']
+        assert '只训练指定类别' not in turn7['message']
+        assert '只计划使用约' not in turn7['message']
+        assert '输出组织:' not in turn7['message']
+        assert '高级参数: single_cls=False, resume=False' in turn7['message']
+        assert calls[-1][0] == 'training_preflight'
+        assert calls[-1][1]['training_environment'] == ''
+        assert calls[-1][1]['project'] == ''
+        assert calls[-1][1]['name'] == ''
+        assert calls[-1][1]['fraction'] is None
+        assert calls[-1][1]['classes'] is None
+        assert calls[-1][1]['single_cls'] is False
+        assert calls[-1][1]['resume'] is False
+
+        turn8 = await client.chat('执行。')
+        assert turn8['status'] == 'needs_confirmation', turn8
+        assert turn8['tool_call']['args']['training_environment'] == 'base'
+        assert turn8['tool_call']['args']['project'] == ''
+        assert turn8['tool_call']['args']['name'] == ''
+        assert turn8['tool_call']['args']['fraction'] is None
+        assert turn8['tool_call']['args']['classes'] is None
+        assert turn8['tool_call']['args']['single_cls'] is False
+        assert turn8['tool_call']['args']['resume'] is False
         print('training plan advanced dialogue ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)
