@@ -186,25 +186,40 @@ async def _run() -> None:
 
         async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
             calls.append((tool_name, dict(kwargs)))
-            if tool_name != 'select_best_training_run':
+            if tool_name == 'select_best_training_run':
+                result = {
+                    'ok': True,
+                    'summary': '最佳训练记录: train_log_200，状态=completed，mAP50=0.465，mAP50-95=0.260',
+                    'best_run_id': 'train_log_200',
+                    'ranking_basis': '状态=completed，mAP50=0.465，mAP50-95=0.260，precision=0.520',
+                    'best_run': {
+                        'run_id': 'train_log_200',
+                        'run_state': 'completed',
+                        'observation_stage': 'final',
+                        'metrics': {'precision': 0.52, 'recall': 0.60, 'map50': 0.465, 'map': 0.26},
+                    },
+                    'candidates': [
+                        {'run_id': 'train_log_200', 'run_state': 'completed'},
+                        {'run_id': 'train_log_100', 'run_state': 'completed'},
+                    ],
+                    'next_actions': ['如需查看最佳训练详情，可继续调用 inspect_training_run'],
+                }
+            elif tool_name == 'analyze_training_outcome':
+                result = {
+                    'ok': True,
+                    'summary': '最佳训练已完成，mAP50=0.465，当前更值得参考。',
+                    'signals': ['best_run_selected'],
+                    'facts': ['train_log_200 completed'],
+                }
+            elif tool_name == 'recommend_next_training_step':
+                result = {
+                    'ok': True,
+                    'summary': '建议先基于最佳训练继续补数据质量，再做下一轮训练。',
+                    'recommended_action': 'fix_data_quality',
+                    'signals': ['best_run_selected'],
+                }
+            else:
                 raise AssertionError(f'unexpected tool call: {tool_name}')
-            result = {
-                'ok': True,
-                'summary': '最佳训练记录: train_log_200，状态=completed，mAP50=0.465，mAP50-95=0.260',
-                'best_run_id': 'train_log_200',
-                'ranking_basis': '状态=completed，mAP50=0.465，mAP50-95=0.260，precision=0.520',
-                'best_run': {
-                    'run_id': 'train_log_200',
-                    'run_state': 'completed',
-                    'observation_stage': 'final',
-                    'metrics': {'precision': 0.52, 'recall': 0.60, 'map50': 0.465, 'map': 0.26},
-                },
-                'candidates': [
-                    {'run_id': 'train_log_200', 'run_state': 'completed'},
-                    {'run_id': 'train_log_100', 'run_state': 'completed'},
-                ],
-                'next_actions': ['如需查看最佳训练详情，可继续调用 inspect_training_run'],
-            }
             client._apply_to_state(tool_name, result, kwargs)
             return result
 
@@ -216,6 +231,20 @@ async def _run() -> None:
         assert calls[-1] == ('select_best_training_run', {})
         assert '最佳训练: train_log_200' in routed['message']
         assert client.session_state.active_training.best_run_selection.get('best_run_id') == 'train_log_200'
+
+        calls.clear()
+        routed = await client._try_handle_mainline_intent('最值得参考的训练结果怎么看？', 'thread-best')
+        assert routed is not None
+        assert routed['status'] == 'completed', routed
+        assert [name for name, _ in calls] == ['select_best_training_run', 'analyze_training_outcome']
+        assert '最佳训练已完成' in routed['message']
+
+        calls.clear()
+        routed = await client._try_handle_mainline_intent('最好的训练记录下一步怎么做？', 'thread-best')
+        assert routed is not None
+        assert routed['status'] == 'completed', routed
+        assert [name for name, _ in calls] == ['select_best_training_run', 'recommend_next_training_step']
+        assert 'fix_data_quality' in routed['message']
         print('training run best route ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)

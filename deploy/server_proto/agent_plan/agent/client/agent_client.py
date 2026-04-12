@@ -483,7 +483,8 @@ class YoloStudioAgentClient:
             '对比两次训练', '比较两次训练', '训练结果对比', '训练记录对比',
         )) or any(token in normalized_text for token in ('compare training runs', 'compare last two runs'))
         wants_best_training_run = any(token in user_text for token in (
-            '最近哪次训练最好', '哪次训练最好', '最好的训练记录', '最值得参考的训练记录',
+            '最近哪次训练最好', '哪次训练最好', '最好的训练记录', '最好的训练结果',
+            '最值得参考的训练记录', '最值得参考的训练结果',
         )) or any(token in normalized_text for token in ('best training run', 'best run'))
         wants_training_run_list = any(token in user_text for token in (
             '最近训练有哪些', '最近一次训练', '训练历史', '训练记录'
@@ -494,6 +495,10 @@ class YoloStudioAgentClient:
         )
         wants_next_step_guidance = any(token in user_text for token in ('下一步', '先补数据还是先调参数', '先补数据', '先调参数', '怎么优化', '如何优化下一步训练', '下一轮怎么做'))
         wants_training_knowledge = bool(metric_signals) or (asks_metric_terms and any(token in user_text for token in ('说明什么', '什么意思', '意味着什么', '怎么看')))
+        wants_best_training_run_analysis = wants_best_training_run and (
+            wants_training_outcome_analysis
+            or any(token in user_text for token in ('怎么看', '结果怎么样', '结果如何', '效果怎么样', '效果如何', '意味着什么'))
+        )
         readiness_only_query = wants_readiness and (no_train or any(token in user_text for token in ('吗', '是否', '能不能', '可不可以')))
         training_command_like = any(token in user_text for token in ('开始训练', '启动训练', '训练这个数据', '用这个数据训练', '直接开训', 'start_training'))
 
@@ -545,6 +550,9 @@ class YoloStudioAgentClient:
                     compare_kwargs['right_run_id'] = explicit_run_ids[1]
             return await self._complete_training_compare_next_step_reply(**compare_kwargs)
 
+        if wants_best_training_run and wants_next_step_guidance and not wants_predict and not training_command_like:
+            return await self._complete_best_training_next_step_reply()
+
         if wants_training_run_compare and wants_training_outcome_analysis and not wants_predict and not training_command_like:
             compare_kwargs: dict[str, Any] = {}
             if explicit_run_ids:
@@ -552,6 +560,9 @@ class YoloStudioAgentClient:
                 if len(explicit_run_ids) > 1:
                     compare_kwargs['right_run_id'] = explicit_run_ids[1]
             return await self._complete_training_compare_analysis_reply(**compare_kwargs)
+
+        if wants_best_training_run_analysis and not wants_predict and not training_command_like:
+            return await self._complete_best_training_outcome_analysis_reply()
 
         if wants_training_run_compare and not wants_predict and not training_command_like:
             compare_kwargs: dict[str, Any] = {}
@@ -865,6 +876,30 @@ class YoloStudioAgentClient:
             'tool_call': None,
         }
 
+    async def _complete_best_training_outcome_analysis_reply(self) -> dict[str, Any]:
+        selection = await self.direct_tool('select_best_training_run')
+        best_run = selection.get('best_run') if selection.get('ok') else None
+        result = await self.direct_tool(
+            'analyze_training_outcome',
+            metrics=best_run or self.session_state.active_training.training_run_summary or self.session_state.active_training.last_summary or self.session_state.active_training.last_status,
+            data_quality=self.session_state.active_dataset.last_health_check or self.session_state.active_dataset.last_validate,
+            prediction_summary=self.session_state.active_prediction.last_result,
+            model_family='yolo',
+            task_type='detection',
+        )
+        reply = self._merge_grounded_sections([
+            self._build_grounded_tool_reply([('select_best_training_run', selection)]),
+            self._build_grounded_tool_reply([('analyze_training_outcome', result)]),
+        ])
+        if not reply:
+            reply = result.get('summary') or selection.get('summary') or result.get('error') or '最佳训练结果分析已完成'
+        self._messages.append(AIMessage(content=reply))
+        return {
+            'status': 'completed' if selection.get('ok', True) and result.get('ok', True) else 'error',
+            'message': reply,
+            'tool_call': None,
+        }
+
     async def _complete_training_compare_analysis_reply(self, left_run_id: str = '', right_run_id: str = '') -> dict[str, Any]:
         comparison = await self.direct_tool('compare_training_runs', left_run_id=left_run_id, right_run_id=right_run_id)
         latest_run = comparison.get('left_run') if comparison.get('ok') else None
@@ -886,6 +921,31 @@ class YoloStudioAgentClient:
         self._messages.append(AIMessage(content=reply))
         return {
             'status': 'completed' if comparison.get('ok', True) and result.get('ok', True) else 'error',
+            'message': reply,
+            'tool_call': None,
+        }
+
+    async def _complete_best_training_next_step_reply(self) -> dict[str, Any]:
+        selection = await self.direct_tool('select_best_training_run')
+        best_run = selection.get('best_run') if selection.get('ok') else None
+        result = await self.direct_tool(
+            'recommend_next_training_step',
+            readiness=self.session_state.active_dataset.last_readiness,
+            health=self.session_state.active_dataset.last_health_check,
+            status=best_run or self.session_state.active_training.training_run_summary or self.session_state.active_training.last_summary or self.session_state.active_training.last_status,
+            prediction_summary=self.session_state.active_prediction.last_result,
+            model_family='yolo',
+            task_type='detection',
+        )
+        reply = self._merge_grounded_sections([
+            self._build_grounded_tool_reply([('select_best_training_run', selection)]),
+            self._build_grounded_tool_reply([('recommend_next_training_step', result)]),
+        ])
+        if not reply:
+            reply = result.get('summary') or selection.get('summary') or result.get('error') or '最佳训练的下一步建议已生成'
+        self._messages.append(AIMessage(content=reply))
+        return {
+            'status': 'completed' if selection.get('ok', True) and result.get('ok', True) else 'error',
             'message': reply,
             'tool_call': None,
         }
