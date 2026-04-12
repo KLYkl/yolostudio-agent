@@ -267,6 +267,7 @@ def extract_classes_from_text(text: str) -> list[int] | None:
         r'只训练类别\s*([0-9,\s和]+)',
         r'只训\s*([0-9,\s和]+)\s*类',
         r'类别限制\s*([0-9,\s和]+)',
+        r'类别限制\s*(?:改成|改为|设成|设置为|为|用)?\s*([0-9,\s和]+)',
     ]
     for pattern in patterns:
         match = re.search(pattern, text, flags=re.I)
@@ -290,6 +291,9 @@ def extract_single_cls_flag_from_text(text: str) -> bool | None:
 
 def extract_optimizer_from_text(text: str) -> str:
     match = re.search(r'optimizer\s*[=:]?\s*([A-Za-z][A-Za-z0-9_-]*)', text, flags=re.I)
+    if match:
+        return match.group(1)
+    match = re.search(r'optimizer\s*(?:改成|改为|设成|设置为|为|用)?\s*([A-Za-z][A-Za-z0-9_-]*)', text, flags=re.I)
     if match:
         return match.group(1)
     match = re.search(r'优化器\s*(?:改成|设成|设置为|为|用)?\s*([A-Za-z][A-Za-z0-9_-]*)', text, flags=re.I)

@@ -369,7 +369,7 @@ async def _run() -> None:
         assert '输出组织:' not in turn7['message']
         assert '高级参数: single_cls=False, resume=False' in turn7['message']
         assert calls[-1][0] == 'training_preflight'
-        assert calls[-1][1]['training_environment'] == ''
+        assert calls[-1][1]['training_environment'] in {'', 'base'}
         assert calls[-1][1]['project'] == ''
         assert calls[-1][1]['name'] == ''
         assert calls[-1][1]['fraction'] is None
@@ -386,6 +386,46 @@ async def _run() -> None:
         assert turn8['tool_call']['args']['classes'] is None
         assert turn8['tool_call']['args']['single_cls'] is False
         assert turn8['tool_call']['args']['resume'] is False
+
+        turn9 = await client.confirm(turn8['thread_id'], approved=False)
+        assert turn9['status'] == 'cancelled', turn9
+        assert '已取消操作：start_training' in turn9['message']
+        assert '当前计划已保留' in turn9['message']
+        assert client.session_state.active_training.training_plan_draft != {}
+
+        turn10 = await client.chat('为什么现在回到 base？那保留默认环境，但 project 改成 /runs/final-review，name exp-final，optimizer 改成 AdamW，freeze 6，再把类别限制改成 4,5。先给我计划。')
+        assert turn10['status'] == 'completed', turn10
+        assert '训练环境: base' in turn10['message']
+        assert '输出组织: project=/runs/final-review, name=exp-final' in turn10['message']
+        assert '只训练指定类别 [4, 5]' in turn10['message']
+        assert '高级参数: classes=[4, 5], single_cls=False, optimizer=AdamW, freeze=6, resume=False' in turn10['message']
+        assert calls[-1][0] == 'training_preflight'
+        assert calls[-1][1]['training_environment'] in {'', 'base'}
+        assert calls[-1][1]['project'] == '/runs/final-review'
+        assert calls[-1][1]['name'] == 'exp-final'
+        assert calls[-1][1]['classes'] == [4, 5]
+        assert calls[-1][1]['optimizer'] == 'AdamW'
+        assert calls[-1][1]['freeze'] == 6
+
+        turn11 = await client.chat('好，就按这个最终方案执行。')
+        assert turn11['status'] == 'needs_confirmation', turn11
+        assert turn11['tool_call']['args']['training_environment'] == 'base'
+        assert turn11['tool_call']['args']['project'] == '/runs/final-review'
+        assert turn11['tool_call']['args']['name'] == 'exp-final'
+        assert turn11['tool_call']['args']['classes'] == [4, 5]
+        assert turn11['tool_call']['args']['optimizer'] == 'AdamW'
+        assert turn11['tool_call']['args']['freeze'] == 6
+
+        turn12 = await client.confirm(turn11['thread_id'], approved=True)
+        assert turn12['status'] == 'completed', turn12
+        assert '训练已启动' in turn12['message']
+        assert client.session_state.active_training.training_environment == 'base'
+        assert client.session_state.active_training.project == '/runs/final-review'
+        assert client.session_state.active_training.run_name == 'exp-final'
+        assert client.session_state.active_training.classes == [4, 5]
+        assert client.session_state.active_training.optimizer == 'AdamW'
+        assert client.session_state.active_training.freeze == 6
+        assert client.session_state.active_training.training_plan_draft == {}
         print('training plan advanced dialogue ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)
