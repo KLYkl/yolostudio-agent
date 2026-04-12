@@ -1885,6 +1885,8 @@ class YoloStudioAgentClient:
         clear_fields = self._collect_training_clear_fields(user_text)
         requested_execute = any(token in user_text for token in ('执行', '开始吧', '就这样', '确认', '可以开始', '开训', '启动吧', '直接训练', '直接开始训练')) or normalized.strip() in {'y', 'yes'}
         wants_repeat_prepare = any(token in user_text for token in ('再 prepare 一次', '再准备一次', '重新 prepare 一次', '重新准备一次', '再做一次准备', '重新准备一遍'))
+        wants_retry_last_plan = any(token in user_text for token in ('按原计划重试一次', '按原计划重试', '重试刚才那次训练', '重试上次训练', '按刚才的计划再来一次', '按原计划再来一次'))
+        wants_resume_recent_training = any(token in user_text for token in ('从最近状态继续训练', '从最近状态继续', '从最近状态恢复训练', '恢复刚才训练', '接着上次训练', '恢复上次训练'))
         if not draft and not pending:
             if requested_execute and self.session_state.active_training.running:
                 reply = '当前训练已经在运行；如果要新开训练，请先停止当前训练，或明确给出新的数据集和模型。'
@@ -1894,6 +1896,99 @@ class YoloStudioAgentClient:
             data_yaml = str(self.session_state.active_dataset.data_yaml or '').strip()
             if wants_repeat_prepare and readiness.get('ready') and data_yaml:
                 reply = f'当前数据集已经准备完成：{data_yaml}；不需要重复 prepare。你可以直接继续训练或重新规划。'
+                self._messages.append(AIMessage(content=reply))
+                return {'status': 'completed', 'message': reply, 'tool_call': None}
+            if wants_retry_last_plan or wants_resume_recent_training:
+                tr = self.session_state.active_training
+                base_args = dict((tr.last_start_result or {}).get('resolved_args') or {})
+                if not str(base_args.get('model') or '').strip():
+                    base_args['model'] = str(tr.model or '').strip()
+                if not str(base_args.get('data_yaml') or '').strip():
+                    base_args['data_yaml'] = str(tr.data_yaml or self.session_state.active_dataset.data_yaml or '').strip()
+                if not str(base_args.get('training_environment') or '').strip() and str(tr.training_environment or '').strip():
+                    base_args['training_environment'] = str(tr.training_environment).strip()
+                dataset_path = str(self.session_state.active_dataset.dataset_root or self.session_state.active_dataset.img_dir or '').strip()
+                if not dataset_path and str(base_args.get('data_yaml') or '').strip():
+                    dataset_path = str(self.session_state.active_dataset.dataset_root or self.session_state.active_dataset.img_dir or '').strip()
+                if not str(base_args.get('model') or '').strip() or not str(base_args.get('data_yaml') or '').strip():
+                    reply = '当前缺少足够的历史训练参数，暂时不能直接恢复这次训练计划；请先明确数据集和模型。'
+                    self._messages.append(AIMessage(content=reply))
+                    return {'status': 'completed', 'message': reply, 'tool_call': None}
+                run_state = str((tr.training_run_summary or {}).get('run_state') or (tr.last_summary or {}).get('run_state') or (tr.last_status or {}).get('run_state') or '').strip().lower()
+                if wants_resume_recent_training:
+                    if run_state != 'stopped':
+                        reply = '当前只有已停止的训练才适合按最近状态继续；失败或已完成的训练更适合按原计划重试或重新规划。'
+                        self._messages.append(AIMessage(content=reply))
+                        return {'status': 'completed', 'message': reply, 'tool_call': None}
+                    base_args['resume'] = True
+                else:
+                    base_args['resume'] = False
+                if dataset_path and not readiness:
+                    readiness = await self.direct_tool('training_readiness', img_dir=dataset_path)
+                if not (tr.last_environment_probe or {}).get('environments'):
+                    await self.direct_tool('list_training_environments')
+                preflight = await self.direct_tool(
+                    'training_preflight',
+                    model=str(base_args.get('model') or ''),
+                    data_yaml=str(base_args.get('data_yaml') or ''),
+                    epochs=int(base_args.get('epochs', 100)),
+                    device=str(base_args.get('device', 'auto') or 'auto'),
+                    training_environment=str(base_args.get('training_environment') or ''),
+                    project=str(base_args.get('project') or ''),
+                    name=str(base_args.get('name') or ''),
+                    batch=base_args.get('batch'),
+                    imgsz=base_args.get('imgsz'),
+                    fraction=base_args.get('fraction'),
+                    classes=base_args.get('classes'),
+                    single_cls=base_args.get('single_cls'),
+                    optimizer=str(base_args.get('optimizer', '') or ''),
+                    freeze=base_args.get('freeze'),
+                    resume=base_args.get('resume'),
+                    lr0=base_args.get('lr0'),
+                    patience=base_args.get('patience'),
+                    workers=base_args.get('workers'),
+                    amp=base_args.get('amp'),
+                )
+                next_args = {
+                    'model': str((preflight.get('resolved_args') or {}).get('model') or base_args.get('model') or ''),
+                    'data_yaml': str((preflight.get('resolved_args') or {}).get('data_yaml') or base_args.get('data_yaml') or ''),
+                    'epochs': int((preflight.get('resolved_args') or {}).get('epochs') or base_args.get('epochs', 100)),
+                    'device': str((preflight.get('resolved_args') or {}).get('device') or base_args.get('device') or 'auto'),
+                    'training_environment': str((preflight.get('resolved_args') or {}).get('training_environment') or base_args.get('training_environment') or ''),
+                    'project': str((preflight.get('resolved_args') or {}).get('project') or base_args.get('project') or ''),
+                    'name': str((preflight.get('resolved_args') or {}).get('name') or base_args.get('name') or ''),
+                    'batch': (preflight.get('resolved_args') or {}).get('batch', base_args.get('batch')),
+                    'imgsz': (preflight.get('resolved_args') or {}).get('imgsz', base_args.get('imgsz')),
+                    'fraction': (preflight.get('resolved_args') or {}).get('fraction', base_args.get('fraction')),
+                    'classes': (preflight.get('resolved_args') or {}).get('classes', base_args.get('classes')),
+                    'single_cls': (preflight.get('resolved_args') or {}).get('single_cls', base_args.get('single_cls')),
+                    'optimizer': str((preflight.get('resolved_args') or {}).get('optimizer') or base_args.get('optimizer') or ''),
+                    'freeze': (preflight.get('resolved_args') or {}).get('freeze', base_args.get('freeze')),
+                    'resume': (preflight.get('resolved_args') or {}).get('resume', base_args.get('resume')),
+                    'lr0': (preflight.get('resolved_args') or {}).get('lr0', base_args.get('lr0')),
+                    'patience': (preflight.get('resolved_args') or {}).get('patience', base_args.get('patience')),
+                    'workers': (preflight.get('resolved_args') or {}).get('workers', base_args.get('workers')),
+                    'amp': (preflight.get('resolved_args') or {}).get('amp', base_args.get('amp')),
+                }
+                rebuilt_draft = self._build_training_plan_draft(
+                    user_text=user_text,
+                    dataset_path=dataset_path,
+                    readiness=readiness,
+                    preflight=preflight,
+                    next_tool_name='start_training' if preflight.get('ready_to_start') else '',
+                    next_tool_args=next_args if preflight.get('ready_to_start') else {},
+                    planned_training_args=next_args,
+                )
+                self._save_training_plan_draft(rebuilt_draft)
+                if preflight.get('ready_to_start'):
+                    self._set_pending_confirmation(thread_id, {'name': 'start_training', 'args': next_args, 'id': None, 'synthetic': True})
+                    return {
+                        'status': 'needs_confirmation',
+                        'message': self._render_training_plan_draft(rebuilt_draft, pending=True),
+                        'tool_call': {'name': 'start_training', 'args': next_args},
+                        'thread_id': thread_id,
+                    }
+                reply = self._render_training_plan_draft(rebuilt_draft, pending=False)
                 self._messages.append(AIMessage(content=reply))
                 return {'status': 'completed', 'message': reply, 'tool_call': None}
             return None
