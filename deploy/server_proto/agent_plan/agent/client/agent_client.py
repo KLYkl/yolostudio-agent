@@ -1473,8 +1473,10 @@ class YoloStudioAgentClient:
             return None
 
         normalized = user_text.lower()
+        clear_fields = self._collect_training_clear_fields(user_text)
         if (
             any(token in user_text for token in ('取消', '算了', '先不做', '不用了'))
+            and not clear_fields
             and not any(token in user_text for token in ('取消了', '已经取消', '刚才'))
         ):
             if pending:
@@ -1533,7 +1535,6 @@ class YoloStudioAgentClient:
             user_text,
             data_yaml=str(planned_args.get('data_yaml') or self.session_state.active_dataset.data_yaml or ''),
         )
-        clear_fields = self._collect_training_clear_fields(user_text)
         for field in clear_fields:
             planned_args.pop(field, None)
         planned_args.update(

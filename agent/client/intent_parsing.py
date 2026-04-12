@@ -347,10 +347,10 @@ def extract_amp_flag_from_text(text: str) -> bool | None:
 
 def extract_resume_flag_from_text(text: str) -> bool | None:
     lowered = text.lower()
+    if any(token in text for token in ('不要恢复训练', '不要继续训练', '重新开始训练', 'resume 不要', '不要 resume')) or 'resume=false' in lowered:
+        return False
     if any(token in text for token in ('继续训练', '恢复训练', '接着训')) or 'resume' in lowered:
         return True
-    if any(token in text for token in ('不要恢复训练', '不要继续训练', '重新开始训练')):
-        return False
     return None
 
 
@@ -438,6 +438,7 @@ def wants_clear_classes(text: str) -> bool:
         token in text or token in lowered
         for token in (
             '取消类别限制',
+            '类别限制先取消',
             '不要类别限制',
             '类别限制去掉',
             '不限制类别',
