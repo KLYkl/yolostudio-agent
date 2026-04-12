@@ -50,6 +50,28 @@ def main() -> None:
     assert analyzed['interpretation']
     assert analyzed['source_summary']
 
+    analyzed_compare = service.analyze_training_outcome(
+        metrics={
+            'run_state': 'completed',
+            'analysis_ready': True,
+            'metrics': {'precision': 0.82, 'recall': 0.36, 'map50': 0.33, 'map': 0.18},
+        },
+        comparison={
+            'left_run_id': 'train_log_200',
+            'right_run_id': 'train_log_100',
+            'metric_deltas': {
+                'precision': {'left': 0.82, 'right': 0.72, 'delta': 0.1},
+                'map50': {'left': 0.33, 'right': 0.25, 'delta': 0.08},
+            },
+            'highlights': ['precision提升 +0.1000', 'mAP50提升 +0.0800'],
+        },
+        model_family='yolo',
+        task_type='detection',
+    )
+    assert analyzed_compare['ok'] is True
+    assert 'latest_run_improved' in analyzed_compare['signals']
+    assert any('训练对比=train_log_200 vs train_log_100' == item for item in analyzed_compare['facts'])
+
     insufficient = service.analyze_training_outcome(
         metrics={
             'run_state': 'completed',

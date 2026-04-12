@@ -58,6 +58,7 @@ def retrieve_training_knowledge(
 def analyze_training_outcome(
     metrics: dict[str, Any] | None = None,
     data_quality: dict[str, Any] | None = None,
+    comparison: dict[str, Any] | None = None,
     prediction_summary: dict[str, Any] | None = None,
     model_family: str = 'yolo',
     task_type: str = 'detection',
@@ -70,6 +71,7 @@ def analyze_training_outcome(
         service.analyze_training_outcome,
         metrics=metrics,
         data_quality=data_quality,
+        comparison=comparison,
         prediction_summary=prediction_summary,
         model_family=model_family,
         task_type=task_type,

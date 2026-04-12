@@ -524,6 +524,7 @@ class KnowledgeService:
         *,
         metrics: dict[str, Any] | None = None,
         data_quality: dict[str, Any] | None = None,
+        comparison: dict[str, Any] | None = None,
         prediction_summary: dict[str, Any] | None = None,
         model_family: str = 'yolo',
         task_type: str = 'detection',
@@ -532,9 +533,10 @@ class KnowledgeService:
     ) -> dict[str, Any]:
         metric_signals, metric_facts = self._derive_metric_signals(metrics)
         data_signals, data_facts = self._derive_data_quality_signals(data_quality)
+        comparison_signals, comparison_facts = self._derive_comparison_signals(comparison)
         prediction_signals, prediction_facts = self._derive_prediction_signals(prediction_summary)
-        signals = self._dedupe(metric_signals + data_signals + prediction_signals)
-        facts = self._dedupe(metric_facts + data_facts + prediction_facts)
+        signals = self._dedupe(metric_signals + data_signals + comparison_signals + prediction_signals)
+        facts = self._dedupe(metric_facts + data_facts + comparison_facts + prediction_facts)
 
         matched_rules = self.match_rules(
             topic='training_metrics',

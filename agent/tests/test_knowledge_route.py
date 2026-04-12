@@ -278,7 +278,12 @@ async def _run() -> None:
                     'next_actions': ['可继续调用 recommend_next_training_step'],
                 }
             elif tool_name == 'analyze_training_outcome':
-                assert kwargs['metrics'] == client.session_state.active_training.last_summary
+                comparison_payload = kwargs.get('comparison') or {}
+                if comparison_payload:
+                    assert comparison_payload == client.session_state.active_training.last_run_comparison
+                    assert kwargs['metrics'] == comparison_payload.get('left_run')
+                else:
+                    assert kwargs['metrics'] == client.session_state.active_training.last_summary
                 result = {
                     'ok': True,
                     'summary': '训练结果分析: 当前更像漏检问题。',
@@ -338,6 +343,14 @@ async def _run() -> None:
         assert '优先动作' in routed5['message']
         assert calls[-2][0] == 'compare_training_runs'
         assert calls[-1][0] == 'recommend_next_training_step'
+
+        routed6 = await client._try_handle_mainline_intent('对比最近两次训练效果怎么看？', 'thread-6')
+        assert routed6 is not None
+        assert routed6['status'] == 'completed'
+        assert '对比对象: train_log_200 vs train_log_100' in routed6['message']
+        assert '训练结果分析' in routed6['message']
+        assert calls[-2][0] == 'compare_training_runs'
+        assert calls[-1][0] == 'analyze_training_outcome'
         print('knowledge route smoke ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)

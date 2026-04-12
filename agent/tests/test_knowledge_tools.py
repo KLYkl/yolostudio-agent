@@ -41,6 +41,23 @@ def main() -> None:
     assert outcome['next_actions']
     assert outcome['source_summary']
 
+    compared_outcome = analyze_training_outcome(
+        metrics={'run_state': 'completed', 'analysis_ready': True, 'metrics': {'precision': 0.84, 'recall': 0.38, 'map50': 0.42}},
+        comparison={
+            'left_run_id': 'train_log_200',
+            'right_run_id': 'train_log_100',
+            'metric_deltas': {
+                'precision': {'left': 0.84, 'right': 0.74, 'delta': 0.1},
+                'map50': {'left': 0.42, 'right': 0.31, 'delta': 0.11},
+            },
+        },
+        model_family='yolo',
+        task_type='detection',
+    )
+    assert compared_outcome['ok'] is True
+    assert 'latest_run_improved' in compared_outcome['signals']
+    assert compared_outcome['source_summary']
+
     next_step = recommend_next_training_step(
         readiness={'missing_label_ratio': 0.31, 'ready': False},
         model_family='yolo',
