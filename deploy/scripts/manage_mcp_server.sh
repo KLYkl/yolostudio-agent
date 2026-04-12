@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_ROOT="/home/kly/yolostudio_agent_proto"
-CONDA_BIN="$HOME/miniconda3/bin/conda"
-ENV_NAME="yolostudio-agent-server"
-LOG_FILE="$HOME/outputs/yolostudio_mcp.log"
+APP_ROOT="${APP_ROOT:-/opt/yolostudio-agent}"
+CONDA_BIN="${CONDA_BIN:-/opt/conda/bin/conda}"
+ENV_NAME="${ENV_NAME:-agent-server}"
+LOG_FILE="${LOG_FILE:-$HOME/outputs/yolostudio_mcp.log}"
 PID_PATTERN="agent_plan.agent.server.mcp_server"
 
 status() {

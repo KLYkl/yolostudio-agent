@@ -6,7 +6,7 @@
 
 ## 1. 项目目标回顾
 
-当前 `D:\yolodo2.0\agent_plan` 的目标，不是直接改造主项目源码，而是先在 **独立原型层** 中完成一套可运行的 Agent 系统，围绕 YoloStudio 现有能力提供：
+当前 `C:\workspace\yolodo2.0\agent_plan` 的目标，不是直接改造主项目源码，而是先在 **独立原型层** 中完成一套可运行的 Agent 系统，围绕 YoloStudio 现有能力提供：
 
 - 数据集扫描
 - 数据集校验
@@ -63,7 +63,7 @@ Windows 本地
                  │
                  │ SSH Tunnel
                  ▼
-服务器 /home/kly/yolostudio_agent_proto
+服务器 /opt/yolostudio-agent
 ┌─────────────────────────────────────┐
 │ MCP Server                          │
 │ - mcp_server.py                     │
@@ -83,7 +83,7 @@ Windows 本地
 当前原型遵循的关键工程原则是：
 
 - **不直接修改主项目核心源码**
-- 只在 `D:\yolodo2.0\agent_plan\...` 下开发 Agent 原型
+- 只在 `C:\workspace\yolodo2.0\agent_plan\...` 下开发 Agent 原型
 - 对 `core` 做逻辑复用和外围封装，而不是侵入式改造
 - 优先打通真实链路，再做更高维抽象
 
@@ -331,26 +331,26 @@ Windows 本地
 
 当前服务器上已确认存在这些数据集：
 
-### 1. `/home/kly/dataset_1ch`
+### 1. `/home/agent/dataset_1ch`
 - `images/train`
 - `images/val`
 - `labels/train`
 - `labels/val`
-- YAML：`/home/kly/dataset_1ch.yaml`
+- YAML：`/home/agent/dataset_1ch.yaml`
 
-### 2. `/home/kly/test_dataset`
+### 2. `/data/test_dataset`
 - `images`
 - `labels`
 - `images_split/...`
 - `train_augmented/...`
-- YAML：`/home/kly/test_dataset/data.yaml`
+- YAML：`/data/test_dataset/data.yaml`
 
-### 3. `/home/kly/test_dataset_split_for_yaml`
+### 3. `/data/test_dataset_split_for_yaml`
 - `images/train`
 - `images/val`
 - `labels/train`
 - `labels/val`
-- YAML：`/home/kly/test_dataset_split_for_yaml/data.yaml`
+- YAML：`/data/test_dataset_split_for_yaml/data.yaml`
 
 ---
 
@@ -432,10 +432,10 @@ Windows 本地
 
 ### 现象
 如果用户说：
-- “扫描 `/home/kly/test_dataset`”
+- “扫描 `/data/test_dataset`”
 
 Agent 当前会直接把：
-- `img_dir=/home/kly/test_dataset`
+- `img_dir=/data/test_dataset`
 
 传给 `scan_dataset`
 
@@ -589,9 +589,9 @@ Agent 当前会直接把：
 ## 12. 2026-04-10 新增能力范围验证记录
 
 本轮已完成 20 类潜在问题的逐项验证，结果已固化到：
-- `D:\yolodo2.0gent_plan\docgent_issue_inventory_20_2026-04-10.md`
-- `D:\yolodo2.0gent_plan\docgent_capability_stress_report_2026-04-10.md`
-- `D:\yolodo2.0gent_plangent	ests	est_agent_capability_range_output.json`
+- `C:\workspace\yolodo2.0gent_plan\docgent_issue_inventory_20_2026-04-10.md`
+- `C:\workspace\yolodo2.0gent_plan\docgent_capability_stress_report_2026-04-10.md`
+- `C:\workspace\yolodo2.0gent_plangent	ests	est_agent_capability_range_output.json`
 
 ### 新确认的问题边界
 - 非标准目录命名（`pics/ann`）仍不能稳定识别为标准 YOLO 数据集
@@ -640,11 +640,11 @@ Agent 当前会直接把：
 - `test_training_state_purity.py` ✅
 
 #### 远端真实验证
-- `resolve_dataset_root('/home/kly/agent_cap_tests/nonstandard_dataset')` ✅
+- `resolve_dataset_root('/data/agent_cap_tests/nonstandard_dataset')` ✅
   - 现可识别 `pics/ann`
-- `prepare_dataset_for_training('/home/kly/agent_cap_tests/nonstandard_dataset')` ✅
+- `prepare_dataset_for_training('/data/agent_cap_tests/nonstandard_dataset')` ✅
   - 现可完整走到 ready=true
-- `prepare_dataset_for_training('/home/kly/agent_cap_tests/unknown_dataset')` ✅
+- `prepare_dataset_for_training('/data/agent_cap_tests/unknown_dataset')` ✅
   - 现会在 `blocked_at=resolve_root` 提前失败
 - Gemma 复杂提示词回归（fresh session）✅
   - 重新回到两段式确认链：
@@ -707,7 +707,7 @@ Agent 当前会直接把：
 
 #### Gemma 路线
 复杂提示词：
-- `数据在 /home/kly/test_dataset/，按默认划分比例，然后用yolov8n模型进行训练`
+- `数据在 /data/test_dataset/，按默认划分比例，然后用yolov8n模型进行训练`
 
 结果：
 1. `prepare_dataset_for_training(force_split=true)` 确认
@@ -780,7 +780,7 @@ Agent 当前会直接把：
   - 模拟：写入 active registry → 新建 `TrainService()` → `status()` 重新接管 → `stop()` 成功结束 → last registry 正确落盘
 
 #### 远端真实验证
-- 已同步最新 `train_service.py` 到 `/home/kly/yolostudio_agent_proto`
+- 已同步最新 `train_service.py` 到 `/opt/yolostudio-agent`
 - 真实服务器验证链路：
   1. 启动真实训练（`epochs=50`）
   2. 重启 MCP Server
@@ -876,10 +876,10 @@ Agent 当前会直接把：
 
 ### 远端真实验证
 
-对 `/home/kly/agent_cap_tests/zyb` 的真实回归结果：
+对 `/data/agent_cap_tests/zyb` 的真实回归结果：
 
 - `scan_dataset(...)`：
-  - `detected_classes_txt=/home/kly/agent_cap_tests/zyb/labels/classes.txt`
+  - `detected_classes_txt=/data/agent_cap_tests/zyb/labels/classes.txt`
   - `class_name_source=classes_txt`
   - `classes=[Excavator, bulldozer, piling_machine, two_wheeler]`
   - `missing_label_images=5179`
@@ -891,7 +891,7 @@ Agent 当前会直接把：
 - `prepare_dataset_for_training(...)`：
   - `ready=true`
   - `summary=数据集已准备到可训练状态，但存在数据质量风险...`
-  - 输出 YAML：`/home/kly/agent_cap_tests/zyb/images_split/data.yaml`
+  - 输出 YAML：`/data/agent_cap_tests/zyb/images_split/data.yaml`
   - 生成的 `names` 已保留真实类名，而不是 `0/1/2/3`
 
 ### 当前主线判断

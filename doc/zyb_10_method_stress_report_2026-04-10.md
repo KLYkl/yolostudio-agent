@@ -1,7 +1,7 @@
 # zyb 大数据集 10 方法全方位测试报告（2026-04-10）
 
-> 数据集：`/home/kly/agent_cap_tests/zyb`
-> 
+> 数据集：`/data/agent_cap_tests/zyb`
+>
 > 说明：本轮测试的话术为**自拟**，不是随意聊天，而是按真实使用场景去构造：
 > - 数据集扫描与校验
 > - readiness 判断
@@ -43,8 +43,8 @@
 | 9 | `gemma_cancel_and_recall` | Agent / Gemma | 看取消训练后，参数回忆与风险回忆是否准确 |
 | 10 | `deepseek_full_chain_train` | Agent / DeepSeek | 看 DeepSeek 在同一复杂链路上的表现与 Gemma 对照 |
 
-原始结果：`D:\yolodo2.0\agent_plan\agent\tests\test_zyb_10_method_output.json`
-测试脚本：`D:\yolodo2.0\agent_plan\agent\tests\test_zyb_10_method_suite.py`
+原始结果：`C:\workspace\yolodo2.0\agent_plan\agent\tests\test_zyb_10_method_output.json`
+测试脚本：`C:\workspace\yolodo2.0\agent_plan\agent\tests\test_zyb_10_method_suite.py`
 
 ---
 
@@ -52,7 +52,7 @@
 
 ### 方法 1：`tool_scan_root`
 **输入**
-- `scan_dataset('/home/kly/agent_cap_tests/zyb')`
+- `scan_dataset('/data/agent_cap_tests/zyb')`
 
 **目的**
 - 验证 root 解析
@@ -61,11 +61,11 @@
 
 **结果**
 - 成功识别：
-  - `dataset_root=/home/kly/agent_cap_tests/zyb`
-  - `resolved_img_dir=/home/kly/agent_cap_tests/zyb/images`
-  - `resolved_label_dir=/home/kly/agent_cap_tests/zyb/labels`
+  - `dataset_root=/data/agent_cap_tests/zyb`
+  - `resolved_img_dir=/data/agent_cap_tests/zyb/images`
+  - `resolved_label_dir=/data/agent_cap_tests/zyb/labels`
 - 成功发现：
-  - `detected_classes_txt=/home/kly/agent_cap_tests/zyb/labels/classes.txt`
+  - `detected_classes_txt=/data/agent_cap_tests/zyb/labels/classes.txt`
   - `class_name_source=classes_txt`
 - 成功返回真实类名：
   - `Excavator`
@@ -85,7 +85,7 @@
 
 ### 方法 2：`tool_validate_root`
 **输入**
-- `validate_dataset('/home/kly/agent_cap_tests/zyb')`
+- `validate_dataset('/data/agent_cap_tests/zyb')`
 
 **目的**
 - 看 `validate_dataset` 还会不会只盯着“标签文件语法”，忽略大量缺失标签图片
@@ -105,7 +105,7 @@
 
 ### 方法 3：`tool_training_readiness`
 **输入**
-- `training_readiness('/home/kly/agent_cap_tests/zyb')`
+- `training_readiness('/data/agent_cap_tests/zyb')`
 
 **目的**
 - 看 readiness 会不会同时表达：
@@ -129,7 +129,7 @@
 
 ### 方法 4：`tool_prepare_dataset`
 **输入**
-- `prepare_dataset_for_training('/home/kly/agent_cap_tests/zyb')`
+- `prepare_dataset_for_training('/data/agent_cap_tests/zyb')`
 
 **目的**
 - 看 prepare 主线是否已经真正把：
@@ -143,7 +143,7 @@
 **结果**
 - `ready=true`
 - 生成：
-  - `/home/kly/agent_cap_tests/zyb/images_split/data.yaml`
+  - `/data/agent_cap_tests/zyb/images_split/data.yaml`
 - `class_name_source=classes_txt`
 - `summary` 明确写出：
   - “数据集已准备到可训练状态，但存在数据质量风险 ...”
@@ -158,7 +158,7 @@
 ### 方法 5：`tool_training_lifecycle`
 **输入**
 - 先 `prepare_dataset_for_training`
-- 再 `start_training(model=/home/kly/yolov8n.pt, epochs=3, device=auto)`
+- 再 `start_training(model=/models/yolov8n.pt, epochs=3, device=auto)`
 - 再 `check_training_status`
 - 再 `stop_training`
 
@@ -182,7 +182,7 @@
 
 ### 方法 6：`gemma_dirty_summary`
 **话术**
-- `请扫描 /home/kly/agent_cap_tests/zyb/ ，然后用中文总结这个数据集目前最值得注意的 3 个点。`
+- `请扫描 /data/agent_cap_tests/zyb/ ，然后用中文总结这个数据集目前最值得注意的 3 个点。`
 
 **目的**
 - 看 Gemma 在 dirty dataset 摘要任务里，能否老老实实依据工具事实作答
@@ -202,7 +202,7 @@
 
 ### 方法 7：`gemma_no_train_constraint`
 **话术**
-- `请检查 /home/kly/agent_cap_tests/zyb/ 是否能直接训练。如果还不能，请只告诉我原因和建议，不要启动训练，也不要先做划分。`
+- `请检查 /data/agent_cap_tests/zyb/ 是否能直接训练。如果还不能，请只告诉我原因和建议，不要启动训练，也不要先做划分。`
 
 **目的**
 - 看“不要启动训练”这种约束是否能被遵守
@@ -221,7 +221,7 @@
 
 ### 方法 8：`gemma_full_chain_train`
 **话术**
-- `数据在 /home/kly/agent_cap_tests/zyb/，按默认划分比例，然后用 yolov8n 模型进行训练。`
+- `数据在 /data/agent_cap_tests/zyb/，按默认划分比例，然后用 yolov8n 模型进行训练。`
 
 **目的**
 - 验证 Gemma 在复杂多步自然语言下，能不能稳定走主线
@@ -242,7 +242,7 @@
 
 ### 方法 9：`gemma_cancel_and_recall`
 **话术**
-1. `数据在 /home/kly/agent_cap_tests/zyb/，按默认划分比例，然后用 yolov8n 模型进行训练。`
+1. `数据在 /data/agent_cap_tests/zyb/，按默认划分比例，然后用 yolov8n 模型进行训练。`
 2. 在第二次确认处取消训练
 3. 再问：`刚才待确认的训练参数是什么？这个数据集最大的风险又是什么？`
 
@@ -265,7 +265,7 @@
 
 ### 方法 10：`deepseek_full_chain_train`
 **话术**
-- `数据在 /home/kly/agent_cap_tests/zyb/，按默认划分比例，然后用 yolov8n 模型进行训练。`
+- `数据在 /data/agent_cap_tests/zyb/，按默认划分比例，然后用 yolov8n 模型进行训练。`
 
 **目的**
 - 对照 DeepSeek 在同样复杂链路上的表现

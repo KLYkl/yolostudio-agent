@@ -36,3 +36,9 @@ agent/tests/.tmp_*/
 agent/tests/_tmp_*/
 .tmp_*/
 agent/tests/*_output.json
+.codex/
+D:/
+.tmp_prediction_real_media_output/
+.tmp_prediction_real_media_stage/
+.tmp_debug_extract/
+outputs/

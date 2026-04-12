@@ -12,7 +12,7 @@ if __package__ in {None, ""}:
 import agent_plan.agent.server.tools.data_tools as data_tools
 
 
-TMP_ROOT = Path('D:/yolodo2.0/agent_plan/.tmp_dataset_health_tools')
+TMP_ROOT = Path('C:/workspace/yolodo2.0/agent_plan/.tmp_dataset_health_tools')
 
 
 def _make_image(path: Path, size: tuple[int, int], color: tuple[int, int, int], *, fmt: str = 'JPEG') -> None:

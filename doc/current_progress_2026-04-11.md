@@ -105,7 +105,7 @@
 
 ## 1.3 2026-04-11 深夜新增：数据提取链第一批已落地
 
-这轮没有再横向堆功能，而是按 Agent-first 路线把 `D:\yolodo2.0` 里高价值的数据提取能力接进来了。
+这轮没有再横向堆功能，而是按 Agent-first 路线把 `C:\workspace\yolodo2.0` 里高价值的数据提取能力接进来了。
 
 ### 已新增的 Agent 工具
 
@@ -172,7 +172,7 @@
 - 主要类别：`two_wheeler=15`
 
 本地结果文件：
-- `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_remote_real_media_output.json`
+- `C:\workspace\yolodo2.0\agent_plan\agent\tests\test_prediction_remote_real_media_output.json`
 
 这意味着 prediction 这条线已经从“仅本地可用”推进到了：
 
@@ -230,12 +230,12 @@
 
 本次你手动执行远端 roundtrip 之后，以下内容已经**明确上传到远端**：
 
-- `/home/kly/yolostudio_agent_proto/agent_plan/agent/server/services/predict_service.py`
-- `/home/kly/yolostudio_agent_proto/agent_plan/agent/server/tools/predict_tools.py`
-- `/home/kly/yolostudio_agent_proto/agent_plan/agent/tests/test_prediction_remote_real_media.py`
-- `/home/kly/prediction_real_media_stage/manifest.json`
-- `/home/kly/prediction_real_media_stage/weights/*.pt`
-- `/home/kly/prediction_real_media_stage/videos/*.mp4`
+- `/opt/yolostudio-agent/agent_plan/agent/server/services/predict_service.py`
+- `/opt/yolostudio-agent/agent_plan/agent/server/tools/predict_tools.py`
+- `/opt/yolostudio-agent/agent_plan/agent/tests/test_prediction_remote_real_media.py`
+- `/data/prediction_real_media_stage/manifest.json`
+- `/data/prediction_real_media_stage/weights/*.pt`
+- `/data/prediction_real_media_stage/videos/*.mp4`
 
 因此，从这一刻开始，prediction 主线才真正进入：
 
@@ -507,7 +507,7 @@ flowchart TD
 
 #### 遇到的问题
 用户经常说：
-- `数据在 /home/kly/test_dataset/`
+- `数据在 /data/test_dataset/`
 
 但工具真正需要的往往是：
 - `images/`
@@ -534,7 +534,7 @@ flowchart TD
 
 #### 遇到的问题
 这类输入一开始不稳：
-- `数据在 /home/kly/test_dataset/，按默认划分比例，然后用 yolov8n 模型进行训练`
+- `数据在 /data/test_dataset/，按默认划分比例，然后用 yolov8n 模型进行训练`
 
 问题包括：
 - 空白回复
@@ -781,7 +781,7 @@ Gemma 这轮测试很清楚地说明：
 只会把问题放大。
 
 ### 9.4 脏数据集比 toy dataset 更值钱
-`zyb` 这类数据带来的信息密度，远高于小型干净数据。  
+`zyb` 这类数据带来的信息密度，远高于小型干净数据。
 真正有价值的问题，往往是在 dirty dataset 上暴露出来的。
 
 ### 9.5 测试不能只靠“印象流”
@@ -882,10 +882,10 @@ Gemma 这轮测试很清楚地说明：
 
 ### 使用的真实素材
 #### 权重池
-- `C:\Users\29615\OneDrive\桌面\yuntian`
+- `C:\datasets\weights`
 
 #### 视频池
-- `H:\foto`
+- `C:\datasets\videos`
 
 本轮选取的代表样本：
 - 权重：
@@ -928,7 +928,7 @@ Gemma 这轮测试很清楚地说明：
 
 #### 3) 本机真实推理当前被环境阻塞
 本轮最重要的新发现不是 Agent 代码逻辑问题，而是：
-- 本机 `D:\Anaconda\envs\yolo\python.exe` 在导入 `ultralytics / torch` 时失败
+- 本机 `C:\Miniconda3\envs\yolo\python.exe` 在导入 `ultralytics / torch` 时失败
 - 典型错误：
   - `WinError 10106`
   - `_overlapped / winsock 提供程序异常`
@@ -993,13 +993,13 @@ Gemma 这轮测试很清楚地说明：
 
 运行：
 
-- `D:\yolodo2.0gent_plan\deploy\scripts\check_remote_prediction_prereqs.ps1`
+- `C:\workspace\yolodo2.0gent_plan\deploy\scripts\check_remote_prediction_prereqs.ps1`
 
 得到：
 
-- 到 `192.168.0.163:22` 的 TCP 连接被拒绝（访问权限不允许）
-- 到 `192.168.0.163:8080` 的 TCP 连接被拒绝（访问权限不允许）
-- 到 `192.168.0.163:11434` 的 TCP 连接被拒绝（访问权限不允许）
+- 到 `203.0.113.10:22` 的 TCP 连接被拒绝（访问权限不允许）
+- 到 `203.0.113.10:8080` 的 TCP 连接被拒绝（访问权限不允许）
+- 到 `203.0.113.10:11434` 的 TCP 连接被拒绝（访问权限不允许）
 - `ssh` 可执行文件存在，但 `ssh_exit=255`
 
 这说明：
@@ -1017,7 +1017,7 @@ Gemma 这轮测试很清楚地说明：
 
 补充定位：
 - `ssh` 在禁用 host key 校验后，已能走到认证阶段
-- 但会报：`Load key "C:\Users\29615\.ssh\id_ed25519": Permission denied`
+- 但会报：`Load key "C:\Users\Public\.ssh\id_ed25519": Permission denied`
 - 同时 `ssh-add -l` 在当前进程里返回：`Error connecting to agent: Permission denied`
 
 
@@ -1029,8 +1029,8 @@ Gemma 这轮测试很清楚地说明：
 
 #### 本次真实现象
 - 用户手动执行：
-  - `ssh yolostudio "echo ok && pwd"` ✅
-  - `ssh yolostudio "mkdir -p ... && echo __READY__"` ✅
+  - `ssh remote-agent "echo ok && pwd"` ✅
+  - `ssh remote-agent "mkdir -p ... && echo __READY__"` ✅
 - 但脚本里跑同类命令时，表面上一直不返回
 - 按 `Ctrl + C` 后，远端输出才刷出来
 
@@ -1169,13 +1169,13 @@ Gemma 这轮测试很清楚地说明：
 - 远端 `yolostudio-agent-server` 环境补齐了 `numpy` 和 `opencv-python-headless`
 - `extract_video_frames` 已在远端真实视频目录上做 smoke
 - 远端抽帧输出已成功落到：
-  - `/home/kly/prediction_real_media_output/frame_extract_smoke`
+  - `/tmp/prediction_real_media_output/frame_extract_smoke`
 
 #### 远端真实结果
 
 本轮远端抽帧 smoke 使用：
 
-- 输入目录：`/home/kly/prediction_real_media_stage/videos`
+- 输入目录：`/data/prediction_real_media_stage/videos`
 - 模式：`interval`
 - 参数：`frame_interval=10`，`max_frames=6`
 
@@ -1672,10 +1672,10 @@ Gemma 这轮测试很清楚地说明：
 
 - 当前 WSL 默认 `python3` 不是 Agent 客户端验证解释器
 - Agent client / LangChain / LangGraph 相关测试，统一使用：
-  - `D:\yolodo2.0\agent_plan\agent\.venv\Scripts\python.exe`
+  - `C:\workspace\yolodo2.0\agent_plan\agent\.venv\Scripts\python.exe`
 - 纯 server/service/tool 的快速验证，仍可用当前 Linux `python3`
 - 远端服务口径仍是：
-  - `/home/kly/miniconda3/envs/yolostudio-agent-server/bin/python`
+  - `/opt/conda/envs/agent-server/bin/python`
 
 #### deploy/server_proto 同步口径
 
@@ -1700,11 +1700,11 @@ Gemma 这轮测试很清楚地说明：
 #### 已完成的远端动作
 
 - 已把最新 `agent/server/` 同步到：
-  - `/home/kly/yolostudio_agent_proto/agent_plan/agent/server/`
+  - `/opt/yolostudio-agent/agent_plan/agent/server/`
 - 已把最新 `knowledge/` 同步到：
-  - `/home/kly/yolostudio_agent_proto/agent_plan/knowledge/`
+  - `/opt/yolostudio-agent/agent_plan/knowledge/`
 - 已重启远端 MCP：
-  - `/home/kly/yolostudio_agent_proto/manage_mcp_server.sh restart`
+  - `/opt/yolostudio-agent/manage_mcp_server.sh restart`
 
 #### 远端服务层 smoke
 
@@ -2292,7 +2292,7 @@ Gemma 这轮测试很清楚地说明：
 
 - 本地通过
 - `deploy/server_proto` 通过
-- 远端 `/home/kly/yolostudio_agent_proto` 通过
+- 远端 `/opt/yolostudio-agent` 通过
 
 #### M. 已补“真实远端 Agent 训练主线 roundtrip”验证脚本
 
@@ -2358,7 +2358,7 @@ Gemma 这轮测试很清楚地说明：
 - 本地通过
 - `deploy/server_proto` 通过
 - Windows `.venv` 长对话回归通过
-- 远端 `/home/kly/yolostudio_agent_proto` 通过
+- 远端 `/opt/yolostudio-agent` 通过
 
 #### O. 已补真实远端 stopped 后续跟进与状态短句路由
 

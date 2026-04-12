@@ -1,7 +1,7 @@
 # YoloStudio Agent 化 — 实施计划
 
 > **确认日期**：2026-04-08
-> **可行性报告**：[yolostudio_agent_feasibility.md](file:///D:/yolodo2.0/agent_plan/doc/yolostudio_agent_feasibility.md)
+> **可行性报告**：[yolostudio_agent_feasibility.md](file:///C:/workspace/yolodo2.0/agent_plan/doc/yolostudio_agent_feasibility.md)
 
 ---
 
@@ -19,13 +19,13 @@
 ## 项目结构规划
 
 ```
-D:\yolodo2.0\
+C:\workspace\yolodo2.0\
 ├── agent_plan/
 │   └── doc/
 │       └── yolostudio_agent_feasibility.md   # 可行性报告
 │
 ├── agent/                                     # ★ 新增：Agent 相关代码
-│   ├── server/                                # 服务器端（部署到 192.168.0.163）
+│   ├── server/                                # 服务器端（部署到 203.0.113.10）
 │   │   ├── mcp_server.py                      # MCP Server 主入口（FastMCP）
 │   │   ├── tools/                             # MCP Tool 实现
 │   │   │   ├── __init__.py
@@ -60,7 +60,7 @@ D:\yolodo2.0\
 
 ```bash
 # SSH 到服务器
-ssh kly@192.168.0.163
+ssh agent@203.0.113.10
 
 # 停止现有 Ollama（如果在运行）
 pkill ollama
@@ -83,8 +83,8 @@ pip install "mcp[cli]" uvicorn starlette
 ### 1.3 安装客户端依赖（Windows）
 
 ```powershell
-# 在 D:\yolodo2.0 下新建 agent 虚拟环境
-cd D:\yolodo2.0
+# 在 C:\workspace\yolodo2.0 下新建 agent 虚拟环境
+cd C:\workspace\yolodo2.0
 python -m venv agent\.venv
 agent\.venv\Scripts\activate
 pip install langchain-ollama langchain-mcp-adapters langgraph
@@ -113,7 +113,7 @@ print(result.tool_calls)  # 期望: [{'name': 'add', 'args': {'a': 3, 'b': 5}}]
 **前置条件**：先开 SSH Tunnel
 
 ```powershell
-ssh -L 11434:127.0.0.1:11434 -L 8080:127.0.0.1:8080 kly@192.168.0.163
+ssh -L 11434:127.0.0.1:11434 -L 8080:127.0.0.1:8080 agent@203.0.113.10
 ```
 
 ### Phase 1 验收标准
@@ -237,9 +237,9 @@ $ python cli.py
 📡 MCP Server: 127.0.0.1:8080 | Ollama: 127.0.0.1:11434
 
 You: 帮我扫描 /data/hemorrhage 数据集
-Agent: 正在扫描... 
+Agent: 正在扫描...
        总图片: 1200, 已标注: 1180, 缺失标签: 20, 类别: ['hemorrhage', 'normal']
-       
+
 You: 质量怎么样？
 Agent: 正在校验...
        发现 5 个坐标越界标签，建议修复后再训练。
@@ -248,7 +248,7 @@ You: 用 yolov8n 训练 50 轮
 Agent: ⚠️ 即将启动训练:
        模型: yolov8n.pt | 数据: /data/hemorrhage/data.yaml
        Epochs: 50 | GPU: 1 (TITAN X)
-       确认启动? (y/n): 
+       确认启动? (y/n):
 ```
 
 ### 3.4 端到端测试（Day 5）

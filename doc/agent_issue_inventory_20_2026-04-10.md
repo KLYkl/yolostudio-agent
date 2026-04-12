@@ -4,7 +4,7 @@
 
 | # | 问题类型 | 验证方式 | 结论 | 结果说明 |
 |---|---|---|---|---|
-| 1 | 标准 dataset root 是否还能扫错目录 | 动态测试：`scan_dataset(/home/kly/test_dataset/)` 与能力压测 root case | 未复现 | 已返回 33 张图，且解析为 `/images` + `/labels`。这类问题在标准 YOLO 结构下已修复。 |
+| 1 | 标准 dataset root 是否还能扫错目录 | 动态测试：`scan_dataset(/data/test_dataset/)` 与能力压测 root case | 未复现 | 已返回 33 张图，且解析为 `/images` + `/labels`。这类问题在标准 YOLO 结构下已修复。 |
 | 2 | 已可直训的数据集会不会还被强制 split | 动态测试：Gemma `conditional_direct_train` | 未复现 | Gemma 在“如果可以直接训练就不要重新划分”场景下直接 `start_training`，未先 split。 |
 | 3 | 扫描后再说“那就训练 2 轮”能否承接上下文 | 动态测试：Gemma `followup_context_train` | 未复现 | 扫描后接自然语言 follow-up 能直接训练，说明主线多轮承接已可用。 |
 | 4 | 状态分支会不会误启动训练 | 动态测试：Gemma `status_branch` | 未复现 | “有训练就停，否则只告诉我没有训练”没有误触发 `start_training`。 |
@@ -40,7 +40,7 @@
 4. durable checkpoint / persistent HITL
 5. CLI 恢复与故障提示再收口
 
-原始压力测试结果：`D:\yolodo2.0\agent_plan\agent\tests\test_agent_capability_range_output.json`
+原始压力测试结果：`C:\workspace\yolodo2.0\agent_plan\agent\tests\test_agent_capability_range_output.json`
 
 ## 后续进展（2026-04-10 晚间）
 
@@ -78,7 +78,7 @@
 2. **自动生成 YAML 时丢失真实类名**
    - 已修复：`generate_yaml / prepare_dataset_for_training` 现在会优先利用 `classes.txt`
 
-对 `/home/kly/agent_cap_tests/zyb` 的远端真实验证结果：
+对 `/data/agent_cap_tests/zyb` 的远端真实验证结果：
 - `class_name_source=classes_txt`
 - `classes=[Excavator, bulldozer, piling_machine, two_wheeler]`
 - `missing_label_images=5179`

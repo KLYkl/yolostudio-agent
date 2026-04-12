@@ -43,7 +43,7 @@ class _FakeDataHandler:
 
 
 def main() -> None:
-    root = Path('D:/yolodo2.0/agent_plan/.tmp_data_quality_risk')
+    root = Path('C:/workspace/yolodo2.0/agent_plan/.tmp_data_quality_risk')
     if root.exists():
         shutil.rmtree(root)
     img_dir = root / 'dataset' / 'images'

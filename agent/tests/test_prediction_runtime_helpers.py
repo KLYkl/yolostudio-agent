@@ -17,7 +17,7 @@ from agent_plan.agent.server.services.prediction_runtime_helpers import (
     run_batch_inference,
 )
 
-TMP_ROOT = Path('D:/yolodo2.0/agent_plan/.tmp_prediction_runtime_helper_test')
+TMP_ROOT = Path('C:/workspace/yolodo2.0/agent_plan/.tmp_prediction_runtime_helper_test')
 
 
 class _TensorLike:

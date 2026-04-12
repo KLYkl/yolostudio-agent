@@ -13,7 +13,7 @@ from agent_plan.agent.client.agent_client import AgentSettings, build_agent_clie
 SESSION_ID = 'deepseek-long-context-smoke'
 
 USER_TURNS = [
-    '请扫描 /home/kly/dataset_1ch/images 和 /home/kly/dataset_1ch/labels。',
+    '请扫描 /home/agent/dataset_1ch/images 和 /home/agent/dataset_1ch/labels。',
     '这个数据集质量怎么样？请先校验再回答。',
     '现在这个数据集一共有多少张图？',
     '类别分布里最多的是哪两类？',
@@ -22,7 +22,7 @@ USER_TURNS = [
     '请调用 check_gpu_status 工具并告诉我现在哪张卡空闲。',
     '当前是否已经有训练在跑？',
     '请总结一下到目前为止你已经知道的上下文。',
-    '请用 /home/kly/yolov8n.pt 基于刚才的数据训练1轮。',
+    '请用 /models/yolov8n.pt 基于刚才的数据训练1轮。',
     '如果我取消，会发生什么？',
     '重新说一下刚才待确认的训练参数。',
     '请再回答一次：现在这个数据集是哪一个？',

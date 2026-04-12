@@ -1,5 +1,5 @@
 param(
-    [string]$ServerHost = '192.168.0.163',
+    [string]$ServerHost = '203.0.113.10',
     [string]$ServerAlias = 'yolostudio',
     [int[]]$Ports = @(22, 8080, 11434)
 )

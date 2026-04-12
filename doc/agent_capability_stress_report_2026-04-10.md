@@ -4,7 +4,7 @@
 
 - Provider: `ollama + gemma4:e4b`、`deepseek + deepseek-chat`
 - 场景类型：复杂多步训练、条件分支、上下文继承、取消后回忆、禁止启动、非标准目录容错
-- 使用真实服务器、真实 MCP、真实数据集 `/home/kly/test_dataset/`，并额外构造了非标准目录 `/home/kly/agent_cap_tests/nonstandard_dataset/`
+- 使用真实服务器、真实 MCP、真实数据集 `/data/test_dataset/`，并额外构造了非标准目录 `/data/agent_cap_tests/nonstandard_dataset/`
 
 ## 2. 总体结论
 
@@ -31,7 +31,7 @@
 ## 4. 关键发现
 
 ### 4.1 已经证明可用的能力
-1. **复杂根目录提示词已打通**：像“数据在 /home/kly/test_dataset/，按默认划分比例，然后用 yolov8n 模型训练 2 轮”这种提示词，现在能稳定进入 `prepare_dataset_for_training -> start_training` 两段确认链。
+1. **复杂根目录提示词已打通**：像“数据在 /data/test_dataset/，按默认划分比例，然后用 yolov8n 模型训练 2 轮”这种提示词，现在能稳定进入 `prepare_dataset_for_training -> start_training` 两段确认链。
 2. **readiness / no-start 场景表现稳定**：当用户要求“只检查、不要启动训练”时，当前版本能遵守约束。
 3. **多轮上下文已经足够支持主线使用**：扫描后接“那就训练 2 轮”在 Gemma 路线上也能成功。
 4. **DeepSeek 在说明性与取消后回忆上更稳**：尤其是保留 `device=auto` 这类原始参数时更准确。
@@ -62,4 +62,4 @@
 3. **收紧默认模型与 device 的解释规则**：避免 Gemma 在未明确要求时把“合理猜测”写成“确定参数”。
 4. **继续扩大复杂提示词基线**：把本次 12 个 case 固化成长期回归集。
 
-原始结果文件：`D:\yolodo2.0\agent_plan\agent\tests\test_agent_capability_range_output.json`
+原始结果文件：`C:\workspace\yolodo2.0\agent_plan\agent\tests\test_agent_capability_range_output.json`

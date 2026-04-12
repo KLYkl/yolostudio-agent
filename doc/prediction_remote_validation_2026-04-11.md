@@ -5,25 +5,25 @@
 已在远端服务器 `yolostudio` 上完成一轮 **真实视频 prediction 验证**，并把结果拉回本地：
 
 - 本地结果文件：
-  - `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_remote_real_media_output.json`
+  - `C:\workspace\yolodo2.0\agent_plan\agent\tests\test_prediction_remote_real_media_output.json`
 
 ## 验证输入
 
 ### 远端素材目录
 
 - 权重：
-  - `/home/kly/prediction_real_media_stage/weights/zq-4-06-qcar.pt`
-  - `/home/kly/prediction_real_media_stage/weights/zq-4-2.pt`
-  - `/home/kly/prediction_real_media_stage/weights/zq-4-3.pt`
+  - `/data/prediction_real_media_stage/weights/zq-4-06-qcar.pt`
+  - `/data/prediction_real_media_stage/weights/zq-4-2.pt`
+  - `/data/prediction_real_media_stage/weights/zq-4-3.pt`
 - 视频：
-  - `/home/kly/prediction_real_media_stage/videos/fyb2026-03-06_094015_491.mp4`
-  - `/home/kly/prediction_real_media_stage/videos/fyb2026-03-06_094125_133.mp4`
-  - `/home/kly/prediction_real_media_stage/videos/zyb_2026-03-03_125605_456.mp4`
+  - `/data/prediction_real_media_stage/videos/fyb2026-03-06_094015_491.mp4`
+  - `/data/prediction_real_media_stage/videos/fyb2026-03-06_094125_133.mp4`
+  - `/data/prediction_real_media_stage/videos/zyb_2026-03-03_125605_456.mp4`
 
 ### 远端执行环境
 
 - conda root：
-  - `/home/kly/miniconda3`
+  - `/opt/conda`
 - 已发现环境：
   - `base`
   - `yolodo`
@@ -36,7 +36,7 @@
 ### prediction 结果
 
 - 选用权重：
-  - `/home/kly/prediction_real_media_stage/weights/zq-4-06-qcar.pt`
+  - `/data/prediction_real_media_stage/weights/zq-4-06-qcar.pt`
 - 实际处理视频数：
   - `2`
 - 总帧数：
@@ -51,9 +51,9 @@
 ### 远端输出目录
 
 - 汇总目录：
-  - `/home/kly/prediction_real_media_output/codex_roundtrip/videos`
+  - `/tmp/prediction_real_media_output/codex_roundtrip/videos`
 - 报告文件：
-  - `/home/kly/prediction_real_media_output/codex_roundtrip/videos/video_prediction_report.json`
+  - `/tmp/prediction_real_media_output/codex_roundtrip/videos/video_prediction_report.json`
 
 ## 结论
 

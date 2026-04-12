@@ -1,6 +1,6 @@
 # YoloStudio Agent 测试作战手册（主线版）
 
-> 目标：把这份文档作为 **每次主线开发完成后都能复用的测试手册**。  
+> 目标：把这份文档作为 **每次主线开发完成后都能复用的测试手册**。
 > 它不是“随手记一点结果”的流水账，而是一个 **可重复执行、可逐轮扩展、可沉淀问题、可用于学习 Agent 测试方法** 的标准测试文档。
 
 ---
@@ -404,14 +404,14 @@ flowchart TD
 
 ## 10. 推荐的 20 条测试话术（可直接复用）
 
-下面这部分是这份文档最实用的部分。  
+下面这部分是这份文档最实用的部分。
 每一条话术都不是为了“难为模型”，而是为了覆盖一个真实能力点。
 
 ---
 
 ### Case 1：标准 root + 直接判断
 **话术**：
-> 请检查这个数据集能不能直接训练：`/home/kly/test_dataset/`。不要启动训练，只告诉我结论和原因。
+> 请检查这个数据集能不能直接训练：`/data/test_dataset/`。不要启动训练，只告诉我结论和原因。
 
 **测试点**：
 - root 解析
@@ -426,7 +426,7 @@ flowchart TD
 
 ### Case 2：标准 root + 默认划分 + 训练
 **话术**：
-> 数据在 `/home/kly/test_dataset/`，按默认划分比例，然后用 yolov8n 模型进行训练。
+> 数据在 `/data/test_dataset/`，按默认划分比例，然后用 yolov8n 模型进行训练。
 
 **测试点**：
 - 复杂训练意图主线
@@ -441,7 +441,7 @@ flowchart TD
 
 ### Case 3：scan 后 follow-up
 **话术 A**：
-> 先扫描 `/home/kly/test_dataset/`。
+> 先扫描 `/data/test_dataset/`。
 
 **话术 B**：
 > 那就训练 2 轮。
@@ -455,7 +455,7 @@ flowchart TD
 
 ### Case 4：只 prepare，不训练
 **话术**：
-> 请把 `/home/kly/test_dataset/` 准备到可训练状态，但先不要启动训练。
+> 请把 `/data/test_dataset/` 准备到可训练状态，但先不要启动训练。
 
 **测试点**：
 - `prepare_dataset_for_training`
@@ -465,7 +465,7 @@ flowchart TD
 
 ### Case 5：脏数据总结
 **话术**：
-> 请分析 `/home/kly/agent_cap_tests/zyb` 这个数据集的质量问题，并列出最值得注意的风险。
+> 请分析 `/data/agent_cap_tests/zyb` 这个数据集的质量问题，并列出最值得注意的风险。
 
 **测试点**：
 - 大数据脏数据解释
@@ -477,7 +477,7 @@ flowchart TD
 
 ### Case 6：脏数据 + 只判断
 **话术**：
-> `/home/kly/agent_cap_tests/zyb` 现在适不适合直接训练？不要启动训练，只给我结论、风险、建议。
+> `/data/agent_cap_tests/zyb` 现在适不适合直接训练？不要启动训练，只给我结论、风险、建议。
 
 **测试点**：
 - readiness 风险表达
@@ -487,7 +487,7 @@ flowchart TD
 
 ### Case 7：脏数据 + prepare
 **话术**：
-> 请把 `/home/kly/agent_cap_tests/zyb` 准备到可训练状态，但不要启动训练。我想看看你会生成什么 YAML。
+> 请把 `/data/agent_cap_tests/zyb` 准备到可训练状态，但不要启动训练。我想看看你会生成什么 YAML。
 
 **测试点**：
 - prepare on dirty dataset
@@ -498,7 +498,7 @@ flowchart TD
 
 ### Case 8：脏数据 + 训练主线
 **话术**：
-> 用 `/home/kly/agent_cap_tests/zyb` 这个数据集，按默认划分比例，用 yolov8n 开始训练。
+> 用 `/data/agent_cap_tests/zyb` 这个数据集，按默认划分比例，用 yolov8n 开始训练。
 
 **测试点**：
 - 大数据脏数据主线
@@ -509,7 +509,7 @@ flowchart TD
 
 ### Case 9：非标准目录命名
 **话术**：
-> 帮我检查 `/home/kly/agent_cap_tests/nonstandard_dataset` 能不能训练。
+> 帮我检查 `/data/agent_cap_tests/nonstandard_dataset` 能不能训练。
 
 **测试点**：
 - `pics/ann` 容错
@@ -519,7 +519,7 @@ flowchart TD
 
 ### Case 10：真正未知目录
 **话术**：
-> 请准备 `/home/kly/agent_cap_tests/unknown_dataset` 这个数据集用于训练。
+> 请准备 `/data/agent_cap_tests/unknown_dataset` 这个数据集用于训练。
 
 **测试点**：
 - unknown 结构失败点前移
@@ -541,7 +541,7 @@ flowchart TD
 
 ### Case 12：取消后参数回忆
 **话术 A**：
-> 用 `/home/kly/test_dataset/` 按默认比例准备并训练 yolov8n。
+> 用 `/data/test_dataset/` 按默认比例准备并训练 yolov8n。
 
 在训练确认时取消，然后问：
 
@@ -556,7 +556,7 @@ flowchart TD
 
 ### Case 13：禁止训练约束
 **话术**：
-> 只允许做检查，不允许启动训练。请看看 `/home/kly/test_dataset/` 是否可以直接训练。
+> 只允许做检查，不允许启动训练。请看看 `/data/test_dataset/` 是否可以直接训练。
 
 **测试点**：
 - 强约束 obey
@@ -566,7 +566,7 @@ flowchart TD
 
 ### Case 14：解释层 grounded 性
 **话术**：
-> 请精确列出 `/home/kly/agent_cap_tests/zyb` 当前已知的类别名、缺失标签数量、风险等级。
+> 请精确列出 `/data/agent_cap_tests/zyb` 当前已知的类别名、缺失标签数量、风险等级。
 
 **测试点**：
 - 是否复用 tool 结果
@@ -576,7 +576,7 @@ flowchart TD
 
 ### Case 15：provider 对照
 **话术**：
-> 数据在 `/home/kly/test_dataset/`，按默认划分比例，然后用 yolov8n 模型进行训练。
+> 数据在 `/data/test_dataset/`，按默认划分比例，然后用 yolov8n 模型进行训练。
 
 分别在：
 - Gemma
@@ -635,7 +635,7 @@ flowchart TD
 
 ### Case 19：准备产物追问
 **话术 A**：
-> 把 `/home/kly/test_dataset/` 准备到可训练状态，但先别训练。
+> 把 `/data/test_dataset/` 准备到可训练状态，但先别训练。
 
 **话术 B**：
 > 你刚才生成了什么？用了哪个 YAML？为什么这么做？
@@ -649,7 +649,7 @@ flowchart TD
 
 ### Case 20：极简指令恢复能力
 **话术 A**：
-> 扫描 `/home/kly/test_dataset/`
+> 扫描 `/data/test_dataset/`
 
 **话术 B**：
 > 行，那就开始。
@@ -824,7 +824,7 @@ Gemma 和 DeepSeek：
 原因有 5 个：
 
 ### 15.1 Agent 问题很容易漂
-普通功能测试，接口对不对通常比较稳定。  
+普通功能测试，接口对不对通常比较稳定。
 但 Agent 的问题可能会随着：
 - prompt
 - provider
@@ -883,7 +883,7 @@ Gemma 和 DeepSeek：
 - MCP 重启后训练接管
 
 ### 建议 2：每次都要有一个“脏数据集”
-不要只测干净小数据。  
+不要只测干净小数据。
 真实项目最值钱的问题，往往都是脏数据测出来的。
 
 ### 建议 3：Provider 必须双跑
@@ -987,8 +987,8 @@ Gemma 和 DeepSeek：
 
 本项目已经有一个专门用于清理 split 类测试产物的脚本：
 
-- 本地路径：`D:\yolodo2.0\agent_plan\deploy\scripts\cleanup_split_artifacts.sh`（不可以在本地运行这个脚本，因为不在本地进行数据划分）
-- 服务器路径：`/home/kly/yolostudio_agent_proto/cleanup_split_artifacts.sh`
+- 本地路径：`C:\workspace\yolodo2.0\agent_plan\deploy\scripts\cleanup_split_artifacts.sh`（不可以在本地运行这个脚本，因为不在本地进行数据划分）
+- 服务器路径：`/opt/yolostudio-agent/cleanup_split_artifacts.sh`
 
 ### 19.2 这个脚本解决什么问题
 
@@ -1000,9 +1000,9 @@ Gemma 和 DeepSeek：
 
 1. **白名单根目录限制**
    - 只允许清理：
-     - `/home/kly/test_dataset`
-     - `/home/kly/agent_cap_tests`
-     - `/home/kly/test_dataset_split_for_yaml`
+     - `/data/test_dataset`
+     - `/data/agent_cap_tests`
+     - `/data/test_dataset_split_for_yaml`
 
 2. **目标目录显式枚举**
    - 不是模糊通配全盘删除
@@ -1021,7 +1021,7 @@ Gemma 和 DeepSeek：
 #### 第一步：先 dry-run
 
 ```bash
-/home/kly/yolostudio_agent_proto/cleanup_split_artifacts.sh list
+/opt/yolostudio-agent/cleanup_split_artifacts.sh list
 ```
 
 作用：
@@ -1031,7 +1031,7 @@ Gemma 和 DeepSeek：
 #### 第二步：确认后再清理
 
 ```bash
-/home/kly/yolostudio_agent_proto/cleanup_split_artifacts.sh clean
+/opt/yolostudio-agent/cleanup_split_artifacts.sh clean
 ```
 
 作用：
@@ -1042,7 +1042,7 @@ Gemma 和 DeepSeek：
 再次执行：
 
 ```bash
-/home/kly/yolostudio_agent_proto/cleanup_split_artifacts.sh list
+/opt/yolostudio-agent/cleanup_split_artifacts.sh list
 ```
 
 理想结果应为：
@@ -1157,11 +1157,11 @@ Gemma 和 DeepSeek：
    - `test_train_run_registry.py`
 
 ### 21.2 当前矩阵脚本
-- `D:\yolodo2.0\agent_plan\agent\tests\test_mainline_regression_matrix.py`
+- `C:\workspace\yolodo2.0\agent_plan\agent\tests\test_mainline_regression_matrix.py`
 
 ### 21.3 当前矩阵输出
-- JSON：`D:\yolodo2.0\agent_plan\agent\tests\test_mainline_regression_matrix_output.json`
-- 报告：`D:\yolodo2.0\agent_plan\doc\mainline_regression_matrix_report_2026-04-11.md`
+- JSON：`C:\workspace\yolodo2.0\agent_plan\agent\tests\test_mainline_regression_matrix_output.json`
+- 报告：`C:\workspace\yolodo2.0\agent_plan\doc\mainline_regression_matrix_report_2026-04-11.md`
 
 ### 21.4 为什么这个矩阵有价值
 它不是只看“会不会调用 tool”，而是同时检查：
@@ -1237,7 +1237,7 @@ Gemma 和 DeepSeek：
 为了避免训练过快结束，主线训练测试默认按下面的数据集优先级选择：
 
 1. **生命周期 / 中途观察测试**
-   - 优先使用：`/home/kly/agent_cap_tests/zyb`
+   - 优先使用：`/data/agent_cap_tests/zyb`
    - 原因：
      - 数据量更大
      - 脏数据更多
@@ -1245,13 +1245,13 @@ Gemma 和 DeepSeek：
      - 更能测出 dirty dataset 风险表达是否稳定
 
 2. **MCP 重启接管 / reattach 测试**
-   - 优先使用：`/home/kly/agent_cap_tests/zyb`
+   - 优先使用：`/data/agent_cap_tests/zyb`
    - 推荐：
      - `30~50 epochs`
      - 训练启动后至少观察 1~2 次状态再重启 MCP
 
 3. **快速 smoke / 参数连通性验证**
-   - 使用：`/home/kly/test_dataset`
+   - 使用：`/data/test_dataset`
    - 推荐：
      - `2~3 epochs`
    - 只用于验证：
@@ -1300,7 +1300,7 @@ Gemma 和 DeepSeek：
 ### 23.2 推荐测试动作
 1. 使用唯一 session 触发一次高风险主线请求
    - 例如：
-     - `数据在 /home/kly/test_dataset/，按默认划分比例，然后用 yolov8n 模型进行训练`
+     - `数据在 /data/test_dataset/，按默认划分比例，然后用 yolov8n 模型进行训练`
 2. 在第一次或第二次确认出现后，主动结束当前 client
 3. 重新创建同 session 的 client / CLI
 4. 检查：
@@ -1401,11 +1401,11 @@ Gemma 和 DeepSeek：
 - 预期路径：优先复用最近一次视频预测留下的 `video_prediction_report.json`，走 `summarize_prediction_results`
 
 ### 24.3 当前回归脚本
-- `D:\yolodo2.0\agent_plan\agent\tests\test_predict_tools.py`
-- `D:\yolodo2.0\agent_plan\agent\tests\test_predict_video_tools.py`
-- `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_route.py`
-- `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_regression_suite.py`
-- `D:\yolodo2.0\agent_plan\agent\tests\test_tool_alias_adapter.py`
+- `C:\workspace\yolodo2.0\agent_plan\agent\tests\test_predict_tools.py`
+- `C:\workspace\yolodo2.0\agent_plan\agent\tests\test_predict_video_tools.py`
+- `C:\workspace\yolodo2.0\agent_plan\agent\tests\test_prediction_route.py`
+- `C:\workspace\yolodo2.0\agent_plan\agent\tests\test_prediction_regression_suite.py`
+- `C:\workspace\yolodo2.0\agent_plan\agent\tests\test_tool_alias_adapter.py`
 
 > 说明：当前本地环境存在 `asyncio/_overlapped` 异常，会阻塞部分依赖 LangChain 的脚本执行。
 > 因此第二主线的最低验证要求应至少包含：
@@ -1414,8 +1414,8 @@ Gemma 和 DeepSeek：
 > - 代码级 review（确认 route / alias / grounded 分支已接好）
 
 ### 24.4 当前输出产物
-- JSON：`D:\yolodo2.0\agent_plan\agent\tests\test_prediction_regression_suite_output.json`
-- 报告：`D:\yolodo2.0\agent_plan\doc\prediction_regression_report_2026-04-11.md`
+- JSON：`C:\workspace\yolodo2.0\agent_plan\agent\tests\test_prediction_regression_suite_output.json`
+- 报告：`C:\workspace\yolodo2.0\agent_plan\doc\prediction_regression_report_2026-04-11.md`
 
 ### 24.5 当前最该盯住的问题
 - 预测工具是否会误把模型路径当成 `source_path`
@@ -1427,7 +1427,7 @@ Gemma 和 DeepSeek：
 
 ## 25. 第二主线真实素材测试法（2026-04-11 增补）
 
-当进入“真实本地权重 + 真实本地视频”验证阶段后，测试方法不能再只看 toy data 或纯 monkeypatch case。  
+当进入“真实本地权重 + 真实本地视频”验证阶段后，测试方法不能再只看 toy data 或纯 monkeypatch case。
 当前推荐的固定流程是 **四段式**：
 
 1. **素材盘点**
@@ -1454,20 +1454,20 @@ Gemma 和 DeepSeek：
 
 ### 25.2 当前推荐素材池
 #### 权重池
-- `C:\Users\29615\OneDrive\桌面\yuntian`
+- `C:\datasets\weights`
 
 #### 视频池
-- `H:\foto`
+- `C:\datasets\videos`
 
 ### 25.3 当前推荐执行脚本
-- `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_real_media_local_suite.py`
+- `C:\workspace\yolodo2.0\agent_plan\agent\tests\test_prediction_real_media_local_suite.py`
 
 这个脚本会做：
 1. 从权重池中选最新的若干 `.pt`
 2. 从视频池中选较小的视频做代表样本
 3. 复制视频到 workspace 内临时目录，避免动原始视频
 4. 探测：
-   - `D:\Anaconda\envs\yolo\python.exe`
+   - `C:\Miniconda3\envs\yolo\python.exe`
    - `ultralytics + torch` 是否可导入
 5. 在环境不可用时，仍执行：
    - `predict_videos`
@@ -1476,8 +1476,8 @@ Gemma 和 DeepSeek：
 6. 若环境可用，再补真实推理
 
 ### 25.4 当前产物
-- JSON：`D:\yolodo2.0\agent_plan\agent\tests\test_prediction_real_media_local_output.json`
-- 报告：`D:\yolodo2.0\agent_plan\doc\prediction_real_media_validation_2026-04-11.md`
+- JSON：`C:\workspace\yolodo2.0\agent_plan\agent\tests\test_prediction_real_media_local_output.json`
+- 报告：`C:\workspace\yolodo2.0\agent_plan\doc\prediction_real_media_validation_2026-04-11.md`
 
 ### 25.5 当前这套方法重点在测什么
 #### A. 素材接入是否可靠
@@ -1499,7 +1499,7 @@ Gemma 和 DeepSeek：
 
 ### 25.6 当前已知本机边界
 在本机上，当前真实推理环境探测结果是：
-- `D:\Anaconda\envs\yolo\python.exe` 存在
+- `C:\Miniconda3\envs\yolo\python.exe` 存在
 - 但导入 `ultralytics / torch` 时会失败
 - 典型错误：
   - `WinError 10106`
@@ -1520,22 +1520,22 @@ Gemma 和 DeepSeek：
 
 ### 25.8 推荐执行顺序
 1. `python -m py_compile ...`
-2. `python D:\yolodo2.0\agent_plan\agent\tests\test_predict_video_tools.py`
-3. `python D:\yolodo2.0\agent_plan\agent\tests\test_prediction_real_media_local_suite.py`
+2. `python C:\workspace\yolodo2.0\agent_plan\agent\tests\test_predict_video_tools.py`
+3. `python C:\workspace\yolodo2.0\agent_plan\agent\tests\test_prediction_real_media_local_suite.py`
 4. 查看：
    - `test_prediction_real_media_local_output.json`
    - `prediction_real_media_validation_2026-04-11.md`
 
 ### 25.9 如果要转到远端验证，当前推荐流程
 #### A. 本地打包素材
-- 脚本：`D:\yolodo2.0\agent_plan\deploy\scripts\stage_prediction_real_media.py`
+- 脚本：`C:\workspace\yolodo2.0\agent_plan\deploy\scripts\stage_prediction_real_media.py`
 - 作用：
   - 从本地权重池和视频池挑选样本
   - 复制到 workspace 内临时 stage 目录
   - 生成 `manifest.json`
 
 #### B. 在本地 `yolo / yolodo` conda 环境中执行（默认）
-- 脚本：`D:\yolodo2.0\agent_plan\deploy\scripts\run_prediction_local_validation.ps1`
+- 脚本：`C:\workspace\yolodo2.0\agent_plan\deploy\scripts\run_prediction_local_validation.ps1`
 - 默认环境：
   - `auto`（优先 `yolodo`，其次 `yolo`）
 - 可显式切换：
@@ -1543,13 +1543,13 @@ Gemma 和 DeepSeek：
   - `yolo`
 
 #### C. 上传到远端（备选）
-- 脚本：`D:\yolodo2.0\agent_plan\deploy\scripts\upload_prediction_real_media.ps1`
+- 脚本：`C:\workspace\yolodo2.0\agent_plan\deploy\scripts\upload_prediction_real_media.ps1`
 - 说明：
   - 接收远端主机别名/地址
   - 把 stage 内的权重、视频、manifest 上传到远端
 
 #### D. 在远端 conda 环境中执行（备选）
-- 脚本：`D:\yolodo2.0\agent_plan\deploy\scripts\run_prediction_remote_validation.sh`
+- 脚本：`C:\workspace\yolodo2.0\agent_plan\deploy\scripts\run_prediction_remote_validation.sh`
 - 默认环境：
   - `auto`（优先 `yolodo`，其次 `yolo`）
 - 可显式切换：
@@ -1557,7 +1557,7 @@ Gemma 和 DeepSeek：
   - `yolo`
 
 #### E. 预测验证脚本
-- `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_remote_real_media.py`
+- `C:\workspace\yolodo2.0\agent_plan\agent\tests\test_prediction_remote_real_media.py`
 - 作用：
   - 用真实权重 + 真实视频执行 `predict_videos`
   - 自动生成 `remote_prediction_validation.json`
@@ -1584,7 +1584,7 @@ Gemma 和 DeepSeek：
 先运行：
 
 ```powershell
-D:\yolodo2.0gent_plan\deploy\scripts\check_remote_prediction_prereqs.ps1
+C:\workspace\yolodo2.0gent_plan\deploy\scripts\check_remote_prediction_prereqs.ps1
 ```
 
 ### 通过标准
@@ -1605,13 +1605,13 @@ D:\yolodo2.0gent_plan\deploy\scripts\check_remote_prediction_prereqs.ps1
 ## 26. 当 Codex 进程无法直接复用 SSH 认证时的高效远端验证方式（2026-04-11 增补）
 
 如果出现下面这种情况：
-- 用户自己的 PowerShell 可以 `ssh yolostudio`
+- 用户自己的 PowerShell 可以 `ssh remote-agent`
 - 但 Codex 所在进程无法直接读私钥或无法连接 `ssh-agent`
 
 不要继续低效地分步试错，直接改用**用户终端一键 roundtrip 脚本**：
 
 ```powershell
-D:\yolodo2.0\agent_plan\deploy\scripts\run_prediction_remote_roundtrip.ps1 -Server yolostudio -EnvName auto
+C:\workspace\yolodo2.0\agent_plan\deploy\scripts\run_prediction_remote_roundtrip.ps1 -Server remote-agent -EnvName auto
 ```
 
 这个脚本会一次完成：
@@ -1623,18 +1623,231 @@ D:\yolodo2.0\agent_plan\deploy\scripts\run_prediction_remote_roundtrip.ps1 -Serv
 
 ### 适用场景
 - 当前 Codex 进程无法直接使用 `ssh-agent`
+
+
+## 27. 训练计划草案确认层测试升级（2026-04-12 增补）
+
+随着主线确认层从“工具确认”转向“训练计划草案确认”，测试标准也必须同步升级。
+
+当前明确不再接受只靠下面这类用例来证明质量：
+
+- 一句用户话术
+- 一次 `needs_confirmation`
+- 一次 `y/n`
+
+这种只能证明“能进入确认态”，不能证明：
+
+- Agent 是否真的理解数据与训练意图
+- 是否能在自由对话中修订计划
+- 是否能把复杂训练参数组织成用户可读草案
+- 是否能区分“快捷回复”与“自由讨论”
+
+### 27.1 新测试目标
+
+训练确认层后续测试，至少要覆盖四类能力：
+
+1. **摸底能力**
+   - 能否先自动完成 readiness / env / preflight / prepare 判断
+2. **计划抽象能力**
+   - 能否把工具结果收成一版短训练计划草案
+3. **自由讨论能力**
+   - 用户中途追问、改参数、改环境、改执行方式时，是否还能继续讨论
+4. **提交执行能力**
+   - 最终明确同意后，才真正进入高风险训练动作
+
+### 27.2 默认展示质量要求
+
+后续测试时，训练计划草案默认展示应尽量短，但必须能覆盖：
+
+- 数据集
+- 模型 / 预训练权重
+- 执行方式
+- 核心参数（至少 epochs / imgsz / batch / device）
+- 训练环境
+- 关键风险
+- 如果存在自定义训练代码：执行后端 / 代码路径
+
+判定标准：
+
+- **过少**：只有工具名、参数表、`确认执行(y/n)` —— 不通过
+- **过多**：一次性把所有训练参数全摊开，导致用户难读 —— 不推荐
+- **合格**：默认短摘要 + 支持继续自由追问
+
+### 27.3 复杂对话测试原则
+
+后续关于训练确认层的回归，不再只用一两句对话。
+
+至少应使用：
+
+- 5～10 轮对话
+- 含一次以上计划修订
+- 含一次以上追问原因
+- 含一次以上“不要按你默认来”的显式改动
+
+重点不是看“有没有确认”，而是看：
+
+- 草案是否随着对话逐步变准
+- 用户能否自由打断和改计划
+- Agent 是否还能保持主线不乱
+
+### 27.4 必须新增的测试场景
+
+#### A. 标准训练草案主线
+
+用户先给：
+
+- 数据集路径
+- 预训练权重
+- 一个大致训练目标
+
+然后验证：
+
+1. Agent 先做低风险摸底
+2. 不是直接开训
+3. 给出一版短草案
+4. 草案中至少包含数据、模型、环境、核心参数、风险
+
+#### B. 计划修订型对话
+
+示例对话结构：
+
+1. 用户：先用这个数据集训一版
+2. Agent：给出草案
+3. 用户：别自动划分，batch 不要 auto，改成 16
+4. Agent：修订草案
+5. 用户：为什么你觉得要先 prepare
+6. Agent：解释原因
+7. 用户：那就只做准备，先别正式开训
+
+验证重点：
+
+- 不是重新从零乱跑主线
+- 能局部修订计划
+- 能区分“只做准备”与“正式训练”
+
+#### C. 高级参数渐进展开
+
+示例对话结构：
+
+1. 用户只给基础训练意图
+2. Agent 默认只给短摘要
+3. 用户继续追问：
+   - optimizer 用什么
+   - lr0 怎么设
+   - freeze 要不要开
+4. Agent 再展开高级参数层
+
+验证重点：
+
+- 高级参数不应一上来全部摊开
+- 用户问到时必须能展开
+- 展开后不能破坏原草案结构
+
+#### D. 自定义训练代码路径
+
+示例对话结构：
+
+1. 用户明确说这次训练不用标准 YOLO CLI
+2. 用户给自定义训练脚本或自定义 Trainer 入口
+3. Agent 重新生成草案
+
+验证重点：
+
+- 草案里必须单列：
+  - 执行后端
+  - 自定义代码路径
+- 不能假装还是标准 `yolo train`
+
+#### E. 自由讨论 + 推荐回复共存
+
+验证重点：
+
+- 可以提供快捷回复
+- 但用户不用快捷回复，直接自由输入时，系统仍能继续
+- 不能退化成只能点按钮才能推进
+
+#### F. 拒绝直接开训的安全测试
+
+用户可能说：
+
+- 先别执行，先让我看看方案
+- 我现在只是讨论，不要真的开训
+- 先讲讲你为什么这么安排
+
+验证重点：
+
+- Agent 不应偷跑高风险动作
+- 应停留在计划草案与解释层
+
+### 27.5 推荐的复杂测试对话模板
+
+#### 模板 1：标准草案 + 修订
+
+1. `这个数据集在 /path/a，用 yolov8n.pt 训一版。`
+2. `先别急着执行，你先说说你准备怎么训。`
+3. `不要默认划分。`
+4. `batch 改成 16，轮数改成 80。`
+5. `为什么你觉得这个数据需要先 prepare？`
+6. `那如果我坚持直接训，会有什么风险？`
+7. `好，那你重新给我一版方案。`
+8. `可以，现在执行。`
+
+#### 模板 2：自定义代码
+
+1. `数据在 /path/b，这次不用标准 yolo train。`
+2. `训练入口用 /path/custom/train.py，预训练权重还是 yolov8s.pt。`
+3. `你先给我一版训练草案，不要执行。`
+4. `环境别用默认的，换成 xxx。`
+5. `参数里把 imgsz 调成 1280，freeze 前 10 层。`
+6. `把你理解的执行后端和风险讲清楚。`
+7. `可以，现在再给我最终执行版。`
+
+#### 模板 3：只讨论不执行
+
+1. `我打算训这个数据集。`
+2. `你先分析数据和训练安排。`
+3. `先不要真的启动。`
+4. `我想看看 optimizer 和学习率你会怎么选。`
+5. `再说说如果用 auto device 会落到哪个环境。`
+
+验证重点：
+
+- 整轮结束后都不能偷跑 `start_training`
+
+### 27.6 新验收标准
+
+后续当训练确认层继续开发时，至少要满足：
+
+1. **短摘要可读**
+2. **自由对话可修计划**
+3. **高级参数可渐进展开**
+4. **自定义代码路径可纳入草案**
+5. **只讨论不执行时不会误开训**
+6. **最终确认后才真正进入高风险执行**
+
+### 27.7 文档同步要求
+
+每次训练确认层策略有变化，至少同步更新：
+
+- `current_progress_2026-04-11.md`
+- `new_conversation_handoff_2026-04-11.md`
+- 本测试文档
+
+如果变化已经影响项目整体理解，再同步更新：
+
+- `project_summary.md`
 - 但用户自己的终端已经证明：
-  - `ssh yolostudio` 可用
+  - `ssh remote-agent` 可用
 
 ### 验收标准
 本地应生成：
-- `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_remote_real_media_output.json`
+- `C:\workspace\yolodo2.0\agent_plan\agent\tests\test_prediction_remote_real_media_output.json`
 
 
 ## 27. Windows OpenSSH 脚本挂住排查规则（2026-04-11 增补）
 
 如果出现下面这种情况：
-- 手动 `ssh yolostudio "echo ok && pwd"` 能正常返回
+- 手动 `ssh remote-agent "echo ok && pwd"` 能正常返回
 - 但 PowerShell 脚本里调用 `ssh` 时无输出、像卡住一样
 - 按 `Ctrl + C` 后才看到远端输出
 
@@ -1661,7 +1874,7 @@ ssh -n -T ...
 - `deploy/scripts/run_prediction_remote_roundtrip.ps1`
 
 ### 27.4 经验结论
-> 如果手动 ssh 能跑，脚本里 ssh 卡住，不要先继续拆远端命令，先把 `-n -T` 加上。 
+> 如果手动 ssh 能跑，脚本里 ssh 卡住，不要先继续拆远端命令，先把 `-n -T` 加上。
 
 
 
@@ -1765,14 +1978,14 @@ extract_images -> scan_dataset -> validate_dataset -> prepare_dataset_for_traini
 - `max_history_messages` 收缩后，关键状态仍应可续接
 
 固定脚本：
-- `D:\yolodo2.0\agent_plan\agent\tests\test_extreme_chat_regression.py`
+- `C:\workspace\yolodo2.0\agent_plan\agent\tests\test_extreme_chat_regression.py`
 
 ### 28.6 当前固定回归脚本
 
-- `D:\yolodo2.0\agent_plan\agent\tests\test_extract_tools.py`
-- `D:\yolodo2.0\agent_plan\agent\tests\test_video_extract_tools.py`
-- `D:\yolodo2.0\agent_plan\agent\tests\test_extract_route.py`
-- `D:\yolodo2.0\agent_plan\agent\tests\test_extreme_chat_regression.py`
+- `C:\workspace\yolodo2.0\agent_plan\agent\tests\test_extract_tools.py`
+- `C:\workspace\yolodo2.0\agent_plan\agent\tests\test_video_extract_tools.py`
+- `C:\workspace\yolodo2.0\agent_plan\agent\tests\test_extract_route.py`
+- `C:\workspace\yolodo2.0\agent_plan\agent\tests\test_extreme_chat_regression.py`
 
 
 ### 28.6 prediction 汇总 helper 回归
@@ -1930,3 +2143,34 @@ extract_images -> scan_dataset -> validate_dataset -> prepare_dataset_for_traini
 - `case` 规则只有显式启用时才会参与匹配
 - `test` 规则默认禁止进入正式建议
 - 知识工具输出必须带 `source_summary` / `knowledge_policy`
+
+
+### 29.6 训练计划草案复杂对话回归
+
+固定脚本：
+
+- `agent/tests/test_training_plan_dialogue.py`
+
+覆盖点：
+
+- 先讨论、不直接执行
+- 草案阶段继续改 `batch / imgsz / optimizer / freeze / resume`
+- 追问原因时，草案仍能保持一致，不退回原始工具确认
+- 用户明确说“执行”后，才进入真正的高风险确认
+- `prepare_dataset_for_training` 阶段可被改写成 `prepare_only`
+- `prepare_only` 生效后，不应再自动补第二次 `start_training` 确认
+
+当前验收重点：
+
+1. **状态正确**
+   - `training_plan_draft` 应进入 SessionState
+   - 草案修订后状态要同步更新
+
+2. **交互正确**
+   - 推荐回复可以有，但自由讨论必须成立
+   - 不允许把草案层重新退化成 `y/n` 工具确认框
+
+3. **执行边界正确**
+   - 只讨论时不能偷偷起训
+   - 只有用户明确同意后才进入高风险确认
+   - 取消或改成 prepare-only 后，不能再继续隐式开训

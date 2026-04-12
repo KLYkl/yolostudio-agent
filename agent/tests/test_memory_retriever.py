@@ -13,7 +13,7 @@ from agent_plan.agent.client.session_state import SessionState
 
 
 def main() -> None:
-    root = Path('D:/yolodo2.0/agent_plan/.tmp_memory_retriever_test')
+    root = Path('C:/workspace/yolodo2.0/agent_plan/.tmp_memory_retriever_test')
     if root.exists():
         shutil.rmtree(root)
     root.mkdir(parents=True, exist_ok=True)

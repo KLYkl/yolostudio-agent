@@ -1,8 +1,8 @@
 # YoloStudio Agent 化可行性评估（完整版）
 
-> **评估日期**：2026-04-08  
-> **评估对象**：YoloStudio (d:\yolodo2.0) + 服务器 192.168.0.163  
-> **评估目标**：将 YoloStudio 改造为 LLM Agent 驱动的智能 YOLO 全流程工具  
+> **评估日期**：2026-04-08
+> **评估对象**：YoloStudio (C:\workspace\yolodo2.0) + 服务器 203.0.113.10
+> **评估目标**：将 YoloStudio 改造为 LLM Agent 驱动的智能 YOLO 全流程工具
 > **调研方式**：项目代码审查 + 服务器 SSH 实机探查 + 联网调研
 
 ---
@@ -57,14 +57,14 @@ graph LR
 
 Agent 内部循环:
   [推理] 用户想检查数据质量然后训练，先扫描数据集
-  [行动] 调用 scan_dataset("D:/hemorrhage_data") 
+  [行动] 调用 scan_dataset("D:/hemorrhage_data")
   [观察] 结果: 1200 张图, 1180 个标签, 类别: hemorrhage/normal
   [推理] 数据集存在 20 张无标签图片，先做质量检查
   [行动] 调用 validate_dataset("D:/hemorrhage_data")
   [观察] 结果: 20 张图片缺少标签文件，5 张标签格式错误
   [推理] 需要告知用户问题，并询问是否自动修复后继续训练
   [回答] "数据集有 25 个问题...(详情)...需要我自动修复然后开始训练吗？"
-  
+
 用户: "修复然后用 yolov8n 训练 50 轮"
 
   [推理] 用户确认修复并训练
@@ -126,45 +126,45 @@ Agent 内部循环:
 ```
  客户端（Windows / 服务器 / 任意位置）
  ==========================================================
-                                                             
-   用户交互层 (CLI / Web / Claude Desktop)                    
-        |                                                    
-   LangGraph 编排引擎 (Agent 状态机)                          
-   [ 推理节点 ] -> [ 路由判断 ] -> [ MCP 调用 ] -> [ 结果观察 ] 
-        ^                                            |       
-        '-------------- 循环 <----------------------'       
-        |                                                    
-   langchain-mcp-adapters (MCP -> LangChain 桥接)            
-        |                                                    
-        | Streamable HTTP (通过 SSH Tunnel 转发)               
+
+   用户交互层 (CLI / Web / Claude Desktop)
+        |
+   LangGraph 编排引擎 (Agent 状态机)
+   [ 推理节点 ] -> [ 路由判断 ] -> [ MCP 调用 ] -> [ 结果观察 ]
+        ^                                            |
+        '-------------- 循环 <----------------------'
+        |
+   langchain-mcp-adapters (MCP -> LangChain 桥接)
+        |
+        | Streamable HTTP (通过 SSH Tunnel 转发)
  ==========================================================
- 服务器 192.168.0.163（服务仅绑定 127.0.0.1）                   
-        |                                                    
-   YoloStudio MCP Server (:8080, streamable-http)            
-   +---------------------------------------------------+    
-   | Tools:                                             |    
-   |  scan_dataset       (直接调 DataHandler Mixin)      |    
-   |  split_dataset      (直接调 DataHandler Mixin)      |    
-   |  validate_dataset   (直接调 DataHandler Mixin)      |    
-   |  start_training     (Service Wrapper → subprocess)  |    
-   |  check_training_status (日志解析器)                  |    
-   |  stop_training      (Service Wrapper)               |    
-   |  predict_image      (直接调 ultralytics API)        |    
-   |  get_gpu_status     (nvidia-smi 调用)               |    
-   +---------------------------------------------------+    
-        |                                                    
-   +---------------------------------------------------+    
-   | DataHandler (直接复用)   | Train/Predict Wrapper    |    
-   | core/data_handler/      | (新增 service 层,         |    
-   |  _scan.py               |  绕过 Qt QProcess/       |    
-   |  _split.py              |  QThread 封装)           |    
-   |  _validate.py           |  train_service.py        |    
-   |  _augment.py            |  predict_service.py      |    
-   +---------------------------------------------------+    
-                                                             
-   [Ollama :11434]          [YOLO (GPU 1)]                   
-   [GPU 0: RTX 3060]        [GTX TITAN X]                    
-   [Gemma4:e4b]             [训练 / 推理]                     
+ 服务器 203.0.113.10（服务仅绑定 127.0.0.1）
+        |
+   YoloStudio MCP Server (:8080, streamable-http)
+   +---------------------------------------------------+
+   | Tools:                                             |
+   |  scan_dataset       (直接调 DataHandler Mixin)      |
+   |  split_dataset      (直接调 DataHandler Mixin)      |
+   |  validate_dataset   (直接调 DataHandler Mixin)      |
+   |  start_training     (Service Wrapper → subprocess)  |
+   |  check_training_status (日志解析器)                  |
+   |  stop_training      (Service Wrapper)               |
+   |  predict_image      (直接调 ultralytics API)        |
+   |  get_gpu_status     (nvidia-smi 调用)               |
+   +---------------------------------------------------+
+        |
+   +---------------------------------------------------+
+   | DataHandler (直接复用)   | Train/Predict Wrapper    |
+   | core/data_handler/      | (新增 service 层,         |
+   |  _scan.py               |  绕过 Qt QProcess/       |
+   |  _split.py              |  QThread 封装)           |
+   |  _validate.py           |  train_service.py        |
+   |  _augment.py            |  predict_service.py      |
+   +---------------------------------------------------+
+
+   [Ollama :11434]          [YOLO (GPU 1)]
+   [GPU 0: RTX 3060]        [GTX TITAN X]
+   [Gemma4:e4b]             [训练 / 推理]
 ```
 
 **关键优势**：
@@ -292,7 +292,7 @@ CUDA_VISIBLE_DEVICES=0 ~/ollama/bin/ollama serve &
 > 工具通过 MCP Server 暴露，遵循最佳实践：**强类型参数、单一职责、明确描述、Fail-fast 错误处理。**
 
 ```python
-# yolostudio_mcp_server.py — 运行在服务器 192.168.0.163 上
+# yolostudio_mcp_server.py — 运行在服务器 203.0.113.10 上
 # 传输层：使用官方推荐的 Streamable HTTP (FastMCP)
 from mcp.server.fastmcp import FastMCP
 from pathlib import Path
@@ -386,7 +386,7 @@ if __name__ == "__main__":
 > [!IMPORTANT]
 > **前置条件**：先建立 SSH 隧道，再运行客户端。
 > ```bash
-> ssh -L 8080:127.0.0.1:8080 -L 11434:127.0.0.1:11434 kly@192.168.0.163
+> ssh -L 8080:127.0.0.1:8080 -L 11434:127.0.0.1:11434 agent@203.0.113.10
 > ```
 
 ```python
@@ -487,13 +487,13 @@ from langgraph.types import interrupt
 def human_review_node(state: AgentState):
     """需要人工确认的节点"""
     action = state["pending_action"]
-    
+
     # 中断图执行，等待用户输入
     user_decision = interrupt({
         "question": f"⚠️ 即将执行高风险操作: {action}",
         "options": ["确认执行", "取消"]
     })
-    
+
     if user_decision == "确认执行":
         return {"messages": [AIMessage(content="用户已确认，继续执行...")]}
     else:
@@ -528,7 +528,7 @@ def human_review_node(state: AgentState):
 
 ```bash
 # 在 Windows 客户端上建立 SSH 隧道（一条命令转发两个端口）
-ssh -L 8080:127.0.0.1:8080 -L 11434:127.0.0.1:11434 kly@192.168.0.163
+ssh -L 8080:127.0.0.1:8080 -L 11434:127.0.0.1:11434 agent@203.0.113.10
 
 # 然后 Agent 客户端连接本地端口即可
 # MCP:    http://127.0.0.1:8080/mcp
@@ -620,11 +620,11 @@ ssh -L 8080:127.0.0.1:8080 -L 11434:127.0.0.1:11434 kly@192.168.0.163
 
 > [!TIP]
 > **🟢 项目完全可行。**
-> 
+>
 > 服务器双卡配置充裕，Gemma4 原生支持 Tool Calling，MCP + LangChain + LangGraph 技术栈成熟。
-> 
+>
 > **DataHandler 业务层可直接工具化**（纯函数，无 Qt 依赖）；**Train/Predict 模块需编写 Service Wrapper** 来脱离 Qt 事件循环（约占总工期 30%）。
-> 
+>
 > 预计 **2.5-3 周** 可完成 MVP。MCP Server 写一次，自建 Agent、Claude Desktop、Cursor 等均可直接调用。
 
 ---

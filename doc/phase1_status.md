@@ -10,7 +10,7 @@ Date: 2026-04-08 (updated)
 - [x] Gemma4 bind_tools 验证（add(3,5) 正确返回 tool_call）
 - [x] Ollama GPU 隔离：`CUDA_VISIBLE_DEVICES=0`（实机验证）
 - [x] 服务器 MCP 依赖安装：yolostudio-agent-server conda 环境
-- [x] SSH 免密配置：ed25519 密钥 + SSH config (`Host yolostudio`)
+- [x] SSH 免密配置：ed25519 密钥 + SSH config (`Host remote-agent`)
 
 ## Phase 2: MCP Server 开发 ✅ 核心完成
 
@@ -19,7 +19,7 @@ Date: 2026-04-08 (updated)
 - [x] data_tools 4 个工具对齐真实 API（scan/split/validate/augment）
 - [x] train_tools 4 个工具（start/status/stop/gpu）
 - [x] TrainService 接入日志解析器与 GPU 解析逻辑
-- [x] 服务器部署到 `/home/kly/yolostudio_agent_proto`
+- [x] 服务器部署到 `/opt/yolostudio-agent`
 - [x] MCP Server 实机启动：127.0.0.1:8080（远端监听确认）
 - [x] Windows SSH Tunnel 下 Tool 验证：`get_tools()` + `check_training_status` + agent 调用成功
 
@@ -46,4 +46,4 @@ Date: 2026-04-08 (updated)
 ## 剩余事项 ⏳
 
 - [x] 做一次更完整的 scan → validate → start/status/stop 闭环验证
-- [x] 为 MCP Server 增加标准启动/重启脚本（`/home/kly/yolostudio_agent_proto/manage_mcp_server.sh`）
+- [x] 为 MCP Server 增加标准启动/重启脚本（`/opt/yolostudio-agent/manage_mcp_server.sh`）

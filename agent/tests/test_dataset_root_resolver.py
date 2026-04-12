@@ -10,7 +10,7 @@ if __package__ in {None, ""}:
 
 from agent_plan.agent.server.services.dataset_root import resolve_dataset_inputs, resolve_dataset_root
 
-WORK = Path(r'D:\yolodo2.0\agent_plan\agent\tests\_tmp_dataset_root')
+WORK = Path(r'C:\workspace\yolodo2.0\agent_plan\agent\tests\_tmp_dataset_root')
 
 
 def _mkdirs(base: Path, *parts: str) -> Path:

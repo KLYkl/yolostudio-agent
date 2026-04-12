@@ -18,18 +18,18 @@ class _DummyService:
                 {
                     'name': 'yolodo',
                     'display_name': 'yolodo',
-                    'env_path': '/home/kly/miniconda3/envs/yolodo',
-                    'yolo_executable': '/home/kly/miniconda3/envs/yolodo/bin/yolo',
-                    'python_executable': '/home/kly/miniconda3/envs/yolodo/bin/python',
+                    'env_path': '/opt/conda/envs/yolodo',
+                    'yolo_executable': '/opt/conda/envs/yolodo/bin/yolo',
+                    'python_executable': '/opt/conda/envs/yolodo/bin/python',
                     'source': 'conda_env_list',
                     'selected_by_default': True,
                 },
                 {
                     'name': 'yolo',
                     'display_name': 'yolo',
-                    'env_path': '/home/kly/miniconda3/envs/yolo',
-                    'yolo_executable': '/home/kly/miniconda3/envs/yolo/bin/yolo',
-                    'python_executable': '/home/kly/miniconda3/envs/yolo/bin/python',
+                    'env_path': '/opt/conda/envs/yolo',
+                    'yolo_executable': '/opt/conda/envs/yolo/bin/yolo',
+                    'python_executable': '/opt/conda/envs/yolo/bin/python',
                     'source': 'env_directory_scan',
                     'selected_by_default': False,
                 },
@@ -47,8 +47,13 @@ class _DummyService:
         epochs: int = 100,
         device: str = 'auto',
         training_environment: str = '',
+        project: str = '',
+        name: str = '',
         batch: int | None = None,
         imgsz: int | None = None,
+        fraction: float | None = None,
+        classes: list[int] | str | None = None,
+        single_cls: bool | None = None,
         optimizer: str = '',
         freeze: int | None = None,
         resume: bool | None = None,
@@ -59,17 +64,28 @@ class _DummyService:
     ):
         selected_env = training_environment or 'yolodo'
         command_preview = [
-            f'/home/kly/miniconda3/envs/{selected_env}/bin/yolo',
+            f'/opt/conda/envs/{selected_env}/bin/yolo',
             'train',
             f'model={model}',
             f'data={data_yaml}',
             f'epochs={epochs}',
             'device=1',
         ]
+        if project:
+            command_preview.append(f'project={project}')
+        if name:
+            command_preview.append(f'name={name}')
         if batch is not None:
             command_preview.append(f'batch={batch}')
         if imgsz is not None:
             command_preview.append(f'imgsz={imgsz}')
+        if fraction is not None:
+            command_preview.append(f'fraction={fraction}')
+        if classes is not None:
+            joined = ','.join(str(item) for item in classes) if isinstance(classes, list) else str(classes)
+            command_preview.append(f'classes={joined}')
+        if single_cls is not None:
+            command_preview.append(f'single_cls={single_cls}')
         if optimizer:
             command_preview.append(f'optimizer={optimizer}')
         if freeze is not None:
@@ -91,7 +107,7 @@ class _DummyService:
             'training_environment': {
                 'name': selected_env,
                 'display_name': selected_env,
-                'yolo_executable': f'/home/kly/miniconda3/envs/{selected_env}/bin/yolo',
+                'yolo_executable': f'/opt/conda/envs/{selected_env}/bin/yolo',
             },
             'command_preview': command_preview,
             'resolved_args': {
@@ -100,8 +116,13 @@ class _DummyService:
                 'epochs': epochs,
                 'device': '1',
                 'training_environment': selected_env,
+                'project': project or None,
+                'name': name or None,
                 'batch': batch,
                 'imgsz': imgsz,
+                'fraction': fraction,
+                'classes': classes,
+                'single_cls': single_cls,
                 'optimizer': optimizer or None,
                 'freeze': freeze,
                 'resume': resume,
@@ -133,8 +154,13 @@ def main() -> None:
             epochs=5,
             device='auto',
             training_environment='yolo',
+            project='/runs/ablation',
+            name='exp-blue',
             batch=8,
             imgsz=960,
+            fraction=0.5,
+            classes=[1, 3],
+            single_cls=True,
             optimizer='AdamW',
             freeze=6,
             resume=True,
@@ -148,8 +174,13 @@ def main() -> None:
         assert preflight['training_environment']['name'] == 'yolo'
         assert preflight['resolved_args']['training_environment'] == 'yolo'
         assert preflight['command_preview'][0].endswith('/bin/yolo')
+        assert 'project=/runs/ablation' in preflight['command_preview']
+        assert 'name=exp-blue' in preflight['command_preview']
         assert 'batch=8' in preflight['command_preview']
         assert 'imgsz=960' in preflight['command_preview']
+        assert 'fraction=0.5' in preflight['command_preview']
+        assert 'classes=1,3' in preflight['command_preview']
+        assert 'single_cls=True' in preflight['command_preview']
         assert 'optimizer=AdamW' in preflight['command_preview']
         assert 'freeze=6' in preflight['command_preview']
         assert 'resume=True' in preflight['command_preview']

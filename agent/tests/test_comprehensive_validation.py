@@ -105,35 +105,35 @@ async def main() -> None:
 
     # 1) 基础数据集验证
     result['tool_checks']['scan_test_dataset_root'] = await call_tool(tool_map['scan_dataset'], {
-        'img_dir': '/home/kly/test_dataset',
+        'img_dir': '/data/test_dataset',
     })
     result['tool_checks']['scan_test_dataset_explicit'] = await call_tool(tool_map['scan_dataset'], {
-        'img_dir': '/home/kly/test_dataset/images',
-        'label_dir': '/home/kly/test_dataset/labels',
+        'img_dir': '/data/test_dataset/images',
+        'label_dir': '/data/test_dataset/labels',
     })
     result['tool_checks']['validate_test_dataset_explicit'] = await call_tool(tool_map['validate_dataset'], {
-        'img_dir': '/home/kly/test_dataset/images',
-        'label_dir': '/home/kly/test_dataset/labels',
+        'img_dir': '/data/test_dataset/images',
+        'label_dir': '/data/test_dataset/labels',
     })
     result['tool_checks']['readiness_test_dataset'] = await call_tool(tool_map['training_readiness'], {
-        'img_dir': '/home/kly/test_dataset/images',
-        'label_dir': '/home/kly/test_dataset/labels',
+        'img_dir': '/data/test_dataset/images',
+        'label_dir': '/data/test_dataset/labels',
     })
     result['tool_checks']['gpu_status'] = await call_tool(tool_map['check_gpu_status'], {})
     result['tool_checks']['scan_dataset_1ch'] = await call_tool(tool_map['scan_dataset'], {
-        'img_dir': '/home/kly/dataset_1ch/images',
-        'label_dir': '/home/kly/dataset_1ch/labels',
+        'img_dir': '/home/agent/dataset_1ch/images',
+        'label_dir': '/home/agent/dataset_1ch/labels',
     })
     result['tool_checks']['readiness_dataset_1ch'] = await call_tool(tool_map['training_readiness'], {
-        'img_dir': '/home/kly/dataset_1ch/images',
-        'label_dir': '/home/kly/dataset_1ch/labels',
-        'data_yaml': '/home/kly/dataset_1ch.yaml',
+        'img_dir': '/home/agent/dataset_1ch/images',
+        'label_dir': '/home/agent/dataset_1ch/labels',
+        'data_yaml': '/home/agent/dataset_1ch.yaml',
     })
 
     # 2) 多轮训练：直接 tool 路径
     run1 = await call_tool(start_tool, {
-        'model': '/home/kly/yolov8n.pt',
-        'data_yaml': '/home/kly/test_dataset/data.yaml',
+        'model': '/models/yolov8n.pt',
+        'data_yaml': '/data/test_dataset/data.yaml',
         'epochs': 4,
         'device': 'auto',
     })
@@ -147,8 +147,8 @@ async def main() -> None:
         result['findings'].append({'type': 'tool_run_small_4epochs_start_failed', 'detail': run1})
 
     run2 = await call_tool(start_tool, {
-        'model': '/home/kly/yolov8n.pt',
-        'data_yaml': '/home/kly/test_dataset/data.yaml',
+        'model': '/models/yolov8n.pt',
+        'data_yaml': '/data/test_dataset/data.yaml',
         'epochs': 6,
         'device': 'auto',
     })
@@ -175,10 +175,10 @@ async def main() -> None:
     agent = await build_agent_client(settings)
 
     turns = [
-        '请扫描 /home/kly/test_dataset/images 和 /home/kly/test_dataset/labels。',
+        '请扫描 /data/test_dataset/images 和 /data/test_dataset/labels。',
         '这个数据集现在能不能直接训练？如果不能请说明缺什么。',
         '请先调用 check_gpu_status 再告诉我现在是否适合训练。',
-        '请用 /home/kly/yolov8n.pt 基于刚才的数据训练 3 轮。',
+        '请用 /models/yolov8n.pt 基于刚才的数据训练 3 轮。',
         '现在训练状态怎么样？',
     ]
     agent_records: list[dict] = []

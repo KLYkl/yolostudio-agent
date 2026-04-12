@@ -37,7 +37,7 @@
 - 得分: 4/4 (1.0)
 - Provider: `ollama` / `gemma4:e4b`
 - 实际工具链: `check_training_status, training_readiness`
-- 回复摘要: 可以直接训练 当前可用 YAML: /home/kly/test_dataset/data.yaml 当前 auto 设备策略会解析到: 1 建议: - {'description': '可以直接调用 start_training 开始训练', 'tool': 'start_training', 'args_hint': {'data_yaml': '/home/kly/test_dataset/data.yaml'}}
+- 回复摘要: 可以直接训练 当前可用 YAML: /data/test_dataset/data.yaml 当前 auto 设备策略会解析到: 1 建议: - {'description': '可以直接调用 start_training 开始训练', 'tool': 'start_training', 'args_hint': {'data_yaml': '/data/test_dataset/data.yaml'}}
 
 ### agent_ollama_complex_chain
 - 预期: 复杂训练意图应收敛到 prepare -> start_training 两段式流程
@@ -50,7 +50,7 @@
 - 得分: 4/4 (1.0)
 - Provider: `ollama` / `gemma4:e4b`
 - 实际工具链: `check_training_status, scan_dataset, validate_dataset, run_dataset_health_check`
-- 回复摘要: 未发现标签格式/坐标问题；发现 5179 张图片缺少标签（占比 73.7%），训练结果可能受到明显影响 最值得注意的风险: - 发现 5179 张图片缺少标签（占比 73.7%），训练结果可能受到明显影响 - 发现 5 个文件扩展名与真实格式不匹配 - 发现 83 组重复图片（额外重复文件 83 个） 涉及类别: Excavator, bulldozer, piling_machine, two_wheeler 类名来源: /home/kly/agent_cap_tests/
+- 回复摘要: 未发现标签格式/坐标问题；发现 5179 张图片缺少标签（占比 73.7%），训练结果可能受到明显影响 最值得注意的风险: - 发现 5179 张图片缺少标签（占比 73.7%），训练结果可能受到明显影响 - 发现 5 个文件扩展名与真实格式不匹配 - 发现 83 组重复图片（额外重复文件 83 个） 涉及类别: Excavator, bulldozer, piling_machine, two_wheeler 类名来源: /data/agent_cap_tests/
 
 ### agent_ollama_health_grounded
 - 预期: 健康检查应命中专用工具，并以 grounded 方式总结，不编造修改动作
@@ -64,20 +64,20 @@
 - 得分: 4/4 (1.0)
 - Provider: `ollama` / `gemma4:e4b`
 - 实际工具链: `check_training_status, detect_duplicate_images`
-- 回复摘要: 检测完成: 发现 83 组重复图片，额外重复文件 83 个 示例重复组: - /home/kly/agent_cap_tests/zyb/images/20161228230642.jpg, /home/kly/agent_cap_tests/zyb/images/training_training_image_20161228230642.jpg - /home/kly/agent_cap_tests/zyb/images/20161228230649.jpg, /home
+- 回复摘要: 检测完成: 发现 83 组重复图片，额外重复文件 83 个 示例重复组: - /data/agent_cap_tests/zyb/images/20161228230642.jpg, /data/agent_cap_tests/zyb/images/training_training_image_20161228230642.jpg - /data/agent_cap_tests/zyb/images/20161228230649.jpg, /home
 
 ### agent_ollama_state_purity
 - 预期: fresh session 仅查状态时，不应被旧训练参数污染
 - 得分: 4/4 (1.0)
 - Provider: `ollama` / `gemma4:e4b`
-- 状态摘要: `{"running": false, "model": "", "data_yaml": "", "device": "", "last_status": {"ok": true, "running": false, "log_file": "runs/train_log_1775840042.txt", "device": "1", "requested_device": "auto", "command": ["/home/kly/miniconda3/bin/yolo", "train", "model=/home/kly/yolov8n.pt", "data=/home/kly/agent_cap_tests/zyb/images_split/data.yaml", "epochs=30", "device=1"], "started_at": 1775840042.7257767, "yolo_executable": "/home/kly/miniconda3/bin/yolo", "device_policy": "single_idle_gpu", "argument_sources": {"model": "request_or_agent_input", "data_yaml": "request_or_tool_output", "epochs": "request_or_default", "device": "auto_resolved"}, "resolved_args": {"model": "/home/kly/yolov8n.pt", "data_yaml": "/home/kly/agent_cap_tests/zyb/images_split/data.yaml", "epochs": 30, "device": "1", "device_policy": "single_idle_gpu"}, "reattached": false, "registry_path": "runs/active_train_job.json", "pid": 56927, "return_code": -15, "stopped_at": 1775840104.2528205, "stop_reason": "manual_stop", "last_run": {"pid": 56927, "log_file": "runs/train_log_1775840042.txt", "started_at": 1775840042.7257767, "device": "1", "requested_device": "auto", "command": ["/home/kly/miniconda3/bin/yolo", "train", "model=/home/kly/yolov8n.pt", "data=/home/kly/agent_cap_tests/zyb/images_split/data.yaml", "epochs=30", "device=1"], "yolo_executable": "/home/kly/miniconda3/bin/yolo", "argument_sources": {"model": "request_or_agent_input", "data_yaml": "request_or_tool_output", "epochs": "request_or_default", "device": "auto_resolved"}, "resolved_args": {"model": "/home/kly/yolov8n.pt", "data_yaml": "/home/kly/agent_cap_tests/zyb/images_split/data.yaml", "epochs": 30, "device": "1", "device_policy": "single_idle_gpu"}, "running": false, "return_code": -15, "forced": false, "stop_reason": "manual_stop", "updated_at": 1775840104.2528205, "stopped_at": 1775840104.2528205}, "elapsed_seconds": 61.53, "latest_metrics": {"ok": true, "metrics": {"epoch": 1, "total_epochs": 30, "gpu_mem": "2.15G", "box_loss": "1.512", "cls_loss": "6.059", "dfl_loss": "1.262"}}, "summary": "当前无训练在跑，最近一次训练已手动停止，return_code=-15", "next_actions": ["当前无训练在跑，可直接 start_training 启动新训练"]}}`
+- 状态摘要: `{"running": false, "model": "", "data_yaml": "", "device": "", "last_status": {"ok": true, "running": false, "log_file": "runs/train_log_1775840042.txt", "device": "1", "requested_device": "auto", "command": ["/opt/conda/bin/yolo", "train", "model=/models/yolov8n.pt", "data=/data/agent_cap_tests/zyb/images_split/data.yaml", "epochs=30", "device=1"], "started_at": 1775840042.7257767, "yolo_executable": "/opt/conda/bin/yolo", "device_policy": "single_idle_gpu", "argument_sources": {"model": "request_or_agent_input", "data_yaml": "request_or_tool_output", "epochs": "request_or_default", "device": "auto_resolved"}, "resolved_args": {"model": "/models/yolov8n.pt", "data_yaml": "/data/agent_cap_tests/zyb/images_split/data.yaml", "epochs": 30, "device": "1", "device_policy": "single_idle_gpu"}, "reattached": false, "registry_path": "runs/active_train_job.json", "pid": 56927, "return_code": -15, "stopped_at": 1775840104.2528205, "stop_reason": "manual_stop", "last_run": {"pid": 56927, "log_file": "runs/train_log_1775840042.txt", "started_at": 1775840042.7257767, "device": "1", "requested_device": "auto", "command": ["/opt/conda/bin/yolo", "train", "model=/models/yolov8n.pt", "data=/data/agent_cap_tests/zyb/images_split/data.yaml", "epochs=30", "device=1"], "yolo_executable": "/opt/conda/bin/yolo", "argument_sources": {"model": "request_or_agent_input", "data_yaml": "request_or_tool_output", "epochs": "request_or_default", "device": "auto_resolved"}, "resolved_args": {"model": "/models/yolov8n.pt", "data_yaml": "/data/agent_cap_tests/zyb/images_split/data.yaml", "epochs": 30, "device": "1", "device_policy": "single_idle_gpu"}, "running": false, "return_code": -15, "forced": false, "stop_reason": "manual_stop", "updated_at": 1775840104.2528205, "stopped_at": 1775840104.2528205}, "elapsed_seconds": 61.53, "latest_metrics": {"ok": true, "metrics": {"epoch": 1, "total_epochs": 30, "gpu_mem": "2.15G", "box_loss": "1.512", "cls_loss": "6.059", "dfl_loss": "1.262"}}, "summary": "当前无训练在跑，最近一次训练已手动停止，return_code=-15", "next_actions": ["当前无训练在跑，可直接 start_training 启动新训练"]}}`
 
 ### agent_deepseek_standard_no_train
 - 预期: 遵守只检查不训练约束，并给出 grounded 结论
 - 得分: 4/4 (1.0)
 - Provider: `deepseek` / `deepseek-chat`
 - 实际工具链: `check_training_status, training_readiness`
-- 回复摘要: 可以直接训练 当前可用 YAML: /home/kly/test_dataset/data.yaml 当前 auto 设备策略会解析到: 1 建议: - {'description': '可以直接调用 start_training 开始训练', 'tool': 'start_training', 'args_hint': {'data_yaml': '/home/kly/test_dataset/data.yaml'}}
+- 回复摘要: 可以直接训练 当前可用 YAML: /data/test_dataset/data.yaml 当前 auto 设备策略会解析到: 1 建议: - {'description': '可以直接调用 start_training 开始训练', 'tool': 'start_training', 'args_hint': {'data_yaml': '/data/test_dataset/data.yaml'}}
 
 ### agent_deepseek_complex_chain
 - 预期: 复杂训练意图应收敛到 prepare -> start_training 两段式流程
@@ -90,7 +90,7 @@
 - 得分: 4/4 (1.0)
 - Provider: `deepseek` / `deepseek-chat`
 - 实际工具链: `check_training_status, scan_dataset, validate_dataset, run_dataset_health_check`
-- 回复摘要: 未发现标签格式/坐标问题；发现 5179 张图片缺少标签（占比 73.7%），训练结果可能受到明显影响 最值得注意的风险: - 发现 5179 张图片缺少标签（占比 73.7%），训练结果可能受到明显影响 - 发现 5 个文件扩展名与真实格式不匹配 - 发现 83 组重复图片（额外重复文件 83 个） 涉及类别: Excavator, bulldozer, piling_machine, two_wheeler 类名来源: /home/kly/agent_cap_tests/
+- 回复摘要: 未发现标签格式/坐标问题；发现 5179 张图片缺少标签（占比 73.7%），训练结果可能受到明显影响 最值得注意的风险: - 发现 5179 张图片缺少标签（占比 73.7%），训练结果可能受到明显影响 - 发现 5 个文件扩展名与真实格式不匹配 - 发现 83 组重复图片（额外重复文件 83 个） 涉及类别: Excavator, bulldozer, piling_machine, two_wheeler 类名来源: /data/agent_cap_tests/
 
 ### agent_deepseek_health_grounded
 - 预期: 健康检查应命中专用工具，并以 grounded 方式总结，不编造修改动作
@@ -104,13 +104,13 @@
 - 得分: 4/4 (1.0)
 - Provider: `deepseek` / `deepseek-chat`
 - 实际工具链: `check_training_status, detect_duplicate_images`
-- 回复摘要: 检测完成: 发现 83 组重复图片，额外重复文件 83 个 示例重复组: - /home/kly/agent_cap_tests/zyb/images/20161228230642.jpg, /home/kly/agent_cap_tests/zyb/images/training_training_image_20161228230642.jpg - /home/kly/agent_cap_tests/zyb/images/20161228230649.jpg, /home
+- 回复摘要: 检测完成: 发现 83 组重复图片，额外重复文件 83 个 示例重复组: - /data/agent_cap_tests/zyb/images/20161228230642.jpg, /data/agent_cap_tests/zyb/images/training_training_image_20161228230642.jpg - /data/agent_cap_tests/zyb/images/20161228230649.jpg, /home
 
 ### agent_deepseek_state_purity
 - 预期: fresh session 仅查状态时，不应被旧训练参数污染
 - 得分: 4/4 (1.0)
 - Provider: `deepseek` / `deepseek-chat`
-- 状态摘要: `{"running": false, "model": "", "data_yaml": "", "device": "", "last_status": {"ok": true, "running": false, "log_file": "runs/train_log_1775840042.txt", "device": "1", "requested_device": "auto", "command": ["/home/kly/miniconda3/bin/yolo", "train", "model=/home/kly/yolov8n.pt", "data=/home/kly/agent_cap_tests/zyb/images_split/data.yaml", "epochs=30", "device=1"], "started_at": 1775840042.7257767, "yolo_executable": "/home/kly/miniconda3/bin/yolo", "device_policy": "single_idle_gpu", "argument_sources": {"model": "request_or_agent_input", "data_yaml": "request_or_tool_output", "epochs": "request_or_default", "device": "auto_resolved"}, "resolved_args": {"model": "/home/kly/yolov8n.pt", "data_yaml": "/home/kly/agent_cap_tests/zyb/images_split/data.yaml", "epochs": 30, "device": "1", "device_policy": "single_idle_gpu"}, "reattached": false, "registry_path": "runs/active_train_job.json", "pid": 56927, "return_code": -15, "stopped_at": 1775840104.2528205, "stop_reason": "manual_stop", "last_run": {"pid": 56927, "log_file": "runs/train_log_1775840042.txt", "started_at": 1775840042.7257767, "device": "1", "requested_device": "auto", "command": ["/home/kly/miniconda3/bin/yolo", "train", "model=/home/kly/yolov8n.pt", "data=/home/kly/agent_cap_tests/zyb/images_split/data.yaml", "epochs=30", "device=1"], "yolo_executable": "/home/kly/miniconda3/bin/yolo", "argument_sources": {"model": "request_or_agent_input", "data_yaml": "request_or_tool_output", "epochs": "request_or_default", "device": "auto_resolved"}, "resolved_args": {"model": "/home/kly/yolov8n.pt", "data_yaml": "/home/kly/agent_cap_tests/zyb/images_split/data.yaml", "epochs": 30, "device": "1", "device_policy": "single_idle_gpu"}, "running": false, "return_code": -15, "forced": false, "stop_reason": "manual_stop", "updated_at": 1775840104.2528205, "stopped_at": 1775840104.2528205}, "elapsed_seconds": 61.53, "latest_metrics": {"ok": true, "metrics": {"epoch": 1, "total_epochs": 30, "gpu_mem": "2.15G", "box_loss": "1.512", "cls_loss": "6.059", "dfl_loss": "1.262"}}, "summary": "当前无训练在跑，最近一次训练已手动停止，return_code=-15", "next_actions": ["当前无训练在跑，可直接 start_training 启动新训练"]}}`
+- 状态摘要: `{"running": false, "model": "", "data_yaml": "", "device": "", "last_status": {"ok": true, "running": false, "log_file": "runs/train_log_1775840042.txt", "device": "1", "requested_device": "auto", "command": ["/opt/conda/bin/yolo", "train", "model=/models/yolov8n.pt", "data=/data/agent_cap_tests/zyb/images_split/data.yaml", "epochs=30", "device=1"], "started_at": 1775840042.7257767, "yolo_executable": "/opt/conda/bin/yolo", "device_policy": "single_idle_gpu", "argument_sources": {"model": "request_or_agent_input", "data_yaml": "request_or_tool_output", "epochs": "request_or_default", "device": "auto_resolved"}, "resolved_args": {"model": "/models/yolov8n.pt", "data_yaml": "/data/agent_cap_tests/zyb/images_split/data.yaml", "epochs": 30, "device": "1", "device_policy": "single_idle_gpu"}, "reattached": false, "registry_path": "runs/active_train_job.json", "pid": 56927, "return_code": -15, "stopped_at": 1775840104.2528205, "stop_reason": "manual_stop", "last_run": {"pid": 56927, "log_file": "runs/train_log_1775840042.txt", "started_at": 1775840042.7257767, "device": "1", "requested_device": "auto", "command": ["/opt/conda/bin/yolo", "train", "model=/models/yolov8n.pt", "data=/data/agent_cap_tests/zyb/images_split/data.yaml", "epochs=30", "device=1"], "yolo_executable": "/opt/conda/bin/yolo", "argument_sources": {"model": "request_or_agent_input", "data_yaml": "request_or_tool_output", "epochs": "request_or_default", "device": "auto_resolved"}, "resolved_args": {"model": "/models/yolov8n.pt", "data_yaml": "/data/agent_cap_tests/zyb/images_split/data.yaml", "epochs": 30, "device": "1", "device_policy": "single_idle_gpu"}, "running": false, "return_code": -15, "forced": false, "stop_reason": "manual_stop", "updated_at": 1775840104.2528205, "stopped_at": 1775840104.2528205}, "elapsed_seconds": 61.53, "latest_metrics": {"ok": true, "metrics": {"epoch": 1, "total_epochs": 30, "gpu_mem": "2.15G", "box_loss": "1.512", "cls_loss": "6.059", "dfl_loss": "1.262"}}, "summary": "当前无训练在跑，最近一次训练已手动停止，return_code=-15", "next_actions": ["当前无训练在跑，可直接 start_training 启动新训练"]}}`
 
 ## 3. 本轮暴露的问题
 

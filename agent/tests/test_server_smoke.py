@@ -30,7 +30,7 @@ def main() -> None:
         else:
             os.environ["YOLOSTUDIO_TRAIN_DEVICE_POLICY"] = original_policy
 
-    missing_yaml = str(Path("D:/yolodo2.0/agent_plan/definitely_missing.yaml"))
+    missing_yaml = str(Path("C:/workspace/yolodo2.0/agent_plan/definitely_missing.yaml"))
     invalid = service.start(model="yolov8n.pt", data_yaml=missing_yaml, epochs=1)
     print("start:missing_yaml", invalid)
 

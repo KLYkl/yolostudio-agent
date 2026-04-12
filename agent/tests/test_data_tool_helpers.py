@@ -18,7 +18,7 @@ from agent_plan.agent.server.tools.data_tools import (
 
 
 def main() -> None:
-    root = Path('D:/yolodo2.0/agent_plan/.tmp_data_tool_test')
+    root = Path('C:/workspace/yolodo2.0/agent_plan/.tmp_data_tool_test')
     if root.exists():
         shutil.rmtree(root)
     (root / 'dataset_1ch' / 'images' / 'train').mkdir(parents=True, exist_ok=True)

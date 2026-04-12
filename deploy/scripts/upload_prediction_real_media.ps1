@@ -2,12 +2,16 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Server,
 
-    [string]$StageDir = "D:\yolodo2.0\agent_plan\.tmp_prediction_real_media_stage",
-    [string]$RemoteRoot = "/home/kly/prediction_real_media_stage"
+    [string]$StageDir = "",
+    [string]$RemoteRoot = "/data/prediction_real_media_stage"
 )
 
 $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $true
+$RepoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
+if ([string]::IsNullOrWhiteSpace($StageDir)) {
+    $StageDir = Join-Path $RepoRoot ".tmp_prediction_real_media_stage"
+}
 
 if (!(Test-Path -LiteralPath $StageDir)) {
     throw "StageDir 不存在: $StageDir"
@@ -31,9 +35,7 @@ function Invoke-NativeChecked {
     Write-Host $display
 
     if ($Exe -in @("ssh", "scp")) {
-        $quotedArgs = $Args | ForEach-Object {
-            '"' + (($_ -replace '"', '\"')) + '"'
-        }
+        $quotedArgs = $Args | ForEach-Object { '"' + (($_ -replace '"', '\"')) + '"' }
         $cmdLine = '"' + $Exe + '" ' + ($quotedArgs -join " ") + ' < NUL'
         $cmdExe = if ($env:ComSpec) { $env:ComSpec } else { "C:\Windows\System32\cmd.exe" }
         & $cmdExe /c $cmdLine
@@ -54,43 +56,21 @@ $ensureRootCommands = @(
     "mkdir -p $RemoteRoot/videos && echo __REMOTE_READY__ videos"
 )
 foreach ($remoteCommand in $ensureRootCommands) {
-    Invoke-NativeChecked -Exe "ssh" -Args @(
-        "-n",
-        "-T",
-        "-o", "BatchMode=yes",
-        "-o", "ConnectTimeout=10",
-        $Server,
-        $remoteCommand
-    )
+    Invoke-NativeChecked -Exe "ssh" -Args @("-n", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", $Server, $remoteCommand)
 }
 Write-Host "==> remote root ready: $RemoteRoot"
 
 Write-Host "==> upload manifest"
-Invoke-NativeChecked -Exe "scp" -Args @(
-    "-o", "BatchMode=yes",
-    "-o", "ConnectTimeout=10",
-    $Manifest,
-    "$Server`:$RemoteRoot/manifest.json"
-)
+Invoke-NativeChecked -Exe "scp" -Args @("-o", "BatchMode=yes", "-o", "ConnectTimeout=10", $Manifest, "$Server`:$RemoteRoot/manifest.json")
 
 Write-Host "==> upload weights"
 Get-ChildItem -LiteralPath (Join-Path $StageDir "weights") -File | ForEach-Object {
-    Invoke-NativeChecked -Exe "scp" -Args @(
-        "-o", "BatchMode=yes",
-        "-o", "ConnectTimeout=10",
-        $_.FullName,
-        "$Server`:$RemoteRoot/weights/$($_.Name)"
-    )
+    Invoke-NativeChecked -Exe "scp" -Args @("-o", "BatchMode=yes", "-o", "ConnectTimeout=10", $_.FullName, "$Server`:$RemoteRoot/weights/$($_.Name)")
 }
 
 Write-Host "==> upload videos"
 Get-ChildItem -LiteralPath (Join-Path $StageDir "videos") -File | ForEach-Object {
-    Invoke-NativeChecked -Exe "scp" -Args @(
-        "-o", "BatchMode=yes",
-        "-o", "ConnectTimeout=10",
-        $_.FullName,
-        "$Server`:$RemoteRoot/videos/$($_.Name)"
-    )
+    Invoke-NativeChecked -Exe "scp" -Args @("-o", "BatchMode=yes", "-o", "ConnectTimeout=10", $_.FullName, "$Server`:$RemoteRoot/videos/$($_.Name)")
 }
 
 Write-Host "upload finished: $RemoteRoot"

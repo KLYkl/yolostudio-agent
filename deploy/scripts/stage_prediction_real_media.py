@@ -1,31 +1,23 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from datetime import datetime
 from pathlib import Path
 
 
-DEFAULT_WEIGHTS_ROOT = Path(r"C:\Users\29615\OneDrive\桌面\yuntian")
-DEFAULT_VIDEOS_ROOT = Path(r"H:\foto")
-DEFAULT_STAGE_ROOT = Path(r"D:\yolodo2.0\agent_plan\.tmp_prediction_real_media_stage")
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_STAGE_ROOT = REPO_ROOT / ".tmp_prediction_real_media_stage"
 VIDEO_SUFFIXES = {".mp4", ".avi", ".mov", ".mkv"}
 
 
 def _pick_weights(root: Path, limit: int = 3) -> list[Path]:
-    return sorted(
-        root.glob("*.pt"),
-        key=lambda item: item.stat().st_mtime,
-        reverse=True,
-    )[:limit]
+    return sorted(root.glob("*.pt"), key=lambda item: item.stat().st_mtime, reverse=True)[:limit]
 
 
 def _pick_videos(root: Path, limit: int = 3) -> list[Path]:
-    candidates = [
-        path
-        for path in root.rglob("*")
-        if path.is_file() and path.suffix.lower() in VIDEO_SUFFIXES
-    ]
+    candidates = [path for path in root.rglob("*") if path.is_file() and path.suffix.lower() in VIDEO_SUFFIXES]
     return sorted(candidates, key=lambda item: item.stat().st_size)[:limit]
 
 
@@ -48,9 +40,18 @@ def _copy_files(paths: list[Path], dst_dir: Path) -> list[dict[str, object]]:
 
 
 def main() -> None:
-    weights_root = DEFAULT_WEIGHTS_ROOT
-    videos_root = DEFAULT_VIDEOS_ROOT
-    stage_root = DEFAULT_STAGE_ROOT
+    weights_root_raw = os.environ.get("YOLO_REAL_MEDIA_WEIGHTS_ROOT", "").strip()
+    videos_root_raw = os.environ.get("YOLO_REAL_MEDIA_VIDEOS_ROOT", "").strip()
+    stage_root_raw = os.environ.get("YOLO_REAL_MEDIA_STAGE_ROOT", "").strip()
+
+    if not weights_root_raw or not videos_root_raw:
+        raise RuntimeError(
+            "请先设置 YOLO_REAL_MEDIA_WEIGHTS_ROOT 和 YOLO_REAL_MEDIA_VIDEOS_ROOT，再运行 stage_prediction_real_media.py。"
+        )
+
+    weights_root = Path(weights_root_raw)
+    videos_root = Path(videos_root_raw)
+    stage_root = Path(stage_root_raw) if stage_root_raw else DEFAULT_STAGE_ROOT
 
     if stage_root.exists():
         shutil.rmtree(stage_root)

@@ -10,7 +10,7 @@ if __package__ in {None, ''}:
 
 from agent_plan.agent.server.services.prediction_report_helpers import summarize_prediction_report
 
-TMP_ROOT = Path('D:/yolodo2.0/agent_plan/.tmp_prediction_report_helper_test')
+TMP_ROOT = Path('C:/workspace/yolodo2.0/agent_plan/.tmp_prediction_report_helper_test')
 
 
 def main() -> None:

@@ -4,37 +4,37 @@ set -euo pipefail
 ACTION="${1:-list}"
 
 ALLOWED_PREFIXES=(
-  "/home/kly/test_dataset"
-  "/home/kly/agent_cap_tests"
-  "/home/kly/test_dataset_split_for_yaml"
+  "/data/test_dataset"
+  "/data/agent_cap_tests"
+  "/data/test_dataset_split_for_yaml"
 )
 
 TARGETS=(
-  "/home/kly/agent_cap_tests/nonstandard_dataset/pics_split"
-  "/home/kly/agent_cap_tests/nonstandard_dataset_split"
-  "/home/kly/agent_cap_tests/nonstandard_dataset_split(1)"
-  "/home/kly/agent_cap_tests/nonstandard_dataset_split(2)"
-  "/home/kly/agent_cap_tests/zyb/images_split"
-  "/home/kly/agent_cap_tests/zyb/images_split(1)"
-  "/home/kly/agent_cap_tests/zyb/images_split(2)"
-  "/home/kly/agent_cap_tests/zyb/images_split(3)"
-  "/home/kly/agent_cap_tests/zyb/images_split(4)"
-  "/home/kly/agent_cap_tests/zyb/images_split(5)"
-  "/home/kly/agent_cap_tests/zyb/images_split(6)"
-  "/home/kly/agent_cap_tests/zyb/images_split(7)"
-  "/home/kly/agent_cap_tests/zyb/images_split(8)"
-  "/home/kly/agent_cap_tests/zyb/images_split(9)"
-  "/home/kly/test_dataset/images_split"
-  "/home/kly/test_dataset/images_split(1)"
-  "/home/kly/test_dataset/images_split(2)"
-  "/home/kly/test_dataset/images_split(3)"
-  "/home/kly/test_dataset/images_split(4)"
-  "/home/kly/test_dataset/images_split(5)"
-  "/home/kly/test_dataset/images_split(6)"
-  "/home/kly/test_dataset/images_split(7)"
-  "/home/kly/test_dataset/images_split(8)"
-  "/home/kly/test_dataset/images_split(9)"
-  "/home/kly/test_dataset_split_for_yaml"
+  "/data/agent_cap_tests/nonstandard_dataset/pics_split"
+  "/data/agent_cap_tests/nonstandard_dataset_split"
+  "/data/agent_cap_tests/nonstandard_dataset_split(1)"
+  "/data/agent_cap_tests/nonstandard_dataset_split(2)"
+  "/data/agent_cap_tests/zyb/images_split"
+  "/data/agent_cap_tests/zyb/images_split(1)"
+  "/data/agent_cap_tests/zyb/images_split(2)"
+  "/data/agent_cap_tests/zyb/images_split(3)"
+  "/data/agent_cap_tests/zyb/images_split(4)"
+  "/data/agent_cap_tests/zyb/images_split(5)"
+  "/data/agent_cap_tests/zyb/images_split(6)"
+  "/data/agent_cap_tests/zyb/images_split(7)"
+  "/data/agent_cap_tests/zyb/images_split(8)"
+  "/data/agent_cap_tests/zyb/images_split(9)"
+  "/data/test_dataset/images_split"
+  "/data/test_dataset/images_split(1)"
+  "/data/test_dataset/images_split(2)"
+  "/data/test_dataset/images_split(3)"
+  "/data/test_dataset/images_split(4)"
+  "/data/test_dataset/images_split(5)"
+  "/data/test_dataset/images_split(6)"
+  "/data/test_dataset/images_split(7)"
+  "/data/test_dataset/images_split(8)"
+  "/data/test_dataset/images_split(9)"
+  "/data/test_dataset_split_for_yaml"
 )
 
 is_allowed_prefix() {
@@ -59,7 +59,7 @@ validate_target() {
   fi
 
   case "$resolved" in
-    *split*|*/images_split|*/pics_split|"/home/kly/test_dataset_split_for_yaml") ;;
+    *split*|*/images_split|*/pics_split|"/data/test_dataset_split_for_yaml") ;;
     *)
       echo "[ABORT] target does not look like a split artifact: $target -> $resolved" >&2
       exit 1

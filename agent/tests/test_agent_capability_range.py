@@ -13,7 +13,7 @@ if __package__ in {None, ""}:
 
 from agent_plan.agent.client.agent_client import AgentSettings, YoloStudioAgentClient, build_agent_client
 
-OUT = Path(r'D:\yolodo2.0\agent_plan\agent\tests\test_agent_capability_range_output.json')
+OUT = Path(r'C:\workspace\yolodo2.0\agent_plan\agent\tests\test_agent_capability_range_output.json')
 
 
 def _now_id() -> str:
@@ -98,7 +98,7 @@ async def make_agent(provider: str, model: str, session_id: str) -> YoloStudioAg
 async def case_root_train_chain(provider: str, model: str, prefix: str) -> dict[str, Any]:
     agent = await make_agent(provider, model, f'{prefix}-root-train')
     await ensure_no_training(agent)
-    run = await run_prompt(agent, '数据在 /home/kly/test_dataset/，按默认划分比例，然后用 yolov8n 模型训练 2 轮。', [True, True])
+    run = await run_prompt(agent, '数据在 /data/test_dataset/，按默认划分比例，然后用 yolov8n 模型训练 2 轮。', [True, True])
     cleanup = await cleanup_training(agent)
     summary = summarize_events(agent)
     return {
@@ -112,8 +112,8 @@ async def case_root_train_chain(provider: str, model: str, prefix: str) -> dict[
         'assessment': {
             'used_prepare': any(t['tool'] == 'prepare_dataset_for_training' for t in summary['tools']),
             'used_start_training': any(t['tool'] == 'start_training' for t in summary['tools']),
-            'resolved_root_ok': agent.session_state.active_dataset.img_dir == '/home/kly/test_dataset/images',
-            'resolved_yaml_ok': agent.session_state.active_dataset.data_yaml == '/home/kly/test_dataset/data.yaml',
+            'resolved_root_ok': agent.session_state.active_dataset.img_dir == '/data/test_dataset/images',
+            'resolved_yaml_ok': agent.session_state.active_dataset.data_yaml == '/data/test_dataset/data.yaml',
         },
     }
 
@@ -121,7 +121,7 @@ async def case_root_train_chain(provider: str, model: str, prefix: str) -> dict[
 async def case_conditional_direct_train(provider: str, model: str, prefix: str) -> dict[str, Any]:
     agent = await make_agent(provider, model, f'{prefix}-conditional-direct')
     await ensure_no_training(agent)
-    run = await run_prompt(agent, '先检查 /home/kly/test_dataset/ 是否已经可以直接训练；如果可以，不要重新划分，直接用 yolov8n 模型训练 2 轮。', [True, True])
+    run = await run_prompt(agent, '先检查 /data/test_dataset/ 是否已经可以直接训练；如果可以，不要重新划分，直接用 yolov8n 模型训练 2 轮。', [True, True])
     cleanup = await cleanup_training(agent)
     summary = summarize_events(agent)
     prepare = (summary.get('latest_prepare') or {}).get('result', {})
@@ -145,7 +145,7 @@ async def case_conditional_direct_train(provider: str, model: str, prefix: str) 
 async def case_followup_context_train(provider: str, model: str, prefix: str) -> dict[str, Any]:
     agent = await make_agent(provider, model, f'{prefix}-followup-context')
     await ensure_no_training(agent)
-    first = await run_prompt(agent, '扫描 /home/kly/test_dataset/')
+    first = await run_prompt(agent, '扫描 /data/test_dataset/')
     second = await run_prompt(agent, '那就直接训练 2 轮', [True, True])
     cleanup = await cleanup_training(agent)
     summary = summarize_events(agent)
@@ -187,7 +187,7 @@ async def case_status_branch(provider: str, model: str, prefix: str) -> dict[str
 async def case_nonstandard_dataset(provider: str, model: str, prefix: str) -> dict[str, Any]:
     agent = await make_agent(provider, model, f'{prefix}-nonstandard')
     await ensure_no_training(agent)
-    run = await run_prompt(agent, '数据在 /home/kly/agent_cap_tests/nonstandard_dataset/，帮我准备到可训练状态。', [True])
+    run = await run_prompt(agent, '数据在 /data/agent_cap_tests/nonstandard_dataset/，帮我准备到可训练状态。', [True])
     summary = summarize_events(agent)
     return {
         'case': 'nonstandard_dataset',
@@ -207,7 +207,7 @@ async def case_nonstandard_dataset(provider: str, model: str, prefix: str) -> di
 async def case_no_start_info(provider: str, model: str, prefix: str) -> dict[str, Any]:
     agent = await make_agent(provider, model, f'{prefix}-no-start-info')
     await ensure_no_training(agent)
-    run = await run_prompt(agent, '检查 /home/kly/test_dataset/ 是否能直接训练，如果可以，只告诉我会使用哪个 data.yaml 和 auto 会选哪张卡，不要启动训练。')
+    run = await run_prompt(agent, '检查 /data/test_dataset/ 是否能直接训练，如果可以，只告诉我会使用哪个 data.yaml 和 auto 会选哪张卡，不要启动训练。')
     summary = summarize_events(agent)
     return {
         'case': 'no_start_info',
@@ -226,7 +226,7 @@ async def case_no_start_info(provider: str, model: str, prefix: str) -> dict[str
 async def case_cancel_and_recall(provider: str, model: str, prefix: str) -> dict[str, Any]:
     agent = await make_agent(provider, model, f'{prefix}-cancel-recall')
     await ensure_no_training(agent)
-    first = await run_prompt(agent, '数据在 /home/kly/test_dataset/，用 yolov8n 模型训练 2 轮。', [True, False])
+    first = await run_prompt(agent, '数据在 /data/test_dataset/，用 yolov8n 模型训练 2 轮。', [True, False])
     second = await run_prompt(agent, '刚才待确认的训练参数是什么？')
     summary = summarize_events(agent)
     return {
@@ -246,7 +246,7 @@ async def case_cancel_and_recall(provider: str, model: str, prefix: str) -> dict
 async def case_prepare_only_no_train(provider: str, model: str, prefix: str) -> dict[str, Any]:
     agent = await make_agent(provider, model, f'{prefix}-prepare-only')
     await ensure_no_training(agent)
-    run = await run_prompt(agent, '数据在 /home/kly/test_dataset/。如果已经可训练就不要重新划分；如果还不能，请按默认比例划分并生成 yaml。但无论如何都不要启动训练，只告诉我结果。', [True])
+    run = await run_prompt(agent, '数据在 /data/test_dataset/。如果已经可训练就不要重新划分；如果还不能，请按默认比例划分并生成 yaml。但无论如何都不要启动训练，只告诉我结果。', [True])
     summary = summarize_events(agent)
     prepare = (summary.get('latest_prepare') or {}).get('result', {})
     return {

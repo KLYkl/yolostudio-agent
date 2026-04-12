@@ -18,18 +18,18 @@ class _DummyService:
                 {
                     'name': 'yolodo',
                     'display_name': 'yolodo',
-                    'env_path': '/home/kly/miniconda3/envs/yolodo',
-                    'yolo_executable': '/home/kly/miniconda3/envs/yolodo/bin/yolo',
-                    'python_executable': '/home/kly/miniconda3/envs/yolodo/bin/python',
+                    'env_path': '/opt/conda/envs/yolodo',
+                    'yolo_executable': '/opt/conda/envs/yolodo/bin/yolo',
+                    'python_executable': '/opt/conda/envs/yolodo/bin/python',
                     'source': 'conda_env_list',
                     'selected_by_default': True,
                 },
                 {
                     'name': 'yolo',
                     'display_name': 'yolo',
-                    'env_path': '/home/kly/miniconda3/envs/yolo',
-                    'yolo_executable': '/home/kly/miniconda3/envs/yolo/bin/yolo',
-                    'python_executable': '/home/kly/miniconda3/envs/yolo/bin/python',
+                    'env_path': '/opt/conda/envs/yolo',
+                    'yolo_executable': '/opt/conda/envs/yolo/bin/yolo',
+                    'python_executable': '/opt/conda/envs/yolo/bin/python',
                     'source': 'env_directory_scan',
                     'selected_by_default': False,
                 },
@@ -59,7 +59,7 @@ class _DummyService:
     ):
         selected_env = training_environment or 'yolodo'
         command_preview = [
-            f'/home/kly/miniconda3/envs/{selected_env}/bin/yolo',
+            f'/opt/conda/envs/{selected_env}/bin/yolo',
             'train',
             f'model={model}',
             f'data={data_yaml}',
@@ -91,7 +91,7 @@ class _DummyService:
             'training_environment': {
                 'name': selected_env,
                 'display_name': selected_env,
-                'yolo_executable': f'/home/kly/miniconda3/envs/{selected_env}/bin/yolo',
+                'yolo_executable': f'/opt/conda/envs/{selected_env}/bin/yolo',
             },
             'command_preview': command_preview,
             'resolved_args': {

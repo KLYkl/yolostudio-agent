@@ -14,9 +14,9 @@ if __package__ in {None, ""}:
 
 from agent_plan.agent.client.agent_client import AgentSettings, YoloStudioAgentClient, build_agent_client
 
-OUT = Path(r'D:\yolodo2.0\agent_plan\agent\tests\test_zyb_10_method_output.json')
-DATASET_ROOT = '/home/kly/agent_cap_tests/zyb'
-MODEL_PATH = '/home/kly/yolov8n.pt'
+OUT = Path(r'C:\workspace\yolodo2.0\agent_plan\agent\tests\test_zyb_10_method_output.json')
+DATASET_ROOT = '/data/agent_cap_tests/zyb'
+MODEL_PATH = '/models/yolov8n.pt'
 
 
 def _now_id() -> str:
@@ -165,7 +165,7 @@ async def case_05_tool_train_lifecycle(agent: YoloStudioAgentClient) -> dict[str
 async def case_06_gemma_dirty_summary() -> dict[str, Any]:
     agent = await make_agent('ollama', 'gemma4:e4b', f'zyb-gemma-summary-{uuid.uuid4().hex[:8]}')
     await ensure_no_training(agent)
-    prompt = '请扫描 /home/kly/agent_cap_tests/zyb/ ，然后用中文总结这个数据集目前最值得注意的 3 个点。'
+    prompt = '请扫描 /data/agent_cap_tests/zyb/ ，然后用中文总结这个数据集目前最值得注意的 3 个点。'
     run = await run_prompt(agent, prompt)
     msg = str(run['result'].get('message', ''))
     return {
@@ -186,7 +186,7 @@ async def case_06_gemma_dirty_summary() -> dict[str, Any]:
 async def case_07_gemma_no_train_constraint() -> dict[str, Any]:
     agent = await make_agent('ollama', 'gemma4:e4b', f'zyb-gemma-no-train-{uuid.uuid4().hex[:8]}')
     await ensure_no_training(agent)
-    prompt = '请检查 /home/kly/agent_cap_tests/zyb/ 是否能直接训练。如果还不能，请只告诉我原因和建议，不要启动训练，也不要先做划分。'
+    prompt = '请检查 /data/agent_cap_tests/zyb/ 是否能直接训练。如果还不能，请只告诉我原因和建议，不要启动训练，也不要先做划分。'
     run = await run_prompt(agent, prompt)
     events = agent.memory.read_events(agent.session_state.session_id, limit=20)
     started = any(e.get('type') == 'tool_result' and e.get('tool') == 'start_training' for e in events)
@@ -208,7 +208,7 @@ async def case_07_gemma_no_train_constraint() -> dict[str, Any]:
 async def case_08_gemma_full_chain_train() -> dict[str, Any]:
     agent = await make_agent('ollama', 'gemma4:e4b', f'zyb-gemma-full-{uuid.uuid4().hex[:8]}')
     await ensure_no_training(agent)
-    prompt = '数据在 /home/kly/agent_cap_tests/zyb/，按默认划分比例，然后用 yolov8n 模型进行训练。'
+    prompt = '数据在 /data/agent_cap_tests/zyb/，按默认划分比例，然后用 yolov8n 模型进行训练。'
     run = await run_prompt(agent, prompt, [True, True])
     await asyncio.sleep(8)
     status = await agent.direct_tool('check_training_status')
@@ -236,7 +236,7 @@ async def case_08_gemma_full_chain_train() -> dict[str, Any]:
 async def case_09_gemma_cancel_and_recall() -> dict[str, Any]:
     agent = await make_agent('ollama', 'gemma4:e4b', f'zyb-gemma-recall-{uuid.uuid4().hex[:8]}')
     await ensure_no_training(agent)
-    first = await run_prompt(agent, '数据在 /home/kly/agent_cap_tests/zyb/，按默认划分比例，然后用 yolov8n 模型进行训练。', [True, False])
+    first = await run_prompt(agent, '数据在 /data/agent_cap_tests/zyb/，按默认划分比例，然后用 yolov8n 模型进行训练。', [True, False])
     second = await run_prompt(agent, '刚才待确认的训练参数是什么？这个数据集最大的风险又是什么？')
     msg = str(second['result'].get('message', ''))
     return {
@@ -257,7 +257,7 @@ async def case_09_gemma_cancel_and_recall() -> dict[str, Any]:
 async def case_10_deepseek_full_chain() -> dict[str, Any]:
     agent = await make_agent('deepseek', 'deepseek-chat', f'zyb-deepseek-full-{uuid.uuid4().hex[:8]}')
     await ensure_no_training(agent)
-    prompt = '数据在 /home/kly/agent_cap_tests/zyb/，按默认划分比例，然后用 yolov8n 模型进行训练。'
+    prompt = '数据在 /data/agent_cap_tests/zyb/，按默认划分比例，然后用 yolov8n 模型进行训练。'
     run = await run_prompt(agent, prompt, [True, True])
     await asyncio.sleep(8)
     status = await agent.direct_tool('check_training_status')

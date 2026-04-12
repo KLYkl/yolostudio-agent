@@ -1,6 +1,6 @@
 # YoloStudio Agent 项目新会话交接（精简版，2026-04-11）
 
-> 用途：给新会话快速续上项目状态。  
+> 用途：给新会话快速续上项目状态。
 > 这份文档刻意**少写本轮 SSH/连接细节**，重点只保留项目本身的阶段、代码状态、验证状态和下一步方向。
 
 ---
@@ -51,7 +51,7 @@
 
 ## 1. 一句话状态
 
-截至 2026-04-11，`D:\yolodo2.0\agent_plan` 已经从“Agent 原型”推进到：
+截至 2026-04-11，`C:\workspace\yolodo2.0\agent_plan` 已经从“Agent 原型”推进到：
 
 > **训练主链路已进入可实用状态；预测主链路已完成本地能力建设、本地回归与远端真实验证。**
 
@@ -153,25 +153,25 @@
 
 当前重点目录：
 
-- `D:\yolodo2.0\agent_plan\agent\client`
-- `D:\yolodo2.0\agent_plan\agent\server\tools`
-- `D:\yolodo2.0\agent_plan\agent\server\services`
-- `D:\yolodo2.0\agent_plan\agent\tests`
-- `D:\yolodo2.0\agent_plan\deploy\scripts`
-- `D:\yolodo2.0\agent_plan\doc`
+- `C:\workspace\yolodo2.0\agent_plan\agent\client`
+- `C:\workspace\yolodo2.0\agent_plan\agent\server\tools`
+- `C:\workspace\yolodo2.0\agent_plan\agent\server\services`
+- `C:\workspace\yolodo2.0\agent_plan\agent\tests`
+- `C:\workspace\yolodo2.0\agent_plan\deploy\scripts`
+- `C:\workspace\yolodo2.0\agent_plan\doc`
 
 ### 当前关键文件
 
-- `D:\yolodo2.0\agent_plan\agent\client\agent_client.py`
-- `D:\yolodo2.0\agent_plan\agent\client\tool_adapter.py`
-- `D:\yolodo2.0\agent_plan\agent\client\file_checkpointer.py`
-- `D:\yolodo2.0\agent_plan\agent\server\tools\data_tools.py`
-- `D:\yolodo2.0\agent_plan\agent\server\tools\train_tools.py`
-- `D:\yolodo2.0\agent_plan\agent\server\tools\predict_tools.py`
-- `D:\yolodo2.0\agent_plan\agent\server\tools\combo_tools.py`
-- `D:\yolodo2.0\agent_plan\agent\server\services\train_service.py`
-- `D:\yolodo2.0\agent_plan\agent\server\services\predict_service.py`
-- `D:\yolodo2.0\agent_plan\agent\server\mcp_server.py`
+- `C:\workspace\yolodo2.0\agent_plan\agent\client\agent_client.py`
+- `C:\workspace\yolodo2.0\agent_plan\agent\client\tool_adapter.py`
+- `C:\workspace\yolodo2.0\agent_plan\agent\client\file_checkpointer.py`
+- `C:\workspace\yolodo2.0\agent_plan\agent\server\tools\data_tools.py`
+- `C:\workspace\yolodo2.0\agent_plan\agent\server\tools\train_tools.py`
+- `C:\workspace\yolodo2.0\agent_plan\agent\server\tools\predict_tools.py`
+- `C:\workspace\yolodo2.0\agent_plan\agent\server\tools\combo_tools.py`
+- `C:\workspace\yolodo2.0\agent_plan\agent\server\services\train_service.py`
+- `C:\workspace\yolodo2.0\agent_plan\agent\server\services\predict_service.py`
+- `C:\workspace\yolodo2.0\agent_plan\agent\server\mcp_server.py`
 
 ### 目前结构上的真实问题
 
@@ -268,7 +268,7 @@
 - 主要类别：`two_wheeler=15`
 
 本地结果文件：
-- `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_remote_real_media_output.json`
+- `C:\workspace\yolodo2.0\agent_plan\agent\tests\test_prediction_remote_real_media_output.json`
 
 因此新会话不应再把 prediction 理解为“只有本地验证”，而应理解为：
 
@@ -278,20 +278,20 @@
 
 ### 文档
 
-- `D:\yolodo2.0\agent_plan\doc\project_summary.md`
-- `D:\yolodo2.0\agent_plan\doc\current_progress_2026-04-11.md`
-- `D:\yolodo2.0\agent_plan\doc\agent_test_playbook_2026-04-10.md`
-- `D:\yolodo2.0\agent_plan\doc\prediction_regression_report_2026-04-11.md`
-- `D:\yolodo2.0\agent_plan\doc\prediction_real_media_validation_2026-04-11.md`
-- `D:\yolodo2.0\agent_plan\doc\prediction_remote_real_media_validation_2026-04-11.md`
+- `C:\workspace\yolodo2.0\agent_plan\doc\project_summary.md`
+- `C:\workspace\yolodo2.0\agent_plan\doc\current_progress_2026-04-11.md`
+- `C:\workspace\yolodo2.0\agent_plan\doc\agent_test_playbook_2026-04-10.md`
+- `C:\workspace\yolodo2.0\agent_plan\doc\prediction_regression_report_2026-04-11.md`
+- `C:\workspace\yolodo2.0\agent_plan\doc\prediction_real_media_validation_2026-04-11.md`
+- `C:\workspace\yolodo2.0\agent_plan\doc\prediction_remote_real_media_validation_2026-04-11.md`
 
 ### 测试
 
-- `D:\yolodo2.0\agent_plan\agent\tests\test_mainline_regression_matrix.py`
-- `D:\yolodo2.0\agent_plan\agent\tests\test_zyb_long_training_lifecycle.py`
-- `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_regression_suite.py`
-- `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_real_media_local_suite.py`
-- `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_remote_real_media.py`
+- `C:\workspace\yolodo2.0\agent_plan\agent\tests\test_mainline_regression_matrix.py`
+- `C:\workspace\yolodo2.0\agent_plan\agent\tests\test_zyb_long_training_lifecycle.py`
+- `C:\workspace\yolodo2.0\agent_plan\agent\tests\test_prediction_regression_suite.py`
+- `C:\workspace\yolodo2.0\agent_plan\agent\tests\test_prediction_real_media_local_suite.py`
+- `C:\workspace\yolodo2.0\agent_plan\agent\tests\test_prediction_remote_real_media.py`
 
 ---
 
@@ -300,13 +300,13 @@
 可直接复制下面这段：
 
 ```text
-继续 D:\yolodo2.0\agent_plan 项目。
+继续 C:\workspace\yolodo2.0\agent_plan 项目。
 
 先读取：
-D:\yolodo2.0\agent_plan\doc\new_conversation_handoff_2026-04-11.md
-D:\yolodo2.0\agent_plan\doc\current_progress_2026-04-11.md
-D:\yolodo2.0\agent_plan\doc\project_summary.md
-D:\yolodo2.0\agent_plan\doc\agent_test_playbook_2026-04-10.md
+C:\workspace\yolodo2.0\agent_plan\doc\new_conversation_handoff_2026-04-11.md
+C:\workspace\yolodo2.0\agent_plan\doc\current_progress_2026-04-11.md
+C:\workspace\yolodo2.0\agent_plan\doc\project_summary.md
+C:\workspace\yolodo2.0\agent_plan\doc\agent_test_playbook_2026-04-10.md
 
 然后直接继续推进，不用先问我。
 当前优先做 prediction 这条线的结构整理，并继续固化远端真实验证基线。
@@ -417,11 +417,11 @@ D:\yolodo2.0\agent_plan\doc\agent_test_playbook_2026-04-10.md
 当前固定口径：
 
 - Agent client / LangChain / LangGraph / route / state / grounded 相关验证：
-  - `D:\yolodo2.0\agent_plan\agent\.venv\Scripts\python.exe`
+  - `C:\workspace\yolodo2.0\agent_plan\agent\.venv\Scripts\python.exe`
 - 纯 server/service/tool 的快速验证：
   - 可继续用当前 Linux `python3`
 - 远端真实执行：
-  - `/home/kly/miniconda3/envs/yolostudio-agent-server/bin/python`
+  - `/opt/conda/envs/agent-server/bin/python`
 
 同时，`deploy/server_proto` 已切换成“**主实现同轮对齐**”口径，不再默认允许长期落后。
 
@@ -431,11 +431,11 @@ D:\yolodo2.0\agent_plan\doc\agent_test_playbook_2026-04-10.md
 在当前继续推进里，这条链不只做了本地回归，也补了远端实际验证：
 
 - 已把最新 `agent/server/` 同步到：
-  - `/home/kly/yolostudio_agent_proto/agent_plan/agent/server/`
+  - `/opt/yolostudio-agent/agent_plan/agent/server/`
 - 已把最新 `knowledge/` 同步到：
-  - `/home/kly/yolostudio_agent_proto/agent_plan/knowledge/`
+  - `/opt/yolostudio-agent/agent_plan/knowledge/`
 - 已通过：
-  - `/home/kly/yolostudio_agent_proto/manage_mcp_server.sh restart`
+  - `/opt/yolostudio-agent/manage_mcp_server.sh restart`
 
 远端验证分成两层：
 
@@ -765,7 +765,7 @@ D:\yolodo2.0\agent_plan\doc\agent_test_playbook_2026-04-10.md
 
 - 本地主实现
 - `deploy/server_proto`
-- 远端 `/home/kly/yolostudio_agent_proto`
+- 远端 `/opt/yolostudio-agent`
 
 都验证通过。
 
@@ -830,7 +830,7 @@ D:\yolodo2.0\agent_plan\doc\agent_test_playbook_2026-04-10.md
 
 - 本地
 - `deploy/server_proto`
-- 远端 `/home/kly/yolostudio_agent_proto`
+- 远端 `/opt/yolostudio-agent`
 
 完成验证。
 
@@ -876,7 +876,7 @@ D:\yolodo2.0\agent_plan\doc\agent_test_playbook_2026-04-10.md
 
 - 本地
 - `deploy/server_proto`
-- 远端 `/home/kly/yolostudio_agent_proto`
+- 远端 `/opt/yolostudio-agent`
 
 完成验证。
 
@@ -937,7 +937,7 @@ D:\yolodo2.0\agent_plan\doc\agent_test_playbook_2026-04-10.md
 - 本地
 - `deploy/server_proto`
 - Windows `.venv`
-- 远端 `/home/kly/yolostudio_agent_proto`
+- 远端 `/opt/yolostudio-agent`
 
 完成验证。
 

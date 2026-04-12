@@ -30,7 +30,7 @@ class _DummyGraph:
         return None
 
 
-WORK = Path(r'D:\yolodo2.0\agent_plan\agent\tests\_tmp_prediction_route')
+WORK = Path(r'C:\workspace\yolodo2.0\agent_plan\agent\tests\_tmp_prediction_route')
 
 
 async def _run() -> None:

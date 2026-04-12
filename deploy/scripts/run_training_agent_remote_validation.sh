@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_ROOT="${APP_ROOT:-$HOME/yolostudio_agent_proto}"
-CONDA_ROOT="${CONDA_ROOT:-$HOME/miniconda3}"
+APP_ROOT="${APP_ROOT:-/opt/yolostudio-agent}"
+CONDA_ROOT="${CONDA_ROOT:-/opt/conda}"
 REQUESTED_ENV="${1:-auto}"
-OUTPUT_ROOT="${2:-$HOME/training_real_lifecycle_output/agent_mainline_roundtrip}"
-DATASET_ROOT="${3:-/home/kly/agent_cap_tests/zyb}"
-MODEL_PATH="${4:-/home/kly/yolov8n.pt}"
+OUTPUT_ROOT="${2:-/tmp/training_real_lifecycle_output/agent_mainline_roundtrip}"
+DATASET_ROOT="${3:-/data/example_dataset}"
+MODEL_PATH="${4:-/models/yolov8n.pt}"
 EPOCHS="${5:-30}"
 TARGET_EPOCH="${6:-2}"
 STATUS_DELAYS="${7:-15,35,60}"
@@ -35,7 +35,7 @@ resolve_env() {
     return 0
   fi
 
-  for candidate in yolostudio-agent-server yolodo yolo; do
+  for candidate in agent-server yolodo yolo; do
     if grep -qx "$candidate" <<<"$env_names"; then
       printf '%s\n' "$candidate"
       return 0
@@ -45,7 +45,7 @@ resolve_env() {
   if [[ -n "$requested" && "$requested" != "auto" ]]; then
     echo "requested conda env not found: $requested" >&2
   fi
-  echo "no usable training conda env found (tried: yolostudio-agent-server, yolodo, yolo)" >&2
+  echo "no usable training conda env found (tried: agent-server, yolodo, yolo)" >&2
   return 1
 }
 

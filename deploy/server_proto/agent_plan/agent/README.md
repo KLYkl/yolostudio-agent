@@ -1,7 +1,7 @@
-# Agent Plan Workspace
+# Agent Plan Workspace (Server Prototype)
 
-本目录仅用于 Agent 化原型、验证脚本、文档和 wrapper 草稿。
+本目录是远端部署原型中的 Agent 工作区镜像。
 
-- 不直接修改 `D:\yolodo2.0\core\`、`ui\`、`utils\` 等现有源码
-- 所有 Agent 相关实验先在本目录完成
-- 通过验证后再决定是否迁移到正式实现位置
+- 用于部署、回归和远端验证
+- 结构应与主工作区保持兼容
+- 示例路径与主仓库一样使用公开版占位默认值，请按实际环境覆盖

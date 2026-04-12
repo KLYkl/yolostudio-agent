@@ -96,7 +96,7 @@ class PredictService:
                 'ok': False,
                 'error': '请提供模型路径或模型名称',
                 'summary': '预测未启动：缺少模型参数',
-                'next_actions': ['请显式提供 model，例如 /home/kly/yolov8n.pt'],
+                'next_actions': ['请显式提供 model，例如 /models/yolov8n.pt 或你自己的权重文件'],
             }
 
         source = Path(source_path)
@@ -193,7 +193,7 @@ class PredictService:
                 'ok': False,
                 'error': '请提供模型路径或模型名称',
                 'summary': '视频预测未启动：缺少模型参数',
-                'next_actions': ['请显式提供 model，例如 /home/kly/yolov8n.pt'],
+                'next_actions': ['请显式提供 model，例如 /models/yolov8n.pt 或你自己的权重文件'],
             }
 
         source = Path(source_path)

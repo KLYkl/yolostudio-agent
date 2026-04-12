@@ -26,12 +26,12 @@
 
 优先顺序：
 
-1. `D:\yolodo2.0\agent_plan\doc\conversation_context_handoff.md`（本文件）
-2. `D:\yolodo2.0\agent_plan\doc\current_progress_2026-04-11.md`
-3. `D:\yolodo2.0\agent_plan\doc\project_summary.md`
-4. `D:\yolodo2.0\agent_plan\doc\agent_test_playbook_2026-04-10.md`
-5. `D:\yolodo2.0\agent_plan\doc\mainline_regression_matrix_report_2026-04-11.md`
-6. `D:\yolodo2.0\agent_plan\doc\prediction_regression_report_2026-04-11.md`
+1. `C:\workspace\yolodo2.0\agent_plan\doc\conversation_context_handoff.md`（本文件）
+2. `C:\workspace\yolodo2.0\agent_plan\doc\current_progress_2026-04-11.md`
+3. `C:\workspace\yolodo2.0\agent_plan\doc\project_summary.md`
+4. `C:\workspace\yolodo2.0\agent_plan\doc\agent_test_playbook_2026-04-10.md`
+5. `C:\workspace\yolodo2.0\agent_plan\doc\mainline_regression_matrix_report_2026-04-11.md`
+6. `C:\workspace\yolodo2.0\agent_plan\doc\prediction_regression_report_2026-04-11.md`
 
 如果只想最快进入状态，至少读前 3 个。
 
@@ -64,21 +64,21 @@
 
 最近一个明确里程碑提交是：
 
-- 仓库：`D:\yolodo2.0\agent_plan`
+- 仓库：`C:\workspace\yolodo2.0\agent_plan`
 - commit：`f712b7b`
 - message：`feat: add durable checkpoints and image prediction mainline`
 
 这个提交的实际意义：
 
 ### 4.1 第一主线补上 durable checkpoint
-- 新增：`D:\yolodo2.0\agent_plan\agent\client\file_checkpointer.py`
+- 新增：`C:\workspace\yolodo2.0\agent_plan\agent\client\file_checkpointer.py`
 - 作用：LangGraph 的 interrupt / HITL 不再只依赖进程内内存
 - 当前 checkpoint 文件落在：
-  - `D:\yolodo2.0\agent_plan\memory\checkpoints\<session>.pkl`
+  - `C:\workspace\yolodo2.0\agent_plan\memory\checkpoints\<session>.pkl`
 
 ### 4.2 第二主线正式起线
-- 新增：`D:\yolodo2.0\agent_plan\agent\server\services\predict_service.py`
-- 新增：`D:\yolodo2.0\agent_plan\agent\server\tools\predict_tools.py`
+- 新增：`C:\workspace\yolodo2.0\agent_plan\agent\server\services\predict_service.py`
+- 新增：`C:\workspace\yolodo2.0\agent_plan\agent\server\tools\predict_tools.py`
 - MCP 新工具：`predict_images`
 - MCP 新工具：`summarize_prediction_results`
 - MCP 新工具：`predict_videos`
@@ -89,10 +89,10 @@
   - 预测结果汇总路由与 grounded 汇总
 
 ### 4.3 第二主线已有本地验证基线
-- `D:\yolodo2.0\agent_plan\agent\tests\test_predict_tools.py`
-- `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_route.py`
-- `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_regression_suite.py`
-- 报告：`D:\yolodo2.0\agent_plan\doc\prediction_regression_report_2026-04-11.md`
+- `C:\workspace\yolodo2.0\agent_plan\agent\tests\test_predict_tools.py`
+- `C:\workspace\yolodo2.0\agent_plan\agent\tests\test_prediction_route.py`
+- `C:\workspace\yolodo2.0\agent_plan\agent\tests\test_prediction_regression_suite.py`
+- 报告：`C:\workspace\yolodo2.0\agent_plan\doc\prediction_regression_report_2026-04-11.md`
 - 当前本地预测回归分数：`1.0`
 - 追加完成：
   - `summarize_prediction_results` 的工具级验证
@@ -169,7 +169,7 @@
 这个是下一步的第一优先级。
 
 还没做的包括：
-- 用本地 `D:\Anaconda\envs\yolo` / `D:\Anaconda\envs\yolodo` 环境做真实 prediction 验证
+- 用本地 `C:\Miniconda3\envs\yolo` / `C:\Miniconda3\envs\yolodo` 环境做真实 prediction 验证
 - 用真实图片 / 图片目录 / 视频 / 视频目录做本地 prediction 验证
 - 检查输出目录、标注图、JSON 报告是否正常
 - 解决当前 `WinError 10106` 环境阻塞
@@ -190,22 +190,22 @@
 ## 7. 当前最重要的测试资产
 
 ### 7.1 第一主线
-- `D:\yolodo2.0\agent_plan\agent\tests\test_mainline_regression_matrix.py`
-- `D:\yolodo2.0\agent_plan\doc\mainline_regression_matrix_report_2026-04-11.md`
-- `D:\yolodo2.0\agent_plan\agent\tests\test_zyb_long_training_lifecycle.py`
-- `D:\yolodo2.0\agent_plan\agent\tests\test_file_checkpointer.py`
+- `C:\workspace\yolodo2.0\agent_plan\agent\tests\test_mainline_regression_matrix.py`
+- `C:\workspace\yolodo2.0\agent_plan\doc\mainline_regression_matrix_report_2026-04-11.md`
+- `C:\workspace\yolodo2.0\agent_plan\agent\tests\test_zyb_long_training_lifecycle.py`
+- `C:\workspace\yolodo2.0\agent_plan\agent\tests\test_file_checkpointer.py`
 
 ### 7.2 第二主线
-- `D:\yolodo2.0\agent_plan\agent\tests\test_predict_tools.py`
-- `D:\yolodo2.0\agent_plan\agent\tests\test_predict_video_tools.py`
-- `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_route.py`
-- `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_regression_suite.py`
-- `D:\yolodo2.0\agent_plan\doc\prediction_regression_report_2026-04-11.md`
-- `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_real_media_local_suite.py`
-- `D:\yolodo2.0\agent_plan\doc\prediction_real_media_validation_2026-04-11.md`
+- `C:\workspace\yolodo2.0\agent_plan\agent\tests\test_predict_tools.py`
+- `C:\workspace\yolodo2.0\agent_plan\agent\tests\test_predict_video_tools.py`
+- `C:\workspace\yolodo2.0\agent_plan\agent\tests\test_prediction_route.py`
+- `C:\workspace\yolodo2.0\agent_plan\agent\tests\test_prediction_regression_suite.py`
+- `C:\workspace\yolodo2.0\agent_plan\doc\prediction_regression_report_2026-04-11.md`
+- `C:\workspace\yolodo2.0\agent_plan\agent\tests\test_prediction_real_media_local_suite.py`
+- `C:\workspace\yolodo2.0\agent_plan\doc\prediction_real_media_validation_2026-04-11.md`
 
 ### 7.3 测试手册
-- `D:\yolodo2.0\agent_plan\doc\agent_test_playbook_2026-04-10.md`
+- `C:\workspace\yolodo2.0\agent_plan\doc\agent_test_playbook_2026-04-10.md`
 
 当前手册已经覆盖：
 - 主线回归矩阵
@@ -219,14 +219,14 @@
 ## 8. 当前用到的关键数据集
 
 ### 8.1 第一主线标准训练/准备集
-- `/home/kly/test_dataset`
+- `/data/test_dataset`
 
 用途：
 - 标准数据准备到训练链路
 - 复杂训练意图回归
 
 ### 8.2 第一主线脏数据/长任务集
-- `/home/kly/agent_cap_tests/zyb`
+- `/data/agent_cap_tests/zyb`
 
 用途：
 - 脏数据风险表达
@@ -234,26 +234,26 @@
 - 长任务训练生命周期测试
 
 ### 8.3 非标准目录测试集
-- `/home/kly/agent_cap_tests/nonstandard_dataset`
+- `/data/agent_cap_tests/nonstandard_dataset`
 
 用途：
 - `pics/ann` 这类非标准目录结构容错测试
 
 ### 8.4 真正未知结构测试集
-- `/home/kly/agent_cap_tests/unknown_dataset`
+- `/data/agent_cap_tests/unknown_dataset`
 
 用途：
 - fail-fast / resolve_root 提前失败测试
 
 ### 8.5 本地大数据集
-- `H:\fuyangben\zyb`
+- `C:\datasets\zyb`
 
 用途：
 - 本地 health / duplicate 只读压力测试
 
 ### 8.6 本地真实预测素材
-- 权重池：`C:\Users\29615\OneDrive\桌面\yuntian`
-- 视频池：`H:\foto`
+- 权重池：`C:\datasets\weights`
+- 视频池：`C:\datasets\videos`
 
 用途：
 - 第二主线真实本地权重 / 视频验证
@@ -261,11 +261,11 @@
 - 真实素材 Mock 链路验证
 
 当前已准备好的本地 / 可选远端链路脚本：
-- `D:\yolodo2.0\agent_plan\deploy\scripts\run_prediction_local_validation.ps1`（本地 conda env）
-- `D:\yolodo2.0\agent_plan\deploy\scripts\stage_prediction_real_media.py`
-- `D:\yolodo2.0\agent_plan\deploy\scripts\upload_prediction_real_media.ps1`
-- `D:\yolodo2.0\agent_plan\deploy\scripts\run_prediction_remote_validation.sh`
-- `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_remote_real_media.py`
+- `C:\workspace\yolodo2.0\agent_plan\deploy\scripts\run_prediction_local_validation.ps1`（本地 conda env）
+- `C:\workspace\yolodo2.0\agent_plan\deploy\scripts\stage_prediction_real_media.py`
+- `C:\workspace\yolodo2.0\agent_plan\deploy\scripts\upload_prediction_real_media.ps1`
+- `C:\workspace\yolodo2.0\agent_plan\deploy\scripts\run_prediction_remote_validation.sh`
+- `C:\workspace\yolodo2.0\agent_plan\agent\tests\test_prediction_remote_real_media.py`
 
 ---
 
@@ -282,8 +282,8 @@
 - 只有在真正高风险、不可逆、或业务方向有歧义时才停下来
 
 ### 需要遵守的工程边界
-- 优先改 `D:\yolodo2.0\agent_plan\...`
-- 不随意改 `D:\yolodo2.0\core\`、`ui\` 等主项目核心源码
+- 优先改 `C:\workspace\yolodo2.0\agent_plan\...`
+- 不随意改 `C:\workspace\yolodo2.0\core\`、`ui\` 等主项目核心源码
 - 文档 / 代码默认 UTF-8（无 BOM）
 - 不把无关未提交文件混入主线提交
 
@@ -294,12 +294,12 @@
 推荐直接说：
 
 ```text
-继续 D:\yolodo2.0\agent_plan 项目。
+继续 C:\workspace\yolodo2.0\agent_plan 项目。
 先读取：
-D:\yolodo2.0\agent_plan\doc\conversation_context_handoff.md
-D:\yolodo2.0\agent_plan\doc\current_progress_2026-04-11.md
-D:\yolodo2.0\agent_plan\doc\project_summary.md
-D:\yolodo2.0\agent_plan\doc\agent_test_playbook_2026-04-10.md
+C:\workspace\yolodo2.0\agent_plan\doc\conversation_context_handoff.md
+C:\workspace\yolodo2.0\agent_plan\doc\current_progress_2026-04-11.md
+C:\workspace\yolodo2.0\agent_plan\doc\project_summary.md
+C:\workspace\yolodo2.0\agent_plan\doc\agent_test_playbook_2026-04-10.md
 然后按主线继续推进，不用先问我。
 ```
 
@@ -332,7 +332,7 @@ D:\yolodo2.0\agent_plan\doc\agent_test_playbook_2026-04-10.md
 
 ## 11. 第二主线远端验证当前阻塞点
 
-远端 prediction 验证脚本和素材 staging 已经准备好，但当前会话所在运行环境对服务器 `192.168.0.163` 的 TCP 连接被系统策略拦截。
+远端 prediction 验证脚本和素材 staging 已经准备好，但当前会话所在运行环境对服务器 `203.0.113.10` 的 TCP 连接被系统策略拦截。
 
 关键证据：
 - `deploy/scripts/check_remote_prediction_prereqs.ps1`
@@ -348,7 +348,7 @@ D:\yolodo2.0\agent_plan\doc\agent_test_playbook_2026-04-10.md
 
 补充定位：
 - `ssh` 在禁用 host key 校验后，已能走到认证阶段
-- 但会报：`Load key "C:\Users\29615\.ssh\id_ed25519": Permission denied`
+- 但会报：`Load key "C:\Users\Public\.ssh\id_ed25519": Permission denied`
 - 同时 `ssh-add -l` 在当前进程里返回：`Error connecting to agent: Permission denied`
 
 
@@ -357,7 +357,7 @@ D:\yolodo2.0\agent_plan\doc\agent_test_playbook_2026-04-10.md
 这次验证里又确认了一个**以后大概率还会用到**的经验：
 
 ### 现象
-- 用户在自己的 PowerShell 里手动执行 `ssh yolostudio "..."` 可以成功返回
+- 用户在自己的 PowerShell 里手动执行 `ssh remote-agent "..."` 可以成功返回
 - 但脚本里调用 `ssh` 时，经常出现：
   - 远端命令实际已经执行
   - 本地终端却一直不退出

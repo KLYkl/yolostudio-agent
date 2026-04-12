@@ -59,7 +59,7 @@
 
 ## 0.3 2026-04-11 深夜新增：数据提取链第一批完成并同步到远端
 
-按 Agent-first 路线，当前已经把 `D:\yolodo2.0` 中最值得先接的提取能力落成了第一批工具：
+按 Agent-first 路线，当前已经把 `C:\workspace\yolodo2.0` 中最值得先接的提取能力落成了第一批工具：
 
 - `preview_extract_images`
 - `extract_images`
@@ -103,8 +103,8 @@
 - 主要类别：`two_wheeler=15`
 
 结果文件：
-- `D:\yolodo2.0\agent_plan\agent\tests\test_prediction_remote_real_media_output.json`
-- `D:\yolodo2.0\agent_plan\doc\prediction_remote_validation_2026-04-11.md`
+- `C:\workspace\yolodo2.0\agent_plan\agent\tests\test_prediction_remote_real_media_output.json`
+- `C:\workspace\yolodo2.0\agent_plan\doc\prediction_remote_validation_2026-04-11.md`
 
 这意味着 prediction 这条线已经不再只是“本地完成”，而是已经完成了第一轮远端真实执行。
 
@@ -154,12 +154,12 @@
 
 已上传到远端：
 
-- `/home/kly/yolostudio_agent_proto/agent_plan/agent/server/services/predict_service.py`
-- `/home/kly/yolostudio_agent_proto/agent_plan/agent/server/tools/predict_tools.py`
-- `/home/kly/yolostudio_agent_proto/agent_plan/agent/tests/test_prediction_remote_real_media.py`
-- `/home/kly/prediction_real_media_stage/manifest.json`
-- `/home/kly/prediction_real_media_stage/weights/*.pt`
-- `/home/kly/prediction_real_media_stage/videos/*.mp4`
+- `/opt/yolostudio-agent/agent_plan/agent/server/services/predict_service.py`
+- `/opt/yolostudio-agent/agent_plan/agent/server/tools/predict_tools.py`
+- `/opt/yolostudio-agent/agent_plan/agent/tests/test_prediction_remote_real_media.py`
+- `/data/prediction_real_media_stage/manifest.json`
+- `/data/prediction_real_media_stage/weights/*.pt`
+- `/data/prediction_real_media_stage/videos/*.mp4`
 
 所以从这一刻起，prediction 主线才算真正进入“远端同版部署开始补齐”的阶段。
 
@@ -224,7 +224,7 @@
 ## 三、架构全景
 
 ```
-   Windows 客户端                              服务器 192.168.0.163
+   Windows 客户端                              服务器 203.0.113.10
   ┌─────────────────────┐    SSH Tunnel    ┌──────────────────────────┐
   │  cli.py             │   :8080/:11434   │  MCP Server (:8080)      │
   │  agent_client.py    │◄════════════════►│  FastMCP + streamable-http│
@@ -251,14 +251,14 @@
 - DataHandler 业务层（Mixin 方法）直接复用，无 Qt 依赖
 - Train/Predict 需要 Service Wrapper（subprocess 替代 QProcess）
 - 训练 GPU 动态检测（查 compute 进程，不硬编码设备号）
-- 现有 `D:\yolodo2.0\core\` 源码零改动
+- 现有 `C:\workspace\yolodo2.0\core\` 源码零改动
 
 ---
 
 ## 四、项目文件结构
 
 ```
-D:\yolodo2.0\agent_plan\               ← Git 仓库 (4 commits)
+C:\workspace\yolodo2.0\agent_plan\               ← Git 仓库 (4 commits)
 ├── .gitignore
 ├── doc/
 │   ├── yolostudio_agent_feasibility.md    # 可行性报告 (650行, 28KB)
@@ -295,7 +295,7 @@ D:\yolodo2.0\agent_plan\               ← Git 仓库 (4 commits)
 └── deploy/                                # 服务器部署相关（自动生成）
 ```
 
-**服务器部署位置：** `/home/kly/yolostudio_agent_proto`
+**服务器部署位置：** `/opt/yolostudio-agent`
 
 ---
 
@@ -307,7 +307,7 @@ D:\yolodo2.0\agent_plan\               ← Git 仓库 (4 commits)
 - [x] yolostudio-agent-server conda 环境 + 依赖
 - [x] Gemma4 bind_tools 验证（add(3,5) 通过）
 - [x] SSH Tunnel 连通性（8080 + 11434）
-- [x] SSH 免密配置（ed25519，Host yolostudio）
+- [x] SSH 免密配置（ed25519，Host remote-agent）
 
 ### Phase 2: MCP Server ✅ 核心完成
 
@@ -367,9 +367,9 @@ D:\yolodo2.0\agent_plan\               ← Git 仓库 (4 commits)
 | ~~MCP 重启后训练丢失~~ | ~~🟡~~ | ~~train_service~~ | ✅ **已修**：run registry + reattach 已落地，fresh 进程可继续 status/stop |
 | **split 只支持 train/val** | 🟡 | core API | 现有 `split_dataset()` 只做二分 |
 | **MCP Server 没有重启脚本** | 🟢 | 运维 | 目前手动启动 |
-| ~~模型权重损坏~~ | ~~🔴~~ | ~~服务器~~ | ✅ **已修**：`yolov8n.pt`(380K→6.3M) 和 `yolo26n.pt`(496K→5.3M) 均被损坏文件覆盖，从 `/home/kly/` 正确副本恢复 |
+| ~~模型权重损坏~~ | ~~🔴~~ | ~~服务器~~ | ✅ **已修**：`yolov8n.pt`(380K→6.3M) 和 `yolo26n.pt`(496K→5.3M) 均被损坏文件覆盖，从 `/home/agent/` 正确副本恢复 |
 | **scan_dataset 递归扫描子目录** | 🟡 | data_tools / core | scan 传入 `test_dataset` 会递归扫描 images_split/train_augmented 等子目录，导致图片数虚高（33→78），需明确传 `img_dir` 和 `label_dir` |
-| **Agent 不自动推导 img/label 目录** | 🟡 | System Prompt / Agent | 用户说「扫描 /home/kly/test_dataset」时，Agent 直接把整个目录传给 `img_dir`，未自动推导出 `images/` 和 `labels/` 子目录 |
+| **Agent 不自动推导 img/label 目录** | 🟡 | System Prompt / Agent | 用户说「扫描 /data/test_dataset」时，Agent 直接把整个目录传给 `img_dir`，未自动推导出 `images/` 和 `labels/` 子目录 |
 | **Ollama 僵死占端口** | 🟢 | 服务器运维 | Ollama 进程(PID 15713)占着 11434 端口但 connection reset，需 kill 重启 |
 
 ---
@@ -393,7 +393,7 @@ D:\yolodo2.0\agent_plan\               ← Git 仓库 (4 commits)
 
 **完成的工作：**
 
-1. **测试数据准备**：33 张图 + 25 标签上传到服务器 `/home/kly/test_dataset/`
+1. **测试数据准备**：33 张图 + 25 标签上传到服务器 `/data/test_dataset/`
 2. **8 个 MCP Tool 全部验证通过**：
    - scan_dataset ✅ | validate_dataset ✅ | split_dataset ✅ | augment_dataset ✅
    - start_training ✅ | check_training_status ✅ | stop_training ✅ | check_gpu_status ✅
@@ -419,8 +419,8 @@ D:\yolodo2.0\agent_plan\               ← Git 仓库 (4 commits)
 2. **修复 Ollama 僵死**：旧进程(PID 15713)占端口但无响应，kill 后重启
 3. **补全测试标签**：33 张图只有 25 个标签，Python 脚本补生成 8 个随机标签
 4. **修复模型权重损坏**：
-   - `yolov8n.pt` 仅 380K（应为 6.3MB），从 `/home/kly/yolov8n.pt` 正确副本覆盖
-   - `yolo26n.pt` 仅 496K（应为 5.3MB），AMP 检查时 RuntimeError: PytorchStreamReader failed，从 `/home/kly/yolo26n.pt` 覆盖修复
+   - `yolov8n.pt` 仅 380K（应为 6.3MB），从 `/models/yolov8n.pt` 正确副本覆盖
+   - `yolo26n.pt` 仅 496K（应为 5.3MB），AMP 检查时 RuntimeError: PytorchStreamReader failed，从 `/models/yolo26n.pt` 覆盖修复
 5. **训练成功完成** 🎉：
    - yolov8n 3 epochs，GPU 1 (TITAN X)，2.19GB 显存
    - 最终 mAP50: 0.0265（随机标签，数值正常偏低）
@@ -452,7 +452,7 @@ D:\yolodo2.0\agent_plan\               ← Git 仓库 (4 commits)
 
 ```powershell
 # 必须先开 SSH Tunnel，再做其他任何操作
-ssh -L 8080:127.0.0.1:8080 -L 11434:127.0.0.1:11434 yolostudio
+ssh -L 8080:127.0.0.1:8080 -L 11434:127.0.0.1:11434 remote-agent
 ```
 
 ### 检查 MCP 是否在跑
@@ -461,15 +461,15 @@ ssh -L 8080:127.0.0.1:8080 -L 11434:127.0.0.1:11434 yolostudio
 ```bash
 ss -tlnp | grep 8080
 # 如果没有输出，启动 MCP：
-cd /home/kly/yolostudio_agent_proto
-nohup /home/kly/miniconda3/envs/yolostudio-agent-server/bin/python -m agent_plan.agent.server.mcp_server > /tmp/mcp.log 2>&1 &
+cd /opt/yolostudio-agent
+nohup /opt/conda/envs/agent-server/bin/python -m agent_plan.agent.server.mcp_server > /tmp/mcp.log 2>&1 &
 ```
 
 ### 跑 CLI
 
 ```powershell
-cd D:\yolodo2.0
-D:\yolodo2.0\agent_plan\agent\.venv\Scripts\python.exe agent_plan\agent\client\cli.py
+cd C:\workspace\yolodo2.0
+C:\workspace\yolodo2.0\agent_plan\agent\.venv\Scripts\python.exe agent_plan\agent\client\cli.py
 ```
 
 ### 遗留待办（优先级排序）
@@ -494,8 +494,8 @@ D:\yolodo2.0\agent_plan\agent\.venv\Scripts\python.exe agent_plan\agent\client\c
 | 改 GPU 检测 | `agent/server/services/gpu_utils.py` |
 | 改 Agent 行为 | `agent/client/agent_client.py` |
 | 改 CLI 交互 | `agent/client/cli.py` |
-| 查真实 API | `D:\yolodo2.0\core\data_handler\_*.py` |
-| 查训练 API | `D:\yolodo2.0\core\train_handler.py` |
+| 查真实 API | `C:\workspace\yolodo2.0\core\data_handler\_*.py` |
+| 查训练 API | `C:\workspace\yolodo2.0\core\train_handler.py` |
 
 ---
 
@@ -521,19 +521,19 @@ afab4c1  test: comprehensive validation + log parser fix
 **服务器代码已同步**（截止 2026-04-09），共 14 个 commit。
 
 **本次修复的服务器文件：**
-- `/home/kly/yolostudio_agent_proto/yolov8n.pt` → 从 `/home/kly/yolov8n.pt` 覆盖（6.3MB）
-- `/home/kly/yolostudio_agent_proto/yolo26n.pt` → 从 `/home/kly/yolo26n.pt` 覆盖（5.3MB）
-- 测试标签补全：`/home/kly/test_dataset/labels/` 补生成 8 个随机标签文件
+- `/opt/yolostudio-agent/yolov8n.pt` → 从 `/models/yolov8n.pt` 覆盖（6.3MB）
+- `/opt/yolostudio-agent/yolo26n.pt` → 从 `/models/yolo26n.pt` 覆盖（5.3MB）
+- 测试标签补全：`/data/test_dataset/labels/` 补生成 8 个随机标签文件
 
-**训练产出：** `/home/kly/yolostudio_agent_proto/runs/detect/train5/weights/best.pt`
+**训练产出：** `/opt/yolostudio-agent/runs/detect/train5/weights/best.pt`
 
 ---
 
 ## 十、2026-04-10 高强度能力测试结论（已记录）
 
 本轮已额外完成 20 类潜在问题的逐项验证，详见：
-- `D:\yolodo2.0gent_plan\docgent_issue_inventory_20_2026-04-10.md`
-- `D:\yolodo2.0gent_plan\docgent_capability_stress_report_2026-04-10.md`
+- `C:\workspace\yolodo2.0gent_plan\docgent_issue_inventory_20_2026-04-10.md`
+- `C:\workspace\yolodo2.0gent_plan\docgent_capability_stress_report_2026-04-10.md`
 
 ### 当前确认存在的高价值问题
 1. **非标准目录命名识别不足**（如 `pics/`、`ann/`）
@@ -557,14 +557,14 @@ afab4c1  test: comprehensive validation + log parser fix
 
 1. **非标准目录别名支持**
    - `dataset_root.py` 已支持把 `pics/`、`ann/`、`annotations/`、`imgs/` 等常见别名识别为图片/标签目录。
-   - 真实服务器验证：`/home/kly/agent_cap_tests/nonstandard_dataset` 现在可解析为：
-     - `img_dir=/home/kly/agent_cap_tests/nonstandard_dataset/pics`
-     - `label_dir=/home/kly/agent_cap_tests/nonstandard_dataset/ann`
+   - 真实服务器验证：`/data/agent_cap_tests/nonstandard_dataset` 现在可解析为：
+     - `img_dir=/data/agent_cap_tests/nonstandard_dataset/pics`
+     - `label_dir=/data/agent_cap_tests/nonstandard_dataset/ann`
 
 2. **失败点前移**
    - `prepare_dataset_for_training` 遇到真正 `unknown / images_only / flat` 的目录结构时，不再继续 scan → split → generate_yaml；
    - 而是直接在 `resolve_root` 阶段返回 `blocked_at=resolve_root` 和恢复建议。
-   - 真实服务器验证：`/home/kly/agent_cap_tests/unknown_dataset` 现在会在 `resolve_root` 提前失败，不再产生无意义 split 产物。
+   - 真实服务器验证：`/data/agent_cap_tests/unknown_dataset` 现在会在 `resolve_root` 提前失败，不再产生无意义 split 产物。
 
 3. **训练状态纯净化**
    - `agent_client.py` 已修正 `check_training_status` 的状态回写逻辑：
@@ -636,7 +636,7 @@ afab4c1  test: comprehensive validation + log parser fix
 
 #### Gemma (`ollama + gemma4:e4b`)
 复杂提示词：
-- `数据在 /home/kly/test_dataset/，按默认划分比例，然后用yolov8n模型进行训练`
+- `数据在 /data/test_dataset/，按默认划分比例，然后用yolov8n模型进行训练`
 
 现在稳定回到两段式确认链：
 1. `prepare_dataset_for_training(force_split=true)`
@@ -707,7 +707,7 @@ afab4c1  test: comprehensive validation + log parser fix
   - 模拟：写入 active registry → 新建 `TrainService()` → `status()` 重新接管 → `stop()` 成功结束 → last registry 正确落盘
 
 #### 远端真实验证
-- 已同步最新 `train_service.py` 到 `/home/kly/yolostudio_agent_proto`
+- 已同步最新 `train_service.py` 到 `/opt/yolostudio-agent`
 - 真实服务器验证链路：
   1. 启动真实训练（`epochs=50`）
   2. 重启 MCP Server
@@ -788,7 +788,7 @@ afab4c1  test: comprehensive validation + log parser fix
 - `prepare_dataset_for_training` 在 `ready=true` 但存在风险时，会明确把风险写进 `summary`
 
 ### zyb 真实回归结果
-- `scan_dataset('/home/kly/agent_cap_tests/zyb')` 已返回真实类名：
+- `scan_dataset('/data/agent_cap_tests/zyb')` 已返回真实类名：
   - `Excavator`
   - `bulldozer`
   - `piling_machine`
@@ -809,8 +809,8 @@ afab4c1  test: comprehensive validation + log parser fix
 
 第二主线在完成 `predict_images / predict_videos / summarize_prediction_results` 后，这轮不再只用 toy data 做本地验证，而是正式引入：
 
-- 本地真实权重池：`C:\Users\29615\OneDrive\桌面\yuntian`
-- 本地真实视频池：`H:\foto`
+- 本地真实权重池：`C:\datasets\weights`
+- 本地真实视频池：`C:\datasets\videos`
 
 ### 新的测试方法
 当前第二主线推荐固定使用四段式验证：
@@ -852,7 +852,7 @@ afab4c1  test: comprehensive validation + log parser fix
 
 ### 当前阻塞
 本轮没有掩盖真实问题，而是明确暴露出：
-- 本机 `D:\Anaconda\envs\yolo\python.exe` 在导入 `ultralytics / torch` 时失败
+- 本机 `C:\Miniconda3\envs\yolo\python.exe` 在导入 `ultralytics / torch` 时失败
 - 典型错误：
   - `WinError 10106`
   - `_overlapped / winsock 提供程序异常`
@@ -893,7 +893,7 @@ afab4c1  test: comprehensive validation + log parser fix
 - `agent/tests/test_prediction_remote_real_media.py`
 - `deploy/scripts/check_remote_prediction_prereqs.ps1`
 
-但当前 Codex 所在的 PowerShell / Python 运行环境，对服务器 `192.168.0.163` 的 TCP 出站连接被系统策略拦截：
+但当前 Codex 所在的 PowerShell / Python 运行环境，对服务器 `203.0.113.10` 的 TCP 出站连接被系统策略拦截：
 
 - `22` 端口：拒绝访问
 - `8080` 端口：拒绝访问
@@ -1034,11 +1034,11 @@ afab4c1  test: comprehensive validation + log parser fix
 当前验证环境口径已固定：
 
 - Agent client / LangChain / LangGraph 相关验证：
-  - `D:\yolodo2.0\agent_plan\agent\.venv\Scripts\python.exe`
+  - `C:\workspace\yolodo2.0\agent_plan\agent\.venv\Scripts\python.exe`
 - 纯 server/service/tool 的快速验证：
   - 当前 Linux `python3`
 - 远端真实执行：
-  - `/home/kly/miniconda3/envs/yolostudio-agent-server/bin/python`
+  - `/opt/conda/envs/agent-server/bin/python`
 
 同时，`deploy/server_proto` 当前不再视为可长期落后的旧原型，而是按下面原则同步：
 
@@ -1053,10 +1053,10 @@ afab4c1  test: comprehensive validation + log parser fix
 这轮除了本地回归，还补了远端同步和远端 smoke：
 
 - 同步到远端：
-  - `/home/kly/yolostudio_agent_proto/agent_plan/agent/server/`
-  - `/home/kly/yolostudio_agent_proto/agent_plan/knowledge/`
+  - `/opt/yolostudio-agent/agent_plan/agent/server/`
+  - `/opt/yolostudio-agent/agent_plan/knowledge/`
 - 重启远端 MCP：
-  - `/home/kly/yolostudio_agent_proto/manage_mcp_server.sh restart`
+  - `/opt/yolostudio-agent/manage_mcp_server.sh restart`
 
 远端验证已覆盖：
 
