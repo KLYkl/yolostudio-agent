@@ -443,7 +443,11 @@ class YoloStudioAgentClient:
             self.session_state.preferences.language = "zh-CN"
 
     async def _try_handle_mainline_intent(self, user_text: str, thread_id: str) -> dict[str, Any] | None:
-        dataset_path = self._extract_dataset_path_from_text(user_text) or self.session_state.active_dataset.dataset_root or self.session_state.active_dataset.img_dir
+        extracted_dataset_path = self._extract_dataset_path_from_text(user_text)
+        frame_followup_path = ''
+        if any(token in user_text for token in ('这些帧', '刚才抽的帧', '刚才这些帧', '这些抽出来的帧', '这些图片', '刚才抽的图片')):
+            frame_followup_path = str((self.session_state.active_dataset.last_frame_extract or {}).get('output_dir') or '').strip()
+        dataset_path = extracted_dataset_path or frame_followup_path or self.session_state.active_dataset.dataset_root or self.session_state.active_dataset.img_dir
         prediction_path = self._extract_dataset_path_from_text(user_text) or self.session_state.active_prediction.source_path
         normalized_text = user_text.lower()
         metric_signals = self._extract_metric_signals_from_text(user_text)
@@ -517,7 +521,7 @@ class YoloStudioAgentClient:
             '最值得参考的训练记录', '最值得参考的训练结果',
         )) or any(token in normalized_text for token in ('best training run', 'best run'))
         wants_stop_training = any(token in user_text for token in (
-            '停止训练', '停掉训练', '停一下训练', '先停训练', '先把训练停掉', '停止当前训练', '先停一下',
+            '停止训练', '停掉训练', '停一下训练', '先停训练', '先把训练停掉', '停止当前训练', '先停一下', '再停一次', '再停一下',
         )) or any(token in normalized_text for token in ('stop training', 'stop current training'))
         wants_training_revision = any(
             token in normalized_text or token in user_text
@@ -725,6 +729,15 @@ class YoloStudioAgentClient:
                 user_text,
                 data_yaml=str(readiness.get('resolved_data_yaml') or self.session_state.active_dataset.data_yaml or ''),
             )
+            if not str(requested_args.get('model') or '').strip():
+                draft_model = str((((self.session_state.active_training.training_plan_draft or {}).get('planned_training_args') or {}).get('model')) or '').strip()
+                preserved_model = ''
+                if frame_followup_path:
+                    preserved_model = draft_model or str(self.session_state.active_training.model or '').strip()
+                elif any(token in user_text for token in ('继续', '刚才', '上次', '恢复')):
+                    preserved_model = draft_model or str(self.session_state.active_training.model or '').strip()
+                if preserved_model:
+                    requested_args['model'] = preserved_model
             requested_model = str(requested_args.get('model') or '').strip()
             discussion_only = self._is_training_discussion_only(user_text)
             execution_backend = self._extract_training_execution_backend_from_text(user_text)
@@ -1924,6 +1937,19 @@ class YoloStudioAgentClient:
                     'thread_id': thread_id if pending else None,
                 }
             return None
+
+        if (
+            draft
+            and not has_revision
+            and not requested_execute
+            and any(token in user_text for token in ('训练计划继续', '继续刚才训练计划', '继续刚才的训练计划', '继续刚才那个训练计划', '刚才训练计划继续'))
+        ):
+            return {
+                'status': 'completed' if not pending else 'needs_confirmation',
+                'message': self._render_training_plan_draft(draft, pending=bool(pending)),
+                'tool_call': {'name': pending['name'], 'args': pending.get('args', {})} if pending else None,
+                'thread_id': thread_id if pending else None,
+            }
 
         if requested_execute and not has_revision:
             if pending:
