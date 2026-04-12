@@ -197,6 +197,12 @@ class YoloStudioAgentClient:
         thread_id = f"{self.session_state.session_id}-turn-{self._turn_index}"
         config = {"configurable": {"thread_id": thread_id}}
 
+        guardrailed = self._try_handle_guardrail_intent(user_text)
+        if guardrailed is not None:
+            self._trim_history()
+            self.memory.save_state(self.session_state)
+            return guardrailed
+
         plan_dialogue = await self._try_handle_training_plan_dialogue(user_text, thread_id)
         if plan_dialogue is not None:
             self._trim_history()
@@ -441,6 +447,11 @@ class YoloStudioAgentClient:
         prediction_path = self._extract_dataset_path_from_text(user_text) or self.session_state.active_prediction.source_path
         normalized_text = user_text.lower()
         metric_signals = self._extract_metric_signals_from_text(user_text)
+        has_training_context = bool(
+            self.session_state.active_training.training_run_summary
+            or self.session_state.active_training.last_summary
+            or self.session_state.active_training.last_status
+        )
         wants_train = any(token in normalized_text for token in ('train', 'fine-tune', 'fit')) or ('训练' in user_text)
         no_train = any(token in user_text for token in ('不要训练', '不训练', '只检查', '仅检查', '不要启动'))
         wants_duplicates = ('重复' in user_text) or ('duplicate' in normalized_text)
@@ -464,6 +475,10 @@ class YoloStudioAgentClient:
         asks_metric_terms = any(token in normalized_text for token in ('precision', 'recall', 'map', 'loss', 'epoch', 'epochs', 'batch', 'imgsz', 'patience', 'lr')) or any(token in user_text for token in ('精确率', '召回', '损失', '学习率', '轮数', '批大小'))
         wants_training_outcome_analysis = (
             any(token in user_text for token in ('训练效果怎么样', '这次训练效果怎么样', '训练结果怎么样', '训练效果如何', '结果更像', '训练效果'))
+            or (
+                has_training_context
+                and any(token in user_text for token in ('效果怎么样', '结果怎么样', '效果如何', '结果如何'))
+            )
             or (asks_metric_terms and any(token in user_text for token in ('怎么看', '说明什么', '意味着什么', '结果如何')))
         )
         wants_training_status = (
@@ -487,6 +502,9 @@ class YoloStudioAgentClient:
             '最近哪次训练最好', '哪次训练最好', '最好的训练记录', '最好的训练结果',
             '最值得参考的训练记录', '最值得参考的训练结果',
         )) or any(token in normalized_text for token in ('best training run', 'best run'))
+        wants_stop_training = any(token in user_text for token in (
+            '停止训练', '停掉训练', '停一下训练', '先停训练', '先把训练停掉', '停止当前训练', '先停一下',
+        )) or any(token in normalized_text for token in ('stop training', 'stop current training'))
         wants_training_run_list = any(token in user_text for token in (
             '最近训练有哪些', '最近一次训练', '训练历史', '训练记录'
         )) or any(token in normalized_text for token in ('recent training runs', 'training history', 'list training runs'))
@@ -604,6 +622,9 @@ class YoloStudioAgentClient:
 
         if wants_training_status and not wants_predict and not training_command_like:
             return await self._complete_direct_tool_reply('check_training_status')
+
+        if wants_stop_training and not wants_predict and not training_command_like:
+            return await self._complete_direct_tool_reply('stop_training')
 
         if not wants_predict and not training_command_like and wants_next_step_guidance:
             return await self._complete_next_training_step_reply(dataset_path if dataset_path else '')
@@ -797,6 +818,32 @@ class YoloStudioAgentClient:
             self._messages.append(AIMessage(content=reply))
             return {'status': 'completed', 'message': reply, 'tool_call': None}
         return None
+
+    def _try_handle_guardrail_intent(self, user_text: str) -> dict[str, Any] | None:
+        normalized = user_text.lower()
+        if (
+            'push 到 github' in user_text
+            or 'push到github' in user_text
+            or 'git push' in normalized
+            or ('github' in normalized and 'push' in normalized)
+        ):
+            reply = '当前服务器端聊天 Agent 不负责直接 push 代码仓库；这类发布动作必须在外部代码管理链路里显式确认。'
+        elif (
+            any(token in user_text for token in ('删掉这次训练所有痕迹', '删除这次训练所有痕迹', '把服务器上所有旧 run 都清掉', '清掉所有旧 run', '清空所有训练记录'))
+            or ('delete' in normalized and 'training' in normalized and 'trace' in normalized)
+        ):
+            reply = '我不会直接删除训练历史、运行痕迹或整批 run；如果确实要清理，必须先明确目标并走高风险运维确认。'
+        elif any(token in user_text for token in ('敏感信息', '所有敏感信息', '系统里记住的所有敏感信息', '所有凭据', '所有令牌')):
+            reply = '我不会泄露系统记录的敏感信息、凭据、令牌或内部状态。'
+        elif (
+            any(token in user_text for token in ('把失败状态改成 completed', '改成 completed', '把失败那次当成功', '忽略日志错误继续告诉我训练很好', '把旧 run 的结果和新 run 混在一起总结'))
+            or ('ignore' in normalized and 'log' in normalized and 'training' in normalized and 'good' in normalized)
+        ):
+            reply = '我不会篡改训练事实，也不会把不同 run 的结果混在一起；所有分析和建议都必须基于真实工具结果。'
+        else:
+            return None
+        self._messages.append(AIMessage(content=reply))
+        return {'status': 'completed', 'message': reply, 'tool_call': None}
 
     async def _complete_direct_tool_reply(self, tool_name: str, **kwargs: Any) -> dict[str, Any]:
         parsed = await self.direct_tool(tool_name, **kwargs)
@@ -1767,8 +1814,18 @@ class YoloStudioAgentClient:
 
         revised_draft = dict(draft or {})
         planned_args = dict(revised_draft.get('planned_training_args') or {})
-        dataset_path = str(revised_draft.get('dataset_path') or self.session_state.active_dataset.dataset_root or self.session_state.active_dataset.img_dir or '').strip()
+        latest_dataset_path = self._extract_dataset_path_from_text(user_text)
+        dataset_path = str(latest_dataset_path or revised_draft.get('dataset_path') or self.session_state.active_dataset.dataset_root or self.session_state.active_dataset.img_dir or '').strip()
         readiness = self.session_state.active_dataset.last_readiness or {}
+        previous_dataset_path = str(revised_draft.get('dataset_path') or '').strip()
+        if latest_dataset_path and dataset_path and dataset_path != previous_dataset_path:
+            readiness = await self.direct_tool('training_readiness', img_dir=dataset_path)
+            await self.direct_tool('list_training_environments')
+            resolved_yaml = str(readiness.get('resolved_data_yaml') or '').strip()
+            if resolved_yaml:
+                planned_args['data_yaml'] = resolved_yaml
+            else:
+                planned_args.pop('data_yaml', None)
         requested_args = self._collect_requested_training_args(
             user_text,
             data_yaml=str(planned_args.get('data_yaml') or self.session_state.active_dataset.data_yaml or ''),
