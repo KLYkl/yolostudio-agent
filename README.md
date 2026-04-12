@@ -17,7 +17,6 @@ YoloStudio Agent is the agent/MCP workspace for turning the desktop YoloStudio w
 agent/                  Agent client, server, tools, and tests
 knowledge/              Phase 1 rule-based knowledge base
 deploy/                 Remote validation scripts and server prototype
-doc/                    Engineering notes, playbooks, and release context
 ```
 
 ## Current scope
@@ -99,4 +98,3 @@ Replace them with paths and hosts that match your own environment.
 ## Notes
 
 - This repo intentionally separates the **agent/MCP workspace** from the main desktop product code.
-- Internal engineering notes remain under `doc/`, but sensitive local paths and host details have been sanitized for publication.
