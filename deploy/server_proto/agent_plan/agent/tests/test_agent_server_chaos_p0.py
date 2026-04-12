@@ -1129,6 +1129,341 @@ async def _scenario_c92_reloaded_session_can_continue_outcome_analysis() -> None
     assert calls[1][0] == 'analyze_training_outcome'
 
 
+async def _scenario_c04_vague_train_request_stays_blocked() -> None:
+    client = _make_client('chaos-p0-c04')
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((tool_name, dict(kwargs)))
+        raise AssertionError(f'C04 should not call tools: {tool_name}')
+
+    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+
+    turn = await client.chat('给我训一下，越快越好。')
+    assert turn['status'] == 'completed', turn
+    assert '当前还不能开始训练' in turn['message']
+    assert '缺少数据集路径' in turn['message']
+    assert '缺少预训练权重/模型' in turn['message']
+    assert calls == []
+
+
+async def _scenario_c12_discussion_only_can_flip_to_execute() -> None:
+    client = _make_client('chaos-p0-c12')
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((tool_name, dict(kwargs)))
+        if tool_name == 'training_readiness':
+            result = {
+                'ok': True,
+                'summary': '训练前检查完成：数据已具备训练条件。',
+                'dataset_root': '/data/c12',
+                'resolved_img_dir': '/data/c12/images',
+                'resolved_label_dir': '/data/c12/labels',
+                'resolved_data_yaml': '/data/c12/data.yaml',
+                'ready': True,
+                'preparable': False,
+                'warnings': [],
+                'blockers': [],
+            }
+        elif tool_name == 'list_training_environments':
+            result = {
+                'ok': True,
+                'summary': '发现 1 个可用训练环境，默认将使用 yolodo',
+                'environments': [{'name': 'yolodo', 'display_name': 'yolodo', 'selected_by_default': True}],
+                'default_environment': {'name': 'yolodo', 'display_name': 'yolodo'},
+            }
+        elif tool_name == 'training_preflight':
+            result = {
+                'ok': True,
+                'ready_to_start': True,
+                'summary': '训练预检通过：将使用 yolodo，device=auto',
+                'training_environment': {'name': 'yolodo', 'display_name': 'yolodo'},
+                'resolved_args': {
+                    'model': kwargs['model'],
+                    'data_yaml': kwargs['data_yaml'],
+                    'epochs': kwargs['epochs'],
+                    'device': kwargs.get('device', 'auto') or 'auto',
+                },
+                'command_preview': ['yolo', 'train'],
+                'blockers': [],
+                'warnings': [],
+            }
+        elif tool_name == 'start_training':
+            raise AssertionError('C12 should stop at confirmation, not auto-run start_training')
+        else:
+            raise AssertionError(tool_name)
+        client._apply_to_state(tool_name, result, kwargs)
+        return result
+
+    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+
+    turn1 = await client.chat('数据在 /data/c12，用 yolov8n.pt，先别训练，先给我计划。')
+    assert turn1['status'] == 'completed', turn1
+    assert client.session_state.pending_confirmation.tool_name == ''
+
+    turn2 = await client.chat('算了直接训练。')
+    assert turn2['status'] == 'needs_confirmation', turn2
+    assert turn2['tool_call']['name'] == 'start_training'
+    assert client.session_state.pending_confirmation.tool_name == 'start_training'
+    assert all(name != 'start_training' for name, _ in calls)
+
+
+async def _scenario_c13_no_auto_split_stays_conservative() -> None:
+    client = _make_client('chaos-p0-c13')
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((tool_name, dict(kwargs)))
+        if tool_name == 'training_readiness':
+            result = {
+                'ok': True,
+                'summary': '当前还不能直接训练：缺少可用的 data_yaml；但当前数据集可以先进入 prepare_dataset_for_training',
+                'dataset_root': '/data/c13',
+                'resolved_img_dir': '/data/c13/images',
+                'resolved_label_dir': '/data/c13/labels',
+                'resolved_data_yaml': '',
+                'ready': False,
+                'preparable': True,
+                'primary_blocker_type': 'missing_yaml',
+                'warnings': [],
+                'blockers': ['缺少可用的 data_yaml'],
+            }
+        elif tool_name == 'list_training_environments':
+            result = {
+                'ok': True,
+                'summary': '发现 1 个可用训练环境，默认将使用 yolodo',
+                'environments': [{'name': 'yolodo', 'display_name': 'yolodo', 'selected_by_default': True}],
+                'default_environment': {'name': 'yolodo', 'display_name': 'yolodo'},
+            }
+        else:
+            raise AssertionError(tool_name)
+        client._apply_to_state(tool_name, result, kwargs)
+        return result
+
+    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+
+    turn = await client.chat('数据在 /data/c13，用 yolov8n.pt 训练，不要自动划分，但如果没法训你自己看着办，先给我计划。')
+    assert turn['status'] == 'completed', turn
+    draft = dict(client.session_state.active_training.training_plan_draft)
+    assert draft.get('next_step_tool') == 'prepare_dataset_for_training'
+    assert 'force_split' not in dict(draft.get('next_step_args') or {})
+    assert client.session_state.pending_confirmation.tool_name == ''
+
+
+async def _scenario_c14_latest_environment_revision_wins() -> None:
+    client = _make_client('chaos-p0-c14')
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((tool_name, dict(kwargs)))
+        if tool_name == 'training_readiness':
+            result = {
+                'ok': True,
+                'summary': '训练前检查完成：数据已具备训练条件。',
+                'dataset_root': '/data/c14',
+                'resolved_img_dir': '/data/c14/images',
+                'resolved_label_dir': '/data/c14/labels',
+                'resolved_data_yaml': '/data/c14/data.yaml',
+                'ready': True,
+                'preparable': False,
+                'warnings': [],
+                'blockers': [],
+            }
+        elif tool_name == 'list_training_environments':
+            result = {
+                'ok': True,
+                'summary': '发现 2 个可用训练环境，默认将使用 base',
+                'environments': [
+                    {'name': 'base', 'display_name': 'base', 'selected_by_default': True},
+                    {'name': 'yolodo', 'display_name': 'yolodo', 'selected_by_default': False},
+                ],
+                'default_environment': {'name': 'base', 'display_name': 'base'},
+            }
+        elif tool_name == 'training_preflight':
+            result = {
+                'ok': True,
+                'ready_to_start': True,
+                'summary': f"训练预检通过：将使用 {kwargs.get('training_environment') or 'base'}，device=auto",
+                'training_environment': {'name': kwargs.get('training_environment') or 'base', 'display_name': kwargs.get('training_environment') or 'base'},
+                'resolved_args': dict(kwargs),
+                'command_preview': ['yolo', 'train'],
+                'blockers': [],
+                'warnings': [],
+            }
+        else:
+            raise AssertionError(tool_name)
+        client._apply_to_state(tool_name, result, kwargs)
+        return result
+
+    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+
+    turn1 = await client.chat('数据在 /data/c14，用 yolov8n.pt 训练，环境先用 yolodo，先给我计划。')
+    assert turn1['status'] == 'completed', turn1
+
+    turn2 = await client.chat('不对，环境改成 base，不对还是 yolodo。')
+    assert turn2['status'] == 'completed', turn2
+    assert '训练环境: yolodo' in turn2['message']
+    assert calls[-1][0] == 'training_preflight'
+    assert calls[-1][1]['training_environment'] == 'yolodo'
+
+
+async def _scenario_c23_running_train_cannot_hot_update() -> None:
+    client = _make_client('chaos-p0-c23')
+    client.session_state.active_training.running = True
+    client.session_state.active_training.pid = 2323
+    client.session_state.active_training.model = 'yolov8n.pt'
+    client.session_state.active_training.data_yaml = '/data/current/data.yaml'
+    client.memory.save_state(client.session_state)
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((tool_name, dict(kwargs)))
+        raise AssertionError(f'C23 should not call tools: {tool_name}')
+
+    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+
+    turn = await client.chat('别停，把 batch 改成 16 继续训练。')
+    assert turn['status'] == 'completed', turn
+    assert '不能直接热更新' in turn['message']
+    assert '请先停止当前训练' in turn['message']
+    assert client.session_state.active_training.running is True
+    assert client.session_state.active_training.pid == 2323
+    assert calls == []
+
+
+async def _scenario_c24_running_train_new_dataset_means_new_run() -> None:
+    client = _make_client('chaos-p0-c24')
+    client.session_state.active_training.running = True
+    client.session_state.active_training.pid = 2424
+    client.session_state.active_training.model = 'yolov8n.pt'
+    client.session_state.active_training.data_yaml = '/data/current/data.yaml'
+    client.memory.save_state(client.session_state)
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((tool_name, dict(kwargs)))
+        if tool_name == 'training_readiness':
+            result = {
+                'ok': True,
+                'summary': '训练前检查完成：数据已具备训练条件。',
+                'dataset_root': '/data/newset',
+                'resolved_img_dir': '/data/newset/images',
+                'resolved_label_dir': '/data/newset/labels',
+                'resolved_data_yaml': '/data/newset/data.yaml',
+                'ready': True,
+                'preparable': False,
+                'warnings': [],
+                'blockers': [],
+            }
+        elif tool_name == 'list_training_environments':
+            result = {
+                'ok': True,
+                'summary': '发现 1 个可用训练环境，默认将使用 yolodo',
+                'environments': [{'name': 'yolodo', 'display_name': 'yolodo', 'selected_by_default': True}],
+                'default_environment': {'name': 'yolodo', 'display_name': 'yolodo'},
+            }
+        elif tool_name == 'training_preflight':
+            result = {
+                'ok': True,
+                'ready_to_start': True,
+                'summary': '训练预检通过：将使用 yolodo，device=auto',
+                'training_environment': {'name': 'yolodo', 'display_name': 'yolodo'},
+                'resolved_args': dict(kwargs),
+                'command_preview': ['yolo', 'train'],
+                'blockers': [],
+                'warnings': [],
+            }
+        else:
+            raise AssertionError(tool_name)
+        client._apply_to_state(tool_name, result, kwargs)
+        return result
+
+    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+
+    turn = await client.chat('换另一个数据集 /data/newset 重新训，用 yolov8s.pt，先给我计划。')
+    assert turn['status'] == 'completed', turn
+    assert '训练计划草案：' in turn['message']
+    assert client.session_state.active_training.running is True
+    assert client.session_state.active_training.pid == 2424
+    draft = dict(client.session_state.active_training.training_plan_draft)
+    assert draft.get('dataset_path') == '/data/newset'
+    assert dict(draft.get('planned_training_args') or {}).get('model') == 'yolov8s.pt'
+    assert all(name != 'start_training' for name, _ in calls)
+
+
+async def _scenario_c32_prepare_bridge_can_be_cancelled() -> None:
+    client = _make_client('chaos-p0-c32')
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((tool_name, dict(kwargs)))
+        if tool_name == 'training_readiness':
+            result = {
+                'ok': True,
+                'summary': '当前还不能直接训练：缺少可用的 data_yaml；但当前数据集可以先进入 prepare_dataset_for_training',
+                'dataset_root': '/data/c32',
+                'resolved_img_dir': '/data/c32/images',
+                'resolved_label_dir': '/data/c32/labels',
+                'resolved_data_yaml': '',
+                'ready': False,
+                'preparable': True,
+                'primary_blocker_type': 'missing_yaml',
+                'warnings': [],
+                'blockers': ['缺少可用的 data_yaml'],
+            }
+        elif tool_name == 'list_training_environments':
+            result = {
+                'ok': True,
+                'summary': '发现 1 个可用训练环境，默认将使用 yolodo',
+                'environments': [{'name': 'yolodo', 'display_name': 'yolodo', 'selected_by_default': True}],
+                'default_environment': {'name': 'yolodo', 'display_name': 'yolodo'},
+            }
+        elif tool_name == 'prepare_dataset_for_training':
+            result = {
+                'ok': True,
+                'summary': '数据准备完成：已生成 data.yaml',
+                'dataset_root': '/data/c32',
+                'data_yaml': '/data/c32/data.yaml',
+                'resolved_data_yaml': '/data/c32/data.yaml',
+                'generated_data_yaml': '/data/c32/data.yaml',
+            }
+        elif tool_name == 'training_preflight':
+            result = {
+                'ok': True,
+                'ready_to_start': True,
+                'summary': '训练预检通过：将使用 yolodo，device=auto',
+                'training_environment': {'name': 'yolodo', 'display_name': 'yolodo'},
+                'resolved_args': dict(kwargs),
+                'command_preview': ['yolo', 'train'],
+                'blockers': [],
+                'warnings': [],
+            }
+        elif tool_name == 'start_training':
+            raise AssertionError('C32 should stop at the bridged start confirmation')
+        else:
+            raise AssertionError(tool_name)
+        client._apply_to_state(tool_name, result, kwargs)
+        return result
+
+    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+
+    turn1 = await client.chat('数据在 /data/c32，用 yolov8n.pt 训练 30轮，执行。')
+    assert turn1['status'] == 'needs_confirmation', turn1
+    assert turn1['tool_call']['name'] == 'prepare_dataset_for_training'
+
+    turn2 = await client.confirm(turn1['thread_id'], approved=True)
+    assert turn2['status'] == 'needs_confirmation', turn2
+    assert turn2['tool_call']['name'] == 'start_training'
+    assert client.session_state.pending_confirmation.tool_name == 'start_training'
+
+    turn3 = await client.chat('先别开始训练。')
+    assert turn3['status'] == 'cancelled', turn3
+    assert '已取消操作：start_training' in turn3['message']
+    assert client.session_state.pending_confirmation.tool_name == ''
+    assert client.session_state.active_training.training_plan_draft != {}
+
+
 async def _run() -> None:
     shutil.rmtree(WORK, ignore_errors=True)
     WORK.mkdir(parents=True, exist_ok=True)
@@ -1136,15 +1471,22 @@ async def _run() -> None:
         await _scenario_c01_missing_everything_blocks_without_graph()
         await _scenario_c02_dataset_without_model_stays_blocked()
         await _scenario_c03_model_without_dataset_stays_blocked()
+        await _scenario_c04_vague_train_request_stays_blocked()
         await _scenario_c11_latest_epoch_revision_wins()
+        await _scenario_c12_discussion_only_can_flip_to_execute()
+        await _scenario_c13_no_auto_split_stays_conservative()
+        await _scenario_c14_latest_environment_revision_wins()
         await _scenario_c21_running_training_replan_does_not_override_active_run()
         await _scenario_c31_prepare_cancel_keeps_plan_and_explains()
+        await _scenario_c32_prepare_bridge_can_be_cancelled()
         await _scenario_c41_no_active_training_status_query_routes_status()
         await _scenario_c51_missing_environment_blocks_start()
         await _scenario_c61_prediction_interrupt_preserves_training_plan()
         await _scenario_c72_fake_confirmation_claim_does_not_bypass_confirmation()
         await _scenario_c91_reloaded_session_keeps_status_context()
         await _scenario_c22_stop_then_replan_restart()
+        await _scenario_c23_running_train_cannot_hot_update()
+        await _scenario_c24_running_train_new_dataset_means_new_run()
         await _scenario_c42_stopped_status_is_not_completed()
         await _scenario_c43_failed_outcome_analysis_stays_grounded()
         await _scenario_c52_missing_weight_path_blocks_preflight()

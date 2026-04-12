@@ -185,23 +185,26 @@ def extract_device_from_text(text: str) -> str:
 
 def extract_training_environment_from_text(text: str, known_environments: list[dict[str, Any]] | None = None) -> str:
     known = known_environments or []
+    matches: list[tuple[int, str]] = []
+
+    def _canonicalize(explicit: str) -> str:
+        for item in known:
+            for candidate in (
+                str(item.get('display_name') or '').strip(),
+                str(item.get('name') or '').strip(),
+            ):
+                if candidate and candidate.lower() == explicit.lower():
+                    return candidate
+        return explicit
+
     patterns = [
         r'(?:用|使用|切到|切换到|改成|换成)\s*([A-Za-z][A-Za-z0-9._-]*)\s*环境',
         r'环境\s*(?:先)?\s*(?:改成|设成|设置为|切到|切换到|为|用)?\s*([A-Za-z][A-Za-z0-9._-]*)',
         r'conda\s*环境\s*([A-Za-z][A-Za-z0-9._-]*)',
     ]
     for pattern in patterns:
-        match = re.search(pattern, text, flags=re.I)
-        if match:
-            explicit = match.group(1)
-            for item in known:
-                for candidate in (
-                    str(item.get('display_name') or '').strip(),
-                    str(item.get('name') or '').strip(),
-                ):
-                    if candidate and candidate.lower() == explicit.lower():
-                        return candidate
-            return explicit
+        for match in re.finditer(pattern, text, flags=re.I):
+            matches.append((match.start(), _canonicalize(match.group(1))))
 
     lowered = text.lower()
     for item in known:
@@ -211,7 +214,10 @@ def extract_training_environment_from_text(text: str, known_environments: list[d
         ):
             token = candidate.lower()
             if token and token in lowered:
-                return candidate
+                matches.append((lowered.rfind(token), candidate))
+    if matches:
+        _, candidate = max(matches, key=lambda item: item[0])
+        return candidate
     return ''
 
 

@@ -452,7 +452,10 @@ class YoloStudioAgentClient:
             or self.session_state.active_training.last_summary
             or self.session_state.active_training.last_status
         )
-        wants_train = any(token in normalized_text for token in ('train', 'fine-tune', 'fit')) or ('训练' in user_text)
+        wants_train = (
+            any(token in normalized_text for token in ('train', 'fine-tune', 'fit'))
+            or any(token in user_text for token in ('训练', '开训', '重训', '重新训', '训一下'))
+        )
         no_train = any(token in user_text for token in ('不要训练', '不训练', '只检查', '仅检查', '不要启动'))
         wants_duplicates = ('重复' in user_text) or ('duplicate' in normalized_text)
         wants_health = any(token in user_text for token in ('损坏', '尺寸异常', '健康检查', '健康状况', '图片质量'))
@@ -505,6 +508,14 @@ class YoloStudioAgentClient:
         wants_stop_training = any(token in user_text for token in (
             '停止训练', '停掉训练', '停一下训练', '先停训练', '先把训练停掉', '停止当前训练', '先停一下',
         )) or any(token in normalized_text for token in ('stop training', 'stop current training'))
+        wants_training_revision = any(
+            token in normalized_text or token in user_text
+            for token in (
+                'batch', 'imgsz', 'device', 'epochs', '轮数', '轮', 'optimizer', '优化器',
+                'freeze', '冻结', 'lr0', '学习率', 'resume', 'project', 'name',
+                'fraction', 'classes', '类别', 'single_cls', '环境', '继续训练', '别停', '不要停',
+            )
+        )
         wants_training_run_list = any(token in user_text for token in (
             '最近训练有哪些', '最近一次训练', '训练历史', '训练记录'
         )) or any(token in normalized_text for token in ('recent training runs', 'training history', 'list training runs'))
@@ -625,6 +636,21 @@ class YoloStudioAgentClient:
 
         if wants_stop_training and not wants_predict and not training_command_like:
             return await self._complete_direct_tool_reply('stop_training')
+
+        if (
+            self.session_state.active_training.running
+            and wants_train
+            and wants_training_revision
+            and not wants_stop_training
+            and not dataset_path
+            and not wants_predict
+        ):
+            reply = (
+                '当前训练还在运行，不能直接热更新 batch、轮数、优化器或设备等核心参数。'
+                '如果要改参数，请先停止当前训练，再生成新的训练计划。'
+            )
+            self._messages.append(AIMessage(content=reply))
+            return {'status': 'completed', 'message': reply, 'tool_call': None}
 
         if not wants_predict and not training_command_like and wants_next_step_guidance:
             return await self._complete_next_training_step_reply(dataset_path if dataset_path else '')
@@ -1748,9 +1774,23 @@ class YoloStudioAgentClient:
 
         normalized = user_text.lower()
         clear_fields = self._collect_training_clear_fields(user_text)
+        requested_execute = any(token in user_text for token in ('执行', '开始吧', '就这样', '确认', '可以开始', '开训', '启动吧', '直接训练', '直接开始训练')) or normalized.strip() in {'y', 'yes'}
+        has_revision = any(
+            token in normalized or token in user_text
+            for token in (
+                'batch', 'imgsz', 'device', 'epochs', '轮', '轮数', '优化器', 'optimizer', '冻结', 'freeze', 'resume',
+                'lr0', '学习率', 'patience', '早停', 'workers', '线程数', 'amp', '混合精度',
+                '模型', '权重', 'project', '输出目录', 'name', '实验名', '运行名',
+                'fraction', '全量数据', '抽样', 'classes', '类别', 'single_cls', '单类别',
+                '环境', '为什么', '原因', '依据', '先只做准备', '只做准备', '标准 yolo', '自定义脚本', 'trainer',
+                '高级参数', '高级配置', '展开参数', '详细参数',
+            )
+        ) or bool(self._extract_custom_training_script_from_text(user_text))
         if (
-            any(token in user_text for token in ('取消', '算了', '先不做', '不用了'))
+            any(token in user_text for token in ('取消', '算了', '先不做', '不用了', '先别开始训练', '先不要开始训练', '先别开训', '先不要开训'))
             and not clear_fields
+            and not requested_execute
+            and not has_revision
             and not any(token in user_text for token in ('取消了', '已经取消', '刚才'))
         ):
             if pending:
@@ -1766,19 +1806,6 @@ class YoloStudioAgentClient:
             self._clear_training_plan_draft()
             self.memory.save_state(self.session_state)
             return None
-
-        requested_execute = any(token in user_text for token in ('执行', '开始吧', '就这样', '确认', '可以开始', '开训', '启动吧')) or normalized.strip() in {'y', 'yes'}
-        has_revision = any(
-            token in normalized or token in user_text
-            for token in (
-                'batch', 'imgsz', 'device', 'epochs', '轮', '轮数', '优化器', 'optimizer', '冻结', 'freeze', 'resume',
-                'lr0', '学习率', 'patience', '早停', 'workers', '线程数', 'amp', '混合精度',
-                '模型', '权重', 'project', '输出目录', 'name', '实验名', '运行名',
-                'fraction', '全量数据', '抽样', 'classes', '类别', 'single_cls', '单类别',
-                '环境', '为什么', '原因', '依据', '先只做准备', '只做准备', '标准 yolo', '自定义脚本', 'trainer',
-                '高级参数', '高级配置', '展开参数', '详细参数',
-            )
-        ) or bool(self._extract_custom_training_script_from_text(user_text))
         if (
             any(token in user_text for token in ('先别执行', '先不要执行', '先别启动', '先不要启动', '先讨论', '先看看计划', '先给我计划'))
             and not has_revision
