@@ -464,8 +464,13 @@ class YoloStudioAgentClient:
             or (asks_metric_terms and any(token in user_text for token in ('怎么看', '说明什么', '意味着什么', '结果如何')))
         )
         wants_training_status = (
-            any(token in user_text for token in ('训练状态', '当前训练状态', '训练进度', '当前进度', '还在训练吗', '还在跑吗', '训练到哪了', '训练到第几轮', '跑到第几轮'))
-            or any(token in normalized_text for token in ('training status', 'training progress', 'check status'))
+            any(token in user_text for token in (
+                '训练状态', '当前训练状态', '训练进度', '当前进度',
+                '还在训练吗', '还在跑吗',
+                '训练到哪了', '训练到第几轮', '跑到第几轮',
+                '训练停了吗', '停了吗', '训练结束了吗', '结束了没', '跑完了吗', '训练完成了吗'
+            ))
+            or any(token in normalized_text for token in ('training status', 'training progress', 'check status', 'is training done', 'training finished'))
         )
         wants_next_step_guidance = any(token in user_text for token in ('下一步', '先补数据还是先调参数', '先补数据', '先调参数', '怎么优化', '如何优化下一步训练', '下一轮怎么做'))
         wants_training_knowledge = bool(metric_signals) or (asks_metric_terms and any(token in user_text for token in ('说明什么', '什么意思', '意味着什么', '怎么看')))

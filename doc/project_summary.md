@@ -1431,3 +1431,35 @@ afab4c1  test: comprehensive validation + log parser fix
 说明当前主线推进已经进入：
 
 > **不仅做本地回归，还在持续固化真实远端 roundtrip。**
+
+### 最新补充：已补训练最终状态的主线回归
+
+当前又继续往前推进了一层：
+
+> **训练完成 / 停止后的主线状态、结果解释、下一步建议**
+
+本轮新增：
+
+- `test_training_mainline_final_state_roundtrip.py`
+
+它覆盖的主线是：
+
+- ready 数据集直接训练
+- `check_training_status`
+- `summarize_training_run`
+- `analyze_training_outcome`
+- `recommend_next_training_step`
+
+并且覆盖两种最终状态：
+
+- `completed`
+- `stopped`
+
+同时补了一条状态查询语义增强：
+
+- “训练跑完了吗 / 训练停了吗 / 训练完成了吗 / 训练结束了吗”
+  现在也优先路由到 `check_training_status`
+
+说明当前第一主线已经不只是“能开训、能跟踪”，而是在继续固化：
+
+> **最终状态下的整链解释稳定性。**

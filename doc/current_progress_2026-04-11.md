@@ -2330,6 +2330,36 @@ Gemma 这轮测试很清楚地说明：
 - 远端输出已归档：
   - `agent/tests/test_zyb_training_mainline_agent_roundtrip_output.json`
 
+#### N. 已补“训练最终状态”主线回归
+
+这一轮继续沿第一主线推进，补的是：
+
+- ready 数据集直接训练
+- 训练最终状态查询
+- 训练完成 / 停止后的结果解释与下一步建议
+
+新增：
+
+- `agent/tests/test_training_mainline_final_state_roundtrip.py`
+- `deploy/server_proto/agent_plan/agent/tests/test_training_mainline_final_state_roundtrip.py`
+
+当前覆盖的最终状态场景：
+
+- `completed`
+- `stopped`
+
+并且补了一条显式状态路由增强：
+
+- “训练跑完了吗 / 训练停了吗 / 训练完成了吗 / 训练结束了吗”
+  现在也优先进入 `check_training_status`
+
+当前验证结论：
+
+- 本地通过
+- `deploy/server_proto` 通过
+- Windows `.venv` 长对话回归通过
+- 远端 `/home/kly/yolostudio_agent_proto` 通过
+
 #### K. 已补“preparable 数据集下切执行后端”的复杂测试
 
 这一轮继续补了另一类长链路：

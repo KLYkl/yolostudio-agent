@@ -911,3 +911,32 @@ D:\yolodo2.0\agent_plan\doc\agent_test_playbook_2026-04-10.md
 最新远端真实结果已归档到：
 
 - `agent/tests/test_zyb_training_mainline_agent_roundtrip_output.json`
+
+### 最新补充：已补训练最终状态主线回归
+
+这一轮继续沿第一主线推进，新增：
+
+- `test_training_mainline_final_state_roundtrip.py`
+
+它覆盖：
+
+- ready 数据集直接训练
+- `completed` 最终状态
+- `stopped` 最终状态
+- 训练完成/停止后的状态查询
+- 训练完成/停止后的结果解释
+- 训练完成/停止后的下一步建议
+
+同时补了一条显式状态路由增强：
+
+- “训练跑完了吗 / 训练停了吗 / 训练完成了吗 / 训练结束了吗”
+  现在也优先进入 `check_training_status`
+
+这批已在：
+
+- 本地
+- `deploy/server_proto`
+- Windows `.venv`
+- 远端 `/home/kly/yolostudio_agent_proto`
+
+完成验证。
