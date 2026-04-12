@@ -1,0 +1,244 @@
+[
+  {
+    "id": "generic_post_metrics_missing",
+    "family": "generic",
+    "task_type": "detection",
+    "stage": "post_training",
+    "topic": "training_metrics",
+    "keywords": [
+      "metrics missing",
+      "没有指标"
+    ],
+    "signals": [
+      "metrics_missing"
+    ],
+    "conditions": [
+      "no precision/recall/mAP/loss metrics available"
+    ],
+    "interpretation": "当前证据不足，无法对训练效果做可靠结论。",
+    "recommendation": "先补齐训练指标或有效状态信息，再判断是否需要调参。",
+    "next_actions": [
+      "先获取最新训练状态或报告",
+      "确认日志是否完整",
+      "再做效果分析"
+    ],
+    "priority": 10,
+    "source_type": "workflow",
+    "confidence": 0.96,
+    "action_type": "collect_metrics_first",
+    "tags": [
+      "metrics",
+      "post-training"
+    ],
+    "sources": [
+      {
+        "title": "YoloStudio check_training_status contract",
+        "url": "agent_plan workflow"
+      }
+    ],
+    "origin": "project_workflow",
+    "evidence_level": "system_rule"
+  },
+  {
+    "id": "generic_post_loss_only_metrics",
+    "family": "generic",
+    "task_type": "detection",
+    "stage": "post_training",
+    "topic": "training_metrics",
+    "keywords": [
+      "loss only",
+      "只有loss"
+    ],
+    "signals": [
+      "loss_only_metrics"
+    ],
+    "conditions": [
+      "only train losses available without validation metrics"
+    ],
+    "interpretation": "仅有训练 loss 时只能做弱判断，不能替代 precision/recall/mAP 的效果评估。",
+    "recommendation": "把当前结论当成过程观察，不要据此直接下最终调参结论。",
+    "next_actions": [
+      "继续观察验证指标",
+      "不要只凭 loss 决定模型好坏",
+      "必要时拉长观察窗口"
+    ],
+    "priority": 8,
+    "source_type": "official",
+    "confidence": 0.9,
+    "action_type": "continue_observing",
+    "tags": [
+      "loss",
+      "metrics"
+    ],
+    "sources": [
+      {
+        "title": "Performance Metrics Deep Dive",
+        "url": "https://docs.ultralytics.com/guides/yolo-performance-metrics/"
+      }
+    ],
+    "origin": "official_docs",
+    "evidence_level": "seed_rule"
+  },
+  {
+    "id": "generic_post_early_training_observation",
+    "family": "generic",
+    "task_type": "detection",
+    "stage": "post_training",
+    "topic": "training_metrics",
+    "keywords": [
+      "早期观察",
+      "early epochs"
+    ],
+    "signals": [
+      "early_training_observation"
+    ],
+    "conditions": [
+      "epoch_fraction < 0.20"
+    ],
+    "interpretation": "训练还处在较早阶段，过早下结论容易误判。",
+    "recommendation": "优先继续观察，而不是立刻大改参数。",
+    "next_actions": [
+      "继续训练到更有代表性的阶段",
+      "记录中途指标变化",
+      "再决定是否调参"
+    ],
+    "priority": 9,
+    "source_type": "official",
+    "confidence": 0.9,
+    "action_type": "continue_observing",
+    "tags": [
+      "early",
+      "training"
+    ],
+    "sources": [
+      {
+        "title": "Model Training Tips",
+        "url": "https://docs.ultralytics.com/guides/model-training-tips/"
+      }
+    ],
+    "origin": "official_docs",
+    "evidence_level": "seed_rule"
+  },
+  {
+    "id": "generic_post_high_precision_low_recall",
+    "family": "generic",
+    "task_type": "detection",
+    "stage": "post_training",
+    "topic": "training_metrics",
+    "keywords": [
+      "precision 高 recall 低",
+      "misses"
+    ],
+    "signals": [
+      "high_precision_low_recall"
+    ],
+    "conditions": [
+      "precision >= 0.75 and recall < 0.50"
+    ],
+    "interpretation": "模型偏保守，误检不多但漏检偏多，更像覆盖不足或阈值过保守。",
+    "recommendation": "优先检查漏检样本和数据覆盖，再决定是否调置信度或继续补数据。",
+    "next_actions": [
+      "查看漏检样本",
+      "检查是否有漏标/难样本",
+      "必要时再调 conf 或补数据"
+    ],
+    "priority": 9,
+    "source_type": "official",
+    "confidence": 0.93,
+    "action_type": "inspect_missed_samples",
+    "tags": [
+      "precision",
+      "recall",
+      "false-negatives"
+    ],
+    "sources": [
+      {
+        "title": "Performance Metrics Deep Dive",
+        "url": "https://docs.ultralytics.com/guides/yolo-performance-metrics/"
+      }
+    ],
+    "origin": "official_docs",
+    "evidence_level": "seed_rule"
+  },
+  {
+    "id": "generic_post_low_precision_high_recall",
+    "family": "generic",
+    "task_type": "detection",
+    "stage": "post_training",
+    "topic": "training_metrics",
+    "keywords": [
+      "precision 低 recall 高",
+      "false positives"
+    ],
+    "signals": [
+      "low_precision_high_recall"
+    ],
+    "conditions": [
+      "precision < 0.50 and recall >= 0.75"
+    ],
+    "interpretation": "模型较激进，能抓到较多目标，但误检偏多。",
+    "recommendation": "优先检查误检样本和类别边界，再考虑阈值或数据清洗。",
+    "next_actions": [
+      "检查高频误检场景",
+      "确认类别定义是否清晰",
+      "必要时提高阈值或补负样本"
+    ],
+    "priority": 9,
+    "source_type": "official",
+    "confidence": 0.93,
+    "action_type": "inspect_false_positives",
+    "tags": [
+      "precision",
+      "recall",
+      "false-positives"
+    ],
+    "sources": [
+      {
+        "title": "Performance Metrics Deep Dive",
+        "url": "https://docs.ultralytics.com/guides/yolo-performance-metrics/"
+      }
+    ],
+    "origin": "official_docs",
+    "evidence_level": "seed_rule"
+  },
+  {
+    "id": "generic_post_low_map_overall",
+    "family": "generic",
+    "task_type": "detection",
+    "stage": "post_training",
+    "topic": "training_metrics",
+    "keywords": [
+      "mAP 低",
+      "low map"
+    ],
+    "signals": [
+      "low_map_overall"
+    ],
+    "conditions": [
+      "mAP50 < 0.40 or mAP < 0.30"
+    ],
+    "interpretation": "整体检测质量偏低，通常需要先做误差分析，再决定是数据优先还是参数优先。",
+    "recommendation": "不要直接盲调多个参数，先找出失败样本类型。",
+    "next_actions": [
+      "做错检/漏检样本分析",
+      "区分数据问题与参数问题",
+      "一次只改一类变量"
+    ],
+    "priority": 8,
+    "source_type": "official",
+    "confidence": 0.9,
+    "action_type": "run_error_analysis",
+    "tags": [
+      "map",
+      "evaluation"
+    ],
+    "sources": [
+      {
+        "title": "Performance Metrics Deep Dive",
+        "url": "https://docs.ultralytics.com/guides/yolo-performance-metrics/"
+      }
+    ],
+    "origin": "official_docs",
+    "evidence_level": "seed_rule"
+  }
+]

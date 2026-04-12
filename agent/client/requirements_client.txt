@@ -1,0 +1,6 @@
+langchain-ollama
+langchain-mcp-adapters
+langgraph
+langchain-core
+langchain-openai
+openai

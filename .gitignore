@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# 虚拟环境
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 训练产物（大文件）
+runs/
+*.pt
+*.onnx
+
+# 日志
+*.log
+
+# Agent runtime artifacts
+memory/
+train_log_*.txt
+agent/tests/test_long_context_smoke_output.json
+agent/tests/_v2ray_config.json
+agent/tests/_train_log.txt
+agent/tests/.tmp_*/
+agent/tests/_tmp_*/
+.tmp_*/
+agent/tests/*_output.json
+.codex/
+D:/
+.tmp_prediction_real_media_output/
+.tmp_prediction_real_media_stage/
+.tmp_debug_extract/
+outputs/

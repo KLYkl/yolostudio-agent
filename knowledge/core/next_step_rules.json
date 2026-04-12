@@ -1,0 +1,286 @@
+[
+  {
+    "id": "generic_next_fix_data_before_tuning",
+    "family": "generic",
+    "task_type": "detection",
+    "stage": "next_step",
+    "topic": "next_step",
+    "keywords": [
+      "先补数据还是先调参",
+      "data before tuning"
+    ],
+    "signals": [
+      "high_missing_labels",
+      "duplicate_images_present",
+      "corrupted_images_present",
+      "validation_issues_present"
+    ],
+    "conditions": [
+      "high-risk data quality signals present"
+    ],
+    "interpretation": "当前更像数据质量问题优先，而不是参数优先。",
+    "recommendation": "先修数据，再谈调参。",
+    "next_actions": [
+      "先清理或补齐数据",
+      "修完后再重新跑 readiness/health",
+      "避免在脏数据上反复调参"
+    ],
+    "priority": 10,
+    "source_type": "official",
+    "confidence": 0.96,
+    "action_type": "fix_data_quality",
+    "tags": [
+      "next-step",
+      "data-first"
+    ],
+    "sources": [
+      {
+        "title": "Model Training Tips",
+        "url": "https://docs.ultralytics.com/guides/model-training-tips/"
+      }
+    ],
+    "origin": "official_docs",
+    "evidence_level": "seed_rule"
+  },
+  {
+    "id": "generic_next_collect_metrics_first",
+    "family": "generic",
+    "task_type": "detection",
+    "stage": "next_step",
+    "topic": "next_step",
+    "keywords": [
+      "先看指标",
+      "collect metrics"
+    ],
+    "signals": [
+      "metrics_missing",
+      "loss_only_metrics"
+    ],
+    "conditions": [
+      "insufficient evaluation evidence"
+    ],
+    "interpretation": "当前缺少足够证据，无法负责任地建议大幅调参。",
+    "recommendation": "先拿到更完整的训练指标，再决定下一步。",
+    "next_actions": [
+      "补齐 precision/recall/mAP 或更完整状态",
+      "不要只凭单个 loss 下结论"
+    ],
+    "priority": 9,
+    "source_type": "workflow",
+    "confidence": 0.95,
+    "action_type": "collect_metrics_first",
+    "tags": [
+      "next-step",
+      "metrics"
+    ],
+    "sources": [
+      {
+        "title": "YoloStudio training status workflow",
+        "url": "agent_plan workflow"
+      }
+    ],
+    "origin": "project_workflow",
+    "evidence_level": "system_rule"
+  },
+  {
+    "id": "generic_next_continue_observing",
+    "family": "generic",
+    "task_type": "detection",
+    "stage": "next_step",
+    "topic": "next_step",
+    "keywords": [
+      "继续观察",
+      "continue observing"
+    ],
+    "signals": [
+      "early_training_observation",
+      "training_running"
+    ],
+    "conditions": [
+      "training is still early or still running"
+    ],
+    "interpretation": "当前更适合继续观察，不适合马上重做训练策略。",
+    "recommendation": "继续训练或继续观测一个更有代表性的窗口。",
+    "next_actions": [
+      "保留当前配置继续观察",
+      "延后做大改动",
+      "记录下一次状态节点"
+    ],
+    "priority": 8,
+    "source_type": "official",
+    "confidence": 0.9,
+    "action_type": "continue_observing",
+    "tags": [
+      "next-step",
+      "observe"
+    ],
+    "sources": [
+      {
+        "title": "Model Training Tips",
+        "url": "https://docs.ultralytics.com/guides/model-training-tips/"
+      }
+    ],
+    "origin": "official_docs",
+    "evidence_level": "seed_rule"
+  },
+  {
+    "id": "generic_next_inspect_missed_samples",
+    "family": "generic",
+    "task_type": "detection",
+    "stage": "next_step",
+    "topic": "next_step",
+    "keywords": [
+      "漏检",
+      "recall low"
+    ],
+    "signals": [
+      "high_precision_low_recall"
+    ],
+    "conditions": [
+      "precision high, recall low"
+    ],
+    "interpretation": "下一步最值钱的是先理解漏检，而不是立刻同时改多个参数。",
+    "recommendation": "先做漏检样本分析，再决定补数据还是调阈值。",
+    "next_actions": [
+      "收集漏检样本",
+      "检查是否缺少长尾场景",
+      "必要时再调 conf 或补样本"
+    ],
+    "priority": 9,
+    "source_type": "official",
+    "confidence": 0.93,
+    "action_type": "inspect_missed_samples",
+    "tags": [
+      "next-step",
+      "recall"
+    ],
+    "sources": [
+      {
+        "title": "Performance Metrics Deep Dive",
+        "url": "https://docs.ultralytics.com/guides/yolo-performance-metrics/"
+      }
+    ],
+    "origin": "official_docs",
+    "evidence_level": "seed_rule"
+  },
+  {
+    "id": "generic_next_inspect_false_positives",
+    "family": "generic",
+    "task_type": "detection",
+    "stage": "next_step",
+    "topic": "next_step",
+    "keywords": [
+      "误检",
+      "precision low"
+    ],
+    "signals": [
+      "low_precision_high_recall"
+    ],
+    "conditions": [
+      "precision low, recall high"
+    ],
+    "interpretation": "下一步更适合先看误检来源，而不是盲目拉长训练。",
+    "recommendation": "先分析误检样本，必要时补负样本或收紧阈值。",
+    "next_actions": [
+      "收集误检样本",
+      "明确类别边界",
+      "必要时提高阈值"
+    ],
+    "priority": 9,
+    "source_type": "official",
+    "confidence": 0.93,
+    "action_type": "inspect_false_positives",
+    "tags": [
+      "next-step",
+      "precision"
+    ],
+    "sources": [
+      {
+        "title": "Performance Metrics Deep Dive",
+        "url": "https://docs.ultralytics.com/guides/yolo-performance-metrics/"
+      }
+    ],
+    "origin": "official_docs",
+    "evidence_level": "seed_rule"
+  },
+  {
+    "id": "generic_next_prediction_no_detections",
+    "family": "generic",
+    "task_type": "detection",
+    "stage": "next_step",
+    "topic": "next_step",
+    "keywords": [
+      "没有检测结果",
+      "no detections"
+    ],
+    "signals": [
+      "prediction_no_detections"
+    ],
+    "conditions": [
+      "prediction outputs zero detections"
+    ],
+    "interpretation": "没有检测结果时，优先检查数据、类别映射、标签和模型匹配关系。",
+    "recommendation": "先核对数据和标签，再决定是否调参。",
+    "next_actions": [
+      "检查标签是否覆盖目标",
+      "核对类别名称和模型输出",
+      "抽查样本做人工比对"
+    ],
+    "priority": 8,
+    "source_type": "workflow",
+    "confidence": 0.9,
+    "action_type": "inspect_labels_and_mapping",
+    "tags": [
+      "prediction",
+      "next-step"
+    ],
+    "sources": [
+      {
+        "title": "YoloStudio prediction workflow",
+        "url": "agent_plan workflow"
+      }
+    ],
+    "origin": "project_workflow",
+    "evidence_level": "system_rule"
+  },
+  {
+    "id": "generic_next_small_dataset_fast_iteration",
+    "family": "generic",
+    "task_type": "detection",
+    "stage": "next_step",
+    "topic": "next_step",
+    "keywords": [
+      "小样本怎么做",
+      "fast iteration"
+    ],
+    "signals": [
+      "small_dataset"
+    ],
+    "conditions": [
+      "dataset is small"
+    ],
+    "interpretation": "小样本阶段更适合快速迭代，而不是一次性追求最优。",
+    "recommendation": "优先保持实验小步、可回溯，并记录每次变化。",
+    "next_actions": [
+      "先做短周期训练",
+      "每次只改一个关键因素",
+      "保留结果与样本对照"
+    ],
+    "priority": 7,
+    "source_type": "official",
+    "confidence": 0.82,
+    "action_type": "quick_iteration",
+    "tags": [
+      "small-data",
+      "next-step"
+    ],
+    "sources": [
+      {
+        "title": "Model Training Tips",
+        "url": "https://docs.ultralytics.com/guides/model-training-tips/"
+      }
+    ],
+    "origin": "official_docs",
+    "evidence_level": "seed_rule"
+  }
+]
