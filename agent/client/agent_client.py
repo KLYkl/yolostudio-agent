@@ -533,6 +533,14 @@ class YoloStudioAgentClient:
         if dataset_path and readiness_only_query:
             return await self._complete_readiness_knowledge_reply(dataset_path)
 
+        if wants_training_run_compare and wants_next_step_guidance and not wants_predict and not training_command_like:
+            compare_kwargs: dict[str, Any] = {}
+            if explicit_run_ids:
+                compare_kwargs['left_run_id'] = explicit_run_ids[0]
+                if len(explicit_run_ids) > 1:
+                    compare_kwargs['right_run_id'] = explicit_run_ids[1]
+            return await self._complete_training_compare_next_step_reply(**compare_kwargs)
+
         if wants_training_run_compare and not wants_predict and not training_command_like:
             compare_kwargs: dict[str, Any] = {}
             if explicit_run_ids:
@@ -851,6 +859,7 @@ class YoloStudioAgentClient:
             readiness=readiness or self.session_state.active_dataset.last_readiness,
             health=self.session_state.active_dataset.last_health_check,
             status=training_summary,
+            comparison=self.session_state.active_training.last_run_comparison,
             prediction_summary=self.session_state.active_prediction.last_result,
             model_family='yolo',
             task_type='detection',
@@ -866,6 +875,32 @@ class YoloStudioAgentClient:
         self._messages.append(AIMessage(content=reply))
         return {
             'status': 'completed' if training_summary.get('ok', True) and result.get('ok', True) else 'error',
+            'message': reply,
+            'tool_call': None,
+        }
+
+    async def _complete_training_compare_next_step_reply(self, left_run_id: str = '', right_run_id: str = '') -> dict[str, Any]:
+        comparison = await self.direct_tool('compare_training_runs', left_run_id=left_run_id, right_run_id=right_run_id)
+        latest_run = comparison.get('left_run') if comparison.get('ok') else None
+        result = await self.direct_tool(
+            'recommend_next_training_step',
+            readiness=self.session_state.active_dataset.last_readiness,
+            health=self.session_state.active_dataset.last_health_check,
+            status=latest_run or self.session_state.active_training.training_run_summary or self.session_state.active_training.last_summary or self.session_state.active_training.last_status,
+            comparison=comparison if comparison.get('ok') else None,
+            prediction_summary=self.session_state.active_prediction.last_result,
+            model_family='yolo',
+            task_type='detection',
+        )
+        reply = self._merge_grounded_sections([
+            self._build_grounded_tool_reply([('compare_training_runs', comparison)]),
+            self._build_grounded_tool_reply([('recommend_next_training_step', result)]),
+        ])
+        if not reply:
+            reply = result.get('summary') or comparison.get('summary') or result.get('error') or '训练对比后的下一步建议已生成'
+        self._messages.append(AIMessage(content=reply))
+        return {
+            'status': 'completed' if comparison.get('ok', True) and result.get('ok', True) else 'error',
             'message': reply,
             'tool_call': None,
         }
