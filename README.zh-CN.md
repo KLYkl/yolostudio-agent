@@ -1,8 +1,8 @@
-# YoloStudio Agent Plan
+# YoloStudio Agent
 
 [English](./README.md)
 
-YoloStudio Agent Plan 是 YoloStudio 的 agent / MCP 工作区，用来把桌面端的 YoloStudio 工作流整理成一个可对话、可远端执行的训练与预测系统。
+YoloStudio Agent 是 YoloStudio 的 agent / MCP 工作区，用来把桌面端的 YoloStudio 工作流整理成一个可对话、可远端执行的训练与预测系统。
 
 ## 仓库包含内容
 
