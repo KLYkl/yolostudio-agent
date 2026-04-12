@@ -27,7 +27,7 @@ start() {
   fi
   mkdir -p "$HOME/outputs"
   cd "$APP_ROOT"
-  nohup env PYTHONPATH="$APP_ROOT" "$CONDA_BIN" run -n "$ENV_NAME" python -m yolostudio_agent.agent.server.mcp_server >"$LOG_FILE" 2>&1 &
+  nohup env PYTHONPATH="$APP_ROOT:$APP_ROOT/agent_plan${PYTHONPATH:+:$PYTHONPATH}" "$CONDA_BIN" run -n "$ENV_NAME" python -m yolostudio_agent.agent.server.mcp_server >"$LOG_FILE" 2>&1 &
   sleep 4
   status
 }
