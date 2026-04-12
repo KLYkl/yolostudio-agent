@@ -21,13 +21,28 @@ from agent_plan.agent.client.intent_parsing import (
     build_image_extract_args_from_text,
     build_video_extract_args_from_text,
     extract_all_paths_from_text,
+    extract_batch_size_from_text,
     extract_count_from_text,
+    extract_custom_training_script_from_text,
     extract_dataset_path_from_text,
+    extract_device_from_text,
     extract_epochs_from_text,
+    extract_image_size_from_text,
     extract_metric_signals_from_text,
     extract_model_from_text,
+    extract_optimizer_from_text,
+    extract_lr0_from_text,
     extract_output_path_from_text,
     extract_ratio_from_text,
+    extract_resume_flag_from_text,
+    extract_freeze_from_text,
+    extract_patience_from_text,
+    extract_training_environment_from_text,
+    extract_training_execution_backend_from_text,
+    extract_workers_from_text,
+    extract_amp_flag_from_text,
+    is_training_discussion_only,
+    wants_training_advanced_details,
     looks_like_model_path,
     looks_like_video_path,
     should_use_video_prediction,
@@ -65,6 +80,10 @@ SYSTEM_PROMPT = """你是 YoloStudio Agent，负责帮助用户完成数据准�
 训练约定：
 - device 默认传 auto，GPU 分配由服务器端策略决定。
 - training_readiness 是训练前检查的优先入口；如果 data_yaml 已明确且参数完整，也可以直接 start_training。
+- 当用户明确询问“当前有哪些训练环境 / 默认会用哪个环境 / 这次训练会落到哪个 conda 环境”时，优先使用 list_training_environments。
+- 当用户明确要求“先预检 / 先 dry-run / 先看看这次训练会怎么启动”时，优先使用 training_preflight，而不是直接 start_training。
+- 当用户明确询问“最近训练有哪些 / 最近一次训练 / 训练历史 / 训练记录”时，优先使用 list_training_runs。
+- 当用户明确询问“某次训练的详情 / 某个 run 的具体情况 / 某个 train_log 的记录”时，优先使用 inspect_training_run。
 - check_gpu_status 仅在用户明确询问 GPU 状态时使用；不要在每次训练前机械地多调一次。
 - 如果工具返回 next_actions / args_hint / recommended_start_training_args，继续执行时优先原样复用这些参数，不要自己重新猜。
 - 回答训练参数时，要区分三类来源：用户明确指定、工具检测/生成、auto 解析结果；不要把 auto 或默认推断说成用户已明确指定；如果是工具解析结果，请明确说明是“工具检测到...”或“当前 auto 会解析到 ...”。
@@ -149,6 +168,12 @@ class YoloStudioAgentClient:
         parsed = self._normalize_tool_output(payload)
         self.memory.append_event(self.session_state.session_id, "tool_result", {"tool": canonical_name, "args": normalized_args, "result": parsed})
         self._apply_to_state(canonical_name, parsed, normalized_args)
+        if canonical_name == 'start_training' and parsed.get('ok'):
+            self._clear_training_plan_draft()
+        elif canonical_name == 'prepare_dataset_for_training' and parsed.get('ok'):
+            draft = self.session_state.active_training.training_plan_draft or {}
+            if str(draft.get('execution_mode') or '').strip().lower() == 'prepare_only':
+                self._clear_training_plan_draft()
         self._record_secondary_event(canonical_name, parsed)
         self.memory.save_state(self.session_state)
         return parsed
@@ -158,6 +183,12 @@ class YoloStudioAgentClient:
         self._turn_index += 1
         thread_id = f"{self.session_state.session_id}-turn-{self._turn_index}"
         config = {"configurable": {"thread_id": thread_id}}
+
+        plan_dialogue = await self._try_handle_training_plan_dialogue(user_text, thread_id)
+        if plan_dialogue is not None:
+            self._trim_history()
+            self.memory.save_state(self.session_state)
+            return plan_dialogue
 
         routed = await self._try_handle_mainline_intent(user_text, thread_id)
         if routed is not None:
@@ -218,6 +249,8 @@ class YoloStudioAgentClient:
             cancel_message = self._build_cancel_message(pending)
             self._messages.append(AIMessage(content=cancel_message))
             self._clear_pending_confirmation()
+            if pending.get('name') in {'start_training', 'prepare_dataset_for_training'}:
+                self._clear_training_plan_draft()
             self._trim_history()
             self.memory.append_event(self.session_state.session_id, "confirmation_cancelled", {"tool": pending["name"], "args": pending.get("args", {})})
             self.memory.save_state(self.session_state)
@@ -239,6 +272,47 @@ class YoloStudioAgentClient:
             if pending.get('name') == 'prepare_dataset_for_training':
                 synthetic_followup = self._build_followup_training_request()
                 if synthetic_followup:
+                    preflight = await self.direct_tool(
+                        'training_preflight',
+                        model=synthetic_followup['args'].get('model', ''),
+                        data_yaml=synthetic_followup['args'].get('data_yaml', ''),
+                        epochs=int(synthetic_followup['args'].get('epochs', 100)),
+                        device=str(synthetic_followup['args'].get('device', 'auto') or 'auto'),
+                        training_environment=str(synthetic_followup['args'].get('training_environment', '') or ''),
+                        batch=synthetic_followup['args'].get('batch'),
+                        imgsz=synthetic_followup['args'].get('imgsz'),
+                        optimizer=str(synthetic_followup['args'].get('optimizer', '') or ''),
+                        freeze=synthetic_followup['args'].get('freeze'),
+                        resume=synthetic_followup['args'].get('resume'),
+                        lr0=synthetic_followup['args'].get('lr0'),
+                        patience=synthetic_followup['args'].get('patience'),
+                        workers=synthetic_followup['args'].get('workers'),
+                        amp=synthetic_followup['args'].get('amp'),
+                    )
+                    draft = self._build_training_plan_draft(
+                        user_text=self._recent_user_text(),
+                        dataset_path=self.session_state.active_dataset.dataset_root or self.session_state.active_dataset.img_dir,
+                        readiness=self.session_state.active_dataset.last_readiness,
+                        preflight=preflight,
+                        next_tool_name='start_training' if preflight.get('ready_to_start') else '',
+                        next_tool_args=dict(synthetic_followup.get('args') or {}) if preflight.get('ready_to_start') else {},
+                        planned_training_args=dict(synthetic_followup.get('args') or {}),
+                    )
+                    self._save_training_plan_draft(draft)
+                    if not preflight.get('ready_to_start'):
+                        reply = self._merge_grounded_sections([
+                            final_text,
+                            self._build_grounded_tool_reply([('training_preflight', preflight)]),
+                        ]) or preflight.get('summary') or final_text
+                        self._messages.append(AIMessage(content=reply))
+                        self._trim_history()
+                        self.memory.save_state(self.session_state)
+                        return {
+                            "status": "error",
+                            "message": reply,
+                            "tool_call": synthetic_followup,
+                            "approved": True,
+                        }
                     self._set_pending_confirmation(thread_id, synthetic_followup)
                     self.memory.save_state(self.session_state)
                     return {
@@ -277,6 +351,44 @@ class YoloStudioAgentClient:
         if pending.get("name") == "prepare_dataset_for_training":
             synthetic_followup = self._build_followup_training_request()
         if synthetic_followup:
+            preflight = await self.direct_tool(
+                'training_preflight',
+                model=synthetic_followup['args'].get('model', ''),
+                data_yaml=synthetic_followup['args'].get('data_yaml', ''),
+                epochs=int(synthetic_followup['args'].get('epochs', 100)),
+                device=str(synthetic_followup['args'].get('device', 'auto') or 'auto'),
+                training_environment=str(synthetic_followup['args'].get('training_environment', '') or ''),
+                batch=synthetic_followup['args'].get('batch'),
+                imgsz=synthetic_followup['args'].get('imgsz'),
+                optimizer=str(synthetic_followup['args'].get('optimizer', '') or ''),
+                freeze=synthetic_followup['args'].get('freeze'),
+                resume=synthetic_followup['args'].get('resume'),
+                lr0=synthetic_followup['args'].get('lr0'),
+                patience=synthetic_followup['args'].get('patience'),
+                workers=synthetic_followup['args'].get('workers'),
+                amp=synthetic_followup['args'].get('amp'),
+            )
+            draft = self._build_training_plan_draft(
+                user_text=self._recent_user_text(),
+                dataset_path=self.session_state.active_dataset.dataset_root or self.session_state.active_dataset.img_dir,
+                readiness=self.session_state.active_dataset.last_readiness,
+                preflight=preflight,
+                next_tool_name='start_training' if preflight.get('ready_to_start') else '',
+                next_tool_args=dict(synthetic_followup.get('args') or {}) if preflight.get('ready_to_start') else {},
+                planned_training_args=dict(synthetic_followup.get('args') or {}),
+            )
+            self._save_training_plan_draft(draft)
+            if not preflight.get('ready_to_start'):
+                preflight_reply = self._build_grounded_tool_reply([('training_preflight', preflight)]) or preflight.get('summary') or '训练预检未通过'
+                self._messages.append(AIMessage(content=preflight_reply))
+                self._trim_history()
+                self.memory.save_state(self.session_state)
+                return {
+                    "status": "error",
+                    "message": preflight_reply,
+                    "tool_call": synthetic_followup,
+                    "approved": True,
+                }
             self._set_pending_confirmation(thread_id, synthetic_followup)
             self.memory.save_state(self.session_state)
             return {
@@ -409,16 +521,143 @@ class YoloStudioAgentClient:
             return await self._complete_direct_tool_reply(predict_tool, source_path=prediction_path, model=model)
 
         if dataset_path and wants_train and not no_train and not readiness_only_query and not wants_training_outcome_analysis and not wants_next_step_guidance and not wants_training_knowledge:
-            args: dict[str, Any] = {'dataset_path': dataset_path}
-            if wants_split:
-                args['force_split'] = True
-            self._set_pending_confirmation(thread_id, {'name': 'prepare_dataset_for_training', 'args': args, 'id': None, 'synthetic': True})
-            return {
-                'status': 'needs_confirmation',
-                'message': self._build_confirmation_prompt({'name': 'prepare_dataset_for_training', 'args': args}),
-                'tool_call': {'name': 'prepare_dataset_for_training', 'args': args},
-                'thread_id': thread_id,
-            }
+            readiness = await self.direct_tool('training_readiness', img_dir=dataset_path)
+            await self.direct_tool('list_training_environments')
+            requested_args = self._collect_requested_training_args(
+                user_text,
+                data_yaml=str(readiness.get('resolved_data_yaml') or self.session_state.active_dataset.data_yaml or ''),
+            )
+            requested_model = str(requested_args.get('model') or '').strip()
+            discussion_only = self._is_training_discussion_only(user_text)
+            execution_backend = self._extract_training_execution_backend_from_text(user_text)
+
+            if not requested_model:
+                draft = self._build_training_plan_draft(
+                    user_text=user_text,
+                    dataset_path=dataset_path,
+                    readiness=readiness,
+                    next_tool_name='',
+                    next_tool_args={},
+                    planned_training_args=requested_args,
+                )
+                blockers = list(draft.get('blockers') or [])
+                blockers.insert(0, '当前缺少预训练权重/模型，先补模型后再确认训练')
+                draft['blockers'] = blockers
+                self._save_training_plan_draft(draft)
+                reply = self._render_training_plan_draft(draft, pending=False)
+                self._messages.append(AIMessage(content=reply))
+                return {'status': 'completed', 'message': reply, 'tool_call': None}
+
+            if execution_backend != 'standard_yolo':
+                draft = self._build_training_plan_draft(
+                    user_text=user_text,
+                    dataset_path=dataset_path,
+                    readiness=readiness,
+                    next_tool_name='',
+                    next_tool_args={},
+                    planned_training_args=requested_args,
+                )
+                self._save_training_plan_draft(draft)
+                reply = self._render_training_plan_draft(draft, pending=False)
+                self._messages.append(AIMessage(content=reply))
+                return {'status': 'completed', 'message': reply, 'tool_call': None}
+
+            can_direct_train = bool(readiness.get('ready')) and bool(readiness.get('resolved_data_yaml'))
+            if can_direct_train:
+                preflight = await self.direct_tool(
+                    'training_preflight',
+                    model=requested_model,
+                    data_yaml=str(requested_args.get('data_yaml') or readiness.get('resolved_data_yaml') or ''),
+                    epochs=int(requested_args.get('epochs', 100)),
+                    device=str(requested_args.get('device', 'auto') or 'auto'),
+                    training_environment=str(requested_args.get('training_environment') or ''),
+                    batch=requested_args.get('batch'),
+                    imgsz=requested_args.get('imgsz'),
+                    optimizer=str(requested_args.get('optimizer', '') or ''),
+                    freeze=requested_args.get('freeze'),
+                    resume=requested_args.get('resume'),
+                    lr0=requested_args.get('lr0'),
+                    patience=requested_args.get('patience'),
+                    workers=requested_args.get('workers'),
+                    amp=requested_args.get('amp'),
+                )
+                next_args = {
+                    'model': str((preflight.get('resolved_args') or {}).get('model') or requested_model),
+                    'data_yaml': str((preflight.get('resolved_args') or {}).get('data_yaml') or readiness.get('resolved_data_yaml') or ''),
+                    'epochs': int((preflight.get('resolved_args') or {}).get('epochs') or requested_args.get('epochs', 100)),
+                    'device': str((preflight.get('resolved_args') or {}).get('device') or requested_args.get('device') or 'auto'),
+                    'training_environment': str((preflight.get('resolved_args') or {}).get('training_environment') or requested_args.get('training_environment') or ''),
+                    'batch': (preflight.get('resolved_args') or {}).get('batch', requested_args.get('batch')),
+                    'imgsz': (preflight.get('resolved_args') or {}).get('imgsz', requested_args.get('imgsz')),
+                    'optimizer': str((preflight.get('resolved_args') or {}).get('optimizer') or requested_args.get('optimizer') or ''),
+                    'freeze': (preflight.get('resolved_args') or {}).get('freeze', requested_args.get('freeze')),
+                    'resume': (preflight.get('resolved_args') or {}).get('resume', requested_args.get('resume')),
+                    'lr0': (preflight.get('resolved_args') or {}).get('lr0', requested_args.get('lr0')),
+                    'patience': (preflight.get('resolved_args') or {}).get('patience', requested_args.get('patience')),
+                    'workers': (preflight.get('resolved_args') or {}).get('workers', requested_args.get('workers')),
+                    'amp': (preflight.get('resolved_args') or {}).get('amp', requested_args.get('amp')),
+                }
+                draft = self._build_training_plan_draft(
+                    user_text=user_text,
+                    dataset_path=dataset_path,
+                    readiness=readiness,
+                    preflight=preflight,
+                    next_tool_name='start_training' if preflight.get('ready_to_start') else '',
+                    next_tool_args=next_args if preflight.get('ready_to_start') else {},
+                    planned_training_args=next_args,
+                )
+                self._save_training_plan_draft(draft)
+                reply = self._render_training_plan_draft(draft, pending=bool(preflight.get('ready_to_start') and not discussion_only))
+                self._messages.append(AIMessage(content=reply))
+                if preflight.get('ready_to_start') and not discussion_only:
+                    self._set_pending_confirmation(thread_id, {'name': 'start_training', 'args': next_args, 'id': None, 'synthetic': True})
+                    return {
+                        'status': 'needs_confirmation',
+                        'message': reply,
+                        'tool_call': {'name': 'start_training', 'args': next_args},
+                        'thread_id': thread_id,
+                    }
+                return {'status': 'completed', 'message': reply, 'tool_call': None}
+
+            if readiness.get('preparable'):
+                args: dict[str, Any] = {'dataset_path': dataset_path}
+                if wants_split:
+                    args['force_split'] = True
+                draft = self._build_training_plan_draft(
+                    user_text=user_text,
+                    dataset_path=dataset_path,
+                    readiness=readiness,
+                    preflight={},
+                    next_tool_name='prepare_dataset_for_training',
+                    next_tool_args=args,
+                    planned_training_args=requested_args,
+                )
+                self._save_training_plan_draft(draft)
+                reply = self._render_training_plan_draft(draft, pending=not discussion_only)
+                self._messages.append(AIMessage(content=reply))
+                if discussion_only:
+                    return {'status': 'completed', 'message': reply, 'tool_call': None}
+                self._set_pending_confirmation(thread_id, {'name': 'prepare_dataset_for_training', 'args': args, 'id': None, 'synthetic': True})
+                return {
+                    'status': 'needs_confirmation',
+                    'message': reply,
+                    'tool_call': {'name': 'prepare_dataset_for_training', 'args': args},
+                    'thread_id': thread_id,
+                }
+
+            draft = self._build_training_plan_draft(
+                user_text=user_text,
+                dataset_path=dataset_path,
+                readiness=readiness,
+                preflight={},
+                next_tool_name='',
+                next_tool_args={},
+                planned_training_args=requested_args,
+            )
+            self._save_training_plan_draft(draft)
+            reply = self._render_training_plan_draft(draft, pending=False)
+            self._messages.append(AIMessage(content=reply))
+            return {'status': 'completed', 'message': reply, 'tool_call': None}
         return None
 
     async def _complete_direct_tool_reply(self, tool_name: str, **kwargs: Any) -> dict[str, Any]:
@@ -469,11 +708,12 @@ class YoloStudioAgentClient:
 
     async def _complete_readiness_knowledge_reply(self, dataset_path: str) -> dict[str, Any]:
         readiness = await self.direct_tool('training_readiness', img_dir=dataset_path)
+        training_summary = self.session_state.active_training.training_run_summary or self.session_state.active_training.last_summary
         recommendation = await self.direct_tool(
             'recommend_next_training_step',
             readiness=readiness,
             health=self.session_state.active_dataset.last_health_check,
-            status=self.session_state.active_training.last_status,
+            status=training_summary or self.session_state.active_training.last_status,
             prediction_summary=self.session_state.active_prediction.last_result,
         )
         reply = self._merge_grounded_sections([
@@ -509,20 +749,24 @@ class YoloStudioAgentClient:
         }
 
     async def _complete_training_outcome_analysis_reply(self) -> dict[str, Any]:
+        training_summary = await self.direct_tool('summarize_training_run')
         result = await self.direct_tool(
             'analyze_training_outcome',
-            metrics=self.session_state.active_training.last_status,
+            metrics=training_summary,
             data_quality=self.session_state.active_dataset.last_health_check or self.session_state.active_dataset.last_validate,
             prediction_summary=self.session_state.active_prediction.last_result,
             model_family='yolo',
             task_type='detection',
         )
-        reply = self._build_grounded_tool_reply([('analyze_training_outcome', result)])
+        reply = self._merge_grounded_sections([
+            self._build_grounded_tool_reply([('summarize_training_run', training_summary)]),
+            self._build_grounded_tool_reply([('analyze_training_outcome', result)]),
+        ])
         if not reply:
-            reply = result.get('summary') or result.get('error') or '训练结果分析已完成'
+            reply = result.get('summary') or training_summary.get('summary') or result.get('error') or '训练结果分析已完成'
         self._messages.append(AIMessage(content=reply))
         return {
-            'status': 'completed' if result.get('ok', True) else 'error',
+            'status': 'completed' if training_summary.get('ok', True) and result.get('ok', True) else 'error',
             'message': reply,
             'tool_call': None,
         }
@@ -531,11 +775,12 @@ class YoloStudioAgentClient:
         readiness: dict[str, Any] | None = None
         if dataset_path:
             readiness = await self.direct_tool('training_readiness', img_dir=dataset_path)
+        training_summary = await self.direct_tool('summarize_training_run')
         result = await self.direct_tool(
             'recommend_next_training_step',
             readiness=readiness or self.session_state.active_dataset.last_readiness,
             health=self.session_state.active_dataset.last_health_check,
-            status=self.session_state.active_training.last_status,
+            status=training_summary,
             prediction_summary=self.session_state.active_prediction.last_result,
             model_family='yolo',
             task_type='detection',
@@ -543,13 +788,14 @@ class YoloStudioAgentClient:
         sections = []
         if readiness is not None:
             sections.append(self._build_grounded_tool_reply([('training_readiness', readiness)]))
+        sections.append(self._build_grounded_tool_reply([('summarize_training_run', training_summary)]))
         sections.append(self._build_grounded_tool_reply([('recommend_next_training_step', result)]))
         reply = self._merge_grounded_sections(sections)
         if not reply:
-            reply = result.get('summary') or result.get('error') or '下一步建议已生成'
+            reply = result.get('summary') or training_summary.get('summary') or result.get('error') or '下一步建议已生成'
         self._messages.append(AIMessage(content=reply))
         return {
-            'status': 'completed' if result.get('ok', True) else 'error',
+            'status': 'completed' if training_summary.get('ok', True) and result.get('ok', True) else 'error',
             'message': reply,
             'tool_call': None,
         }
@@ -702,6 +948,17 @@ class YoloStudioAgentClient:
         return ""
 
     def _build_followup_training_request(self) -> dict[str, Any] | None:
+        draft = self.session_state.active_training.training_plan_draft or {}
+        if str(draft.get('execution_mode') or '').strip().lower() == 'prepare_only':
+            return None
+        planned_args = dict(draft.get('planned_training_args') or {})
+        if draft and planned_args.get('model') and planned_args.get('data_yaml'):
+            return {
+                "id": None,
+                "name": "start_training",
+                "args": planned_args,
+                "synthetic": True,
+            }
         user_text = self._recent_user_text()
         if not user_text:
             return None
@@ -719,6 +976,42 @@ class YoloStudioAgentClient:
         epochs = self._extract_epochs_from_text(user_text)
         if epochs is not None:
             args["epochs"] = epochs
+        batch = self._extract_batch_size_from_text(user_text)
+        if batch is not None:
+            args["batch"] = batch
+        imgsz = self._extract_image_size_from_text(user_text)
+        if imgsz is not None:
+            args["imgsz"] = imgsz
+        device = self._extract_device_from_text(user_text)
+        if device:
+            args["device"] = device
+        training_environment = self._extract_training_environment_from_text(
+            user_text,
+            list((self.session_state.active_training.last_environment_probe or {}).get('environments') or []),
+        )
+        if training_environment:
+            args["training_environment"] = training_environment
+        optimizer = self._extract_optimizer_from_text(user_text)
+        if optimizer:
+            args["optimizer"] = optimizer
+        freeze = self._extract_freeze_from_text(user_text)
+        if freeze is not None:
+            args["freeze"] = freeze
+        resume = self._extract_resume_flag_from_text(user_text)
+        if resume is not None:
+            args["resume"] = resume
+        lr0 = self._extract_lr0_from_text(user_text)
+        if lr0 is not None:
+            args["lr0"] = lr0
+        patience = self._extract_patience_from_text(user_text)
+        if patience is not None:
+            args["patience"] = patience
+        workers = self._extract_workers_from_text(user_text)
+        if workers is not None:
+            args["workers"] = workers
+        amp = self._extract_amp_flag_from_text(user_text)
+        if amp is not None:
+            args["amp"] = amp
         return {"id": None, "name": "start_training", "args": args, "synthetic": True}
 
     @staticmethod
@@ -758,11 +1051,531 @@ class YoloStudioAgentClient:
         return extract_metric_signals_from_text(text)
 
     @staticmethod
-    def _build_confirmation_prompt(tool_call: dict[str, Any]) -> str:
+    def _extract_batch_size_from_text(text: str) -> int | None:
+        return extract_batch_size_from_text(text)
+
+    @staticmethod
+    def _extract_image_size_from_text(text: str) -> int | None:
+        return extract_image_size_from_text(text)
+
+    @staticmethod
+    def _extract_device_from_text(text: str) -> str:
+        return extract_device_from_text(text)
+
+    @staticmethod
+    def _extract_training_environment_from_text(text: str, known_environments: list[dict[str, Any]] | None = None) -> str:
+        return extract_training_environment_from_text(text, known_environments)
+
+    @staticmethod
+    def _extract_optimizer_from_text(text: str) -> str:
+        return extract_optimizer_from_text(text)
+
+    @staticmethod
+    def _extract_freeze_from_text(text: str) -> int | None:
+        return extract_freeze_from_text(text)
+
+    @staticmethod
+    def _extract_resume_flag_from_text(text: str) -> bool | None:
+        return extract_resume_flag_from_text(text)
+
+    @staticmethod
+    def _extract_custom_training_script_from_text(text: str) -> str:
+        return extract_custom_training_script_from_text(text)
+
+    @staticmethod
+    def _extract_training_execution_backend_from_text(text: str) -> str:
+        return extract_training_execution_backend_from_text(text)
+
+    @staticmethod
+    def _is_training_discussion_only(text: str) -> bool:
+        return is_training_discussion_only(text)
+
+    @staticmethod
+    def _extract_lr0_from_text(text: str) -> float | None:
+        return extract_lr0_from_text(text)
+
+    @staticmethod
+    def _extract_patience_from_text(text: str) -> int | None:
+        return extract_patience_from_text(text)
+
+    @staticmethod
+    def _extract_workers_from_text(text: str) -> int | None:
+        return extract_workers_from_text(text)
+
+    @staticmethod
+    def _extract_amp_flag_from_text(text: str) -> bool | None:
+        return extract_amp_flag_from_text(text)
+
+    def _collect_requested_training_args(self, user_text: str, *, data_yaml: str = '') -> dict[str, Any]:
+        tr = self.session_state.active_training
+        args: dict[str, Any] = {}
+        known_environments = list((tr.last_environment_probe or {}).get('environments') or [])
+        model = self._extract_model_from_text(user_text) or tr.model
+        if model:
+            args['model'] = model
+        resolved_yaml = str(data_yaml or tr.data_yaml or self.session_state.active_dataset.data_yaml or '').strip()
+        if resolved_yaml:
+            args['data_yaml'] = resolved_yaml
+        epochs = self._extract_epochs_from_text(user_text)
+        if epochs is not None:
+            args['epochs'] = epochs
+        batch = self._extract_batch_size_from_text(user_text)
+        if batch is not None:
+            args['batch'] = batch
+        imgsz = self._extract_image_size_from_text(user_text)
+        if imgsz is not None:
+            args['imgsz'] = imgsz
+        device = self._extract_device_from_text(user_text)
+        if device:
+            args['device'] = device
+        training_environment = self._extract_training_environment_from_text(user_text, known_environments)
+        if training_environment:
+            args['training_environment'] = training_environment
+        optimizer = self._extract_optimizer_from_text(user_text)
+        if optimizer:
+            args['optimizer'] = optimizer
+        freeze = self._extract_freeze_from_text(user_text)
+        if freeze is not None:
+            args['freeze'] = freeze
+        resume = self._extract_resume_flag_from_text(user_text)
+        if resume is not None:
+            args['resume'] = resume
+        lr0 = self._extract_lr0_from_text(user_text)
+        if lr0 is not None:
+            args['lr0'] = lr0
+        patience = self._extract_patience_from_text(user_text)
+        if patience is not None:
+            args['patience'] = patience
+        workers = self._extract_workers_from_text(user_text)
+        if workers is not None:
+            args['workers'] = workers
+        amp = self._extract_amp_flag_from_text(user_text)
+        if amp is not None:
+            args['amp'] = amp
+        return args
+
+    def _build_training_plan_draft(
+        self,
+        *,
+        user_text: str,
+        dataset_path: str,
+        readiness: dict[str, Any] | None = None,
+        preflight: dict[str, Any] | None = None,
+        next_tool_name: str = '',
+        next_tool_args: dict[str, Any] | None = None,
+        planned_training_args: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        readiness = readiness or {}
+        preflight = preflight or {}
+        next_tool_args = dict(next_tool_args or {})
+        planned_training_args = dict(planned_training_args or {})
+        environment = (
+            next_tool_args.get('training_environment')
+            or planned_training_args.get('training_environment')
+            or preflight.get('training_environment')
+            or self.session_state.active_training.last_environment_probe.get('default_environment')
+            or {}
+        )
+        if isinstance(environment, dict):
+            env_name = str(environment.get('display_name') or environment.get('name') or '').strip()
+        else:
+            env_name = str(environment or '').strip()
+        execution_backend = self._extract_training_execution_backend_from_text(user_text)
+        custom_script = self._extract_custom_training_script_from_text(user_text)
+        if next_tool_name == 'prepare_dataset_for_training':
+            execution_mode = 'prepare_then_train'
+        elif next_tool_name == 'start_training':
+            execution_mode = 'direct_train'
+        else:
+            execution_mode = 'discussion_only' if self._is_training_discussion_only(user_text) else 'blocked'
+        if any(token in user_text for token in ('只做准备', '只准备', '先准备不要训练')):
+            execution_mode = 'prepare_only'
+
+        blockers = [str(item) for item in (preflight.get('blockers') or readiness.get('blockers') or []) if str(item).strip()]
+        warnings = [str(item) for item in (preflight.get('warnings') or readiness.get('warnings') or []) if str(item).strip()]
+        risks = list(warnings[:2])
+        if readiness.get('primary_blocker_type') and readiness.get('primary_blocker_type') not in risks:
+            risks.insert(0, str(readiness.get('primary_blocker_type')))
+        if execution_backend != 'standard_yolo':
+            blockers.insert(0, '当前自动执行链只支持标准 YOLO 训练；自定义训练后端先保留为计划草案')
+
+        data_yaml = str(
+            planned_training_args.get('data_yaml')
+            or readiness.get('resolved_data_yaml')
+            or self.session_state.active_dataset.data_yaml
+            or ''
+        ).strip()
+        if data_yaml:
+            planned_training_args['data_yaml'] = data_yaml
+        if env_name:
+            planned_training_args['training_environment'] = env_name
+
+        return {
+            'stage': 'training_plan',
+            'status': 'ready_for_confirmation' if next_tool_name else 'discussion',
+            'dataset_path': dataset_path,
+            'data_summary': readiness.get('summary') or '',
+            'preparable': readiness.get('preparable'),
+            'primary_blocker_type': readiness.get('primary_blocker_type') or '',
+            'execution_mode': execution_mode,
+            'execution_backend': execution_backend,
+            'custom_script': custom_script,
+            'training_environment': env_name,
+            'planned_training_args': planned_training_args,
+            'advanced_details_requested': wants_training_advanced_details(user_text),
+            'preflight_summary': preflight.get('summary') or '',
+            'command_preview': list(preflight.get('command_preview') or []),
+            'blockers': blockers,
+            'warnings': warnings,
+            'risks': risks,
+            'next_step_tool': next_tool_name,
+            'next_step_args': next_tool_args,
+            'editable_fields': ['model', 'epochs', 'batch', 'imgsz', 'device', 'training_environment', 'execution_mode', 'execution_backend'],
+        }
+
+    def _save_training_plan_draft(self, draft: dict[str, Any]) -> None:
+        self.session_state.active_training.training_plan_draft = dict(draft)
+
+    def _clear_training_plan_draft(self) -> None:
+        self.session_state.active_training.training_plan_draft = {}
+
+    def _render_training_plan_draft(self, draft: dict[str, Any], *, pending: bool) -> str:
+        if not draft:
+            return ''
+        def _has_value(value: Any) -> bool:
+            return value is not None and value != ''
+
+        args = dict(draft.get('planned_training_args') or {})
+        lines = ['训练计划草案：']
+        dataset_path = str(draft.get('dataset_path') or '').strip()
+        if dataset_path:
+            lines.append(f'- 数据集: {dataset_path}')
+        if draft.get('data_summary'):
+            lines.append(f"- 当前判断: {draft.get('data_summary')}")
+        execution_mode_map = {
+            'prepare_then_train': '先准备再训练',
+            'direct_train': '直接训练',
+            'prepare_only': '只做准备，暂不启动训练',
+            'discussion_only': '先讨论方案，暂不执行',
+            'blocked': '当前存在阻塞，先解决问题',
+        }
+        lines.append(f"- 执行方式: {execution_mode_map.get(str(draft.get('execution_mode') or ''), draft.get('execution_mode') or '未定')}")
+        backend_map = {
+            'standard_yolo': '标准 YOLO 训练',
+            'custom_script': '自定义训练脚本',
+            'custom_trainer': '自定义 Trainer',
+        }
+        lines.append(f"- 执行后端: {backend_map.get(str(draft.get('execution_backend') or ''), draft.get('execution_backend') or '标准 YOLO 训练')}")
+        if draft.get('custom_script'):
+            lines.append(f"- 自定义脚本: {draft.get('custom_script')}")
+        core_bits: list[str] = []
+        for key in ('model', 'data_yaml', 'epochs', 'batch', 'imgsz', 'device'):
+            value = args.get(key)
+            if not _has_value(value):
+                continue
+            display_key = 'data' if key == 'data_yaml' else key
+            core_bits.append(f'{display_key}={value}')
+        if core_bits:
+            lines.append(f"- 核心参数: {', '.join(core_bits)}")
+        advanced_bits: list[str] = []
+        for key in ('optimizer', 'freeze', 'resume', 'lr0', 'patience', 'workers', 'amp'):
+            value = args.get(key)
+            if not _has_value(value):
+                continue
+            advanced_bits.append(f'{key}={value}')
+        if advanced_bits:
+            lines.append(f"- 高级参数: {', '.join(advanced_bits)}")
+        elif draft.get('advanced_details_requested'):
+            lines.append("- 高级参数: 当前未显式指定，将使用运行时默认值")
+        if draft.get('training_environment'):
+            lines.append(f"- 训练环境: {draft.get('training_environment')}")
+        if draft.get('preflight_summary'):
+            lines.append(f"- 预检: {draft.get('preflight_summary')}")
+        blockers = draft.get('blockers') or []
+        warnings = draft.get('warnings') or []
+        risks = draft.get('risks') or []
+        if blockers:
+            lines.append('- 当前阻塞:')
+            lines.extend(f'  - {item}' for item in blockers[:2])
+        elif risks:
+            lines.append('- 主要风险:')
+            lines.extend(f'  - {item}' for item in risks[:2])
+        elif warnings:
+            lines.append('- 主要风险:')
+            lines.extend(f'  - {item}' for item in warnings[:2])
+        next_tool_name = str(draft.get('next_step_tool') or '').strip()
+        if next_tool_name:
+            lines.append(f'- 下一步动作: {next_tool_name}')
+        if pending:
+            lines.append('你可以直接确认，也可以继续改参数、追问原因、改执行方式。')
+        else:
+            lines.append('你可以继续讨论、改参数；如果决定执行，我会再进入确认。')
+        return '\n'.join(lines)
+
+    async def _try_handle_training_plan_dialogue(self, user_text: str, thread_id: str) -> dict[str, Any] | None:
+        draft = dict(self.session_state.active_training.training_plan_draft or {})
+        pending = self._pending_from_state()
+        if not draft and not pending:
+            return None
+
+        normalized = user_text.lower()
+        if (
+            any(token in user_text for token in ('取消', '算了', '先不做', '不用了'))
+            and not any(token in user_text for token in ('取消了', '已经取消', '刚才'))
+        ):
+            if pending:
+                return await self.confirm(thread_id, approved=False)
+            self._clear_training_plan_draft()
+            self.memory.save_state(self.session_state)
+            return {'status': 'cancelled', 'message': '已取消当前训练计划草案。', 'tool_call': None}
+
+        if any(token in user_text for token in ('先别执行', '先不要执行', '先别启动', '先不要启动', '先讨论', '先看看计划', '先给我计划')):
+            if draft:
+                return {
+                    'status': 'completed' if not pending else 'needs_confirmation',
+                    'message': self._render_training_plan_draft(draft, pending=bool(pending)),
+                    'tool_call': {'name': pending['name'], 'args': pending.get('args', {})} if pending else None,
+                    'thread_id': thread_id if pending else None,
+                }
+            return None
+
+        requested_execute = any(token in user_text for token in ('执行', '开始吧', '就这样', '确认', '可以开始', '开训', '启动吧')) or normalized.strip() in {'y', 'yes'}
+        has_revision = any(
+            token in normalized or token in user_text
+            for token in (
+                'batch', 'imgsz', 'device', 'epochs', '优化器', 'optimizer', '冻结', 'freeze', 'resume',
+                'lr0', '学习率', 'patience', '早停', 'workers', '线程数', 'amp', '混合精度',
+                '模型', '权重', '为什么', '原因', '依据', '先只做准备', '只做准备', '标准 yolo', '自定义脚本', 'trainer',
+                '高级参数', '高级配置', '展开参数', '详细参数',
+            )
+        ) or bool(self._extract_custom_training_script_from_text(user_text))
+
+        if requested_execute and not has_revision:
+            if pending:
+                return await self.confirm(thread_id, approved=True)
+            next_tool_name = str(draft.get('next_step_tool') or '').strip()
+            next_tool_args = dict(draft.get('next_step_args') or {})
+            if not next_tool_name:
+                return {'status': 'completed', 'message': self._render_training_plan_draft(draft, pending=False), 'tool_call': None}
+            self._set_pending_confirmation(thread_id, {'name': next_tool_name, 'args': next_tool_args, 'id': None, 'synthetic': True})
+            self.memory.save_state(self.session_state)
+            return {
+                'status': 'needs_confirmation',
+                'message': self._render_training_plan_draft(draft, pending=True),
+                'tool_call': {'name': next_tool_name, 'args': next_tool_args},
+                'thread_id': thread_id,
+            }
+
+        if not has_revision:
+            return None
+
+        revised_draft = dict(draft or {})
+        planned_args = dict(revised_draft.get('planned_training_args') or {})
+        dataset_path = str(revised_draft.get('dataset_path') or self.session_state.active_dataset.dataset_root or self.session_state.active_dataset.img_dir or '').strip()
+        readiness = self.session_state.active_dataset.last_readiness or {}
+        requested_args = self._collect_requested_training_args(
+            user_text,
+            data_yaml=str(planned_args.get('data_yaml') or self.session_state.active_dataset.data_yaml or ''),
+        )
+        planned_args.update({key: value for key, value in requested_args.items() if value not in {None, ''}})
+        execution_backend = self._extract_training_execution_backend_from_text(user_text)
+        advanced_requested = wants_training_advanced_details(user_text) or bool(revised_draft.get('advanced_details_requested'))
+        if any(token in user_text for token in ('只做准备', '只准备', '先准备不要训练')):
+            revised_draft['execution_mode'] = 'prepare_only'
+            revised_draft['next_step_tool'] = 'prepare_dataset_for_training'
+        if any(token in user_text for token in ('不要自动划分', '不要划分', '不划分')):
+            next_step_args = dict(revised_draft.get('next_step_args') or {})
+            next_step_args.pop('force_split', None)
+            revised_draft['next_step_args'] = next_step_args
+
+        next_tool_name = str(revised_draft.get('next_step_tool') or (pending or {}).get('name') or '').strip()
+        next_tool_args = dict(revised_draft.get('next_step_args') or (pending or {}).get('args') or {})
+        execution_mode = str(revised_draft.get('execution_mode') or '').strip().lower()
+        if execution_backend != 'standard_yolo':
+            revised_draft = self._build_training_plan_draft(
+                user_text=user_text,
+                dataset_path=dataset_path,
+                readiness=readiness,
+                preflight={},
+                next_tool_name='',
+                next_tool_args={},
+                planned_training_args=planned_args,
+            )
+            revised_draft['advanced_details_requested'] = advanced_requested
+        elif (
+            next_tool_name == 'start_training'
+            or (execution_mode in {'direct_train', 'discussion_only', 'blocked'} and readiness.get('ready') and planned_args.get('model'))
+        ):
+            preflight = await self.direct_tool(
+                'training_preflight',
+                model=str(planned_args.get('model') or ''),
+                data_yaml=str(planned_args.get('data_yaml') or ''),
+                epochs=int(planned_args.get('epochs', 100)),
+                device=str(planned_args.get('device', 'auto') or 'auto'),
+                training_environment=str(planned_args.get('training_environment') or ''),
+                batch=planned_args.get('batch'),
+                imgsz=planned_args.get('imgsz'),
+                optimizer=str(planned_args.get('optimizer', '') or ''),
+                freeze=planned_args.get('freeze'),
+                resume=planned_args.get('resume'),
+                lr0=planned_args.get('lr0'),
+                patience=planned_args.get('patience'),
+                workers=planned_args.get('workers'),
+                amp=planned_args.get('amp'),
+            )
+            revised_draft = self._build_training_plan_draft(
+                user_text=user_text,
+                dataset_path=dataset_path,
+                readiness=readiness,
+                preflight=preflight,
+                next_tool_name='start_training' if preflight.get('ready_to_start') else '',
+                next_tool_args={
+                    'model': str((preflight.get('resolved_args') or {}).get('model') or planned_args.get('model') or ''),
+                    'data_yaml': str((preflight.get('resolved_args') or {}).get('data_yaml') or planned_args.get('data_yaml') or ''),
+                    'epochs': int((preflight.get('resolved_args') or {}).get('epochs') or planned_args.get('epochs', 100)),
+                    'device': str((preflight.get('resolved_args') or {}).get('device') or planned_args.get('device') or 'auto'),
+                    'training_environment': str((preflight.get('resolved_args') or {}).get('training_environment') or planned_args.get('training_environment') or ''),
+                    'batch': (preflight.get('resolved_args') or {}).get('batch', planned_args.get('batch')),
+                    'imgsz': (preflight.get('resolved_args') or {}).get('imgsz', planned_args.get('imgsz')),
+                    'optimizer': str((preflight.get('resolved_args') or {}).get('optimizer') or planned_args.get('optimizer') or ''),
+                    'freeze': (preflight.get('resolved_args') or {}).get('freeze', planned_args.get('freeze')),
+                    'resume': (preflight.get('resolved_args') or {}).get('resume', planned_args.get('resume')),
+                    'lr0': (preflight.get('resolved_args') or {}).get('lr0', planned_args.get('lr0')),
+                    'patience': (preflight.get('resolved_args') or {}).get('patience', planned_args.get('patience')),
+                    'workers': (preflight.get('resolved_args') or {}).get('workers', planned_args.get('workers')),
+                    'amp': (preflight.get('resolved_args') or {}).get('amp', planned_args.get('amp')),
+                } if preflight.get('ready_to_start') else {},
+                planned_training_args={
+                    'model': str((preflight.get('resolved_args') or {}).get('model') or planned_args.get('model') or ''),
+                    'data_yaml': str((preflight.get('resolved_args') or {}).get('data_yaml') or planned_args.get('data_yaml') or ''),
+                    'epochs': int((preflight.get('resolved_args') or {}).get('epochs') or planned_args.get('epochs', 100)),
+                    'device': str((preflight.get('resolved_args') or {}).get('device') or planned_args.get('device') or 'auto'),
+                    'training_environment': str((preflight.get('resolved_args') or {}).get('training_environment') or planned_args.get('training_environment') or ''),
+                    'batch': (preflight.get('resolved_args') or {}).get('batch', planned_args.get('batch')),
+                    'imgsz': (preflight.get('resolved_args') or {}).get('imgsz', planned_args.get('imgsz')),
+                    'optimizer': str((preflight.get('resolved_args') or {}).get('optimizer') or planned_args.get('optimizer') or ''),
+                    'freeze': (preflight.get('resolved_args') or {}).get('freeze', planned_args.get('freeze')),
+                    'resume': (preflight.get('resolved_args') or {}).get('resume', planned_args.get('resume')),
+                    'lr0': (preflight.get('resolved_args') or {}).get('lr0', planned_args.get('lr0')),
+                    'patience': (preflight.get('resolved_args') or {}).get('patience', planned_args.get('patience')),
+                    'workers': (preflight.get('resolved_args') or {}).get('workers', planned_args.get('workers')),
+                    'amp': (preflight.get('resolved_args') or {}).get('amp', planned_args.get('amp')),
+                },
+            )
+            revised_draft['advanced_details_requested'] = advanced_requested
+        elif readiness.get('preparable'):
+            prepare_args = dict(next_tool_args)
+            prepare_args.setdefault('dataset_path', dataset_path)
+            revised_draft = self._build_training_plan_draft(
+                user_text=user_text,
+                dataset_path=dataset_path,
+                readiness=readiness,
+                preflight={},
+                next_tool_name='prepare_dataset_for_training',
+                next_tool_args=prepare_args,
+                planned_training_args=planned_args,
+            )
+            revised_draft['advanced_details_requested'] = advanced_requested
+        else:
+            revised_draft['planned_training_args'] = planned_args
+            if next_tool_name:
+                revised_draft['next_step_tool'] = next_tool_name
+            revised_draft['advanced_details_requested'] = advanced_requested
+        self._save_training_plan_draft(revised_draft)
+        if pending and revised_draft.get('next_step_tool'):
+            self._set_pending_confirmation(
+                thread_id,
+                {
+                    'name': str(revised_draft.get('next_step_tool')),
+                    'args': dict(revised_draft.get('next_step_args') or {}),
+                    'id': None,
+                    'synthetic': True,
+                },
+            )
+            self.memory.save_state(self.session_state)
+            return {
+                'status': 'needs_confirmation',
+                'message': self._render_training_plan_draft(revised_draft, pending=True),
+                'tool_call': {
+                    'name': str(revised_draft.get('next_step_tool')),
+                    'args': dict(revised_draft.get('next_step_args') or {}),
+                },
+                'thread_id': thread_id,
+            }
+        self.memory.save_state(self.session_state)
+        return {
+            'status': 'completed',
+            'message': self._render_training_plan_draft(revised_draft, pending=False),
+            'tool_call': None,
+        }
+
+    def _build_confirmation_prompt(self, tool_call: dict[str, Any]) -> str:
         args = tool_call.get("args", {})
+        tool_name = str(tool_call.get('name') or '')
+        ds = self.session_state.active_dataset
+        tr = self.session_state.active_training
+        plan_draft = tr.training_plan_draft or {}
+
+        if plan_draft and str(plan_draft.get('next_step_tool') or '').strip() == tool_name:
+            return self._render_training_plan_draft(plan_draft, pending=True)
+
+        if tool_name == 'prepare_dataset_for_training':
+            lines = ['准备执行：数据准备']
+            dataset_path = str(args.get('dataset_path') or ds.dataset_root or ds.img_dir or '').strip()
+            if dataset_path:
+                lines.append(f'数据集: {dataset_path}')
+            readiness = ds.last_readiness or {}
+            if readiness.get('summary'):
+                lines.append(f"当前判断: {readiness.get('summary')}")
+            if readiness.get('primary_blocker_type'):
+                lines.append(f"主要阻塞: {readiness.get('primary_blocker_type')}")
+            if readiness.get('preparable'):
+                lines.append('初步安排: 自动补齐训练产物')
+            if args.get('force_split'):
+                lines.append('附加安排: 按默认比例划分数据')
+            lines.append('确认执行？(y/n)')
+            return '\n'.join(lines)
+
+        if tool_name == 'start_training':
+            lines = ['准备执行：启动训练']
+            readiness = ds.last_readiness or {}
+            if readiness.get('summary'):
+                lines.append(f"数据理解: {readiness.get('summary')}")
+            preflight = tr.last_preflight or {}
+            environment = preflight.get('training_environment') or tr.last_environment_probe.get('default_environment') or {}
+            env_name = environment.get('display_name') or environment.get('name')
+            if env_name:
+                lines.append(f'训练环境: {env_name}')
+            model = args.get('model') or tr.model
+            data_yaml = args.get('data_yaml') or tr.data_yaml or ds.data_yaml
+            epochs = args.get('epochs') or (preflight.get('resolved_args') or {}).get('epochs') or 100
+            device = args.get('device') or (preflight.get('resolved_args') or {}).get('device') or 'auto'
+            batch = args.get('batch')
+            if batch is None:
+                batch = (preflight.get('resolved_args') or {}).get('batch')
+            imgsz = args.get('imgsz')
+            if imgsz is None:
+                imgsz = (preflight.get('resolved_args') or {}).get('imgsz')
+            plan_bits = [f'model={model}', f'data={data_yaml}', f'epochs={epochs}', f'device={device}']
+            if batch is not None:
+                plan_bits.append(f'batch={batch}')
+            if imgsz is not None:
+                plan_bits.append(f'imgsz={imgsz}')
+            lines.append(f"初步安排: {', '.join(str(item) for item in plan_bits)}")
+            if preflight.get('summary'):
+                lines.append(f"预检: {preflight.get('summary')}")
+            command_preview = preflight.get('command_preview') or []
+            if command_preview:
+                preview_text = ' '.join(str(item) for item in command_preview[:6])
+                if len(command_preview) > 6:
+                    preview_text += ' ...'
+                lines.append(f'命令预览: {preview_text}')
+            lines.append('确认执行？(y/n)')
+            return '\n'.join(lines)
+
         pretty_args = "\n".join(f"  - {k}: {v}" for k, v in args.items()) or "  - 无参数"
         return (
-            f"检测到高风险操作：{tool_call['name']}\n"
+            f"检测到高风险操作：{tool_name}\n"
             f"参数摘要：\n{pretty_args}\n"
             "确认执行？(y/n)"
         )
@@ -846,7 +1659,3 @@ async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudi
 
 async def build_agent():
     return await build_agent_client()
-
-
-
-

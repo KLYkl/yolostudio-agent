@@ -40,6 +40,9 @@
 - 训练参数来源标注
 - MCP 重启后的 run registry / reattach
 - file checkpoint / durable HITL 第一版
+- 训练环境探测
+- 训练预检 / dry-run
+- 最近训练记录查询
 
 ### 2.2 数据提取 / 预测链路
 
@@ -326,3 +329,414 @@ D:\yolodo2.0\agent_plan\doc\agent_test_playbook_2026-04-10.md
 最准确的一句话是：
 
 > **当前知识库已经是可用的训练解释层，但还不是基于大量真实训练沉淀出来的经验库。**
+
+
+## 13. 补充：训练结果分析链已收口到“先汇总事实，再解释”
+
+在新的继续推进里，训练结果分析链已经不再主要依赖裸 `check_training_status`。
+
+当前应按下面理解：
+
+- `check_training_status`
+  - 仍是**状态查询工具**
+  - 负责返回运行态、最近日志、训练事实字段
+- `summarize_training_run`
+  - 现在是**训练结果事实汇总层**
+  - 负责把最近一次训练整理成统一骨架：
+    - `run_state`
+    - `metrics`
+    - `signals`
+    - `facts`
+    - `next_actions`
+- `analyze_training_outcome`
+  - 优先吃 `summarize_training_run` 的输出
+- `recommend_next_training_step`
+  - 组合 `training_readiness / health / summarize_training_run`
+
+这轮还额外收了一个容易误导的点：
+
+- 训练如果只是留下了 `return_code/device` 这类运行态碎片，
+  **不再被当成“已经有足够训练事实”**
+- 如果训练已结束但缺 `precision/recall/mAP/loss`，
+  知识层会明确回到：
+  > **先补事实 / 先补指标**
+
+因此新会话继续时，最准确的理解是：
+
+> **当前训练知识链已经形成“状态查询层 → 训练结果事实层 → 知识解释层”的三段式结构。**
+
+
+## 14. 补充：本地 / 远端验证环境口径已固定
+
+新会话继续时，不应再把当前 shell 默认 `python3` 当成 Agent 客户端验证解释器。
+
+当前固定口径：
+
+- Agent client / LangChain / LangGraph / route / state / grounded 相关验证：
+  - `D:\yolodo2.0\agent_plan\agent\.venv\Scripts\python.exe`
+- 纯 server/service/tool 的快速验证：
+  - 可继续用当前 Linux `python3`
+- 远端真实执行：
+  - `/home/kly/miniconda3/envs/yolostudio-agent-server/bin/python`
+
+同时，`deploy/server_proto` 已切换成“**主实现同轮对齐**”口径，不再默认允许长期落后。
+
+
+## 15. 补充：训练结果分析链已完成一轮远端 smoke
+
+在当前继续推进里，这条链不只做了本地回归，也补了远端实际验证：
+
+- 已把最新 `agent/server/` 同步到：
+  - `/home/kly/yolostudio_agent_proto/agent_plan/agent/server/`
+- 已把最新 `knowledge/` 同步到：
+  - `/home/kly/yolostudio_agent_proto/agent_plan/knowledge/`
+- 已通过：
+  - `/home/kly/yolostudio_agent_proto/manage_mcp_server.sh restart`
+
+远端验证分成两层：
+
+1. **远端服务层 smoke**
+   - `TrainService.summarize_run()`
+   - `KnowledgeService.analyze_training_outcome()`
+
+2. **远端 MCP smoke**
+   - 通过本地 SSH tunnel 调远端 MCP
+   - 已确认：
+     - `check_training_status`
+     - `summarize_training_run`
+     - `retrieve_training_knowledge`
+     - `analyze_training_outcome`
+     - `recommend_next_training_step`
+     都可正常返回
+
+因此新会话继续时，应把当前状态理解为：
+
+> **训练结果分析链已经补到“本地实现 + deploy 原型同步 + 远端实际 smoke 通过”的状态。**
+
+
+## 16. 补充：第一主线已补到一轮远端真实训练生命周期
+
+在远端真实环境里，已经继续跑过一轮 `zyb` 数据集训练生命周期：
+
+- `training_readiness`
+- `prepare_dataset_for_training`
+- `start_training`
+- 多轮 `check_training_status`
+- `summarize_training_run`
+- `analyze_training_outcome`
+- `recommend_next_training_step`
+
+当前已确认：
+
+- 真实训练能够在远端启动
+- `check_training_status` 能连续返回 `run_state=running`
+- 真实训练事实能进入 `summarize_training_run`
+- 知识层已基于训练汇总而不是裸状态给出解释和下一步建议
+
+本轮远端归档结果：
+
+- `agent/tests/test_zyb_long_training_lifecycle_output.json`
+
+最关键的真实结论是：
+
+- 这组大数据训练在当前窗口里仍处在 **early_training_observation**
+- 当前最稳定的下一步建议不是先调参数，而是：
+  - `recommended_action=fix_data_quality`
+
+
+## 17. 补充：第二主线已再次做远端视频 prediction 回归
+
+为了确认这轮训练链推进没有破坏 prediction，也补跑了远端真实视频 prediction。
+
+最新回归结果仍然保持在原基线：
+
+- 2 个视频
+- 24 帧
+- 13 个检测帧
+- 15 个检测框
+- `two_wheeler=15`
+
+本地归档结果：
+
+- `agent/tests/test_prediction_remote_real_media_output.json`
+
+因此新会话继续时，应把当前状态更新为：
+
+> **训练链已经补到远端真实生命周期，prediction 也已再次确认没有被这轮改动带坏。**
+
+
+## 18. 补充：远端真实训练已经有标准 roundtrip 入口
+
+新会话继续时，不应再把远端训练验证理解成“只能手动拼 SSH 命令”。
+
+当前已补：
+
+- 本地发起脚本：
+  - `deploy/scripts/run_training_remote_roundtrip.ps1`
+- 远端执行脚本：
+  - `deploy/scripts/run_training_remote_validation.sh`
+- 固定入口测试：
+  - `agent/tests/test_zyb_long_training_lifecycle.py`
+
+因此当前远端训练验证的正确理解是：
+
+> **已经开始从手工验证过渡到标准 roundtrip 回归。**
+
+
+## 19. 补充：训练前语义与训练中语义已继续收口
+
+当前继续时，应额外记住两个新语义：
+
+### 19.1 `training_readiness`
+
+新增字段：
+
+- `preparable`
+- `primary_blocker_type`
+
+当前当数据集只是缺 `data_yaml` 时，会明确表现成：
+
+- `ready=false`
+- `preparable=true`
+- `primary_blocker_type=missing_yaml`
+- `next_actions[0].tool=prepare_dataset_for_training`
+
+### 19.2 训练事实观察阶段
+
+`check_training_status` / `summarize_training_run` 已新增：
+
+- `observation_stage`
+
+阶段固定为：
+
+- `early / mid / late / final`
+
+当前在 `zyb` 大数据集训练上，远端真实结果已经确认：
+
+- 训练中状态仍属于 `early`
+- 手动停止后的训练汇总属于 `final`
+
+所以新会话继续时，最准确的理解是：
+
+> **当前系统已经能区分“有阶段性指标”和“是否仍属早期观察”。**
+
+
+## 20. 补充：训练 run 管理已继续往前补一层
+
+当前训练 run 管理不再只有 `list_training_runs`。
+
+已新增：
+
+- `inspect_training_run`
+
+当前语义：
+
+- 默认不传 `run_id` 时，查看最近一次训练记录详情
+- 传 `run_id` 时，查看指定训练记录
+- 也兼容直接传日志路径
+
+当前返回重点：
+
+- `selected_run_id`
+- `run_state`
+- `observation_stage`
+- `progress`
+- `metrics`
+- `signals`
+- `facts`
+- `status_source`
+
+并且这一层已经同步接入：
+
+- SessionState：`last_run_inspection`
+- grounded reply：训练记录详情展示
+
+所以后续继续推进时，训练 run 管理当前应理解成：
+
+> **已有环境探测、预检、训练历史列表、训练记录详情四层能力。**
+
+
+## 21. 补充：高风险确认层已开始收口成“执行摘要”
+
+当前对高风险训练动作的确认，不再只准备停留在：
+
+- 工具名
+- 参数列表
+
+已开始往“执行摘要”收口。
+
+当前覆盖：
+
+- `prepare_dataset_for_training`
+- `start_training`
+
+摘要里会尽量简短展示：
+
+- 数据理解
+- 当前阻塞 / 是否可继续准备
+- 训练环境
+- 初步训练安排
+- 预检摘要
+
+另外，数据准备完成后，如果用户目标明确是训练，当前会先自动补一轮：
+
+- `training_preflight`
+
+再进入 `start_training` 的确认层。
+
+
+## 22. 补充：训练确认层的讨论结论已锁定到计划
+
+当前已确认一个重要方向：
+
+> **训练确认层最终不做成“工具确认”，也不做成“只能点推荐回复的按钮确认”，而是做成“可自由讨论的训练计划草案”。**
+
+当前已锁定的交互原则：
+
+1. 推荐回复可以保留，但只是快捷入口
+2. 用户必须可以自由说：
+   - 改参数
+   - 追问原因
+   - 改执行方式
+   - 改训练环境
+   - 指定自定义训练代码
+3. 默认只展示短摘要，不默认把所有训练参数一次性抖出来
+4. 高级参数只在非默认、关键、或用户追问时展开
+5. 自定义训练代码 / Trainer / 脚本路径，必须作为独立确认字段
+
+因此，后续继续推进时，高风险训练确认层的目标应理解成：
+
+> **先自动摸底，再给出一版可讨论的训练计划草案，最后在用户明确同意后执行。**
+
+另外，本轮也已把测试要求同步升级：
+
+- 不再接受只靠一两句对话来证明训练确认层质量
+- 后续至少应覆盖：
+  - 多轮复杂对话
+  - 计划修订
+  - 原因追问
+  - 高级参数渐进展开
+  - 自定义训练代码路径
+  - “只讨论不执行”安全场景
+
+
+## 23. 补充：核心训练参数已继续接入主线
+
+当前除了：
+
+- `epochs`
+- `device`
+
+还已继续接入：
+
+- `batch`
+- `imgsz`
+
+已接入位置：
+
+- 用户文本抽取
+- `training_preflight`
+- `start_training`
+- 高风险确认摘要
+- SessionState
+
+因此后续继续时，训练计划草案当前应理解成：
+
+> **已经能表达最核心的一组训练超参数，而不只是 model/data/epochs。**
+
+
+## 24. 补充：训练计划草案已开始进入真实主线
+
+这轮已经不只是“讨论方向”，而是把训练计划草案的第一版落进主线了。
+
+当前新增的事实：
+
+1. `SessionState.active_training` 已新增 `training_plan_draft`
+2. 用户说“先别执行 / 先给我计划 / 先讨论”时：
+   - Agent 会先自动做低风险摸底
+   - 然后返回训练计划草案
+   - 不直接挂高风险确认
+3. 当草案已经存在时，用户继续自由讨论时：
+   - 可以改 `batch / imgsz / optimizer / freeze / resume`
+   - 可以追问为什么这么安排
+   - 可以把执行方式改成“只做准备”
+4. 当用户明确说“执行 / 就这样 / 确认”时：
+   - 再进入真正的高风险确认
+
+也就是说，训练确认层已经从：
+
+- 工具确认
+
+开始往：
+
+- 可讨论的训练计划草案确认
+
+过渡。
+
+### 当前新增测试
+
+已新增：
+
+- `agent/tests/test_training_plan_dialogue.py`
+
+已覆盖：
+
+- 只讨论不执行
+- 中途修订参数
+- 修订后再进入确认
+- prepare-only 改写
+
+### 当前新增高级参数
+
+这轮继续接入：
+
+- `optimizer`
+- `freeze`
+- `resume`
+
+当前已进入：
+
+- 文本解析
+- `training_preflight`
+- `start_training`
+- 草案渲染
+- SessionState / grounded reply
+
+### 最新恢复点：training plan draft 中断批次已收口
+
+上一轮中断时，停在“训练计划草案 + 高级参数 + 自定义训练脚本讨论”这一批。
+现在这一批已经补齐：
+
+- `lr0 / patience / workers / amp`
+- `执行后端: 标准 YOLO / 自定义训练脚本 / 自定义 Trainer`
+- 自定义脚本只进入计划草案，不直接自动执行
+- 高级参数在草案中按需显式展示
+
+新增复杂测试：
+
+- `agent/tests/test_training_plan_dialogue.py`
+- `agent/tests/test_training_plan_advanced_dialogue.py`
+
+这批测试现在已经在：
+
+- 本地主实现
+- `deploy/server_proto`
+- 远端 `/home/kly/yolostudio_agent_proto`
+
+都验证通过。
+
+### 最新补充：训练环境已变成可显式指定参数
+
+这轮不是只继续补高级超参数，而是把 `training_environment` 也接进了训练计划草案和训练执行链。
+
+当前用户已经可以在对话里表达：
+
+- 用哪个环境训练
+- 中途把环境从默认值改成指定环境
+
+并且这会继续传入：
+
+- `training_preflight`
+- `start_training`
+- SessionState
+- 训练计划草案展示
