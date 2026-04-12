@@ -32,6 +32,8 @@ TOOL_NAME_ALIASES: dict[str, str] = {
     'training_run_detail': 'inspect_training_run',
     'compare_training_history': 'compare_training_runs',
     'compare_training_results': 'compare_training_runs',
+    'best_training_run': 'select_best_training_run',
+    'pick_best_training_run': 'select_best_training_run',
 }
 
 _ARG_ALIASES: dict[str, dict[str, str]] = {

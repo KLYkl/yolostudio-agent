@@ -77,6 +77,7 @@ class TrainingContext:
     recent_runs: list[dict[str, Any]] = field(default_factory=list)
     last_run_inspection: dict[str, Any] = field(default_factory=dict)
     last_run_comparison: dict[str, Any] = field(default_factory=dict)
+    best_run_selection: dict[str, Any] = field(default_factory=dict)
     training_plan_draft: dict[str, Any] = field(default_factory=dict)
 
 

@@ -231,6 +231,23 @@ def compare_training_runs(left_run_id: str = '', right_run_id: str = '') -> dict
     return result
 
 
+def select_best_training_run(limit: int = 5) -> dict[str, Any]:
+    """从最近训练记录中挑出当前最值得参考的一次；默认按可分析指标和最终状态排序。"""
+    result = _wrap("选择最佳训练记录", service.select_best_training_run, limit=limit)
+    if result.get('ok'):
+        result.setdefault('next_actions', [
+            '如需查看最佳训练详情，可继续调用 inspect_training_run',
+            '如需和最近一次训练做对比，可继续调用 compare_training_runs',
+            '如需基于最佳训练判断下一步动作，可继续调用 recommend_next_training_step',
+        ])
+    else:
+        result.setdefault('next_actions', [
+            '可先调用 list_training_runs 查看最近训练记录',
+            '如当前没有训练记录，可先调用 start_training',
+        ])
+    return result
+
+
 def check_training_status() -> dict:
     """获取当前训练任务状态与最近日志指标。"""
     result = _wrap("查询训练状态", service.status)

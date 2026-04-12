@@ -674,6 +674,41 @@ class TrainService:
             'next_actions': next_actions,
         }
 
+    def select_best_training_run(self, limit: int = 5) -> dict[str, Any]:
+        self._sync_runtime_state()
+        max_items = max(2, min(int(limit), 20))
+        runs = self._collect_training_run_summaries(limit=max_items)
+        if not runs:
+            return {
+                'ok': False,
+                'error': '当前没有可读训练记录',
+                'summary': '当前没有可用于评估的训练记录',
+                'next_actions': [
+                    '可先调用 list_training_runs 查看最近训练记录',
+                    '如需先产生训练记录，可继续调用 start_training',
+                ],
+            }
+
+        ranked = sorted(runs, key=self._best_run_sort_key, reverse=True)
+        best = ranked[0]
+        score_reason = self._build_best_run_reason(best)
+        summary = f"最佳训练记录: {best.get('run_id')}，{score_reason}"
+        next_actions = [
+            f"如需查看 {best.get('run_id')} 的详情，可继续调用 inspect_training_run",
+            '如需对比最佳训练与最近一次训练，可继续调用 compare_training_runs',
+            '如需基于最佳训练判断下一步动作，可继续调用 recommend_next_training_step',
+        ]
+        return {
+            'ok': True,
+            'summary': summary,
+            'best_run_id': best.get('run_id'),
+            'best_run': best,
+            'ranking_basis': score_reason,
+            'evaluated_count': len(ranked),
+            'candidates': ranked[: min(3, len(ranked))],
+            'next_actions': next_actions,
+        }
+
     def stop(self) -> dict:
         self._sync_runtime_state()
         if not self._is_running():
@@ -1024,6 +1059,48 @@ class TrainService:
                 f"状态变化: {right_summary.get('run_state')} -> {left_summary.get('run_state')}",
             )
         return deltas, highlights
+
+    @staticmethod
+    def _best_run_sort_key(summary: dict[str, Any]) -> tuple[float, float, float, float, float, float]:
+        run_state = str(summary.get('run_state') or '').strip().lower()
+        state_score = {
+            'completed': 3.0,
+            'stopped': 2.0,
+            'running': 1.0,
+            'failed': 0.0,
+            'unavailable': -1.0,
+        }.get(run_state, -1.0)
+        analysis_ready = 1.0 if summary.get('analysis_ready') else 0.0
+        metrics = summary.get('metrics') or {}
+
+        def _metric(*keys: str) -> float:
+            for key in keys:
+                value = metrics.get(key)
+                if isinstance(value, (int, float)):
+                    return float(value)
+            return -1.0
+
+        map50 = _metric('map50', 'mAP50')
+        map5095 = _metric('map', 'mAP50-95')
+        precision = _metric('precision')
+        recall = _metric('recall')
+        updated = float(summary.get('updated_at') or summary.get('stopped_at') or summary.get('started_at') or 0.0)
+        return (analysis_ready, state_score, map50, map5095, precision + recall, updated)
+
+    @staticmethod
+    def _build_best_run_reason(summary: dict[str, Any]) -> str:
+        metrics = summary.get('metrics') or {}
+        fragments: list[str] = []
+        run_state = str(summary.get('run_state') or '').strip().lower()
+        if run_state:
+            fragments.append(f'状态={run_state}')
+        for key, label in (('map50', 'mAP50'), ('map', 'mAP50-95'), ('precision', 'precision'), ('recall', 'recall')):
+            value = metrics.get(key)
+            if isinstance(value, (int, float)):
+                fragments.append(f'{label}={float(value):.3f}')
+        if not fragments:
+            return '当前可读指标最完整'
+        return '，'.join(fragments[:4])
 
     @staticmethod
     def _read_json(path: Path) -> dict[str, Any] | None:

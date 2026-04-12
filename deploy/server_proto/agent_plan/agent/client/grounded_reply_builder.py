@@ -265,6 +265,22 @@ def build_grounded_tool_reply(applied_results: list[tuple[str, dict[str, Any]]])
             lines.append('建议:')
             lines.extend(f'- {item}' for item in next_actions[:2])
         return _join(lines)
+    if tool_name == 'select_best_training_run':
+        lines = [result.get('summary', '最佳训练记录已选出')]
+        if result.get('best_run_id'):
+            lines.append(f"最佳训练: {result.get('best_run_id')}")
+        if result.get('ranking_basis'):
+            lines.append(f"选择依据: {result.get('ranking_basis')}")
+        candidates = result.get('candidates') or []
+        if candidates:
+            lines.append('候选记录:')
+            for item in candidates[:3]:
+                lines.append(f"- {item.get('run_id')}: {item.get('run_state')}")
+        next_actions = result.get('next_actions') or []
+        if next_actions:
+            lines.append('建议:')
+            lines.extend(f'- {item}' for item in next_actions[:2])
+        return _join(lines)
     if tool_name == 'prepare_dataset_for_training':
         lines = [result.get('summary', '数据准备完成')]
         if result.get('data_yaml'):
