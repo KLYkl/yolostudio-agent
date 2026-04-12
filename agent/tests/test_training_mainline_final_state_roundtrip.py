@@ -176,30 +176,75 @@ class _DummyGraph:
 WORK = Path(__file__).resolve().parent / '_tmp_training_mainline_final_state_roundtrip'
 
 
-def _build_status_payload(run_state: str, metrics: dict[str, Any], *, summary: str, facts: list[str], signals: list[str]) -> dict[str, Any]:
+def _build_status_payload(
+    run_state: str,
+    metrics: dict[str, Any],
+    *,
+    summary: str,
+    facts: list[str],
+    signals: list[str],
+    analysis_ready: bool = True,
+    minimum_facts_ready: bool = True,
+    progress_epoch: int = 30,
+    total_epochs: int = 30,
+) -> dict[str, Any]:
     return {
         'ok': True,
         'summary': summary,
         'running': False,
         'run_state': run_state,
         'observation_stage': 'final',
-        'progress': {'epoch': 30, 'total_epochs': 30, 'progress_ratio': 1.0},
-        'latest_metrics': {'ok': True, 'metrics': {'epoch': 30, 'total_epochs': 30, **metrics}},
-        'analysis_ready': True,
-        'minimum_facts_ready': True,
+        'progress': {
+            'epoch': progress_epoch,
+            'total_epochs': total_epochs,
+            'progress_ratio': (progress_epoch / total_epochs) if total_epochs else None,
+        },
+        'latest_metrics': {'ok': True, 'metrics': {'epoch': progress_epoch, 'total_epochs': total_epochs, **metrics}},
+        'analysis_ready': analysis_ready,
+        'minimum_facts_ready': minimum_facts_ready,
         'signals': list(signals),
         'facts': list(facts),
         'next_actions': ['可继续调用 summarize_training_run 查看最终训练事实'],
     }
 
 
-async def _run_final_state_scenario(*, session_id: str, status_query: str, final_run_state: str, status_summary: str, training_summary: str, analysis_summary: str, recommendation_summary: str, recommended_action: str, metrics: dict[str, Any], facts: list[str], signals: list[str]) -> None:
+async def _run_final_state_scenario(
+    *,
+    session_id: str,
+    status_query: str,
+    final_run_state: str,
+    status_summary: str,
+    training_summary: str,
+    analysis_summary: str,
+    recommendation_summary: str,
+    recommended_action: str,
+    metrics: dict[str, Any],
+    facts: list[str],
+    signals: list[str],
+    analysis_ready: bool = True,
+    minimum_facts_ready: bool = True,
+    progress_epoch: int = 30,
+    total_epochs: int = 30,
+    expect_metrics_line: str = '最近指标:',
+    expect_summary_line: str = '关键指标:',
+    expect_shortage_line: str | None = None,
+) -> None:
     scenario_root = WORK / session_id
     settings = AgentSettings(session_id=session_id, memory_root=str(scenario_root))
     client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
     calls: list[tuple[str, dict[str, Any]]] = []
 
-    status_payload = _build_status_payload(final_run_state, metrics, summary=status_summary, facts=facts, signals=signals)
+    status_payload = _build_status_payload(
+        final_run_state,
+        metrics,
+        summary=status_summary,
+        facts=facts,
+        signals=signals,
+        analysis_ready=analysis_ready,
+        minimum_facts_ready=minimum_facts_ready,
+        progress_epoch=progress_epoch,
+        total_epochs=total_epochs,
+    )
     summary_payload = {
         'ok': True,
         'summary': training_summary,
@@ -210,10 +255,14 @@ async def _run_final_state_scenario(*, session_id: str, status_query: str, final
         'signals': list(signals),
         'facts': list(facts),
         'next_actions': ['可继续调用 analyze_training_outcome 解释训练效果', '如需下一步动作建议，可调用 recommend_next_training_step'],
-        'analysis_ready': True,
-        'minimum_facts_ready': True,
+        'analysis_ready': analysis_ready,
+        'minimum_facts_ready': minimum_facts_ready,
         'observation_stage': 'final',
-        'progress': {'epoch': 30, 'total_epochs': 30, 'progress_ratio': 1.0},
+        'progress': {
+            'epoch': progress_epoch,
+            'total_epochs': total_epochs,
+            'progress_ratio': (progress_epoch / total_epochs) if total_epochs else None,
+        },
     }
 
     async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
@@ -328,7 +377,9 @@ async def _run_final_state_scenario(*, session_id: str, status_query: str, final
     assert calls[-1][0] == 'check_training_status'
     assert f'运行状态: {final_run_state}' in turn4['message']
     assert '观察阶段: 最终状态' in turn4['message']
-    assert '最近指标:' in turn4['message']
+    assert expect_metrics_line in turn4['message']
+    if expect_shortage_line:
+        assert expect_shortage_line in turn4['message']
 
     turn5 = await client.chat('这次训练效果怎么样？')
     assert turn5['status'] == 'completed', turn5
@@ -337,7 +388,9 @@ async def _run_final_state_scenario(*, session_id: str, status_query: str, final
     assert '训练结果汇总:' in turn5['message']
     assert '训练结果分析:' in turn5['message']
     assert '不能当成最终结论' not in turn5['message']
-    assert '关键指标:' in turn5['message']
+    assert expect_summary_line in turn5['message']
+    if expect_shortage_line:
+        assert expect_shortage_line in turn5['message']
 
     turn6 = await client.chat('下一步先补数据还是调参数？')
     assert turn6['status'] == 'completed', turn6
@@ -377,6 +430,26 @@ async def _run() -> None:
             metrics={'precision': 0.432, 'recall': 0.804, 'map50': 0.471, 'map': 0.251},
             facts=['epoch=30/30', 'precision=0.432', 'recall=0.804', 'mAP50=0.471', 'mAP50-95=0.251'],
             signals=['training_stopped', 'low_precision_high_recall'],
+        )
+        await _run_final_state_scenario(
+            session_id='training-mainline-failed',
+            status_query='训练失败了吗？',
+            final_run_state='failed',
+            status_summary='训练已失败，当前先保留失败前的可读损失和报错事实。',
+            training_summary='训练结果汇总: 本次训练已失败，目前还没有完整评估指标，只能先基于失败日志判断。',
+            analysis_summary='训练结果分析: 当前更像训练环境或显存问题，现阶段不能把损失当成最终效果结论。',
+            recommendation_summary='下一步建议: 当前先检查报错日志、显存与 batch 设置，确认能稳定起训后再继续分析效果。',
+            recommended_action='inspect_training_failure',
+            metrics={'box_loss': 1.420, 'cls_loss': 0.910, 'dfl_loss': 1.120},
+            facts=['epoch=2/30', 'RuntimeError: CUDA out of memory'],
+            signals=['training_failed', 'loss_only_metrics', 'metrics_missing'],
+            analysis_ready=False,
+            minimum_facts_ready=True,
+            progress_epoch=2,
+            total_epochs=30,
+            expect_metrics_line='当前仅有训练损失:',
+            expect_summary_line='当前仅有训练损失:',
+            expect_shortage_line='当前不足: 缺少稳定评估指标',
         )
         print('training mainline final-state roundtrip ok')
     finally:

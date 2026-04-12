@@ -183,34 +183,55 @@ async def _run() -> None:
         settings = AgentSettings(session_id='training-status-route-phrases', memory_root=str(WORK))
         client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
         calls: list[tuple[str, dict[str, Any]]] = []
+        status_mode = {'value': 'stopped'}
 
         async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
             calls.append((tool_name, dict(kwargs)))
             if tool_name != 'check_training_status':
                 raise AssertionError(f'unexpected tool call: {tool_name}')
-            result = {
-                'ok': True,
-                'summary': '训练已停止，当前保留了停止前的最终可读指标。',
-                'running': False,
-                'run_state': 'stopped',
-                'observation_stage': 'final',
-                'progress': {'epoch': 30, 'total_epochs': 30, 'progress_ratio': 1.0},
-                'latest_metrics': {
+            if status_mode['value'] == 'failed':
+                result = {
                     'ok': True,
-                    'metrics': {'epoch': 30, 'total_epochs': 30, 'precision': 0.44, 'recall': 0.81, 'map50': 0.47, 'map': 0.25},
-                },
-                'analysis_ready': True,
-                'minimum_facts_ready': True,
-                'signals': ['training_stopped', 'low_precision_high_recall'],
-                'facts': ['epoch=30/30', 'precision=0.440', 'recall=0.810'],
-                'next_actions': ['可继续调用 summarize_training_run 查看最终训练事实'],
-            }
+                    'summary': '训练已失败，当前可先检查报错日志与训练环境。',
+                    'running': False,
+                    'run_state': 'failed',
+                    'observation_stage': 'final',
+                    'progress': {'epoch': 2, 'total_epochs': 30, 'progress_ratio': 2 / 30},
+                    'latest_metrics': {
+                        'ok': True,
+                        'metrics': {'epoch': 2, 'total_epochs': 30, 'box_loss': 1.42, 'cls_loss': 0.91, 'dfl_loss': 1.12},
+                    },
+                    'analysis_ready': False,
+                    'minimum_facts_ready': True,
+                    'signals': ['training_failed', 'loss_only_metrics', 'metrics_missing'],
+                    'facts': ['epoch=2/30', 'RuntimeError: CUDA out of memory'],
+                    'next_actions': ['先检查报错日志，再确认训练环境与 batch 设置'],
+                }
+            else:
+                result = {
+                    'ok': True,
+                    'summary': '训练已停止，当前保留了停止前的最终可读指标。',
+                    'running': False,
+                    'run_state': 'stopped',
+                    'observation_stage': 'final',
+                    'progress': {'epoch': 30, 'total_epochs': 30, 'progress_ratio': 1.0},
+                    'latest_metrics': {
+                        'ok': True,
+                        'metrics': {'epoch': 30, 'total_epochs': 30, 'precision': 0.44, 'recall': 0.81, 'map50': 0.47, 'map': 0.25},
+                    },
+                    'analysis_ready': True,
+                    'minimum_facts_ready': True,
+                    'signals': ['training_stopped', 'low_precision_high_recall'],
+                    'facts': ['epoch=30/30', 'precision=0.440', 'recall=0.810'],
+                    'next_actions': ['可继续调用 summarize_training_run 查看最终训练事实'],
+                }
             client._apply_to_state(tool_name, result, kwargs)
             return result
 
         client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
 
         for text in ('训练停了吗？', '训练结束了吗？', '训练完成了吗？', '训练跑完了吗？'):
+            status_mode['value'] = 'stopped'
             routed = await client._try_handle_mainline_intent(text, f'thread-{text}')
             assert routed is not None
             assert routed['status'] == 'completed', routed
@@ -218,6 +239,17 @@ async def _run() -> None:
             assert '运行状态: stopped' in routed['message']
             assert '观察阶段: 最终状态' in routed['message']
             assert '最近指标:' in routed['message']
+
+        for text in ('训练失败了吗？', '是不是训练失败了？', '训练挂了吗？'):
+            status_mode['value'] = 'failed'
+            routed = await client._try_handle_mainline_intent(text, f'thread-{text}')
+            assert routed is not None
+            assert routed['status'] == 'completed', routed
+            assert calls[-1][0] == 'check_training_status'
+            assert '运行状态: failed' in routed['message']
+            assert '观察阶段: 最终状态' in routed['message']
+            assert '当前仅有训练损失:' in routed['message']
+            assert '当前不足: 缺少稳定评估指标' in routed['message']
 
         print('training status route phrases ok')
     finally:
