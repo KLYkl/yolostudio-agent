@@ -1,1 +1,1 @@
-"""Agent planning workspace package."""
+"""YoloStudio Agent compatibility root package."""

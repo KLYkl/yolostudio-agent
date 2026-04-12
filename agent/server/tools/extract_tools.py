@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from agent_plan.agent.server.services.extract_service import ExtractService
+from yolostudio_agent.agent.server.services.extract_service import ExtractService
 
 service = ExtractService()
 

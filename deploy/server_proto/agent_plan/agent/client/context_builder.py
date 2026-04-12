@@ -4,8 +4,8 @@ from typing import Iterable
 
 from langchain_core.messages import BaseMessage, SystemMessage
 
-from agent_plan.agent.client.event_retriever import MemoryDigest
-from agent_plan.agent.client.session_state import SessionState
+from yolostudio_agent.agent.client.event_retriever import MemoryDigest
+from yolostudio_agent.agent.client.session_state import SessionState
 
 
 def _fmt_mapping(data: dict) -> str:

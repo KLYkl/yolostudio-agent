@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from agent_plan.agent.client.session_state import SessionState, utc_now
+from yolostudio_agent.agent.client.session_state import SessionState, utc_now
 
 
 class MemoryStore:

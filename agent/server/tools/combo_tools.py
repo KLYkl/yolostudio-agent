@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from agent_plan.agent.server.services.dataset_root import resolve_dataset_root
-from agent_plan.agent.server.tools.data_tools import generate_yaml, scan_dataset, split_dataset, training_readiness, validate_dataset
+from yolostudio_agent.agent.server.services.dataset_root import resolve_dataset_root
+from yolostudio_agent.agent.server.tools.data_tools import generate_yaml, scan_dataset, split_dataset, training_readiness, validate_dataset
 
 _EARLY_BLOCK_TYPES = {'unknown', 'images_only', 'flat'}
 

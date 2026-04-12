@@ -6,17 +6,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from agent_plan.agent.server.services.prediction_image_helpers import predict_images_batch
-from agent_plan.agent.server.services.prediction_report_helpers import summarize_prediction_report
-from agent_plan.agent.server.services.prediction_runtime_helpers import (
+from yolostudio_agent.agent.server.services.prediction_image_helpers import predict_images_batch
+from yolostudio_agent.agent.server.services.prediction_report_helpers import summarize_prediction_report
+from yolostudio_agent.agent.server.services.prediction_runtime_helpers import (
     draw_detections,
     load_prediction_model,
     pil_to_bgr,
     read_image,
     run_batch_inference,
 )
-from agent_plan.agent.server.services.prediction_video_batch_helpers import predict_videos_batch
-from agent_plan.agent.server.services.prediction_video_helpers import predict_single_video
+from yolostudio_agent.agent.server.services.prediction_video_batch_helpers import predict_videos_batch
+from yolostudio_agent.agent.server.services.prediction_video_helpers import predict_single_video
 
 try:
     import cv2  # type: ignore

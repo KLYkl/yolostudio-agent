@@ -5,7 +5,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Iterable
 
-from agent_plan.agent.server.services.dataset_root import resolve_dataset_inputs
+from yolostudio_agent.agent.server.services.dataset_root import resolve_dataset_inputs
 
 MAX_EXAMPLES = 3
 

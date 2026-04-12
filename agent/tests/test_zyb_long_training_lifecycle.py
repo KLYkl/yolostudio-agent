@@ -48,10 +48,10 @@ def _env_csv_ints(name: str, default: list[int]) -> list[int]:
 
 
 def _build_direct_tool_map() -> dict[str, Any]:
-    import agent_plan.agent.server.tools.combo_tools as combo_tools
-    import agent_plan.agent.server.tools.data_tools as data_tools
-    import agent_plan.agent.server.tools.knowledge_tools as knowledge_tools
-    import agent_plan.agent.server.tools.train_tools as train_tools
+    import yolostudio_agent.agent.server.tools.combo_tools as combo_tools
+    import yolostudio_agent.agent.server.tools.data_tools as data_tools
+    import yolostudio_agent.agent.server.tools.knowledge_tools as knowledge_tools
+    import yolostudio_agent.agent.server.tools.train_tools as train_tools
 
     mapping = {
         'training_readiness': data_tools.training_readiness,

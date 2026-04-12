@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from agent_plan.agent.server.services.knowledge_service import KnowledgeService
+from yolostudio_agent.agent.server.services.knowledge_service import KnowledgeService
 
 service = KnowledgeService()
 

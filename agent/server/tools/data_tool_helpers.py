@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from agent_plan.agent.server.services.dataset_root import resolve_dataset_inputs, resolve_dataset_root
+from yolostudio_agent.agent.server.services.dataset_root import resolve_dataset_inputs, resolve_dataset_root
 
 MAX_ISSUE_EXAMPLES = 3
 

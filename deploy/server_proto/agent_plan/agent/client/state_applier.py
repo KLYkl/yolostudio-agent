@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent_plan.agent.client.session_state import SessionState
+from yolostudio_agent.agent.client.session_state import SessionState
 
 
 def apply_tool_result_to_state(

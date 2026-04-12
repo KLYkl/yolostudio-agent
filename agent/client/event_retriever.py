@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from agent_plan.agent.client.memory_store import MemoryStore
-from agent_plan.agent.client.session_state import SessionState
+from yolostudio_agent.agent.client.memory_store import MemoryStore
+from yolostudio_agent.agent.client.session_state import SessionState
 
 
 @dataclass(slots=True)
