@@ -328,6 +328,7 @@ async def main() -> None:
         await asyncio.sleep(3)
         final_status = await client.direct_tool('check_training_status')
 
+    final_status_turn = await client.chat('训练停了吗？')
     outcome_turn = await client.chat('这次训练效果怎么样？')
     next_step_turn = await client.chat('下一步先补数据还是调参数？')
 
@@ -357,6 +358,7 @@ async def main() -> None:
         'status_turns': status_turns,
         'stop': stop,
         'final_status': final_status,
+        'final_status_turn': final_status_turn,
         'outcome_turn': outcome_turn,
         'next_step_turn': next_step_turn,
         'tool_calls': calls,
@@ -368,6 +370,7 @@ async def main() -> None:
             'extra_polls': extra_polls,
             'max_observed_epoch': max(observed_epochs or [0]),
             'status_route_used': 'check_training_status' in tool_names,
+            'final_status_route_used': final_status_turn.get('status') == 'completed' and '运行状态: stopped' in str(final_status_turn.get('message', '')),
             'summary_route_used': contains_in_order(tool_names, ['summarize_training_run', 'analyze_training_outcome']),
             'next_step_route_used': contains_in_order(tool_names, ['training_readiness', 'summarize_training_run', 'recommend_next_training_step']),
             'summary_run_state': summary_result.get('run_state'),

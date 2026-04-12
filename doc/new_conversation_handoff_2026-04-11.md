@@ -940,3 +940,32 @@ D:\yolodo2.0\agent_plan\doc\agent_test_playbook_2026-04-10.md
 - 远端 `/home/kly/yolostudio_agent_proto`
 
 完成验证。
+
+### 最新补充：已补真实远端 stopped 后续跟进和状态短句路由
+
+这一轮继续把第一主线加厚，新增：
+
+- `test_training_status_route_phrases.py`
+
+它覆盖：
+
+- `训练停了吗`
+- `训练结束了吗`
+- `训练完成了吗`
+- `训练跑完了吗`
+
+这些短句现在都优先走 `check_training_status`。
+
+同时真实远端：
+
+- `test_zyb_training_mainline_agent_roundtrip.py`
+
+也已经继续补到 stop 之后的后续跟进：
+
+- `训练停了吗？`
+- `这次训练效果怎么样？`
+- `下一步先补数据还是调参数？`
+
+最新远端归档结果已经确认：
+
+- `final_status_route_used=true`

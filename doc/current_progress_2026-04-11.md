@@ -2360,6 +2360,36 @@ Gemma 这轮测试很清楚地说明：
 - Windows `.venv` 长对话回归通过
 - 远端 `/home/kly/yolostudio_agent_proto` 通过
 
+#### O. 已补真实远端 stopped 后续跟进与状态短句路由
+
+这一轮继续加厚的是：
+
+- 真实远端 stopped 状态下的后续跟进
+- 多种“训练是否结束/停止”短句的显式状态路由
+
+新增：
+
+- `agent/tests/test_training_status_route_phrases.py`
+- `deploy/server_proto/agent_plan/agent/tests/test_training_status_route_phrases.py`
+
+并继续补强：
+
+- `agent/tests/test_zyb_training_mainline_agent_roundtrip.py`
+
+这轮真实远端 roundtrip 在 stop 之后，已经继续覆盖：
+
+- `训练停了吗？`
+- `这次训练效果怎么样？`
+- `下一步先补数据还是调参数？`
+
+当前验证结论：
+
+- 本地通过
+- `deploy/server_proto` 通过
+- 远端短句状态路由通过
+- 真实远端 roundtrip 通过，并确认：
+  - `final_status_route_used=true`
+
 #### K. 已补“preparable 数据集下切执行后端”的复杂测试
 
 这一轮继续补了另一类长链路：

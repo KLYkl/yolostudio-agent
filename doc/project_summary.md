@@ -1463,3 +1463,31 @@ afab4c1  test: comprehensive validation + log parser fix
 说明当前第一主线已经不只是“能开训、能跟踪”，而是在继续固化：
 
 > **最终状态下的整链解释稳定性。**
+
+### 最新补充：已补 stopped 后续跟进和状态短句路由
+
+当前又继续加厚了一层：
+
+> **训练 stop/completed 之后，用户用自然短句追问状态、结果、下一步**
+
+本轮新增：
+
+- `test_training_status_route_phrases.py`
+
+它明确覆盖：
+
+- `训练停了吗`
+- `训练结束了吗`
+- `训练完成了吗`
+- `训练跑完了吗`
+
+这些短句都会优先进入 `check_training_status`。
+
+同时真实远端 `test_zyb_training_mainline_agent_roundtrip.py` 也继续补到 stop 之后的后续跟进，
+并确认：
+
+- `final_status_route_used=true`
+
+说明当前第一主线已经开始固化：
+
+> **训练结束后的真实对话收尾能力。**
