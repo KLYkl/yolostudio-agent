@@ -469,7 +469,7 @@ class YoloStudioAgentClient:
         wants_training_status = (
             any(token in user_text for token in (
                 '训练状态', '当前训练状态', '训练进度', '当前进度',
-                '还在训练吗', '还在跑吗',
+                '还在训练吗', '训练还在吗', '刚才训练还在吗', '上次训练还在吗', '还在跑吗',
                 '训练到哪了', '训练到第几轮', '跑到第几轮',
                 '训练停了吗', '停了吗', '训练结束了吗', '结束了没', '跑完了吗', '训练完成了吗',
                 '训练失败了吗', '失败了吗', '是不是训练失败了', '是不是失败了', '训练挂了吗'
@@ -634,6 +634,19 @@ class YoloStudioAgentClient:
             model = self._extract_model_from_text(user_text) or self.session_state.active_prediction.model or self.session_state.active_training.model
             predict_tool = 'predict_videos' if self._should_use_video_prediction(user_text, prediction_path) else 'predict_images'
             return await self._complete_direct_tool_reply(predict_tool, source_path=prediction_path, model=model)
+
+        if wants_train and not dataset_path and not no_train and not readiness_only_query and not wants_training_outcome_analysis and not wants_next_step_guidance and not wants_training_knowledge:
+            requested_model = self._extract_model_from_text(user_text)
+            missing_fields = ['数据集路径']
+            if not requested_model:
+                missing_fields.append('预训练权重/模型')
+            lines = ['当前还不能开始训练：']
+            for field in missing_fields:
+                lines.append(f'- 缺少{field}')
+            lines.append('请先补充最少必要信息；我至少需要数据集目录，训练时还需要可用的预训练权重/模型。')
+            reply = '\n'.join(lines)
+            self._messages.append(AIMessage(content=reply))
+            return {'status': 'completed', 'message': reply, 'tool_call': None}
 
         if dataset_path and wants_train and not no_train and not readiness_only_query and not wants_training_outcome_analysis and not wants_next_step_guidance and not wants_training_knowledge:
             readiness = await self.direct_tool('training_readiness', img_dir=dataset_path)
@@ -1711,7 +1724,7 @@ class YoloStudioAgentClient:
         has_revision = any(
             token in normalized or token in user_text
             for token in (
-                'batch', 'imgsz', 'device', 'epochs', '优化器', 'optimizer', '冻结', 'freeze', 'resume',
+                'batch', 'imgsz', 'device', 'epochs', '轮', '轮数', '优化器', 'optimizer', '冻结', 'freeze', 'resume',
                 'lr0', '学习率', 'patience', '早停', 'workers', '线程数', 'amp', '混合精度',
                 '模型', '权重', 'project', '输出目录', 'name', '实验名', '运行名',
                 'fraction', '全量数据', '抽样', 'classes', '类别', 'single_cls', '单类别',
