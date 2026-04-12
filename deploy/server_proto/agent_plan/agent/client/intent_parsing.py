@@ -375,6 +375,10 @@ def extract_custom_training_script_from_text(text: str) -> str:
 
 def extract_training_execution_backend_from_text(text: str) -> str:
     lowered = text.lower()
+    if any(token in text for token in ('不用自定义脚本', '不用脚本了', '切回标准 yolo', '改成标准 yolo', '用标准 yolo')) or any(token in lowered for token in ('don\'t use custom script', 'switch back to standard yolo')):
+        return 'standard_yolo'
+    if any(token in text for token in ('不用 trainer', '不用自定义trainer', '不用自定义训练器', '切回标准训练器')) or any(token in lowered for token in ('switch back to standard trainer',)):
+        return 'standard_yolo'
     script_path = extract_custom_training_script_from_text(text)
     if script_path or any(token in text for token in ('自定义训练脚本', 'python脚本训练', '脚本训练')):
         return 'custom_script'

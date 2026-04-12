@@ -800,6 +800,97 @@ async def _scenario_cancel_prepare_then_rebuild() -> None:
     assert all(name != 'start_training' for name, _ in calls)
 
 
+async def _scenario_preparable_backend_switch() -> None:
+    scenario_root = WORK / 'preparable_backend_switch'
+    settings = AgentSettings(session_id='training-plan-dialogue-6', memory_root=str(scenario_root))
+    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((tool_name, dict(kwargs)))
+        if tool_name == 'training_readiness':
+            result = {
+                'ok': True,
+                'summary': '当前还不能直接训练：缺少可用的 data_yaml；但当前数据集可以先进入 prepare_dataset_for_training',
+                'dataset_root': '/data/backend-prepare',
+                'resolved_img_dir': '/data/backend-prepare/images',
+                'resolved_label_dir': '/data/backend-prepare/labels',
+                'resolved_data_yaml': '',
+                'ready': False,
+                'preparable': True,
+                'primary_blocker_type': 'missing_yaml',
+                'warnings': ['当前还没有训练配置文件，建议先准备再决定是否开训'],
+                'blockers': ['缺少可用的 data_yaml'],
+            }
+        elif tool_name == 'list_training_environments':
+            result = {
+                'ok': True,
+                'summary': '发现 2 个可用训练环境，默认将使用 yolodo',
+                'environments': [
+                    {'name': 'yolodo', 'display_name': 'yolodo', 'selected_by_default': True},
+                    {'name': 'base', 'display_name': 'base', 'selected_by_default': False},
+                ],
+                'default_environment': {'name': 'yolodo', 'display_name': 'yolodo'},
+            }
+        elif tool_name == 'prepare_dataset_for_training':
+            result = {
+                'ok': True,
+                'ready': True,
+                'summary': '数据准备完成: 当前数据集可直接训练，data_yaml 已就绪',
+                'dataset_root': '/data/backend-prepare',
+                'img_dir': '/data/backend-prepare/images',
+                'label_dir': '/data/backend-prepare/labels',
+                'data_yaml': '/data/backend-prepare/data.yaml',
+                'steps_completed': [{'step': 'generate_yaml', 'status': 'completed'}],
+                'next_actions': ['如需训练，可继续 start_training'],
+            }
+        else:
+            raise AssertionError(f'unexpected tool call: {tool_name}')
+
+        client._apply_to_state(tool_name, result, kwargs)
+        if tool_name == 'prepare_dataset_for_training' and result.get('ok'):
+            draft = client.session_state.active_training.training_plan_draft or {}
+            if str(draft.get('execution_mode') or '').strip().lower() == 'prepare_only':
+                client._clear_training_plan_draft()
+        return result
+
+    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+
+    turn1 = await client.chat('数据在 /data/backend-prepare，用 yolov8n.pt 训练 25轮，先给我计划，不要执行。')
+    assert turn1['status'] == 'completed', turn1
+    assert '执行方式: 先准备再训练' in turn1['message']
+    assert '当前阻塞:' in turn1['message']
+    assert '缺少可用的 data_yaml' in turn1['message']
+
+    turn2 = await client.chat('先别执行，改成自定义 trainer 讨论一下，为什么现在只能先 prepare？')
+    assert turn2['status'] == 'completed', turn2
+    assert '执行方式: 先讨论方案，暂不执行' in turn2['message']
+    assert '执行后端: 自定义 Trainer' in turn2['message']
+    assert '当前自动执行链只支持标准 YOLO 训练' in turn2['message']
+    assert '当前还不能直接训练' in turn2['message']
+    assert client.session_state.pending_confirmation.tool_name == ''
+    assert all(name != 'prepare_dataset_for_training' for name, _ in calls)
+
+    turn3 = await client.chat('不用 trainer 了，切回标准 yolo，环境改成 base，只做准备，不要自动划分，先给我计划。')
+    assert turn3['status'] == 'completed', turn3
+    assert '执行方式: 只做准备，暂不启动训练' in turn3['message']
+    assert '执行后端: 标准 YOLO 训练' in turn3['message']
+    assert '训练环境: base' in turn3['message']
+    assert '下一步动作: prepare_dataset_for_training' in turn3['message']
+
+    turn4 = await client.chat('好，就按这个准备方案执行。')
+    assert turn4['status'] == 'needs_confirmation', turn4
+    assert turn4['tool_call']['name'] == 'prepare_dataset_for_training'
+    assert turn4['tool_call']['args']['dataset_path'] == '/data/backend-prepare'
+    assert 'force_split' not in turn4['tool_call']['args']
+
+    turn5 = await client.confirm(turn4['thread_id'], approved=True)
+    assert turn5['status'] == 'completed', turn5
+    assert '数据准备完成' in turn5['message']
+    assert [name for name, _ in calls].count('prepare_dataset_for_training') == 1
+    assert client.session_state.active_training.training_plan_draft == {}
+
+
 async def _run() -> None:
     shutil.rmtree(WORK, ignore_errors=True)
     WORK.mkdir(parents=True, exist_ok=True)
@@ -809,6 +900,7 @@ async def _run() -> None:
         await _scenario_prepare_then_replan_and_execute()
         await _scenario_cancel_then_replan()
         await _scenario_cancel_prepare_then_rebuild()
+        await _scenario_preparable_backend_switch()
         print('training plan dialogue ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)

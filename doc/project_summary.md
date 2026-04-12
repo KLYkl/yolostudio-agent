@@ -1303,3 +1303,17 @@ afab4c1  test: comprehensive validation + log parser fix
 这说明当前训练计划草案层已经不只是“取消后继续改参数”，而是开始支持：
 
 > **取消后继续讨论、切执行后端、再回标准执行链并落到最终训练。**
+
+### 最新补充：训练计划草案也已覆盖 preparable 数据集的后端切换
+
+现在还补上了另一类重要链路：
+
+- 先 prepare_then_train
+- 再切 custom_trainer 讨论态
+- 再切回标准 YOLO
+- 再改成 prepare_only
+- 最终只执行准备步骤
+
+这说明当前训练计划草案已经开始覆盖：
+
+> **可训练数据和不可直接训练但可 prepare 的数据，两种执行链下的后端切换。**

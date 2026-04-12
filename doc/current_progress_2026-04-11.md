@@ -2194,3 +2194,25 @@ Gemma 这轮测试很清楚地说明：
 - 本地通过
 - `deploy/server_proto` 通过
 - 远端补同步后通过
+
+#### K. 已补“preparable 数据集下切执行后端”的复杂测试
+
+这一轮继续补了另一类长链路：
+
+- 数据集当前不可直接训练，但 `preparable=True`
+- 先生成“prepare_then_train”草案
+- 中途切到 `custom_trainer` 讨论态
+- 再切回标准 YOLO
+- 改成 `prepare_only`
+- 最终只执行 `prepare_dataset_for_training`
+
+同时补了一条解析修正：
+
+- `不用脚本了 / 切回标准 yolo / 用标准 yolo`
+  不应误把当前计划继续识别成 `custom_script`
+
+当前验证结论：
+
+- 本地通过
+- `deploy/server_proto` 通过
+- 远端补同步后通过

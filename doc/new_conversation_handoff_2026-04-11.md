@@ -789,3 +789,18 @@ D:\yolodo2.0\agent_plan\doc\agent_test_playbook_2026-04-10.md
 - 远端 `/home/kly/yolostudio_agent_proto`
 
 完成验证。
+
+### 最新补充：已覆盖 preparable 数据集下的执行后端切换
+
+这轮又补了一类关键场景：
+
+- 数据当前还不能直接训练，但可以 prepare
+- 先生成 prepare_then_train 草案
+- 中途切到 `custom_trainer` 做讨论态方案
+- 再切回标准 YOLO
+- 改成 `prepare_only`
+- 最终只执行准备，不直接开训
+
+同时修了一条解析问题：
+
+- `不用脚本了 / 切回标准 yolo` 现在会正确回到 `standard_yolo`
