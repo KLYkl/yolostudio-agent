@@ -1,5 +1,7 @@
 # YoloStudio Agent Plan
 
+[中文说明](./README.zh-CN.md)
+
 YoloStudio Agent Plan is the agent/MCP workspace for turning the desktop YoloStudio workflow into a conversational, remotely executable training and prediction system.
 
 ## What is included
