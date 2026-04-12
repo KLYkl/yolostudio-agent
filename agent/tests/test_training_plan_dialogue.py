@@ -891,6 +891,153 @@ async def _scenario_preparable_backend_switch() -> None:
     assert client.session_state.active_training.training_plan_draft == {}
 
 
+async def _scenario_prepare_approval_then_revise_start() -> None:
+    scenario_root = WORK / 'prepare_approval_then_revise_start'
+    settings = AgentSettings(session_id='training-plan-dialogue-7', memory_root=str(scenario_root))
+    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((tool_name, dict(kwargs)))
+        if tool_name == 'training_readiness':
+            result = {
+                'ok': True,
+                'summary': '当前还不能直接训练：缺少可用的 data_yaml；但当前数据集可以先进入 prepare_dataset_for_training',
+                'dataset_root': '/data/prepare-bridge',
+                'resolved_img_dir': '/data/prepare-bridge/images',
+                'resolved_label_dir': '/data/prepare-bridge/labels',
+                'resolved_data_yaml': '',
+                'ready': False,
+                'preparable': True,
+                'primary_blocker_type': 'missing_yaml',
+                'warnings': ['当前数据还是原始目录，先准备后再做训练预检更稳'],
+                'blockers': ['缺少可用的 data_yaml'],
+            }
+        elif tool_name == 'list_training_environments':
+            result = {
+                'ok': True,
+                'summary': '发现 2 个可用训练环境，默认将使用 yolodo',
+                'environments': [
+                    {'name': 'yolodo', 'display_name': 'yolodo', 'selected_by_default': True},
+                    {'name': 'base', 'display_name': 'base', 'selected_by_default': False},
+                ],
+                'default_environment': {'name': 'yolodo', 'display_name': 'yolodo'},
+            }
+        elif tool_name == 'prepare_dataset_for_training':
+            result = {
+                'ok': True,
+                'ready': True,
+                'summary': '数据准备完成: 当前数据集可直接训练，data_yaml 已就绪',
+                'dataset_root': '/data/prepare-bridge',
+                'img_dir': '/data/prepare-bridge/images',
+                'label_dir': '/data/prepare-bridge/labels',
+                'data_yaml': '/data/prepare-bridge/data.yaml',
+                'steps_completed': [{'step': 'generate_yaml', 'status': 'completed'}],
+                'next_actions': ['如需训练，可继续 start_training'],
+            }
+        elif tool_name == 'training_preflight':
+            selected_environment = kwargs.get('training_environment') or 'yolodo'
+            result = {
+                'ok': True,
+                'ready_to_start': True,
+                'summary': f"训练预检通过：将使用 {selected_environment}，device={kwargs.get('device', 'auto') or 'auto'}",
+                'training_environment': {'name': selected_environment, 'display_name': selected_environment},
+                'resolved_args': {
+                    'model': kwargs['model'],
+                    'data_yaml': kwargs['data_yaml'],
+                    'epochs': kwargs['epochs'],
+                    'device': kwargs.get('device', 'auto') or 'auto',
+                    'training_environment': selected_environment,
+                    'project': kwargs.get('project') or None,
+                    'name': kwargs.get('name') or None,
+                    'batch': kwargs.get('batch'),
+                    'imgsz': kwargs.get('imgsz'),
+                    'fraction': kwargs.get('fraction'),
+                    'classes': kwargs.get('classes'),
+                    'single_cls': kwargs.get('single_cls'),
+                },
+                'command_preview': ['yolo', 'train'],
+                'blockers': [],
+                'warnings': ['当前是 prepare 后的第一轮训练，建议先做短轮验证'],
+            }
+        elif tool_name == 'start_training':
+            result = {
+                'ok': True,
+                'summary': '训练已启动: model=yolov8s.pt, data=/data/prepare-bridge/data.yaml, device=auto',
+                'device': kwargs.get('device', 'auto') or 'auto',
+                'pid': 6543,
+                'log_file': '/runs/prepare_bridge.txt',
+                'started_at': 654.3,
+                'resolved_args': dict(kwargs),
+            }
+        else:
+            raise AssertionError(f'unexpected tool call: {tool_name}')
+
+        client._apply_to_state(tool_name, result, kwargs)
+        if tool_name == 'start_training' and result.get('ok'):
+            client._clear_training_plan_draft()
+        return result
+
+    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+
+    turn1 = await client.chat(
+        '数据在 /data/prepare-bridge，用 yolov8s.pt 训练 45轮，环境 yolodo，project /runs/bridge，name exp-bridge，batch 10，imgsz 896，fraction 0.5，只训练类别 1,3。先给我计划，不要执行。'
+    )
+    assert turn1['status'] == 'completed', turn1
+    assert '执行方式: 先准备再训练' in turn1['message']
+    assert '训练环境: yolodo' in turn1['message']
+    assert '输出组织: project=/runs/bridge, name=exp-bridge' in turn1['message']
+    assert '高级参数: fraction=0.5, classes=[1, 3]' in turn1['message']
+
+    turn2 = await client.chat('执行。')
+    assert turn2['status'] == 'needs_confirmation', turn2
+    assert turn2['tool_call']['name'] == 'prepare_dataset_for_training'
+    assert turn2['tool_call']['args']['dataset_path'] == '/data/prepare-bridge'
+
+    turn3 = await client.confirm(turn2['thread_id'], approved=True)
+    assert turn3['status'] == 'needs_confirmation', turn3
+    assert turn3['tool_call']['name'] == 'start_training'
+    assert turn3['tool_call']['args']['model'] == 'yolov8s.pt'
+    assert turn3['tool_call']['args']['data_yaml'] == '/data/prepare-bridge/data.yaml'
+    assert turn3['tool_call']['args']['epochs'] == 45
+    assert turn3['tool_call']['args']['training_environment'] == 'yolodo'
+    assert turn3['tool_call']['args']['project'] == '/runs/bridge'
+    assert turn3['tool_call']['args']['name'] == 'exp-bridge'
+    assert turn3['tool_call']['args']['batch'] == 10
+    assert turn3['tool_call']['args']['imgsz'] == 896
+    assert turn3['tool_call']['args']['fraction'] == 0.5
+    assert turn3['tool_call']['args']['classes'] == [1, 3]
+    assert '当前阻塞:' not in turn3['message']
+    assert '当前数据已具备训练条件' in turn3['message']
+    assert calls[-1][0] == 'training_preflight'
+
+    turn4 = await client.chat('为什么现在可以直接训练了？环境改成 base，batch 12，imgsz 960，fraction 不要了，类别限制取消，先给我计划。')
+    assert turn4['status'] == 'needs_confirmation', turn4
+    assert turn4['tool_call']['name'] == 'start_training'
+    assert turn4['tool_call']['args']['training_environment'] == 'base'
+    assert turn4['tool_call']['args']['batch'] == 12
+    assert turn4['tool_call']['args']['imgsz'] == 960
+    assert turn4['tool_call']['args']['fraction'] is None
+    assert turn4['tool_call']['args']['classes'] is None
+    assert '已从默认环境 yolodo 切换到 base' in turn4['message']
+    assert '只训练指定类别' not in turn4['message']
+
+    turn5 = await client.confirm(turn4['thread_id'], approved=True)
+    assert turn5['status'] == 'completed', turn5
+    assert '训练已启动' in turn5['message']
+    assert client.session_state.active_training.training_environment == 'base'
+    assert client.session_state.active_training.project == '/runs/bridge'
+    assert client.session_state.active_training.run_name == 'exp-bridge'
+    assert client.session_state.active_training.batch == 12
+    assert client.session_state.active_training.imgsz == 960
+    assert client.session_state.active_training.fraction is None
+    assert client.session_state.active_training.classes == []
+    assert client.session_state.active_training.training_plan_draft == {}
+    assert [name for name, _ in calls].count('prepare_dataset_for_training') == 1
+    assert [name for name, _ in calls].count('training_preflight') == 2
+    assert [name for name, _ in calls].count('start_training') == 1
+
+
 async def _run() -> None:
     shutil.rmtree(WORK, ignore_errors=True)
     WORK.mkdir(parents=True, exist_ok=True)
@@ -901,6 +1048,7 @@ async def _run() -> None:
         await _scenario_cancel_then_replan()
         await _scenario_cancel_prepare_then_rebuild()
         await _scenario_preparable_backend_switch()
+        await _scenario_prepare_approval_then_revise_start()
         print('training plan dialogue ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)

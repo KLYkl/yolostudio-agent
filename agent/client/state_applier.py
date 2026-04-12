@@ -135,6 +135,16 @@ def apply_tool_result_to_state(
         ds.label_dir = str(result.get('label_dir') or ds.label_dir)
         if result.get('data_yaml'):
             ds.data_yaml = str(result['data_yaml'])
+        ds.last_readiness = {
+            'ready': bool(result.get('ready', True)),
+            'preparable': False,
+            'primary_blocker_type': '',
+            'risk_level': '',
+            'warnings': [],
+            'blockers': [],
+            'resolved_data_yaml': ds.data_yaml,
+            'summary': result.get('summary') or '数据准备完成：当前数据集已具备训练条件。',
+        }
         for step in result.get('steps_completed', []):
             step_name = step.get('step')
             if step_name == 'scan' and step.get('ok'):
@@ -176,8 +186,13 @@ def apply_tool_result_to_state(
             or tr.training_environment
             or ''
         )
+        tr.project = str(resolved_args.get('project') or '')
+        tr.run_name = str(resolved_args.get('name') or '')
         tr.batch = resolved_args.get('batch')
         tr.imgsz = resolved_args.get('imgsz')
+        tr.fraction = resolved_args.get('fraction')
+        tr.classes = list(resolved_args.get('classes') or [])
+        tr.single_cls = resolved_args.get('single_cls')
         tr.optimizer = str(resolved_args.get('optimizer') or '')
         tr.freeze = resolved_args.get('freeze')
         tr.resume = resolved_args.get('resume')
@@ -212,10 +227,20 @@ def apply_tool_result_to_state(
         if resolved_args.get('data_yaml'):
             tr.data_yaml = str(resolved_args.get('data_yaml'))
             ds.data_yaml = tr.data_yaml
+        if resolved_args.get('project'):
+            tr.project = str(resolved_args.get('project'))
+        if resolved_args.get('name'):
+            tr.run_name = str(resolved_args.get('name'))
         if resolved_args.get('batch') is not None:
             tr.batch = resolved_args.get('batch')
         if resolved_args.get('imgsz') is not None:
             tr.imgsz = resolved_args.get('imgsz')
+        if resolved_args.get('fraction') is not None:
+            tr.fraction = resolved_args.get('fraction')
+        if resolved_args.get('classes') is not None:
+            tr.classes = list(resolved_args.get('classes') or [])
+        if resolved_args.get('single_cls') is not None:
+            tr.single_cls = resolved_args.get('single_cls')
         if resolved_args.get('optimizer'):
             tr.optimizer = str(resolved_args.get('optimizer'))
         if resolved_args.get('freeze') is not None:
@@ -262,10 +287,20 @@ def apply_tool_result_to_state(
         if resolved_args.get('data_yaml'):
             tr.data_yaml = str(resolved_args.get('data_yaml'))
             ds.data_yaml = tr.data_yaml
+        if resolved_args.get('project'):
+            tr.project = str(resolved_args.get('project'))
+        if resolved_args.get('name'):
+            tr.run_name = str(resolved_args.get('name'))
         if resolved_args.get('batch') is not None:
             tr.batch = resolved_args.get('batch')
         if resolved_args.get('imgsz') is not None:
             tr.imgsz = resolved_args.get('imgsz')
+        if resolved_args.get('fraction') is not None:
+            tr.fraction = resolved_args.get('fraction')
+        if resolved_args.get('classes') is not None:
+            tr.classes = list(resolved_args.get('classes') or [])
+        if resolved_args.get('single_cls') is not None:
+            tr.single_cls = resolved_args.get('single_cls')
         if resolved_args.get('optimizer'):
             tr.optimizer = str(resolved_args.get('optimizer'))
         if resolved_args.get('freeze') is not None:
@@ -300,6 +335,22 @@ def apply_tool_result_to_state(
                     tr.imgsz = int(part.split('=', 1)[1])
                 except ValueError:
                     pass
+            if isinstance(part, str) and part.startswith('project='):
+                tr.project = part.split('=', 1)[1]
+            if isinstance(part, str) and part.startswith('name='):
+                tr.run_name = part.split('=', 1)[1]
+            if isinstance(part, str) and part.startswith('fraction='):
+                try:
+                    tr.fraction = float(part.split('=', 1)[1])
+                except ValueError:
+                    pass
+            if isinstance(part, str) and part.startswith('classes='):
+                raw = part.split('=', 1)[1].strip()
+                values = [item.strip() for item in raw.split(',') if item.strip()]
+                if values and all(item.isdigit() for item in values):
+                    tr.classes = [int(item) for item in values]
+            if isinstance(part, str) and part.startswith('single_cls='):
+                tr.single_cls = part.split('=', 1)[1].strip().lower() == 'true'
             if isinstance(part, str) and part.startswith('optimizer='):
                 tr.optimizer = part.split('=', 1)[1]
             if isinstance(part, str) and part.startswith('freeze='):

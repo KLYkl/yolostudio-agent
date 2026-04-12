@@ -5,6 +5,41 @@
 
 ---
 
+## 1.5 2026-04-12 上午新增：prepare 批准后会自动桥接到 start_training 确认
+
+这轮继续沿“训练计划草案确认层”推进，没有扩新工具，而是把 `prepare_then_train` 这条链补稳了。
+
+### 本轮收口点
+
+- 当数据当前 `preparable=True`、计划为“先准备再训练”时：
+  - 批准 `prepare_dataset_for_training`
+  - 现在会自动进入 `training_preflight`
+  - 然后直接生成 `start_training` 的下一次确认
+- 训练计划里已规划的参数会跨过 prepare 保留下来：
+  - `model / epochs / training_environment`
+  - `project / name`
+  - `batch / imgsz`
+  - `fraction / classes`
+- 在 prepare 完成、进入 start_training 待确认后，用户仍然可以继续修计划：
+  - 改环境
+  - 改 batch / imgsz
+  - 清掉 `fraction / classes`
+  - 再次确认执行
+
+### 顺手修掉的两个真实问题
+
+- `prepare_dataset_for_training` 成功后，`last_readiness` 现在会同步刷新成“已具备训练条件”，避免后续草案还残留 `missing_yaml` 阻塞。
+- `fraction 不要了 / 类别限制取消` 这类自然语言清空语义已补进解析，避免在待确认阶段误保留旧覆盖项。
+
+### 本轮新增测试重点
+
+- 新增一条长链路测试：
+  - 先生成 `prepare_then_train` 草案
+  - 批准 prepare
+  - 自动桥接到 start_training 确认
+  - 中途继续改环境和高级参数
+  - 最终确认启动训练
+
 ## 1.4 2026-04-12 凌晨新增：训练环境探测、训练预检与训练历史工具第一批已落地
 
 这一轮继续按“第一主线工具完善”收口，没有扩新业务面，而是把训练链里最实用的一批缺口工具补上了。

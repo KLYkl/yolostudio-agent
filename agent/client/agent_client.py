@@ -980,6 +980,19 @@ class YoloStudioAgentClient:
         if str(draft.get('execution_mode') or '').strip().lower() == 'prepare_only':
             return None
         planned_args = dict(draft.get('planned_training_args') or {})
+        if draft and planned_args.get('model'):
+            prepared_yaml = str(planned_args.get('data_yaml') or self.session_state.active_dataset.data_yaml or '').strip()
+            if prepared_yaml:
+                planned_args['data_yaml'] = prepared_yaml
+                draft['planned_training_args'] = dict(planned_args)
+                self._save_training_plan_draft(draft)
+                self.memory.save_state(self.session_state)
+                return {
+                    "id": None,
+                    "name": "start_training",
+                    "args": planned_args,
+                    "synthetic": True,
+                }
         if draft and planned_args.get('model') and planned_args.get('data_yaml'):
             return {
                 "id": None,

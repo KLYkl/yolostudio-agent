@@ -135,6 +135,16 @@ def apply_tool_result_to_state(
         ds.label_dir = str(result.get('label_dir') or ds.label_dir)
         if result.get('data_yaml'):
             ds.data_yaml = str(result['data_yaml'])
+        ds.last_readiness = {
+            'ready': bool(result.get('ready', True)),
+            'preparable': False,
+            'primary_blocker_type': '',
+            'risk_level': '',
+            'warnings': [],
+            'blockers': [],
+            'resolved_data_yaml': ds.data_yaml,
+            'summary': result.get('summary') or '数据准备完成：当前数据集已具备训练条件。',
+        }
         for step in result.get('steps_completed', []):
             step_name = step.get('step')
             if step_name == 'scan' and step.get('ok'):

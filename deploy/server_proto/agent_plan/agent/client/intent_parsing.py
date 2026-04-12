@@ -442,6 +442,8 @@ def wants_clear_fraction(text: str) -> bool:
             '取消抽样',
             '不做抽样',
             '取消 fraction',
+            'fraction 取消',
+            'fraction 不要了',
             '不要 fraction',
             '不限制数据比例',
         )
@@ -454,7 +456,9 @@ def wants_clear_classes(text: str) -> bool:
         token in text or token in lowered
         for token in (
             '取消类别限制',
+            '类别限制取消',
             '类别限制先取消',
+            '把类别限制取消',
             '不要类别限制',
             '类别限制去掉',
             '不限制类别',

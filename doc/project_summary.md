@@ -5,6 +5,24 @@
 
 ---
 
+## 0.4 2026-04-12 上午新增：训练计划草案已补齐 `prepare -> preflight -> start_training` 桥接
+
+当前训练计划草案确认层又补上了一段关键链路：
+
+- 对于当前 `preparable=True` 的数据集，
+- 当计划是“先准备再训练”时，
+- 用户批准 `prepare_dataset_for_training` 后，
+- 系统现在会自动补一次 `training_preflight`，
+- 然后直接进入 `start_training` 的下一次确认。
+
+并且：
+
+- 原草案里的训练参数会保留下来
+- prepare 完成后的草案不再残留 `missing_yaml` 这类旧阻塞
+- 用户可以在最终启动前继续修改环境、batch、imgsz、fraction、classes
+
+这说明当前“训练计划草案确认层”已经不只是工具确认，而是开始形成真正连续的训练计划执行确认链。
+
 ## 0.3 2026-04-11 深夜新增：数据提取链第一批完成并同步到远端
 
 按 Agent-first 路线，当前已经把 `D:\yolodo2.0` 中最值得先接的提取能力落成了第一批工具：

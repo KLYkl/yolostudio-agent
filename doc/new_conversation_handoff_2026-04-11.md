@@ -5,6 +5,23 @@
 
 ---
 
+## 1.1 2026-04-12 上午补充：`prepare_then_train` 桥接确认已补上
+
+训练计划草案这一层又往前推进了一步：
+
+- 以前：
+  - 批准 `prepare_dataset_for_training` 后，只会返回“数据准备完成”
+  - 计划里的训练参数不会自动桥到 `start_training`
+- 现在：
+  - 批准 prepare 后，会自动补一次 `training_preflight`
+  - 然后直接进入 `start_training` 的确认层
+  - 原计划里的环境、输出组织、基础/高级参数会保留下来
+  - 用户还可以在这第二次确认前继续修计划
+
+这意味着当前训练计划草案已经不只是“能讨论”，而是：
+
+> **可以把 `prepare -> preflight -> start_training` 这一段接成连续可讨论的确认链。**
+
 ## 1. 一句话状态
 
 截至 2026-04-11，`D:\yolodo2.0\agent_plan` 已经从“Agent 原型”推进到：
