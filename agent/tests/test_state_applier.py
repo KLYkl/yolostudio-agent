@@ -4,10 +4,15 @@ import sys
 from pathlib import Path
 
 if __package__ in {None, ''}:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    repo_root = Path(__file__).resolve().parents[2]
+    parent_root = repo_root.parent
+    for candidate in (repo_root, parent_root):
+        path = str(candidate)
+        if path not in sys.path:
+            sys.path.insert(0, path)
 
-from agent_plan.agent.client.session_state import SessionState
-from agent_plan.agent.client.state_applier import apply_tool_result_to_state
+from yolostudio_agent.agent.client.session_state import SessionState
+from yolostudio_agent.agent.client.state_applier import apply_tool_result_to_state
 
 
 def main() -> None:
@@ -154,7 +159,7 @@ def main() -> None:
         {
             'ok': True,
             'summary': '训练预检通过',
-            'resolved_args': {'model': '/tmp/yolov8n.pt', 'data_yaml': '/tmp/data.yaml', 'epochs': 5, 'device': '1', 'training_environment': 'yolodo', 'batch': 8, 'imgsz': 1280, 'optimizer': 'SGD', 'freeze': 4, 'resume': False, 'lr0': 0.01, 'patience': 8, 'workers': 2, 'amp': True},
+            'resolved_args': {'model': '/tmp/yolov8n.pt', 'data_yaml': '/tmp/data.yaml', 'epochs': 5, 'device': '1', 'training_environment': 'yolodo', 'project': '/runs/ablation', 'name': 'exp-blue', 'batch': 8, 'imgsz': 1280, 'fraction': 0.5, 'classes': [1, 3], 'single_cls': False, 'optimizer': 'SGD', 'freeze': 4, 'resume': False, 'lr0': 0.01, 'patience': 8, 'workers': 2, 'amp': True},
             'training_environment': {'name': 'yolodo'},
             'ready_to_start': True,
         },
@@ -162,8 +167,13 @@ def main() -> None:
     assert state.active_training.last_preflight['ready_to_start'] is True
     assert state.active_training.model == '/tmp/yolov8n.pt'
     assert state.active_training.training_environment == 'yolodo'
+    assert state.active_training.project == '/runs/ablation'
+    assert state.active_training.run_name == 'exp-blue'
     assert state.active_training.batch == 8
     assert state.active_training.imgsz == 1280
+    assert state.active_training.fraction == 0.5
+    assert state.active_training.classes == [1, 3]
+    assert state.active_training.single_cls is False
     assert state.active_training.optimizer == 'SGD'
     assert state.active_training.freeze == 4
     assert state.active_training.resume is False

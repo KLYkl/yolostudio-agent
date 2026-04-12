@@ -5,11 +5,16 @@ from pathlib import Path
 import sys
 
 if __package__ in {None, ""}:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    repo_root = Path(__file__).resolve().parents[2]
+    parent_root = repo_root.parent
+    for candidate in (repo_root, parent_root):
+        path = str(candidate)
+        if path not in sys.path:
+            sys.path.insert(0, path)
 
-from agent_plan.agent.server.services.train_service import TrainService
-from agent_plan.agent.server.tools.train_tools import check_training_status, stop_training
-from agent_plan.agent.server.tools.data_tools import scan_dataset
+from yolostudio_agent.agent.server.services.train_service import TrainService
+from yolostudio_agent.agent.server.tools.train_tools import check_training_status, stop_training
+from yolostudio_agent.agent.server.tools.data_tools import scan_dataset
 
 
 def main() -> None:

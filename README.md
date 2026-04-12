@@ -1,8 +1,6 @@
-# YoloStudio Agent
+# YoloStudio Agent Plan
 
-[中文说明](./README.zh-CN.md)
-
-YoloStudio Agent is the agent/MCP workspace for turning the desktop YoloStudio workflow into a conversational, remotely executable training and prediction system.
+YoloStudio Agent Plan is the agent/MCP workspace for turning the desktop YoloStudio workflow into a conversational, remotely executable training and prediction system.
 
 ## What is included
 
@@ -17,6 +15,7 @@ YoloStudio Agent is the agent/MCP workspace for turning the desktop YoloStudio w
 agent/                  Agent client, server, tools, and tests
 knowledge/              Phase 1 rule-based knowledge base
 deploy/                 Remote validation scripts and server prototype
+doc/                    Engineering notes, playbooks, and release context
 ```
 
 ## Current scope
@@ -46,7 +45,7 @@ pip install -r agent/server/requirements_server.txt
 ### 2. Start the MCP server
 
 ```bash
-python -m agent_plan.agent.server.mcp_server
+python -m yolostudio_agent.agent.server.mcp_server
 ```
 
 Or use the helper script on a remote Linux host:
@@ -98,3 +97,4 @@ Replace them with paths and hosts that match your own environment.
 ## Notes
 
 - This repo intentionally separates the **agent/MCP workspace** from the main desktop product code.
+- Internal engineering notes remain under `doc/`, but sensitive local paths and host details have been sanitized for publication.

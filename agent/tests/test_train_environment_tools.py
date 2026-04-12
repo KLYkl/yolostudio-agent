@@ -4,9 +4,14 @@ import sys
 from pathlib import Path
 
 if __package__ in {None, ''}:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    repo_root = Path(__file__).resolve().parents[2]
+    parent_root = repo_root.parent
+    for candidate in (repo_root, parent_root):
+        path = str(candidate)
+        if path not in sys.path:
+            sys.path.insert(0, path)
 
-import agent_plan.agent.server.tools.train_tools as train_tools
+import yolostudio_agent.agent.server.tools.train_tools as train_tools
 
 
 class _DummyService:

@@ -5,11 +5,16 @@ import sys
 from pathlib import Path
 
 if __package__ in {None, ""}:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    repo_root = Path(__file__).resolve().parents[2]
+    parent_root = repo_root.parent
+    for candidate in (repo_root, parent_root):
+        path = str(candidate)
+        if path not in sys.path:
+            sys.path.insert(0, path)
 
 from langgraph.checkpoint.base import empty_checkpoint
 
-from agent_plan.agent.client.file_checkpointer import FileCheckpointSaver
+from yolostudio_agent.agent.client.file_checkpointer import FileCheckpointSaver
 
 
 WORK = Path(r'C:\workspace\yolodo2.0\agent_plan\agent\tests\_tmp_file_checkpointer')

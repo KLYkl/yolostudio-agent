@@ -9,15 +9,15 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_mcp_adapters.client import MultiServerMCPClient
-from agent_plan.agent.client.file_checkpointer import FileCheckpointSaver
+from yolostudio_agent.agent.client.file_checkpointer import FileCheckpointSaver
 from langgraph.prebuilt import create_react_agent
 from langgraph.types import Command
 
-from agent_plan.agent.client.context_builder import ContextBuilder
-from agent_plan.agent.client.event_retriever import EventRetriever
-from agent_plan.agent.client.grounded_reply_builder import build_grounded_tool_reply
-from agent_plan.agent.client.state_applier import apply_tool_result_to_state
-from agent_plan.agent.client.intent_parsing import (
+from yolostudio_agent.agent.client.context_builder import ContextBuilder
+from yolostudio_agent.agent.client.event_retriever import EventRetriever
+from yolostudio_agent.agent.client.grounded_reply_builder import build_grounded_tool_reply
+from yolostudio_agent.agent.client.state_applier import apply_tool_result_to_state
+from yolostudio_agent.agent.client.intent_parsing import (
     build_image_extract_args_from_text,
     build_video_extract_args_from_text,
     extract_all_paths_from_text,
@@ -57,11 +57,11 @@ from agent_plan.agent.client.intent_parsing import (
     looks_like_video_path,
     should_use_video_prediction,
 )
-from agent_plan.agent.client.llm_factory import LlmProviderSettings, build_llm, provider_summary
-from agent_plan.agent.client.memory_store import MemoryStore
-from agent_plan.agent.client.session_state import SessionState, utc_now
-from agent_plan.agent.client.tool_adapter import adapt_tools_for_chat_model, canonical_tool_name, normalize_tool_args
-from agent_plan.agent.client.tool_result_parser import parse_tool_message
+from yolostudio_agent.agent.client.llm_factory import LlmProviderSettings, build_llm, provider_summary
+from yolostudio_agent.agent.client.memory_store import MemoryStore
+from yolostudio_agent.agent.client.session_state import SessionState, utc_now
+from yolostudio_agent.agent.client.tool_adapter import adapt_tools_for_chat_model, canonical_tool_name, normalize_tool_args
+from yolostudio_agent.agent.client.tool_result_parser import parse_tool_message
 
 SYSTEM_PROMPT = """你是 YoloStudio Agent，负责帮助用户完成数据准备、训练管理和图片预测。
 

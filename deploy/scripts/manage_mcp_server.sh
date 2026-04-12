@@ -5,7 +5,7 @@ APP_ROOT="${APP_ROOT:-/opt/yolostudio-agent}"
 CONDA_BIN="${CONDA_BIN:-/opt/conda/bin/conda}"
 ENV_NAME="${ENV_NAME:-agent-server}"
 LOG_FILE="${LOG_FILE:-$HOME/outputs/yolostudio_mcp.log}"
-PID_PATTERN="agent_plan.agent.server.mcp_server"
+PID_PATTERN="yolostudio_agent.agent.server.mcp_server"
 
 status() {
   if pgrep -af "$PID_PATTERN" >/dev/null 2>&1; then
@@ -27,7 +27,7 @@ start() {
   fi
   mkdir -p "$HOME/outputs"
   cd "$APP_ROOT"
-  nohup env PYTHONPATH="$APP_ROOT" "$CONDA_BIN" run -n "$ENV_NAME" python -m agent_plan.agent.server.mcp_server >"$LOG_FILE" 2>&1 &
+  nohup env PYTHONPATH="$APP_ROOT" "$CONDA_BIN" run -n "$ENV_NAME" python -m yolostudio_agent.agent.server.mcp_server >"$LOG_FILE" 2>&1 &
   sleep 4
   status
 }

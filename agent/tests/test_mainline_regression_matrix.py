@@ -11,9 +11,14 @@ from typing import Any
 import sys
 
 if __package__ in {None, ""}:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    repo_root = Path(__file__).resolve().parents[2]
+    parent_root = repo_root.parent
+    for candidate in (repo_root, parent_root):
+        path = str(candidate)
+        if path not in sys.path:
+            sys.path.insert(0, path)
 
-from agent_plan.agent.client.agent_client import AgentSettings, YoloStudioAgentClient, build_agent_client
+from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient, build_agent_client
 
 OUT_JSON = Path(r'C:\workspace\yolodo2.0\agent_plan\agent\tests\test_mainline_regression_matrix_output.json')
 OUT_MD = Path(r'C:\workspace\yolodo2.0\agent_plan\doc\mainline_regression_matrix_report_2026-04-11.md')

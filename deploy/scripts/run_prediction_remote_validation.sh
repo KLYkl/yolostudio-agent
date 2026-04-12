@@ -48,7 +48,7 @@ echo "using conda env: $ENV_NAME"
 conda activate "$ENV_NAME"
 
 cd "$APP_ROOT"
-python -m agent_plan.agent.tests.test_prediction_remote_real_media \
+python -m yolostudio_agent.agent.tests.test_prediction_remote_real_media \
   --weights-dir "$STAGE_ROOT/weights" \
   --videos-dir "$STAGE_ROOT/videos" \
   --manifest "$STAGE_ROOT/manifest.json" \

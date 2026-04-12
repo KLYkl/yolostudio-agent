@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from agent_plan.agent.server.services.gpu_utils import get_effective_gpu_policy, get_gpu_status_summary, query_gpu_status, resolve_auto_device
-from agent_plan.agent.server.services.train_service import TrainService
+from yolostudio_agent.agent.server.services.gpu_utils import get_effective_gpu_policy, get_gpu_status_summary, query_gpu_status, resolve_auto_device
+from yolostudio_agent.agent.server.services.train_service import TrainService
 
 service = TrainService()
 
@@ -30,8 +30,13 @@ def start_training(
     epochs: int = 100,
     device: str = "auto",
     training_environment: str = "",
+    project: str = "",
+    name: str = "",
     batch: int | None = None,
     imgsz: int | None = None,
+    fraction: float | None = None,
+    classes: list[int] | str | None = None,
+    single_cls: bool | None = None,
     optimizer: str = "",
     freeze: int | None = None,
     resume: bool | None = None,
@@ -49,8 +54,13 @@ def start_training(
         epochs=epochs,
         device=device,
         training_environment=training_environment,
+        project=project,
+        name=name,
         batch=batch,
         imgsz=imgsz,
+        fraction=fraction,
+        classes=classes,
+        single_cls=single_cls,
         optimizer=optimizer,
         freeze=freeze,
         resume=resume,
@@ -103,8 +113,13 @@ def training_preflight(
     epochs: int = 100,
     device: str = "auto",
     training_environment: str = "",
+    project: str = "",
+    name: str = "",
     batch: int | None = None,
     imgsz: int | None = None,
+    fraction: float | None = None,
+    classes: list[int] | str | None = None,
+    single_cls: bool | None = None,
     optimizer: str = "",
     freeze: int | None = None,
     resume: bool | None = None,
@@ -122,8 +137,13 @@ def training_preflight(
         epochs=epochs,
         device=device,
         training_environment=training_environment,
+        project=project,
+        name=name,
         batch=batch,
         imgsz=imgsz,
+        fraction=fraction,
+        classes=classes,
+        single_cls=single_cls,
         optimizer=optimizer,
         freeze=freeze,
         resume=resume,

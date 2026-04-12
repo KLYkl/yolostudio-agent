@@ -3,9 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from agent_plan.agent.server.services.dataset_root import resolve_dataset_inputs, resolve_dataset_root
-from agent_plan.agent.server.services.gpu_utils import describe_gpu_policy, get_effective_gpu_policy, resolve_auto_device
-from agent_plan.agent.server.tools.data_tool_helpers import (
+from yolostudio_agent.agent.server.services.dataset_root import resolve_dataset_inputs, resolve_dataset_root
+from yolostudio_agent.agent.server.services.gpu_utils import describe_gpu_policy, get_effective_gpu_policy, resolve_auto_device
+from yolostudio_agent.agent.server.tools.data_tool_helpers import (
     MAX_ISSUE_EXAMPLES,
     _build_missing_label_risk,
     _discover_classes_txt,
@@ -387,7 +387,7 @@ def training_readiness(
 ) -> dict[str, Any]:
     """给出当前数据集是否适合直接训练的综合判断。优先用作训练前的标准检查入口。"""
     try:
-        from agent_plan.agent.server.services.gpu_utils import query_gpu_status
+        from yolostudio_agent.agent.server.services.gpu_utils import query_gpu_status
 
         scan = scan_dataset(img_dir=img_dir, label_dir=label_dir)
         if not scan.get('ok'):
@@ -410,6 +410,22 @@ def training_readiness(
         risk_level = validate.get('risk_level', scan.get('risk_level', 'none'))
         ready = yaml_exists and (labels_clean or not require_clean_labels) and bool(available_gpus) and not hard_label_block
 
+        primary_blocker_type = ''
+        if hard_label_block:
+            primary_blocker_type = 'no_valid_labels'
+        elif require_clean_labels and not labels_clean:
+            primary_blocker_type = 'label_issues'
+        elif not yaml_exists:
+            primary_blocker_type = 'missing_yaml'
+        elif not available_gpus or auto_error:
+            primary_blocker_type = 'gpu_unavailable'
+
+        preparable = (
+            not ready
+            and bool(scan.get('resolved_img_dir'))
+            and not hard_label_block
+        )
+
         blockers: list[str] = []
         if not yaml_exists:
             blockers.append('缺少可用的 data_yaml')
@@ -424,7 +440,28 @@ def training_readiness(
 
         data_yaml_source = 'explicit_input' if data_yaml else ('detected_existing_yaml' if resolved_yaml else '')
         next_actions: list[dict[str, Any]] = []
-        if not yaml_exists:
+        if primary_blocker_type == 'missing_yaml' and preparable:
+            next_actions.append({
+                'description': '当前不能直接训练，但可以先调用 prepare_dataset_for_training 自动补齐 YAML 和划分产物',
+                'tool': 'prepare_dataset_for_training',
+                'args_hint': {
+                    'dataset_path': scan.get('dataset_root') or scan.get('resolved_img_dir', img_dir),
+                },
+            })
+        elif primary_blocker_type == 'label_issues':
+            next_actions.append({
+                'description': '先根据 issue_examples 修复标签问题',
+                'tool': 'validate_dataset',
+                'args_hint': {'img_dir': scan.get('resolved_img_dir', img_dir), 'label_dir': scan.get('resolved_label_dir', label_dir)},
+            })
+        elif primary_blocker_type == 'gpu_unavailable':
+            next_actions.append({
+                'description': '等待空闲 GPU，或释放当前占用后再训练',
+                'tool': 'check_gpu_status',
+                'args_hint': {},
+            })
+
+        if not yaml_exists and not any(action.get('tool') == 'prepare_dataset_for_training' for action in next_actions):
             next_actions.append({
                 'description': '可先调用 generate_yaml 生成训练 YAML',
                 'tool': 'generate_yaml',
@@ -435,7 +472,7 @@ def training_readiness(
                     'classes': scan.get('classes', []),
                 },
             })
-        if require_clean_labels and not labels_clean:
+        if require_clean_labels and not labels_clean and not any(action.get('tool') == 'validate_dataset' for action in next_actions):
             next_actions.append({
                 'description': '先根据 issue_examples 修复标签问题',
                 'tool': 'validate_dataset',
@@ -447,7 +484,7 @@ def training_readiness(
                 'tool': 'scan_dataset',
                 'args_hint': {'img_dir': scan.get('resolved_img_dir', img_dir), 'label_dir': scan.get('resolved_label_dir', label_dir)},
             })
-        if not available_gpus:
+        if (not available_gpus or auto_error) and not any(action.get('tool') == 'check_gpu_status' for action in next_actions):
             next_actions.append({
                 'description': '等待空闲 GPU，或释放当前占用后再训练',
                 'tool': 'check_gpu_status',
@@ -461,12 +498,16 @@ def training_readiness(
             })
 
         summary = '可以直接训练' if ready else f"当前还不能直接训练: {', '.join(blockers)}"
+        if not ready and primary_blocker_type == 'missing_yaml' and preparable:
+            summary += '；但当前数据集可以先进入 prepare_dataset_for_training'
         if ready and warnings:
             summary = f"可以训练，但存在数据质量风险: {'; '.join(warnings)}"
 
         return {
             'ok': True,
             'ready': ready,
+            'preparable': preparable,
+            'primary_blocker_type': primary_blocker_type,
             'summary': summary,
             'dataset_root': scan.get('dataset_root', ''),
             'resolved_img_dir': scan.get('resolved_img_dir', img_dir),

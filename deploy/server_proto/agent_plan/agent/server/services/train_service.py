@@ -10,14 +10,14 @@ import time
 from pathlib import Path
 from typing import Any
 
-from agent_plan.agent.server.services.gpu_utils import (
+from yolostudio_agent.agent.server.services.gpu_utils import (
     GpuAllocationPolicy,
     get_effective_gpu_policy,
     query_gpu_status,
     resolve_auto_device,
 )
-from agent_plan.agent.server.services.train_log_parser import parse_latest_metrics, parse_training_log
-from agent_plan.agent.server.services.training_result_helpers import build_training_facts, summarize_training_run as build_training_run_summary
+from yolostudio_agent.agent.server.services.train_log_parser import parse_latest_metrics, parse_training_log
+from yolostudio_agent.agent.server.services.training_result_helpers import build_training_facts, summarize_training_run as build_training_run_summary
 
 
 class TrainService:
