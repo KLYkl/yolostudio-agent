@@ -1,6 +1,6 @@
 param(
     [string]$Server = "remote-agent",
-    [ValidateSet("auto", "agent-server", "yolodo", "yolo")]
+    [ValidateSet("auto", "yolostudio-agent-server", "agent-server", "yolodo", "yolo")]
     [string]$EnvName = "auto",
     [string]$RemoteAppRoot = "/opt/yolostudio-agent",
     [string]$RemoteOutputRoot = "/tmp/training_real_lifecycle_output/agent_mainline_roundtrip",
@@ -11,7 +11,9 @@ param(
     [int]$TargetEpoch = 2,
     [string]$StatusDelays = "15,35,60",
     [int]$ExtraPollInterval = 30,
-    [int]$ExtraPollLimit = 8
+    [int]$ExtraPollLimit = 8,
+    [ValidateSet("stopped", "completed", "failed")]
+    [string]$FinalMode = "stopped"
 )
 
 $ErrorActionPreference = "Stop"
@@ -90,7 +92,7 @@ Write-Host "==> ensure remote mcp"
 Invoke-NativeChecked -Exe "ssh" -Args @("-n", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", $Server, "$RemoteAppRoot/manage_mcp_server.sh status || $RemoteAppRoot/manage_mcp_server.sh restart")
 
 Write-Host "==> run remote training agent validation"
-$remoteCommand = "bash $RemoteAppRoot/deploy/scripts/run_training_agent_remote_validation.sh $EnvName $RemoteOutputRoot $DatasetRoot $ModelPath $Epochs $TargetEpoch $StatusDelays $ExtraPollInterval $ExtraPollLimit"
+$remoteCommand = "bash $RemoteAppRoot/deploy/scripts/run_training_agent_remote_validation.sh $EnvName $RemoteOutputRoot $DatasetRoot $ModelPath $Epochs $TargetEpoch $StatusDelays $ExtraPollInterval $ExtraPollLimit $FinalMode"
 Invoke-NativeChecked -Exe "ssh" -Args @("-n", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", $Server, $remoteCommand)
 
 Write-Host "==> fetch remote validation result"

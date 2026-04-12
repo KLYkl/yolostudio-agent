@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import signal
 import shutil
 import sys
 import time
@@ -181,6 +182,7 @@ DEFAULT_TEST_MODE = 'mcp'
 DEFAULT_TARGET_EPOCH = 2
 DEFAULT_EXTRA_POLL_INTERVAL = 30
 DEFAULT_EXTRA_POLL_LIMIT = 8
+DEFAULT_FINAL_MODE = 'stopped'
 
 
 class _DummyGraph:
@@ -256,7 +258,19 @@ async def main() -> None:
     target_epoch = _env_int('YOLO_AGENT_TRAIN_TARGET_EPOCH', DEFAULT_TARGET_EPOCH)
     extra_poll_interval = _env_int('YOLO_AGENT_TRAIN_EXTRA_POLL_INTERVAL', DEFAULT_EXTRA_POLL_INTERVAL)
     extra_poll_limit = _env_int('YOLO_AGENT_TRAIN_EXTRA_POLL_LIMIT', DEFAULT_EXTRA_POLL_LIMIT)
+    final_mode_raw = os.environ.get('YOLO_AGENT_TRAIN_FINAL_MODE', DEFAULT_FINAL_MODE).strip().lower() or DEFAULT_FINAL_MODE
     work_root = Path(os.environ.get('YOLO_AGENT_TRAIN_WORK', str(Path(__file__).resolve().parent / '_tmp_zyb_training_mainline_agent_roundtrip')))
+    final_mode_aliases = {
+        'stop': 'stopped',
+        'stopped': 'stopped',
+        'complete': 'completed',
+        'completed': 'completed',
+        'fail': 'failed',
+        'failed': 'failed',
+    }
+    final_mode = final_mode_aliases.get(final_mode_raw)
+    if final_mode is None:
+        raise AssertionError(f'unsupported YOLO_AGENT_TRAIN_FINAL_MODE: {final_mode_raw}')
 
     shutil.rmtree(work_root, ignore_errors=True)
     work_root.mkdir(parents=True, exist_ok=True)
@@ -315,8 +329,12 @@ async def main() -> None:
         observed_epochs = [int((item.get('status') or {}).get('progress', {}).get('epoch') or 0) for item in status_turns]
         max_observed_epoch = max(observed_epochs or [0])
         latest_status = status_turns[-1]['status'] if status_turns else {}
-        if max_observed_epoch >= target_epoch or not latest_status.get('running'):
-            break
+        if final_mode == 'completed':
+            if not latest_status.get('running'):
+                break
+        else:
+            if max_observed_epoch >= target_epoch or not latest_status.get('running'):
+                break
         await asyncio.sleep(extra_poll_interval)
         status_reply = await client.chat('现在训练到第几轮了？')
         status_turns.append({
@@ -327,13 +345,29 @@ async def main() -> None:
         extra_polls += 1
 
     stop = None
+    forced_failure = None
     final_status = dict(client.session_state.active_training.last_status or {})
-    if final_status.get('running'):
+    if final_mode == 'failed' and final_status.get('running'):
+        pid = client.session_state.active_training.pid
+        if pid:
+            os.kill(pid, signal.SIGKILL)
+            forced_failure = {'ok': True, 'pid': pid, 'signal': 'SIGKILL'}
+            await asyncio.sleep(3)
+            final_status = await client.direct_tool('check_training_status')
+        else:
+            forced_failure = {'ok': False, 'error': 'missing_pid_for_failure_injection'}
+    elif final_mode == 'stopped' and final_status.get('running'):
         stop = await client.direct_tool('stop_training')
         await asyncio.sleep(3)
         final_status = await client.direct_tool('check_training_status')
 
-    final_status_turn = await client.chat('训练停了吗？')
+    final_status_query = {
+        'stopped': '训练停了吗？',
+        'completed': '训练跑完了吗？',
+        'failed': '训练失败了吗？',
+    }[final_mode]
+
+    final_status_turn = await client.chat(final_status_query)
     outcome_turn = await client.chat('这次训练效果怎么样？')
     next_step_turn = await client.chat('下一步先补数据还是调参数？')
 
@@ -342,6 +376,9 @@ async def main() -> None:
     running_count = sum(1 for item in status_turns if (item.get('status') or {}).get('running'))
     summary_result = next((item['result'] for item in reversed(calls) if item['tool'] == 'summarize_training_run'), {})
     next_step_result = next((item['result'] for item in reversed(calls) if item['tool'] == 'recommend_next_training_step'), {})
+    assert final_status.get('run_state') == final_mode, final_status
+    assert final_status_turn.get('status') == 'completed', final_status_turn
+    assert f'运行状态: {final_mode}' in str(final_status_turn.get('message', '')), final_status_turn
 
     payload = {
         'ok': True,
@@ -354,6 +391,7 @@ async def main() -> None:
         'target_epoch': target_epoch,
         'extra_poll_interval': extra_poll_interval,
         'extra_poll_limit': extra_poll_limit,
+        'final_mode': final_mode,
         'prompt': prompt,
         'pre_status': pre_status,
         'pre_stop': pre_stop,
@@ -362,7 +400,9 @@ async def main() -> None:
         'turn3_started': turn3,
         'status_turns': status_turns,
         'stop': stop,
+        'forced_failure': forced_failure,
         'final_status': final_status,
+        'final_status_query': final_status_query,
         'final_status_turn': final_status_turn,
         'outcome_turn': outcome_turn,
         'next_step_turn': next_step_turn,
@@ -375,7 +415,7 @@ async def main() -> None:
             'extra_polls': extra_polls,
             'max_observed_epoch': max(observed_epochs or [0]),
             'status_route_used': 'check_training_status' in tool_names,
-            'final_status_route_used': final_status_turn.get('status') == 'completed' and '运行状态: stopped' in str(final_status_turn.get('message', '')),
+            'final_status_route_used': final_status_turn.get('status') == 'completed' and f'运行状态: {final_mode}' in str(final_status_turn.get('message', '')),
             'summary_route_used': contains_in_order(tool_names, ['summarize_training_run', 'analyze_training_outcome']),
             'next_step_route_used': contains_in_order(tool_names, ['training_readiness', 'summarize_training_run', 'recommend_next_training_step']),
             'summary_run_state': summary_result.get('run_state'),
@@ -386,6 +426,7 @@ async def main() -> None:
     out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
     print(json.dumps({
         'ok': True,
+        'final_mode': final_mode,
         'running_observed_count': running_count,
         'max_observed_epoch': max(observed_epochs or [0]),
         'summary_run_state': summary_result.get('run_state'),

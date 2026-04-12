@@ -48,6 +48,7 @@ echo "using conda env: $ENV_NAME"
 conda activate "$ENV_NAME"
 
 cd "$APP_ROOT"
+export PYTHONPATH="$APP_ROOT:$APP_ROOT/agent_plan${PYTHONPATH:+:$PYTHONPATH}"
 python -m yolostudio_agent.agent.tests.test_prediction_remote_real_media \
   --weights-dir "$STAGE_ROOT/weights" \
   --videos-dir "$STAGE_ROOT/videos" \
