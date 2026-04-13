@@ -10,6 +10,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from yolostudio_agent.agent.server.services.gpu_utils import (
     GpuAllocationPolicy,
     get_effective_gpu_policy,
@@ -503,18 +505,53 @@ class TrainService:
             'next_actions': next_actions,
         }
 
-    def list_training_runs(self, limit: int = 5) -> dict[str, Any]:
+    def list_training_runs(
+        self,
+        limit: int = 5,
+        run_state: str = '',
+        analysis_ready: bool | None = None,
+        model_keyword: str = '',
+        data_keyword: str = '',
+    ) -> dict[str, Any]:
         self._sync_runtime_state()
         max_items = max(1, min(int(limit), 20))
-        runs = self._collect_training_run_summaries(limit=max_items)
+        runs = self._collect_training_run_summaries(limit=None)
+        runs = self._filter_training_run_summaries(
+            runs,
+            run_state=run_state,
+            analysis_ready=analysis_ready,
+            model_keyword=model_keyword,
+            data_keyword=data_keyword,
+        )[:max_items]
+        applied_filters = {
+            'run_state': str(run_state or '').strip().lower() or None,
+            'analysis_ready': analysis_ready if analysis_ready is not None else None,
+            'model_keyword': str(model_keyword or '').strip() or None,
+            'data_keyword': str(data_keyword or '').strip() or None,
+        }
+        filter_fragments: list[str] = []
+        if applied_filters['run_state']:
+            filter_fragments.append(f"状态={applied_filters['run_state']}")
+        if applied_filters['analysis_ready'] is True:
+            filter_fragments.append('可分析训练')
+        elif applied_filters['analysis_ready'] is False:
+            filter_fragments.append('仅未具备分析条件的训练')
+        if applied_filters['model_keyword']:
+            filter_fragments.append(f"模型包含 {applied_filters['model_keyword']}")
+        if applied_filters['data_keyword']:
+            filter_fragments.append(f"数据包含 {applied_filters['data_keyword']}")
         if runs:
             summary = f"找到 {len(runs)} 条最近训练记录"
+            if filter_fragments:
+                summary += f"（筛选: {'，'.join(filter_fragments)}）"
             next_actions = [
                 '如需看最近一次训练效果，可继续调用 summarize_training_run',
                 '如需判断下一步怎么做，可继续调用 analyze_training_outcome 或 recommend_next_training_step',
             ]
         else:
             summary = '当前没有可读训练记录'
+            if filter_fragments:
+                summary = f"未找到符合条件的训练记录（筛选: {'，'.join(filter_fragments)}）"
             next_actions = [
                 '可先调用 start_training 启动一次训练',
                 '如需先确认训练参数和环境，可调用 training_preflight',
@@ -524,6 +561,7 @@ class TrainService:
             'summary': summary,
             'count': len(runs),
             'limit': max_items,
+            'applied_filters': applied_filters,
             'runs': runs,
             'next_actions': next_actions,
         }
@@ -531,31 +569,8 @@ class TrainService:
     def inspect_training_run(self, run_id: str = '') -> dict[str, Any]:
         self._sync_runtime_state()
         requested = str(run_id or '').strip()
-        normalized = requested.lower()
-
         statuses = self._collect_training_run_statuses(limit=None)
-        selected_status: dict[str, Any] | None = None
-        found_by = 'latest'
-
-        if normalized in {'', 'latest', 'recent', 'last'}:
-            selected_status = statuses[0] if statuses else None
-        elif normalized == 'active':
-            selected_status = next(
-                (
-                    status for status in statuses
-                    if str(status.get('status_source_hint') or '').strip().lower() == 'active'
-                ),
-                None,
-            )
-            found_by = 'active'
-        else:
-            for status in statuses:
-                candidate_run_id = self._derive_run_id(status)
-                candidate_log = str(status.get('log_file') or '').strip()
-                if requested == candidate_run_id or requested == candidate_log:
-                    selected_status = status
-                    found_by = 'explicit'
-                    break
+        selected_status, found_by = self._resolve_training_run_status(requested, statuses=statuses)
 
         if not selected_status:
             return {
@@ -622,6 +637,113 @@ class TrainService:
             'signals': summary.get('signals'),
             'facts': summary.get('facts'),
             'latest_metrics': summary.get('latest_metrics'),
+            'next_actions': next_actions,
+        }
+
+    def compare_training_runs(self, left_run_id: str = '', right_run_id: str = '') -> dict[str, Any]:
+        self._sync_runtime_state()
+        left_requested = str(left_run_id or '').strip()
+        right_requested = str(right_run_id or '').strip()
+        statuses = self._collect_training_run_statuses(limit=None)
+
+        if len(statuses) < 2 and not (left_requested and right_requested):
+            return {
+                'ok': False,
+                'error': '当前可用于对比的训练记录不足 2 条',
+                'summary': '训练记录不足，暂时不能做对比',
+                'requested_left_run_id': left_requested or 'latest',
+                'requested_right_run_id': right_requested or 'previous',
+                'next_actions': [
+                    '可先调用 list_training_runs 查看最近训练记录',
+                    '如需先产生新训练记录，可继续调用 start_training',
+                ],
+            }
+
+        used_logs: set[str] = set()
+        left_status, left_found_by = self._resolve_training_run_status(left_requested, statuses=statuses, exclude_log_files=used_logs)
+        if left_status and left_status.get('log_file'):
+            used_logs.add(str(left_status.get('log_file')))
+        right_default = 'previous' if not right_requested else right_requested
+        right_status, right_found_by = self._resolve_training_run_status(right_requested or 'previous', statuses=statuses, exclude_log_files=used_logs)
+
+        if not left_status or not right_status:
+            return {
+                'ok': False,
+                'error': '未找到足够的训练记录用于对比',
+                'summary': '未找到可对比的训练记录',
+                'requested_left_run_id': left_requested or 'latest',
+                'requested_right_run_id': right_requested or 'previous',
+                'next_actions': [
+                    '可先调用 list_training_runs 查看最近训练记录',
+                    '如需查看某条训练详情，可调用 inspect_training_run',
+                ],
+            }
+
+        left_summary = self._build_run_summary_from_status(left_status)
+        right_summary = self._build_run_summary_from_status(right_status)
+        metric_deltas, highlights = self._build_training_run_comparison(left_summary, right_summary)
+
+        left_name = left_summary.get('run_id') or 'latest'
+        right_name = right_summary.get('run_id') or right_default
+        if highlights:
+            summary = f'训练对比完成: {left_name} 相比 {right_name}，' + '；'.join(highlights[:2])
+        else:
+            summary = f'训练对比完成: 已整理 {left_name} 与 {right_name} 的状态和关键指标差异'
+
+        next_actions = [
+            f'如需查看 {left_name} 的详情，可调用 inspect_training_run',
+            '如需解释最新这次训练效果，可继续调用 analyze_training_outcome',
+            '如需判断下一步动作，可继续调用 recommend_next_training_step',
+        ]
+
+        return {
+            'ok': True,
+            'summary': summary,
+            'requested_left_run_id': left_requested or 'latest',
+            'requested_right_run_id': right_requested or 'previous',
+            'left_run_id': left_name,
+            'right_run_id': right_name,
+            'left_found_by': left_found_by,
+            'right_found_by': right_found_by,
+            'left_run': left_summary,
+            'right_run': right_summary,
+            'metric_deltas': metric_deltas,
+            'highlights': highlights,
+            'next_actions': next_actions,
+        }
+
+    def select_best_training_run(self, limit: int = 5) -> dict[str, Any]:
+        self._sync_runtime_state()
+        max_items = max(2, min(int(limit), 20))
+        runs = self._collect_training_run_summaries(limit=max_items)
+        if not runs:
+            return {
+                'ok': False,
+                'error': '当前没有可读训练记录',
+                'summary': '当前没有可用于评估的训练记录',
+                'next_actions': [
+                    '可先调用 list_training_runs 查看最近训练记录',
+                    '如需先产生训练记录，可继续调用 start_training',
+                ],
+            }
+
+        ranked = sorted(runs, key=self._best_run_sort_key, reverse=True)
+        best = ranked[0]
+        score_reason = self._build_best_run_reason(best)
+        summary = f"最佳训练记录: {best.get('run_id')}，{score_reason}"
+        next_actions = [
+            f"如需查看 {best.get('run_id')} 的详情，可继续调用 inspect_training_run",
+            '如需对比最佳训练与最近一次训练，可继续调用 compare_training_runs',
+            '如需基于最佳训练判断下一步动作，可继续调用 recommend_next_training_step',
+        ]
+        return {
+            'ok': True,
+            'summary': summary,
+            'best_run_id': best.get('run_id'),
+            'best_run': best,
+            'ranking_basis': score_reason,
+            'evaluated_count': len(ranked),
+            'candidates': ranked[: min(3, len(ranked))],
             'next_actions': next_actions,
         }
 
@@ -729,7 +851,7 @@ class TrainService:
             'updated_at': time.time(),
         }
 
-    def _collect_training_run_summaries(self, limit: int) -> list[dict[str, Any]]:
+    def _collect_training_run_summaries(self, limit: int | None) -> list[dict[str, Any]]:
         statuses = self._collect_training_run_statuses(limit=limit)
         summaries: list[dict[str, Any]] = []
         for status in statuses:
@@ -737,6 +859,34 @@ class TrainService:
             summary.pop('sort_key', None)
             summaries.append(summary)
         return summaries
+
+    @staticmethod
+    def _filter_training_run_summaries(
+        runs: list[dict[str, Any]],
+        *,
+        run_state: str = '',
+        analysis_ready: bool | None = None,
+        model_keyword: str = '',
+        data_keyword: str = '',
+    ) -> list[dict[str, Any]]:
+        expected_state = str(run_state or '').strip().lower()
+        model_token = str(model_keyword or '').strip().lower()
+        data_token = str(data_keyword or '').strip().lower()
+        filtered: list[dict[str, Any]] = []
+        for run in runs:
+            current_state = str(run.get('run_state') or '').strip().lower()
+            if expected_state and current_state != expected_state:
+                continue
+            if analysis_ready is not None and bool(run.get('analysis_ready')) is not bool(analysis_ready):
+                continue
+            model_text = str(run.get('model') or '').strip().lower()
+            if model_token and model_token not in model_text:
+                continue
+            data_text = str(run.get('data_yaml') or '').strip().lower()
+            if data_token and data_token not in data_text:
+                continue
+            filtered.append(run)
+        return filtered
 
     def _collect_training_run_statuses(self, limit: int | None) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
@@ -889,6 +1039,135 @@ class TrainService:
         if self._active_registry_path.exists():
             self._active_registry_path.unlink()
 
+    def _resolve_training_run_status(
+        self,
+        requested_run_id: str,
+        *,
+        statuses: list[dict[str, Any]] | None = None,
+        exclude_log_files: set[str] | None = None,
+    ) -> tuple[dict[str, Any] | None, str]:
+        requested = str(requested_run_id or '').strip()
+        normalized = requested.lower()
+        statuses = statuses or self._collect_training_run_statuses(limit=None)
+        excluded = {str(item) for item in (exclude_log_files or set()) if str(item)}
+
+        if normalized in {'', 'latest', 'recent', 'last'}:
+            for status in statuses:
+                log_file = str(status.get('log_file') or '')
+                if not log_file or log_file not in excluded:
+                    return status, 'latest'
+            return None, 'latest'
+        if normalized in {'previous', 'prev'}:
+            seen = 0
+            for status in statuses:
+                log_file = str(status.get('log_file') or '')
+                if log_file and log_file in excluded:
+                    continue
+                seen += 1
+                target_index = 1 if excluded else 2
+                if seen == target_index:
+                    return status, 'previous'
+            return None, 'previous'
+        if normalized == 'active':
+            for status in statuses:
+                log_file = str(status.get('log_file') or '')
+                if log_file and log_file in excluded:
+                    continue
+                if str(status.get('status_source_hint') or '').strip().lower() == 'active_run':
+                    return status, 'active'
+            return None, 'active'
+
+        for status in statuses:
+            candidate_run_id = self._derive_run_id(status)
+            candidate_log = str(status.get('log_file') or '').strip()
+            if candidate_log and candidate_log in excluded:
+                continue
+            if requested == candidate_run_id or requested == candidate_log:
+                return status, 'explicit'
+        return None, 'explicit'
+
+    @staticmethod
+    def _build_training_run_comparison(left_summary: dict[str, Any], right_summary: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+        metric_pairs = [
+            ('precision', 'precision', True),
+            ('recall', 'recall', True),
+            ('map50', 'mAP50', True),
+            ('map', 'mAP50-95', True),
+            ('box_loss', 'box_loss', False),
+            ('cls_loss', 'cls_loss', False),
+            ('dfl_loss', 'dfl_loss', False),
+        ]
+        left_metrics = left_summary.get('metrics') or {}
+        right_metrics = right_summary.get('metrics') or {}
+
+        deltas: dict[str, Any] = {}
+        highlights: list[str] = []
+        for key, label, higher_is_better in metric_pairs:
+            left_value = left_metrics.get(key)
+            right_value = right_metrics.get(key)
+            if not isinstance(left_value, (int, float)) or not isinstance(right_value, (int, float)):
+                continue
+            delta = round(float(left_value) - float(right_value), 4)
+            deltas[key] = {
+                'left': round(float(left_value), 4),
+                'right': round(float(right_value), 4),
+                'delta': delta,
+            }
+            if abs(delta) < 0.0001:
+                continue
+            direction = '提升' if (delta > 0 if higher_is_better else delta < 0) else '下降'
+            sign = '+' if delta > 0 else ''
+            highlights.append(f'{label}{direction} {sign}{delta:.4f}')
+
+        if left_summary.get('run_state') != right_summary.get('run_state'):
+            highlights.insert(
+                0,
+                f"状态变化: {right_summary.get('run_state')} -> {left_summary.get('run_state')}",
+            )
+        return deltas, highlights
+
+    @staticmethod
+    def _best_run_sort_key(summary: dict[str, Any]) -> tuple[float, float, float, float, float, float]:
+        run_state = str(summary.get('run_state') or '').strip().lower()
+        state_score = {
+            'completed': 3.0,
+            'stopped': 2.0,
+            'running': 1.0,
+            'failed': 0.0,
+            'unavailable': -1.0,
+        }.get(run_state, -1.0)
+        analysis_ready = 1.0 if summary.get('analysis_ready') else 0.0
+        metrics = summary.get('metrics') or {}
+
+        def _metric(*keys: str) -> float:
+            for key in keys:
+                value = metrics.get(key)
+                if isinstance(value, (int, float)):
+                    return float(value)
+            return -1.0
+
+        map50 = _metric('map50', 'mAP50')
+        map5095 = _metric('map', 'mAP50-95')
+        precision = _metric('precision')
+        recall = _metric('recall')
+        updated = float(summary.get('updated_at') or summary.get('stopped_at') or summary.get('started_at') or 0.0)
+        return (analysis_ready, state_score, map50, map5095, precision + recall, updated)
+
+    @staticmethod
+    def _build_best_run_reason(summary: dict[str, Any]) -> str:
+        metrics = summary.get('metrics') or {}
+        fragments: list[str] = []
+        run_state = str(summary.get('run_state') or '').strip().lower()
+        if run_state:
+            fragments.append(f'状态={run_state}')
+        for key, label in (('map50', 'mAP50'), ('map', 'mAP50-95'), ('precision', 'precision'), ('recall', 'recall')):
+            value = metrics.get(key)
+            if isinstance(value, (int, float)):
+                fragments.append(f'{label}={float(value):.3f}')
+        if not fragments:
+            return '当前可读指标最完整'
+        return '，'.join(fragments[:4])
+
     @staticmethod
     def _read_json(path: Path) -> dict[str, Any] | None:
         if not path.exists():
@@ -978,6 +1257,8 @@ class TrainService:
             return 'epochs 必须大于 0'
         if batch is not None and int(batch) <= 0:
             return 'batch 必须大于 0'
+        if batch is not None and int(batch) > 256:
+            return f'batch={int(batch)} 过大；当前自动执行链限制 batch <= 256'
         if imgsz is not None and int(imgsz) <= 0:
             return 'imgsz 必须大于 0'
         if project is not None and not str(project).strip() and project != '':
@@ -1000,9 +1281,48 @@ class TrainService:
             return 'workers 不能小于 0'
         if not Path(data_yaml).exists():
             return f'数据配置文件不存在: {data_yaml}'
+        class_check_error = TrainService._validate_requested_classes_against_data_yaml(data_yaml, normalized_classes)
+        if class_check_error:
+            return class_check_error
         model_path = Path(model)
         if model_path.suffix and model_path.suffix in {'.pt', '.onnx', '.yaml'} and not model_path.exists() and not model.startswith('yolo'):
             return f'模型文件不存在: {model}'
+        return None
+
+    @staticmethod
+    def _validate_requested_classes_against_data_yaml(data_yaml: str, normalized_classes: list[int] | None) -> str | None:
+        if not normalized_classes:
+            return None
+        try:
+            payload = yaml.safe_load(Path(data_yaml).read_text(encoding='utf-8')) or {}
+        except Exception:
+            return None
+
+        names = payload.get('names')
+        class_count = None
+        if isinstance(names, dict) and names:
+            parsed_indexes: list[int] = []
+            for key in names:
+                try:
+                    parsed_indexes.append(int(key))
+                except (TypeError, ValueError):
+                    continue
+            if parsed_indexes:
+                class_count = max(parsed_indexes) + 1
+            else:
+                class_count = len(names)
+        elif isinstance(names, list) and names:
+            class_count = len(names)
+        elif isinstance(payload.get('nc'), int) and int(payload.get('nc')) > 0:
+            class_count = int(payload.get('nc'))
+
+        if class_count is None:
+            return None
+
+        out_of_range = [item for item in normalized_classes if int(item) < 0 or int(item) >= class_count]
+        if out_of_range:
+            unique_ids = ', '.join(str(item) for item in sorted(set(out_of_range)))
+            return f'classes 超出当前数据集类别范围: {unique_ids}（当前类别数={class_count}）'
         return None
 
     @staticmethod
