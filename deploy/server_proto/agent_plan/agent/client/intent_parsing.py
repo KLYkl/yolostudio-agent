@@ -33,7 +33,7 @@ def extract_dataset_path_from_text(text: str) -> str:
     for item in paths:
         if not looks_like_model_path(item):
             return item
-    return paths[0] if paths else ''
+    return ''
 
 
 def extract_model_from_text(text: str) -> str:

@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -n "${BASH_SOURCE[0]:-}" && "${BASH_SOURCE[0]}" != "bash" ]]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+else
+  SCRIPT_DIR="$(pwd)"
+fi
 
 detect_app_root() {
   local candidates=(
@@ -76,6 +80,7 @@ STATUS_DELAYS="${7:-15,35,60}"
 EXTRA_POLL_INTERVAL="${8:-30}"
 EXTRA_POLL_LIMIT="${9:-8}"
 FINAL_MODE="${10:-stopped}"
+TEST_MODE="${11:-direct_tools}"
 
 if [[ ! -f "$CONDA_ROOT/etc/profile.d/conda.sh" ]]; then
   echo "missing conda.sh under: $CONDA_ROOT" >&2
@@ -125,7 +130,7 @@ fi
 
 cd "$APP_ROOT"
 export PYTHONPATH="$APP_ROOT:$APP_ROOT/agent_plan${PYTHONPATH:+:$PYTHONPATH}"
-export YOLO_AGENT_TRAIN_TEST_MODE="direct_tools"
+export YOLO_AGENT_TRAIN_TEST_MODE="$TEST_MODE"
 export YOLO_AGENT_TRAIN_OUT="$OUTPUT_ROOT/remote_training_mainline_agent_roundtrip.json"
 export YOLO_AGENT_TRAIN_DATASET_ROOT="$DATASET_ROOT"
 export YOLO_AGENT_TRAIN_MODEL_PATH="$MODEL_PATH"

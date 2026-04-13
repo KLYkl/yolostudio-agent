@@ -10,6 +10,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from yolostudio_agent.agent.server.services.gpu_utils import (
     GpuAllocationPolicy,
     get_effective_gpu_policy,
@@ -1255,6 +1257,8 @@ class TrainService:
             return 'epochs 必须大于 0'
         if batch is not None and int(batch) <= 0:
             return 'batch 必须大于 0'
+        if batch is not None and int(batch) > 256:
+            return f'batch={int(batch)} 过大；当前自动执行链限制 batch <= 256'
         if imgsz is not None and int(imgsz) <= 0:
             return 'imgsz 必须大于 0'
         if project is not None and not str(project).strip() and project != '':
@@ -1277,9 +1281,48 @@ class TrainService:
             return 'workers 不能小于 0'
         if not Path(data_yaml).exists():
             return f'数据配置文件不存在: {data_yaml}'
+        class_check_error = TrainService._validate_requested_classes_against_data_yaml(data_yaml, normalized_classes)
+        if class_check_error:
+            return class_check_error
         model_path = Path(model)
         if model_path.suffix and model_path.suffix in {'.pt', '.onnx', '.yaml'} and not model_path.exists() and not model.startswith('yolo'):
             return f'模型文件不存在: {model}'
+        return None
+
+    @staticmethod
+    def _validate_requested_classes_against_data_yaml(data_yaml: str, normalized_classes: list[int] | None) -> str | None:
+        if not normalized_classes:
+            return None
+        try:
+            payload = yaml.safe_load(Path(data_yaml).read_text(encoding='utf-8')) or {}
+        except Exception:
+            return None
+
+        names = payload.get('names')
+        class_count = None
+        if isinstance(names, dict) and names:
+            parsed_indexes: list[int] = []
+            for key in names:
+                try:
+                    parsed_indexes.append(int(key))
+                except (TypeError, ValueError):
+                    continue
+            if parsed_indexes:
+                class_count = max(parsed_indexes) + 1
+            else:
+                class_count = len(names)
+        elif isinstance(names, list) and names:
+            class_count = len(names)
+        elif isinstance(payload.get('nc'), int) and int(payload.get('nc')) > 0:
+            class_count = int(payload.get('nc'))
+
+        if class_count is None:
+            return None
+
+        out_of_range = [item for item in normalized_classes if int(item) < 0 or int(item) >= class_count]
+        if out_of_range:
+            unique_ids = ', '.join(str(item) for item in sorted(set(out_of_range)))
+            return f'classes 超出当前数据集类别范围: {unique_ids}（当前类别数={class_count}）'
         return None
 
     @staticmethod
