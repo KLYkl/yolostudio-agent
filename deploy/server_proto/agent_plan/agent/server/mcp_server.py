@@ -36,13 +36,21 @@ from yolostudio_agent.agent.server.tools.knowledge_tools import (
     retrieve_training_knowledge,
 )
 from yolostudio_agent.agent.server.tools.predict_tools import (
+    check_realtime_prediction_status,
     export_prediction_path_lists,
     export_prediction_report,
     inspect_prediction_outputs,
     organize_prediction_results,
     predict_images,
     predict_videos,
+    scan_cameras,
+    scan_screens,
+    start_camera_prediction,
+    start_rtsp_prediction,
+    start_screen_prediction,
+    stop_realtime_prediction,
     summarize_prediction_results,
+    test_rtsp_stream,
 )
 from yolostudio_agent.agent.server.tools.train_tools import (
     check_gpu_status,
@@ -94,6 +102,14 @@ mcp.tool()(inspect_prediction_outputs)
 mcp.tool()(export_prediction_report)
 mcp.tool()(export_prediction_path_lists)
 mcp.tool()(organize_prediction_results)
+mcp.tool()(scan_cameras)
+mcp.tool()(scan_screens)
+mcp.tool()(test_rtsp_stream)
+mcp.tool()(start_camera_prediction)
+mcp.tool()(start_rtsp_prediction)
+mcp.tool()(start_screen_prediction)
+mcp.tool()(check_realtime_prediction_status)
+mcp.tool()(stop_realtime_prediction)
 mcp.tool()(list_training_environments)
 mcp.tool()(training_preflight)
 mcp.tool()(list_training_runs)

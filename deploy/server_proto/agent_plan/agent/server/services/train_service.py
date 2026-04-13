@@ -293,6 +293,7 @@ class TrainService:
         result['minimum_facts_ready'] = bool(result['training_facts'].get('minimum_facts_ready'))
         result['latest_eval_metrics'] = result['training_facts'].get('latest_eval_metrics')
         result['latest_train_metrics'] = result['training_facts'].get('latest_train_metrics')
+        result['save_dir'] = result['training_facts'].get('save_dir')
         result['error_lines'] = result['training_facts'].get('error_lines') or []
         if not result['latest_metrics'].get('metrics'):
             result['latest_metrics'] = result['training_facts'].get('latest_metrics') or result['latest_metrics']
@@ -637,6 +638,7 @@ class TrainService:
             'signals': summary.get('signals'),
             'facts': summary.get('facts'),
             'latest_metrics': summary.get('latest_metrics'),
+            'save_dir': summary.get('save_dir'),
             'next_actions': next_actions,
         }
 
@@ -1211,10 +1213,23 @@ class TrainService:
 
     @staticmethod
     def _terminate_pid(pid: int) -> tuple[bool, int | None]:
-        os.kill(pid, signal.SIGTERM)
         if sys.platform == 'win32':
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except PermissionError:
+                completed = subprocess.run(
+                    ['taskkill', '/PID', str(pid), '/T', '/F'],
+                    capture_output=True,
+                    text=True,
+                )
+                if completed.returncode not in {0, 128}:
+                    raise
+                time.sleep(0.5)
+                return True, completed.returncode
             time.sleep(0.5)
             return False, signal.SIGTERM
+
+        os.kill(pid, signal.SIGTERM)
 
         deadline = time.time() + 5
         while time.time() < deadline:

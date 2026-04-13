@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
+import time
 from dataclasses import dataclass
-from pathlib import Path
+from datetime import datetime
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
@@ -22,25 +25,34 @@ from yolostudio_agent.agent.client.intent_parsing import (
     build_video_extract_args_from_text,
     extract_all_paths_from_text,
     extract_batch_size_from_text,
+    extract_camera_id_from_text,
     extract_count_from_text,
     extract_custom_training_script_from_text,
     extract_dataset_path_from_text,
     extract_device_from_text,
     extract_epochs_from_text,
     extract_fraction_from_text,
+    extract_frame_interval_ms_from_text,
     extract_image_size_from_text,
+    extract_max_frames_from_text,
     extract_metric_signals_from_text,
     extract_model_from_text,
     extract_project_from_text,
     extract_optimizer_from_text,
     extract_lr0_from_text,
     extract_output_path_from_text,
+    extract_remote_root_from_text,
+    extract_remote_server_from_text,
     extract_ratio_from_text,
+    extract_realtime_session_id_from_text,
     extract_resume_flag_from_text,
+    extract_rtsp_url_from_text,
     extract_run_name_from_text,
+    extract_screen_id_from_text,
     extract_freeze_from_text,
     extract_single_cls_flag_from_text,
     extract_patience_from_text,
+    extract_timeout_ms_from_text,
     extract_classes_from_text,
     extract_training_environment_from_text,
     extract_training_execution_backend_from_text,
@@ -60,11 +72,12 @@ from yolostudio_agent.agent.client.intent_parsing import (
 )
 from yolostudio_agent.agent.client.llm_factory import LlmProviderSettings, build_llm, provider_summary
 from yolostudio_agent.agent.client.memory_store import MemoryStore
+from yolostudio_agent.agent.client.remote_transfer_tools import build_local_transfer_tools
 from yolostudio_agent.agent.client.session_state import SessionState, utc_now
 from yolostudio_agent.agent.client.tool_adapter import adapt_tools_for_chat_model, canonical_tool_name, normalize_tool_args
 from yolostudio_agent.agent.client.tool_result_parser import parse_tool_message
 
-SYSTEM_PROMPT = """你是 YoloStudio Agent，负责帮助用户完成数据准备、训练管理和图片预测。
+SYSTEM_PROMPT = """你是 YoloStudio Agent，负责帮助用户完成数据准备、训练管理以及文件/实时源预测。
 
 工作原则：
 1. 优先使用 MCP tools 获取真实结果，不要凭空猜测文件、数据集状态或训练状态。
@@ -88,11 +101,16 @@ SYSTEM_PROMPT = """你是 YoloStudio Agent，负责帮助用户完成数据准�
 - 当用户明确要求对目录做视频扫描 / 抽帧时，优先使用 scan_videos 或 extract_video_frames；输入路径参数名同样是 source_path。
 - 当用户明确要求对单张图片或图片目录做预测 / 推理 / 识别时，优先使用 predict_images；输入路径参数名是 source_path，模型参数名是 model。
 - 当用户明确要求对单个视频或视频目录做预测 / 推理 / 识别时，优先使用 predict_videos；同样使用 source_path 和 model。
-- 当前第二主线只支持图片、图片目录、单视频和视频目录，不支持 RTSP、摄像头或屏幕实时流。
+- 当用户明确要求扫描摄像头、扫描屏幕或测试 RTSP 地址时，优先使用 scan_cameras / scan_screens / test_rtsp_stream；先探测，再启动实时预测。
+- 当用户明确要求用摄像头、RTSP 或屏幕开始实时预测时，优先使用 start_camera_prediction / start_rtsp_prediction / start_screen_prediction；回答时要优先复述 session_id、source_label 和 output_dir。
+- 当用户追问“实时预测现在跑到哪了 / 还在跑吗 / 停掉它”时，优先使用 check_realtime_prediction_status / stop_realtime_prediction；不要自己猜状态。
 - 当用户要求“总结预测结果 / 分析 prediction_report / 汇总刚才预测”时，优先使用 summarize_prediction_results；优先复用最近一次预测留下的 report_path 或 output_dir，不要凭空编造统计结果。
 - 当用户要求“这次预测结果导成报告 / 导出一份可复查摘要”时，优先使用 export_prediction_report；如果用户没给路径，默认写到最近一次 prediction 输出目录。
 - 当用户要求“这次预测结果保存在哪 / 输出目录里有什么 / 给我路径清单”时，优先使用 inspect_prediction_outputs 或 export_prediction_path_lists；优先复用最近一次 prediction 留下的 report_path / output_dir。
 - 当用户要求“只把有命中的结果整理出来 / 按类别整理预测产物”时，优先使用 organize_prediction_results；这是复制到新目录，不会改写原始 prediction 输出。
+- 当用户明确要求“查看有哪些可用远端 / 服务器 profile / SSH alias”时，优先使用 list_remote_profiles。
+- 当用户明确要求“把本机权重 / 数据集 / 视频 / 其他输入上传到服务器”时，优先使用 upload_assets_to_remote；这是本机到远端的数据传输能力，不是服务器端自己读本机路径。
+- upload_assets_to_remote 会把数据发到远端目录，属于高风险外部传输；如果参数足够，应先汇总本地路径、目标服务器和远端目录，再走确认。
 - 不要自己猜测子目录名称；优先依赖工具返回的 img_dir / label_dir / data_yaml。
 - 当前只允许使用 MCP 已注册的工具名；不要发明工具名，也不要把桌面功能名直接当成工具名。像 detect_duplicates、detect_corrupted_images、dataset_manager.prepare_dataset 这类旧名字只属于兼容别名，不是首选正式名称。
 
@@ -122,6 +140,7 @@ HIGH_RISK_TOOLS = {
     "generate_empty_labels",
     "generate_missing_labels",
     "categorize_by_class",
+    "upload_assets_to_remote",
 }
 
 
@@ -296,6 +315,11 @@ class YoloStudioAgentClient:
 
         self.memory.append_event(self.session_state.session_id, "confirmation_approved", {"tool": pending["name"], "args": pending.get("args", {})})
         self._clear_pending_confirmation()
+
+        if pending.get('name') == 'remote_prediction_pipeline':
+            return await self._execute_remote_prediction_pipeline(pending.get('args') or {})
+        if pending.get('name') == 'remote_training_pipeline':
+            return await self._execute_remote_training_pipeline(pending.get('args') or {})
 
         if graph_pending is None or graph_pending.get('adapted'):
             parsed = await self.direct_tool(pending["name"], **pending.get("args", {}))
@@ -508,6 +532,25 @@ class YoloStudioAgentClient:
             or self.session_state.active_prediction.output_dir
             or self.session_state.active_prediction.last_result
         )
+        wants_remote_profile_list = any(
+            token in user_text
+            for token in (
+                '远端配置', '服务器配置', '远端 profile', 'remote profile', '可用服务器', '可用节点', '有哪些节点', '有哪些服务器', 'SSH alias'
+            )
+        ) or any(token in normalized_text for token in ('list remote profiles', 'list remote servers', 'list ssh aliases'))
+        wants_remote_upload = (
+            any(token in user_text for token in ('上传', '传到服务器', '传到远端', '同步到服务器', '同步到远端', '发到服务器'))
+            or any(token in normalized_text for token in ('upload', 'scp', 'sync to server', 'sync to remote'))
+        ) and any(
+            token in user_text or token in normalized_text
+            for token in ('服务器', '远端', '节点', 'server', 'remote')
+        )
+        wants_remote_result_return = any(
+            token in user_text or token in normalized_text
+            for token in ('拉回来', '拉回本机', '回传', '取回', '下载回来', 'download back', 'bring back', 'pull back')
+        )
+        wants_remote_prediction_pipeline = wants_remote_upload and wants_predict and not wants_train
+        wants_remote_training_pipeline = wants_remote_upload and wants_train
         wants_prediction_output_inspection = (
             any(token in user_text for token in ('输出目录', '结果目录', '保存在哪', '产物路径', '输出里有什么', '有哪些结果文件'))
             and (wants_predict or has_prediction_followup_context)
@@ -523,6 +566,39 @@ class YoloStudioAgentClient:
         wants_prediction_result_organize = any(
             token in user_text for token in ('只看有命中的结果', '只保留有命中', '整理预测结果', '整理预测产物', '按类别整理预测', '按类别整理结果', '把命中的结果单独列出来', '把有目标的结果单独列出来')
         ) and (wants_predict or has_prediction_followup_context)
+        rtsp_url = self._extract_rtsp_url_from_text(user_text)
+        has_realtime_context = bool(
+            self.session_state.active_prediction.realtime_session_id
+            or self.session_state.active_prediction.realtime_status
+            or self.session_state.active_prediction.last_realtime_status
+        )
+        mentions_camera = any(token in user_text for token in ('摄像头', 'camera', 'webcam'))
+        mentions_screen = any(token in user_text for token in ('屏幕', 'screen', '显示器'))
+        mentions_rtsp = bool(rtsp_url) or 'rtsp' in normalized_text
+        wants_camera_scan = any(token in user_text for token in ('扫描摄像头', '扫描可用摄像头', '摄像头列表', '可用摄像头', '有哪些摄像头')) or (
+            mentions_camera and any(token in user_text for token in ('扫描', '列出', '看看有哪些', '有哪些'))
+        ) or any(token in normalized_text for token in ('scan camera', 'scan cameras', 'camera list'))
+        wants_screen_scan = any(token in user_text for token in ('扫描屏幕', '扫描可用屏幕', '屏幕列表', '可用屏幕', '有哪些屏幕')) or (
+            mentions_screen and any(token in user_text for token in ('扫描', '列出', '看看有哪些', '有哪些'))
+        ) or any(token in normalized_text for token in ('scan screen', 'scan screens', 'screen list'))
+        wants_realtime_start = any(token in user_text for token in ('开始', '启动', '跑', '接入', '接这个', '开启')) or any(
+            token in normalized_text for token in ('start', 'begin', 'run')
+        )
+        wants_realtime_infer = wants_realtime_start or any(token in user_text for token in ('预测', '检测', '识别'))
+        wants_camera_prediction = mentions_camera and wants_realtime_infer
+        wants_rtsp_prediction = mentions_rtsp and wants_realtime_infer
+        wants_screen_prediction = mentions_screen and wants_realtime_infer
+        wants_rtsp_test = mentions_rtsp and not wants_rtsp_prediction and any(
+            token in user_text for token in ('测试', '测一下', '试一下', '检查', '探测', '能不能用', '可不可用', '通不通')
+        )
+        wants_realtime_status = any(
+            token in user_text for token in ('实时预测状态', '实时预测进度', '摄像头预测状态', 'RTSP 预测状态', 'rtsp 预测状态', '屏幕预测状态')
+        ) or (
+            has_realtime_context and any(token in user_text for token in ('还在跑吗', '现在状态呢', '当前状态', '处理了多少帧', '跑到哪了', '实时状态'))
+        )
+        wants_realtime_stop = any(
+            token in user_text for token in ('停止实时预测', '停掉实时预测', '停止摄像头预测', '停止 RTSP 预测', '停止rtsp预测', '停止屏幕预测', '停掉摄像头', '停掉rtsp', '停掉屏幕')
+        ) or any(token in normalized_text for token in ('stop realtime prediction', 'stop camera prediction', 'stop rtsp prediction', 'stop screen prediction'))
         asks_metric_terms = any(token in normalized_text for token in ('precision', 'recall', 'map', 'loss', 'epoch', 'epochs', 'batch', 'imgsz', 'patience', 'lr')) or any(token in user_text for token in ('精确率', '召回', '损失', '学习率', '轮数', '批大小'))
         wants_training_outcome_analysis = (
             any(token in user_text for token in ('训练效果怎么样', '这次训练效果怎么样', '训练结果怎么样', '训练效果如何', '结果更像', '训练效果'))
@@ -636,10 +712,21 @@ class YoloStudioAgentClient:
             token in user_text or token in normalized_text
             for token in ('分割', 'segmentation', 'segment', 'sam')
         )
-        wants_prediction_and_training_mix = wants_predict and (
+        prediction_only_with_training_exclusion = wants_predict and any(
+            token in user_text
+            for token in (
+                '不要把训练',
+                '别把训练',
+                '不要混进训练',
+                '训练准备的内容混进来',
+                '排除训练',
+                '只总结预测结果',
+            )
+        )
+        wants_prediction_and_training_mix = wants_predict and not prediction_only_with_training_exclusion and (
             wants_train or wants_training_run_compare or wants_best_training_run
         ) and any(token in user_text for token in ('然后', '再', '同时', '边训练边', '一边'))
-        wants_prediction_result_as_training_data = wants_train and any(
+        wants_prediction_result_as_training_data = not prediction_only_with_training_exclusion and wants_train and any(
             token in user_text for token in ('预测结果', 'prediction 结果', '预测输出', '推理结果', '识别结果')
         )
         wants_merge_extract_into_training = any(token in user_text for token in ('合并', '并到', '合到')) and any(
@@ -685,6 +772,45 @@ class YoloStudioAgentClient:
             self._messages.append(AIMessage(content=reply))
             return {'status': 'completed', 'message': reply, 'tool_call': None}
 
+        if wants_camera_scan and not wants_train:
+            return await self._complete_direct_tool_reply('scan_cameras')
+
+        if wants_screen_scan and not wants_train:
+            return await self._complete_direct_tool_reply('scan_screens')
+
+        if wants_rtsp_test and rtsp_url and not wants_train:
+            timeout_ms = self._extract_timeout_ms_from_text(user_text)
+            test_kwargs: dict[str, Any] = {'rtsp_url': rtsp_url}
+            if timeout_ms is not None:
+                test_kwargs['timeout_ms'] = timeout_ms
+            return await self._complete_direct_tool_reply('test_rtsp_stream', **test_kwargs)
+
+        if wants_realtime_status and not wants_train:
+            status_kwargs = self._build_realtime_session_kwargs(user_text)
+            return await self._complete_direct_tool_reply('check_realtime_prediction_status', **status_kwargs)
+
+        if wants_realtime_stop and not wants_train:
+            stop_kwargs = self._build_realtime_session_kwargs(user_text)
+            return await self._complete_direct_tool_reply('stop_realtime_prediction', **stop_kwargs)
+
+        if wants_camera_prediction and not wants_train:
+            return await self._complete_direct_tool_reply(
+                'start_camera_prediction',
+                **self._build_realtime_prediction_args(user_text, source_type='camera'),
+            )
+
+        if wants_rtsp_prediction and not wants_train:
+            return await self._complete_direct_tool_reply(
+                'start_rtsp_prediction',
+                **self._build_realtime_prediction_args(user_text, source_type='rtsp'),
+            )
+
+        if wants_screen_prediction and not wants_train:
+            return await self._complete_direct_tool_reply(
+                'start_screen_prediction',
+                **self._build_realtime_prediction_args(user_text, source_type='screen'),
+            )
+
         if wants_prediction_output_inspection:
             inspect_kwargs = self._prediction_followup_kwargs(user_text, fallback_path=prediction_path)
             if inspect_kwargs:
@@ -715,6 +841,86 @@ class YoloStudioAgentClient:
             organize_kwargs['include_empty'] = '无命中' in user_text or '空结果' in user_text
             if organize_kwargs:
                 return await self._complete_direct_tool_reply('organize_prediction_results', **organize_kwargs)
+
+        if wants_remote_profile_list:
+            return await self._complete_direct_tool_reply('list_remote_profiles')
+
+        if wants_remote_prediction_pipeline:
+            pipeline_args = self._build_remote_prediction_pipeline_args(user_text)
+            upload_args = dict(pipeline_args.get('upload_args') or {})
+            local_paths = list(upload_args.get('local_paths') or [])
+            if not local_paths:
+                reply = '当前还不能发起远端预测闭环：请明确给我要上传的本地模型和图片/视频路径。'
+                self._messages.append(AIMessage(content=reply))
+                return {'status': 'completed', 'message': reply, 'tool_call': None}
+            if not str(upload_args.get('server') or '').strip() and not str(upload_args.get('host') or '').strip():
+                reply = '当前还不能发起远端预测闭环：请明确目标服务器，或先列出并选择一个远端 profile。'
+                self._messages.append(AIMessage(content=reply))
+                return {'status': 'completed', 'message': reply, 'tool_call': None}
+            if not str(upload_args.get('remote_root') or '').strip():
+                reply = '当前还不能发起远端预测闭环：请明确远端目录，或先配置一个带默认 remote_root 的远端 profile。'
+                self._messages.append(AIMessage(content=reply))
+                return {'status': 'completed', 'message': reply, 'tool_call': None}
+            pending = {'name': 'remote_prediction_pipeline', 'args': pipeline_args, 'id': None, 'synthetic': True}
+            self._set_pending_confirmation(thread_id, pending)
+            reply = self._build_confirmation_prompt(pending)
+            self._messages.append(AIMessage(content=reply))
+            return {
+                'status': 'needs_confirmation',
+                'message': reply,
+                'tool_call': {'name': 'remote_prediction_pipeline', 'args': pipeline_args},
+                'thread_id': thread_id,
+            }
+
+        if wants_remote_training_pipeline:
+            pipeline_args = self._build_remote_training_pipeline_args(user_text)
+            upload_args = dict(pipeline_args.get('upload_args') or {})
+            local_paths = list(upload_args.get('local_paths') or [])
+            if not local_paths:
+                reply = '当前还不能发起远端训练闭环：请明确给我要上传的本地模型和数据集路径。'
+                self._messages.append(AIMessage(content=reply))
+                return {'status': 'completed', 'message': reply, 'tool_call': None}
+            if not str(upload_args.get('server') or '').strip() and not str(upload_args.get('host') or '').strip():
+                reply = '当前还不能发起远端训练闭环：请明确目标服务器，或先列出并选择一个远端 profile。'
+                self._messages.append(AIMessage(content=reply))
+                return {'status': 'completed', 'message': reply, 'tool_call': None}
+            if not str(upload_args.get('remote_root') or '').strip():
+                reply = '当前还不能发起远端训练闭环：请明确远端目录，或先配置一个带默认 remote_root 的远端 profile。'
+                self._messages.append(AIMessage(content=reply))
+                return {'status': 'completed', 'message': reply, 'tool_call': None}
+            pending = {'name': 'remote_training_pipeline', 'args': pipeline_args, 'id': None, 'synthetic': True}
+            self._set_pending_confirmation(thread_id, pending)
+            reply = self._build_confirmation_prompt(pending)
+            self._messages.append(AIMessage(content=reply))
+            return {
+                'status': 'needs_confirmation',
+                'message': reply,
+                'tool_call': {'name': 'remote_training_pipeline', 'args': pipeline_args},
+                'thread_id': thread_id,
+            }
+
+        if wants_remote_upload:
+            upload_args = self._build_remote_upload_args(user_text)
+            upload_args = self._apply_remote_defaults(upload_args)
+            local_paths = list(upload_args.get('local_paths') or [])
+            if not local_paths:
+                reply = '当前还不能发起远端上传：请明确给我要上传的本地路径；至少提供一个本地权重、数据集目录或视频路径。'
+                self._messages.append(AIMessage(content=reply))
+                return {'status': 'completed', 'message': reply, 'tool_call': None}
+            if not str(upload_args.get('remote_root') or '').strip():
+                reply = '当前还不能发起远端上传：请明确远端目录，或先配置一个带默认 remote_root 的远端 profile。'
+                self._messages.append(AIMessage(content=reply))
+                return {'status': 'completed', 'message': reply, 'tool_call': None}
+            pending = {'name': 'upload_assets_to_remote', 'args': upload_args, 'id': None, 'synthetic': True}
+            self._set_pending_confirmation(thread_id, pending)
+            reply = self._build_confirmation_prompt(pending)
+            self._messages.append(AIMessage(content=reply))
+            return {
+                'status': 'needs_confirmation',
+                'message': reply,
+                'tool_call': {'name': 'upload_assets_to_remote', 'args': upload_args},
+                'thread_id': thread_id,
+            }
 
         if wants_prediction_summary:
             summary_kwargs = self._prediction_followup_kwargs(user_text, fallback_path=prediction_path)
@@ -1101,6 +1307,401 @@ class YoloStudioAgentClient:
             'message': reply,
             'tool_call': None,
         }
+
+    async def _execute_remote_prediction_pipeline(self, pipeline_args: dict[str, Any]) -> dict[str, Any]:
+        upload_args = dict(pipeline_args.get('upload_args') or {})
+        upload_result = await self.direct_tool('upload_assets_to_remote', **upload_args)
+        if not upload_result.get('ok'):
+            reply = self._build_grounded_tool_reply([('upload_assets_to_remote', upload_result)]) or upload_result.get('error') or '远端上传失败'
+            self._messages.append(AIMessage(content=reply))
+            self._trim_history()
+            self.memory.save_state(self.session_state)
+            return {'status': 'error', 'message': reply, 'tool_call': {'name': 'remote_prediction_pipeline', 'args': pipeline_args}}
+
+        resolved_inputs = self._resolve_prediction_remote_inputs(upload_result)
+        if not resolved_inputs.get('ok'):
+            reply = self._merge_grounded_sections([
+                self._build_grounded_tool_reply([('upload_assets_to_remote', upload_result)]),
+                str(resolved_inputs.get('error') or '').strip(),
+            ]) or str(resolved_inputs.get('error') or '远端预测闭环参数不完整')
+            self._messages.append(AIMessage(content=reply))
+            self._trim_history()
+            self.memory.save_state(self.session_state)
+            return {'status': 'error', 'message': reply, 'tool_call': {'name': 'remote_prediction_pipeline', 'args': pipeline_args}}
+
+        remote_root = str(upload_result.get('remote_root') or '')
+        remote_output_dir = self._remote_join(
+            remote_root,
+            f'_agent_prediction_output_{datetime.now().strftime("%Y%m%d_%H%M%S")}',
+        )
+        predict_tool_name = str(resolved_inputs.get('tool_name') or '')
+        predict_kwargs: dict[str, Any] = {
+            'source_path': str(resolved_inputs.get('source_path') or ''),
+            'model': str(resolved_inputs.get('model_path') or ''),
+            'output_dir': remote_output_dir,
+            'generate_report': True,
+        }
+        if predict_tool_name == 'predict_videos':
+            predict_kwargs.update({
+                'save_video': False,
+                'save_keyframes_annotated': True,
+                'save_keyframes_raw': False,
+            })
+        else:
+            predict_kwargs.update({
+                'save_annotated': True,
+                'save_labels': False,
+                'save_original': False,
+            })
+        predict_result = await self.direct_tool(predict_tool_name, **predict_kwargs)
+        if not predict_result.get('ok'):
+            reply = self._merge_grounded_sections([
+                self._build_grounded_tool_reply([('upload_assets_to_remote', upload_result)]),
+                self._build_grounded_tool_reply([(predict_tool_name, predict_result)]),
+            ]) or predict_result.get('error') or '远端预测执行失败'
+            self._messages.append(AIMessage(content=reply))
+            self._trim_history()
+            self.memory.save_state(self.session_state)
+            return {'status': 'error', 'message': reply, 'tool_call': {'name': 'remote_prediction_pipeline', 'args': pipeline_args}}
+
+        download_result: dict[str, Any] = {}
+        if pipeline_args.get('download_after_predict', True):
+            download_args = {
+                'remote_paths': [str(predict_result.get('output_dir') or remote_output_dir)],
+                'server': upload_args.get('server', ''),
+                'profile': upload_args.get('profile', ''),
+                'host': upload_args.get('host', ''),
+                'username': upload_args.get('username', ''),
+                'port': upload_args.get('port', 0),
+                'local_root': pipeline_args.get('local_result_root', ''),
+                'recursive': True,
+            }
+            download_result = await self.direct_tool('download_assets_from_remote', **download_args)
+
+        pipeline_result = {
+            'ok': predict_result.get('ok') is True and (not download_result or download_result.get('ok') is True),
+            'upload': upload_result,
+            'predict': predict_result,
+            'download': download_result,
+            'remote_source_path': str(resolved_inputs.get('source_path') or ''),
+            'remote_model_path': str(resolved_inputs.get('model_path') or ''),
+            'remote_output_dir': str(predict_result.get('output_dir') or remote_output_dir),
+            'local_result_root': str((download_result or {}).get('local_root') or pipeline_args.get('local_result_root') or ''),
+            'source_kind': str(resolved_inputs.get('source_kind') or ''),
+        }
+        self.session_state.active_prediction.last_remote_roundtrip = pipeline_result
+        self.memory.append_event(self.session_state.session_id, 'remote_prediction_pipeline', pipeline_result)
+
+        reply = self._merge_grounded_sections([
+            self._build_grounded_tool_reply([('upload_assets_to_remote', upload_result)]),
+            self._build_grounded_tool_reply([(predict_tool_name, predict_result)]),
+            self._build_grounded_tool_reply([('download_assets_from_remote', download_result)]) if download_result else '',
+        ]) or predict_result.get('summary') or '远端预测闭环已完成'
+        self._messages.append(AIMessage(content=reply))
+        self._trim_history()
+        self.memory.save_state(self.session_state)
+        return {
+            'status': 'completed' if pipeline_result['ok'] else 'error',
+            'message': reply,
+            'tool_call': {'name': 'remote_prediction_pipeline', 'args': pipeline_args},
+        }
+
+    async def _execute_remote_training_pipeline(self, pipeline_args: dict[str, Any]) -> dict[str, Any]:
+        upload_args = dict(pipeline_args.get('upload_args') or {})
+        upload_result = await self.direct_tool('upload_assets_to_remote', **upload_args)
+        if not upload_result.get('ok'):
+            reply = self._build_grounded_tool_reply([('upload_assets_to_remote', upload_result)]) or upload_result.get('error') or '远端上传失败'
+            self._messages.append(AIMessage(content=reply))
+            self._trim_history()
+            self.memory.save_state(self.session_state)
+            return {'status': 'error', 'message': reply, 'tool_call': {'name': 'remote_training_pipeline', 'args': pipeline_args}}
+
+        resolved_inputs = self._resolve_training_remote_inputs(upload_result)
+        if not resolved_inputs.get('ok'):
+            reply = self._merge_grounded_sections([
+                self._build_grounded_tool_reply([('upload_assets_to_remote', upload_result)]),
+                str(resolved_inputs.get('error') or '').strip(),
+            ]) or str(resolved_inputs.get('error') or '远端训练闭环参数不完整')
+            self._messages.append(AIMessage(content=reply))
+            self._trim_history()
+            self.memory.save_state(self.session_state)
+            return {'status': 'error', 'message': reply, 'tool_call': {'name': 'remote_training_pipeline', 'args': pipeline_args}}
+
+        dataset_path = str(resolved_inputs.get('dataset_path') or '')
+        model_path = str(resolved_inputs.get('model_path') or '')
+        readiness = await self.direct_tool('training_readiness', img_dir=dataset_path)
+        if not readiness.get('ok'):
+            reply = self._merge_grounded_sections([
+                self._build_grounded_tool_reply([('upload_assets_to_remote', upload_result)]),
+                self._build_grounded_tool_reply([('training_readiness', readiness)]),
+            ]) or readiness.get('error') or '远端训练前检查失败'
+            self._messages.append(AIMessage(content=reply))
+            self._trim_history()
+            self.memory.save_state(self.session_state)
+            return {'status': 'error', 'message': reply, 'tool_call': {'name': 'remote_training_pipeline', 'args': pipeline_args}}
+
+        prepare_result: dict[str, Any] = {}
+        data_yaml = str(readiness.get('resolved_data_yaml') or '').strip()
+        if not readiness.get('ready'):
+            prepare_args: dict[str, Any] = {'dataset_path': dataset_path}
+            if pipeline_args.get('force_split'):
+                prepare_args['force_split'] = True
+            prepare_result = await self.direct_tool('prepare_dataset_for_training', **prepare_args)
+            if not prepare_result.get('ok') or not prepare_result.get('ready'):
+                reply = self._merge_grounded_sections([
+                    self._build_grounded_tool_reply([('upload_assets_to_remote', upload_result)]),
+                    self._build_grounded_tool_reply([('training_readiness', readiness)]),
+                    self._build_grounded_tool_reply([('prepare_dataset_for_training', prepare_result)]),
+                ]) or prepare_result.get('summary') or prepare_result.get('error') or '远端数据准备未通过'
+                self._messages.append(AIMessage(content=reply))
+                self._trim_history()
+                self.memory.save_state(self.session_state)
+                return {'status': 'error', 'message': reply, 'tool_call': {'name': 'remote_training_pipeline', 'args': pipeline_args}}
+            data_yaml = str(prepare_result.get('data_yaml') or '').strip()
+
+        requested_args = self._collect_requested_training_args(str(pipeline_args.get('user_text') or ''), data_yaml=data_yaml)
+        requested_args['model'] = model_path
+        requested_args['data_yaml'] = data_yaml
+        requested_args['device'] = str(requested_args.get('device') or 'auto')
+        requested_args['epochs'] = int(requested_args.get('epochs', 100))
+
+        preflight = await self.direct_tool(
+            'training_preflight',
+            model=str(requested_args.get('model') or ''),
+            data_yaml=str(requested_args.get('data_yaml') or ''),
+            epochs=int(requested_args.get('epochs', 100)),
+            device=str(requested_args.get('device', 'auto') or 'auto'),
+            training_environment=str(requested_args.get('training_environment') or ''),
+            project=str(requested_args.get('project') or ''),
+            name=str(requested_args.get('name') or ''),
+            batch=requested_args.get('batch'),
+            imgsz=requested_args.get('imgsz'),
+            fraction=requested_args.get('fraction'),
+            classes=requested_args.get('classes'),
+            single_cls=requested_args.get('single_cls'),
+            optimizer=str(requested_args.get('optimizer', '') or ''),
+            freeze=requested_args.get('freeze'),
+            resume=requested_args.get('resume'),
+            lr0=requested_args.get('lr0'),
+            patience=requested_args.get('patience'),
+            workers=requested_args.get('workers'),
+            amp=requested_args.get('amp'),
+        )
+        if not preflight.get('ok') or not preflight.get('ready_to_start'):
+            reply = self._merge_grounded_sections([
+                self._build_grounded_tool_reply([('upload_assets_to_remote', upload_result)]),
+                self._build_grounded_tool_reply([('training_readiness', readiness)]),
+                self._build_grounded_tool_reply([('prepare_dataset_for_training', prepare_result)]) if prepare_result else '',
+                self._build_grounded_tool_reply([('training_preflight', preflight)]),
+            ]) or preflight.get('summary') or preflight.get('error') or '远端训练预检未通过'
+            self._messages.append(AIMessage(content=reply))
+            self._trim_history()
+            self.memory.save_state(self.session_state)
+            return {'status': 'error', 'message': reply, 'tool_call': {'name': 'remote_training_pipeline', 'args': pipeline_args}}
+
+        resolved_args = dict(preflight.get('resolved_args') or {})
+        start_result = await self.direct_tool(
+            'start_training',
+            model=str(resolved_args.get('model') or requested_args.get('model') or ''),
+            data_yaml=str(resolved_args.get('data_yaml') or requested_args.get('data_yaml') or ''),
+            epochs=int(resolved_args.get('epochs') or requested_args.get('epochs', 100)),
+            device=str(resolved_args.get('device') or requested_args.get('device') or 'auto'),
+            training_environment=str(resolved_args.get('training_environment') or requested_args.get('training_environment') or ''),
+            project=str(resolved_args.get('project') or requested_args.get('project') or ''),
+            name=str(resolved_args.get('name') or requested_args.get('name') or ''),
+            batch=resolved_args.get('batch', requested_args.get('batch')),
+            imgsz=resolved_args.get('imgsz', requested_args.get('imgsz')),
+            fraction=resolved_args.get('fraction', requested_args.get('fraction')),
+            classes=resolved_args.get('classes', requested_args.get('classes')),
+            single_cls=resolved_args.get('single_cls', requested_args.get('single_cls')),
+            optimizer=str(resolved_args.get('optimizer') or requested_args.get('optimizer') or ''),
+            freeze=resolved_args.get('freeze', requested_args.get('freeze')),
+            resume=resolved_args.get('resume', requested_args.get('resume')),
+            lr0=resolved_args.get('lr0', requested_args.get('lr0')),
+            patience=resolved_args.get('patience', requested_args.get('patience')),
+            workers=resolved_args.get('workers', requested_args.get('workers')),
+            amp=resolved_args.get('amp', requested_args.get('amp')),
+        )
+
+        wait_result: dict[str, Any] = {}
+        final_status: dict[str, Any] = {}
+        final_summary: dict[str, Any] = {}
+        final_inspection: dict[str, Any] = {}
+        download_result: dict[str, Any] = {}
+        remote_result_path = ''
+
+        if start_result.get('ok') and pipeline_args.get('wait_for_completion'):
+            poll_interval = pipeline_args.get('poll_interval_seconds', 15)
+            max_wait = pipeline_args.get('max_wait_seconds', 7200)
+            wait_result = await self._wait_for_remote_training_terminal_state(
+                poll_interval_seconds=int(15 if poll_interval is None else poll_interval),
+                max_wait_seconds=int(7200 if max_wait is None else max_wait),
+            )
+            final_status = dict(wait_result.get('status_result') or {})
+            final_summary = dict(wait_result.get('summary_result') or {})
+            final_inspection = dict(wait_result.get('inspect_result') or {})
+            remote_result_path = self._resolve_remote_training_result_path(
+                start_result=start_result,
+                status_result=final_status,
+                summary_result=final_summary,
+                inspection_result=final_inspection,
+            )
+            if wait_result.get('ok') and pipeline_args.get('download_after_completion'):
+                if remote_result_path:
+                    download_args = {
+                        'remote_paths': [remote_result_path],
+                        'server': upload_args.get('server', ''),
+                        'profile': upload_args.get('profile', ''),
+                        'host': upload_args.get('host', ''),
+                        'username': upload_args.get('username', ''),
+                        'port': upload_args.get('port', 0),
+                        'local_root': pipeline_args.get('local_result_root', ''),
+                        'recursive': True,
+                    }
+                    download_result = await self.direct_tool('download_assets_from_remote', **download_args)
+                else:
+                    download_result = {
+                        'ok': False,
+                        'summary': '训练已结束，但当前无法解析远端结果目录，未执行自动回传。',
+                        'error': 'missing_remote_result_path',
+                    }
+
+        final_run_state = str(
+            (final_summary.get('run_state') if isinstance(final_summary, dict) else '')
+            or (final_status.get('run_state') if isinstance(final_status, dict) else '')
+            or ''
+        ).strip().lower()
+        wait_required = bool(pipeline_args.get('wait_for_completion'))
+        wait_ok = True
+        if wait_required:
+            wait_ok = bool(wait_result.get('ok')) and final_run_state == 'completed'
+        download_required = bool(pipeline_args.get('download_after_completion'))
+        download_ok = (not download_required) or bool(download_result.get('ok'))
+        pipeline_result = {
+            'ok': start_result.get('ok') is True and wait_ok and download_ok,
+            'upload': upload_result,
+            'readiness': readiness,
+            'prepare': prepare_result,
+            'preflight': preflight,
+            'start': start_result,
+            'wait': wait_result,
+            'final_status': final_status,
+            'final_summary': final_summary,
+            'final_inspection': final_inspection,
+            'download': download_result,
+            'remote_dataset_path': dataset_path,
+            'remote_model_path': model_path,
+            'remote_result_path': remote_result_path,
+            'local_result_root': str((download_result or {}).get('local_root') or pipeline_args.get('local_result_root') or ''),
+            'wait_for_completion': wait_required,
+            'download_after_completion': download_required,
+            'final_run_state': final_run_state,
+        }
+        self.session_state.active_training.last_remote_roundtrip = pipeline_result
+        self.memory.append_event(self.session_state.session_id, 'remote_training_pipeline', pipeline_result)
+
+        reply = self._merge_grounded_sections([
+            self._build_grounded_tool_reply([('upload_assets_to_remote', upload_result)]),
+            self._build_grounded_tool_reply([('training_readiness', readiness)]),
+            self._build_grounded_tool_reply([('prepare_dataset_for_training', prepare_result)]) if prepare_result else '',
+            self._build_grounded_tool_reply([('training_preflight', preflight)]),
+            self._build_grounded_tool_reply([('start_training', start_result)]),
+            self._build_grounded_tool_reply([('check_training_status', final_status)]) if final_status else '',
+            self._build_grounded_tool_reply([('summarize_training_run', final_summary)]) if final_summary else '',
+            self._build_grounded_tool_reply([('download_assets_from_remote', download_result)]) if download_result else '',
+            str(wait_result.get('message') or '').strip() if wait_result and not wait_result.get('ok') else '',
+        ]) or start_result.get('summary') or start_result.get('error') or '远端训练闭环已完成'
+        self._messages.append(AIMessage(content=reply))
+        self._trim_history()
+        self.memory.save_state(self.session_state)
+        return {
+            'status': 'completed' if pipeline_result['ok'] else 'error',
+            'message': reply,
+            'tool_call': {'name': 'remote_training_pipeline', 'args': pipeline_args},
+        }
+
+    async def _wait_for_remote_training_terminal_state(
+        self,
+        *,
+        poll_interval_seconds: int = 15,
+        max_wait_seconds: int = 7200,
+    ) -> dict[str, Any]:
+        started = time.monotonic()
+        status_checks: list[dict[str, Any]] = []
+        interval = max(0, int(poll_interval_seconds))
+        wait_limit = max(1, int(max_wait_seconds))
+
+        while True:
+            status_result = await self.direct_tool('check_training_status')
+            status_checks.append({
+                'summary': status_result.get('summary'),
+                'running': status_result.get('running'),
+                'run_state': status_result.get('run_state'),
+                'save_dir': status_result.get('save_dir'),
+                'log_file': status_result.get('log_file'),
+            })
+            if not status_result.get('ok'):
+                return {
+                    'ok': False,
+                    'message': '训练已启动，但轮询训练状态失败；未执行自动回传。',
+                    'status_result': status_result,
+                    'status_checks': status_checks,
+                }
+
+            run_state = str(status_result.get('run_state') or '').strip().lower()
+            if not status_result.get('running') and run_state not in {'', 'running'}:
+                summary_result = await self.direct_tool('summarize_training_run')
+                inspect_result = await self.direct_tool('inspect_training_run')
+                return {
+                    'ok': True,
+                    'status_result': status_result,
+                    'summary_result': summary_result,
+                    'inspect_result': inspect_result,
+                    'status_checks': status_checks,
+                }
+
+            if (time.monotonic() - started) >= wait_limit:
+                return {
+                    'ok': False,
+                    'timed_out': True,
+                    'message': f'训练已启动，但在等待窗口 {wait_limit}s 内仍未结束；未执行自动回传。',
+                    'status_result': status_result,
+                    'status_checks': status_checks,
+                }
+
+            if interval > 0:
+                await asyncio.sleep(interval)
+
+    def _extract_training_save_dir(self, payload: dict[str, Any]) -> str:
+        if not isinstance(payload, dict):
+            return ''
+        save_dir = str(payload.get('save_dir') or '').strip()
+        if save_dir:
+            return save_dir
+        for fact in payload.get('facts') or []:
+            text = str(fact or '').strip()
+            if text.startswith('save_dir='):
+                return text.split('=', 1)[1].strip()
+        resolved_args = payload.get('resolved_args') or {}
+        project = str(resolved_args.get('project') or '').strip()
+        name = str(resolved_args.get('name') or '').strip()
+        if project and name:
+            return self._remote_join(project, name)
+        return ''
+
+    def _resolve_remote_training_result_path(
+        self,
+        *,
+        start_result: dict[str, Any],
+        status_result: dict[str, Any],
+        summary_result: dict[str, Any],
+        inspection_result: dict[str, Any],
+    ) -> str:
+        for payload in (inspection_result, summary_result, status_result, start_result):
+            save_dir = self._extract_training_save_dir(payload)
+            if save_dir:
+                return save_dir
+        return ''
 
     async def _complete_dataset_quality_reply(self, dataset_path: str) -> dict[str, Any]:
         scan = await self.direct_tool('scan_dataset', img_dir=dataset_path)
@@ -1502,6 +2103,275 @@ class YoloStudioAgentClient:
     def _looks_like_model_path(path: str) -> bool:
         return looks_like_model_path(path)
 
+    @staticmethod
+    def _extract_remote_server_from_text(text: str) -> str:
+        return extract_remote_server_from_text(text)
+
+    @staticmethod
+    def _extract_remote_root_from_text(text: str) -> str:
+        return extract_remote_root_from_text(text)
+
+    def _build_remote_upload_args(self, user_text: str) -> dict[str, Any]:
+        quoted_paths = [
+            item.rstrip('。，“”,,;；')
+            for item in re.findall(r'[\"\']((?:[A-Za-z]:\\|/)[^\"\']+)[\"\']', user_text)
+        ]
+        raw_paths = []
+        seen_paths: set[str] = set()
+        for item in [*quoted_paths, *self._extract_all_paths_from_text(user_text)]:
+            if item and item not in seen_paths:
+                seen_paths.add(item)
+                raw_paths.append(item)
+        remote_root = self._extract_remote_root_from_text(user_text)
+        server = self._extract_remote_server_from_text(user_text)
+
+        local_paths: list[str] = []
+        remote_candidates: list[str] = []
+        seen_local: set[str] = set()
+        for item in raw_paths:
+            value = str(item or '').strip()
+            if not value:
+                continue
+            if remote_root and value == remote_root:
+                continue
+            path_obj = Path(value).expanduser()
+            if path_obj.exists() or re.match(r'^[A-Za-z]:\\', value):
+                normalized = str(path_obj)
+                if normalized not in seen_local:
+                    seen_local.add(normalized)
+                    local_paths.append(normalized)
+            elif value.startswith('/'):
+                remote_candidates.append(value)
+
+        if not remote_root and remote_candidates:
+            remote_root = remote_candidates[-1]
+
+        if not local_paths:
+            lower_text = user_text.lower()
+            if any(token in user_text for token in ('权重', '模型', 'pt 文件')) or 'weight' in lower_text or 'model' in lower_text:
+                model_path = str(self.session_state.active_training.model or self.session_state.active_prediction.model or '').strip()
+                if model_path:
+                    path_obj = Path(model_path).expanduser()
+                    if path_obj.exists():
+                        local_paths.append(str(path_obj))
+            if any(token in user_text for token in ('数据', '数据集', 'dataset')) or 'dataset' in lower_text:
+                dataset_path = str(self.session_state.active_dataset.dataset_root or self.session_state.active_dataset.img_dir or '').strip()
+                if dataset_path:
+                    path_obj = Path(dataset_path).expanduser()
+                    if path_obj.exists() and str(path_obj) not in local_paths:
+                        local_paths.append(str(path_obj))
+            if any(token in user_text for token in ('视频', '录像', 'video')) and not any(token in user_text for token in ('预测结果', 'prediction 输出')):
+                source_path = str(self.session_state.active_prediction.source_path or '').strip()
+                if source_path:
+                    path_obj = Path(source_path).expanduser()
+                    if path_obj.exists() and str(path_obj) not in local_paths:
+                        local_paths.append(str(path_obj))
+
+        args: dict[str, Any] = {'local_paths': local_paths}
+        remembered_server = str(self.session_state.active_remote_transfer.profile_name or self.session_state.active_remote_transfer.target_label or '').strip()
+        remembered_root = str(self.session_state.active_remote_transfer.remote_root or '').strip()
+        if server:
+            args['server'] = server
+        elif remembered_server:
+            args['server'] = remembered_server
+        if remote_root:
+            args['remote_root'] = remote_root
+        elif remembered_root:
+            args['remote_root'] = remembered_root
+        return args
+
+    @staticmethod
+    def _remote_join(root: str, *parts: str) -> str:
+        path = PurePosixPath(str(root or '/'))
+        for part in parts:
+            text = str(part or '')
+            if not text:
+                continue
+            for chunk in text.replace('\\', '/').split('/'):
+                if chunk and chunk not in {'.'}:
+                    path /= chunk
+        return path.as_posix()
+
+    @staticmethod
+    def _path_looks_like_video(path: str) -> bool:
+        suffix = Path(path).suffix.lower()
+        return suffix in {'.mp4', '.avi', '.mov', '.mkv', '.wmv', '.m4v', '.flv', '.ts', '.webm'}
+
+    @staticmethod
+    def _path_looks_like_image(path: str) -> bool:
+        suffix = Path(path).suffix.lower()
+        return suffix in {'.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tif', '.tiff'}
+
+    def _directory_kind(self, path: str) -> str:
+        path_obj = Path(path)
+        if not path_obj.is_dir():
+            return ''
+        limit = 32
+        seen = 0
+        has_video = False
+        has_image = False
+        for child in path_obj.rglob('*'):
+            if not child.is_file():
+                continue
+            seen += 1
+            child_path = str(child)
+            if self._path_looks_like_video(child_path):
+                has_video = True
+            if self._path_looks_like_image(child_path):
+                has_image = True
+            if seen >= limit or (has_video and has_image):
+                break
+        if has_video and not has_image:
+            return 'video'
+        if has_image and not has_video:
+            return 'image'
+        if has_video:
+            return 'video'
+        if has_image:
+            return 'image'
+        return ''
+
+    def _next_local_roundtrip_root(self, kind: str) -> str:
+        stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        root = Path(__file__).resolve().parents[2] / 'output' / kind / stamp
+        root.mkdir(parents=True, exist_ok=True)
+        return str(root)
+
+    def _apply_remote_defaults(self, args: dict[str, Any]) -> dict[str, Any]:
+        resolved = dict(args or {})
+        if not str(resolved.get('server') or '').strip() and not str(resolved.get('host') or '').strip():
+            remembered_server = str(
+                self.session_state.active_remote_transfer.profile_name
+                or self.session_state.active_remote_transfer.target_label
+                or ''
+            ).strip()
+            if remembered_server:
+                resolved['server'] = remembered_server
+        if not str(resolved.get('remote_root') or '').strip():
+            remembered_root = str(self.session_state.active_remote_transfer.remote_root or '').strip()
+            if remembered_root:
+                resolved['remote_root'] = remembered_root
+        return resolved
+
+    def _build_remote_prediction_pipeline_args(self, user_text: str) -> dict[str, Any]:
+        upload_args = self._apply_remote_defaults(self._build_remote_upload_args(user_text))
+        return {
+            'user_text': user_text,
+            'upload_args': upload_args,
+            'download_after_predict': True,
+            'local_result_root': self._next_local_roundtrip_root('remote_prediction_roundtrip'),
+        }
+
+    def _build_remote_training_pipeline_args(self, user_text: str) -> dict[str, Any]:
+        upload_args = self._apply_remote_defaults(self._build_remote_upload_args(user_text))
+        force_split = any(token in user_text for token in ('按默认比例划分', '先划分再训练', 'split 后训练', 'split后训练'))
+        normalized = user_text.lower()
+        wait_for_completion = any(
+            token in user_text or token in normalized
+            for token in (
+                '等训练结束',
+                '等训练完成',
+                '训练完后',
+                '训练完成后',
+                '训练结束后',
+                '跑完后',
+                'wait until training',
+                'wait for training',
+            )
+        )
+        download_after_completion = any(
+            token in user_text or token in normalized
+            for token in (
+                '回传',
+                '拉回本机',
+                '下载回来',
+                '下载回本机',
+                '训练产物拉回',
+                '结果拉回',
+                'download back',
+                'bring back',
+                'pull back',
+            )
+        )
+        if download_after_completion:
+            wait_for_completion = True
+        return {
+            'user_text': user_text,
+            'upload_args': upload_args,
+            'force_split': force_split,
+            'wait_for_completion': wait_for_completion,
+            'download_after_completion': download_after_completion,
+            'local_result_root': self._next_local_roundtrip_root('remote_training_roundtrip') if download_after_completion else '',
+            'poll_interval_seconds': 15,
+            'max_wait_seconds': 7200,
+        }
+
+    def _resolve_prediction_remote_inputs(self, upload_result: dict[str, Any]) -> dict[str, Any]:
+        uploaded_items = list(upload_result.get('uploaded_items') or [])
+        if not uploaded_items:
+            return {'ok': False, 'error': '远端上传完成了，但没有可用于预测的远端输入项。'}
+
+        model_items = [item for item in uploaded_items if self._looks_like_model_path(str(item.get('local_path') or item.get('remote_path') or ''))]
+        source_items = [item for item in uploaded_items if item not in model_items]
+        if not model_items:
+            return {'ok': False, 'error': '当前远端预测闭环缺少模型文件；请至少上传一个 .pt / .onnx 模型。'}
+        if not source_items:
+            return {'ok': False, 'error': '当前远端预测闭环缺少图片或视频输入。'}
+
+        source_kinds: set[str] = set()
+        for item in source_items:
+            local_path = str(item.get('local_path') or '')
+            item_type = str(item.get('item_type') or '')
+            if item_type == 'directory':
+                kind = self._directory_kind(local_path)
+            elif self._path_looks_like_video(local_path):
+                kind = 'video'
+            elif self._path_looks_like_image(local_path):
+                kind = 'image'
+            else:
+                kind = ''
+            if kind:
+                source_kinds.add(kind)
+        if not source_kinds:
+            return {'ok': False, 'error': '当前还无法判断上传内容是图片还是视频；请显式上传图片/图片目录或视频/视频目录。'}
+        if len(source_kinds) > 1:
+            return {'ok': False, 'error': '当前远端预测闭环不支持把图片和视频混在一次请求里；请拆成独立步骤执行。'}
+        if len(source_items) > 1:
+            return {
+                'ok': False,
+                'error': '当前远端预测闭环要求待预测输入是单个文件或单个目录；如果有多个图片/视频，请先整理进一个目录再上传。',
+            }
+
+        source_kind = next(iter(source_kinds))
+        source_path = str(source_items[0].get('remote_path') or '')
+        tool_name = 'predict_videos' if source_kind == 'video' else 'predict_images'
+        return {
+            'ok': True,
+            'tool_name': tool_name,
+            'model_path': str(model_items[-1].get('remote_path') or ''),
+            'source_path': source_path,
+            'source_kind': source_kind,
+        }
+
+    def _resolve_training_remote_inputs(self, upload_result: dict[str, Any]) -> dict[str, Any]:
+        uploaded_items = list(upload_result.get('uploaded_items') or [])
+        if not uploaded_items:
+            return {'ok': False, 'error': '远端上传完成了，但没有可用于训练的远端输入项。'}
+        model_items = [item for item in uploaded_items if self._looks_like_model_path(str(item.get('local_path') or item.get('remote_path') or ''))]
+        dataset_items = [
+            item for item in uploaded_items
+            if item not in model_items and str(item.get('item_type') or '') == 'directory'
+        ]
+        if not model_items:
+            return {'ok': False, 'error': '当前远端训练闭环缺少模型文件；请至少上传一个 .pt / .onnx 模型。'}
+        if not dataset_items:
+            return {'ok': False, 'error': '当前远端训练闭环缺少数据集目录；请上传一个数据集根目录。'}
+        return {
+            'ok': True,
+            'model_path': str(model_items[-1].get('remote_path') or ''),
+            'dataset_path': str(dataset_items[-1].get('remote_path') or ''),
+        }
+
 
     def _set_pending_confirmation(self, thread_id: str, pending: dict[str, Any]) -> None:
         pc = self.session_state.pending_confirmation
@@ -1713,6 +2583,67 @@ class YoloStudioAgentClient:
 
     def _extract_output_path_from_text(self, text: str, source_path: str = '') -> str:
         return extract_output_path_from_text(text, source_path)
+
+    @staticmethod
+    def _extract_rtsp_url_from_text(text: str) -> str:
+        return extract_rtsp_url_from_text(text)
+
+    @staticmethod
+    def _extract_realtime_session_id_from_text(text: str) -> str:
+        return extract_realtime_session_id_from_text(text)
+
+    @staticmethod
+    def _extract_camera_id_from_text(text: str) -> int | None:
+        return extract_camera_id_from_text(text)
+
+    @staticmethod
+    def _extract_screen_id_from_text(text: str) -> int | None:
+        return extract_screen_id_from_text(text)
+
+    @staticmethod
+    def _extract_frame_interval_ms_from_text(text: str) -> int | None:
+        return extract_frame_interval_ms_from_text(text)
+
+    @staticmethod
+    def _extract_max_frames_from_text(text: str) -> int | None:
+        return extract_max_frames_from_text(text)
+
+    @staticmethod
+    def _extract_timeout_ms_from_text(text: str) -> int | None:
+        return extract_timeout_ms_from_text(text)
+
+    def _build_realtime_session_kwargs(self, user_text: str) -> dict[str, Any]:
+        session_id = self._extract_realtime_session_id_from_text(user_text) or self.session_state.active_prediction.realtime_session_id
+        return {'session_id': session_id} if session_id else {}
+
+    def _build_realtime_prediction_args(self, user_text: str, *, source_type: str) -> dict[str, Any]:
+        args: dict[str, Any] = {}
+        model = self._extract_model_from_text(user_text) or self.session_state.active_prediction.model or self.session_state.active_training.model
+        if model:
+            args['model'] = model
+        frame_interval_ms = self._extract_frame_interval_ms_from_text(user_text)
+        if frame_interval_ms is not None:
+            args['frame_interval_ms'] = frame_interval_ms
+        max_frames = self._extract_max_frames_from_text(user_text)
+        if max_frames is not None:
+            args['max_frames'] = max_frames
+        if source_type == 'camera':
+            camera_id = self._extract_camera_id_from_text(user_text)
+            if camera_id is not None:
+                args['camera_id'] = camera_id
+        elif source_type == 'rtsp':
+            rtsp_url = self._extract_rtsp_url_from_text(user_text)
+            if rtsp_url:
+                args['rtsp_url'] = rtsp_url
+        elif source_type == 'screen':
+            screen_id = self._extract_screen_id_from_text(user_text)
+            if screen_id is not None:
+                args['screen_id'] = screen_id
+        source_hint = str(args.get('rtsp_url') or '')
+        output_dir = self._extract_output_path_from_text(user_text, source_hint)
+        if output_dir:
+            args['output_dir'] = output_dir
+        return args
 
     def _prediction_followup_kwargs(self, user_text: str, fallback_path: str = '') -> dict[str, Any]:
         kwargs: dict[str, Any] = {}
@@ -2146,7 +3077,21 @@ class YoloStudioAgentClient:
         normalized = user_text.lower()
         clear_fields = self._collect_training_clear_fields(user_text)
         discussion_only_hint = self._is_training_discussion_only(user_text) or any(token in user_text for token in ('不执行', '不要执行', '暂不执行', '先不执行'))
-        contradictory_train_intent = any(token in user_text for token in ('不要训练', '先不要训练', '不训练了')) and any(
+        training_readiness_question = any(
+            token in user_text
+            for token in (
+                '能不能直接训练',
+                '能否直接训练',
+                '可不可以直接训练',
+                '可以直接训练吗',
+                '是否可以直接训练',
+                '是否能直接训练',
+                '还能不能直接训练',
+                '可否直接训练',
+                '能直接训练吗',
+            )
+        )
+        contradictory_train_intent = not training_readiness_question and any(token in user_text for token in ('不要训练', '先不要训练', '不训练了')) and any(
             token in user_text for token in ('开始训练', '启动训练', '直接训练', '直接开始训练', '开训', '执行')
         )
         requested_execute = (
@@ -2776,6 +3721,85 @@ class YoloStudioAgentClient:
             lines.append('确认执行？(y/n)')
             return '\n'.join(lines)
 
+        if tool_name == 'upload_assets_to_remote':
+            lines = ['准备执行：远端上传']
+            target_label = str(args.get('server') or self.session_state.active_remote_transfer.target_label or '').strip()
+            remote_root = str(args.get('remote_root') or self.session_state.active_remote_transfer.remote_root or '').strip()
+            if target_label:
+                lines.append(f'目标服务器: {target_label}')
+            if remote_root:
+                lines.append(f'远端目录: {remote_root}')
+            local_paths = list(args.get('local_paths') or [])
+            if local_paths:
+                lines.append('本地上传项:')
+                lines.extend(f'- {item}' for item in local_paths[:5])
+                if len(local_paths) > 5:
+                    lines.append(f'- 其余 {len(local_paths) - 5} 项已省略')
+            lines.append(
+                '默认策略: 大文件自动分块 + 断点续传 + 哈希校验'
+                f" (threshold={args.get('large_file_threshold_mb', 256)}MB, chunk={args.get('chunk_size_mb', 64)}MB)"
+            )
+            lines.append('说明: 这会把本机文件/目录复制到远端服务器。')
+            lines.append('确认执行？(y/n)')
+            return '\n'.join(lines)
+
+        if tool_name == 'remote_prediction_pipeline':
+            lines = ['准备执行：远端预测闭环']
+            pipeline_args = dict(args or {})
+            upload_args = dict(pipeline_args.get('upload_args') or {})
+            target_label = str(upload_args.get('server') or self.session_state.active_remote_transfer.target_label or '').strip()
+            remote_root = str(upload_args.get('remote_root') or self.session_state.active_remote_transfer.remote_root or '').strip()
+            local_paths = list(upload_args.get('local_paths') or [])
+            if target_label:
+                lines.append(f'目标服务器: {target_label}')
+            if remote_root:
+                lines.append(f'远端目录: {remote_root}')
+            if local_paths:
+                lines.append('本地上传项:')
+                lines.extend(f'- {item}' for item in local_paths[:5])
+                if len(local_paths) > 5:
+                    lines.append(f'- 其余 {len(local_paths) - 5} 项已省略')
+            local_result_root = str(pipeline_args.get('local_result_root') or '').strip()
+            if local_result_root:
+                lines.append(f'本机回传目录: {local_result_root}')
+            lines.append('执行链路: 上传本地模型/图片或视频 -> 远端执行 prediction -> 结果下载回本机')
+            lines.append('限制: 待预测输入当前要求是单个文件或单个目录；多个散文件请先整理进目录。')
+            lines.append('确认执行？(y/n)')
+            return '\n'.join(lines)
+
+        if tool_name == 'remote_training_pipeline':
+            lines = ['准备执行：远端训练闭环']
+            pipeline_args = dict(args or {})
+            upload_args = dict(pipeline_args.get('upload_args') or {})
+            target_label = str(upload_args.get('server') or self.session_state.active_remote_transfer.target_label or '').strip()
+            remote_root = str(upload_args.get('remote_root') or self.session_state.active_remote_transfer.remote_root or '').strip()
+            local_paths = list(upload_args.get('local_paths') or [])
+            if target_label:
+                lines.append(f'目标服务器: {target_label}')
+            if remote_root:
+                lines.append(f'远端目录: {remote_root}')
+            if local_paths:
+                lines.append('本地上传项:')
+                lines.extend(f'- {item}' for item in local_paths[:5])
+                if len(local_paths) > 5:
+                    lines.append(f'- 其余 {len(local_paths) - 5} 项已省略')
+            lines.append('执行链路: 上传本地模型/数据集 -> 远端做 readiness/prepare/preflight -> 启动训练')
+            if pipeline_args.get('force_split'):
+                lines.append('附加安排: 数据未就绪时自动按默认比例划分并补齐训练产物')
+            if pipeline_args.get('wait_for_completion'):
+                lines.append(
+                    f"等待策略: 启动后轮询训练状态直到结束 (poll={pipeline_args.get('poll_interval_seconds', 15)}s, "
+                    f"max_wait={pipeline_args.get('max_wait_seconds', 7200)}s)"
+                )
+            if pipeline_args.get('download_after_completion'):
+                local_result_root = str(pipeline_args.get('local_result_root') or '').strip()
+                if local_result_root:
+                    lines.append(f'训练产物回传目录: {local_result_root}')
+                lines.append('附加安排: 训练结束后自动把远端 run 目录下载回本机')
+            lines.append('说明: 这会在远端真正启动训练进程，属于高风险动作。')
+            lines.append('确认执行？(y/n)')
+            return '\n'.join(lines)
+
         pretty_args = "\n".join(f"  - {k}: {v}" for k, v in args.items()) or "  - 无参数"
         return (
             f"检测到高风险操作：{tool_name}\n"
@@ -2846,7 +3870,8 @@ async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudi
             }
         }
     )
-    raw_tools = await client.get_tools()
+    raw_tools = list(await client.get_tools())
+    raw_tools.extend(build_local_transfer_tools())
     tools = adapt_tools_for_chat_model(raw_tools)
     llm = build_llm(settings.to_llm_settings())
     graph = create_react_agent(

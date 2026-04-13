@@ -18,7 +18,7 @@ if __package__ in {None, ''}:
 from yolostudio_agent.agent.server.services.train_service import TrainService
 
 
-WORK = Path('/mnt/d/yolodo2.0/agent_plan/agent/tests/_tmp_training_run_summary')
+WORK = Path(__file__).resolve().parent / '_tmp_training_run_summary'
 
 COMPLETED_LOG = '''
       Epoch    GPU_mem   box_loss   cls_loss   dfl_loss  Instances       Size
@@ -81,6 +81,7 @@ def main() -> None:
         assert completed['run_state'] == 'completed'
         assert completed['analysis_ready'] is True
         assert completed['minimum_facts_ready'] is True
+        assert completed['save_dir'] == '/tmp/runs/train5'
         assert completed['metrics']['precision'] == 0.42
         assert completed['latest_metrics']['metrics']['precision'] == 0.42
         assert completed['progress']['progress_ratio'] == 1.0

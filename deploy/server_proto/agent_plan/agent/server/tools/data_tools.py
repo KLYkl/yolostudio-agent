@@ -13,6 +13,7 @@ from yolostudio_agent.agent.server.tools.data_tool_helpers import (
     _error_payload,
     _format_issue_examples,
     _infer_dataset_root,
+    _inspect_training_yaml,
     _merge_risk_levels,
     _read_classes_txt_lines,
     _read_yaml_names,
@@ -1510,6 +1511,15 @@ def training_readiness(
 
         resolved_yaml = data_yaml or scan.get('detected_data_yaml', '')
         yaml_exists = bool(resolved_yaml and Path(resolved_yaml).exists())
+        yaml_check = _inspect_training_yaml(resolved_yaml) if yaml_exists else {
+            'exists': False,
+            'usable': False,
+            'yaml_path': '',
+            'issues': [],
+            'resolved_targets': {},
+            'warnings': [],
+        }
+        yaml_usable = bool(yaml_check.get('usable'))
         labels_clean = not validate.get('has_issues', False)
         labeled_images = int(scan.get('labeled_images', 0) or 0)
         total_images = int(scan.get('total_images', 0) or 0)
@@ -1519,14 +1529,17 @@ def training_readiness(
         device_policy = get_effective_gpu_policy()
         auto_device, auto_error = resolve_auto_device(policy=device_policy, gpus=gpu_info)
         warnings = list(validate.get('warnings', []))
+        warnings.extend(str(item) for item in (yaml_check.get('warnings') or []) if str(item))
         risk_level = validate.get('risk_level', scan.get('risk_level', 'none'))
-        ready = yaml_exists and (labels_clean or not require_clean_labels) and bool(available_gpus) and not hard_label_block
+        ready = yaml_usable and (labels_clean or not require_clean_labels) and bool(available_gpus) and not hard_label_block
 
         primary_blocker_type = ''
         if hard_label_block:
             primary_blocker_type = 'no_valid_labels'
         elif require_clean_labels and not labels_clean:
             primary_blocker_type = 'label_issues'
+        elif yaml_exists and not yaml_usable:
+            primary_blocker_type = 'invalid_yaml'
         elif not yaml_exists:
             primary_blocker_type = 'missing_yaml'
         elif not available_gpus or auto_error:
@@ -1539,6 +1552,8 @@ def training_readiness(
         )
 
         blockers: list[str] = []
+        if yaml_exists and not yaml_usable:
+            blockers.append('当前 data_yaml 内的 train/val 路径不可用')
         if not yaml_exists:
             blockers.append('缺少可用的 data_yaml')
         if require_clean_labels and not labels_clean:
@@ -1560,6 +1575,14 @@ def training_readiness(
                     'dataset_path': scan.get('dataset_root') or scan.get('resolved_img_dir', img_dir),
                 },
             })
+        elif primary_blocker_type == 'invalid_yaml' and preparable:
+            next_actions.append({
+                'description': '当前 data.yaml 的 train/val 路径在当前机器不可用；建议先调用 prepare_dataset_for_training 重新生成可训练 YAML',
+                'tool': 'prepare_dataset_for_training',
+                'args_hint': {
+                    'dataset_path': scan.get('dataset_root') or scan.get('resolved_img_dir', img_dir),
+                },
+            })
         elif primary_blocker_type == 'label_issues':
             next_actions.append({
                 'description': '先根据 issue_examples 修复标签问题',
@@ -1573,7 +1596,7 @@ def training_readiness(
                 'args_hint': {},
             })
 
-        if not yaml_exists and not any(action.get('tool') == 'prepare_dataset_for_training' for action in next_actions):
+        if (not yaml_exists or (yaml_exists and not yaml_usable)) and not any(action.get('tool') == 'prepare_dataset_for_training' for action in next_actions):
             next_actions.append({
                 'description': '可先调用 generate_yaml 生成训练 YAML',
                 'tool': 'generate_yaml',
@@ -1612,6 +1635,8 @@ def training_readiness(
         summary = '可以直接训练' if ready else f"当前还不能直接训练: {', '.join(blockers)}"
         if not ready and primary_blocker_type == 'missing_yaml' and preparable:
             summary += '；但当前数据集可以先进入 prepare_dataset_for_training'
+        if not ready and primary_blocker_type == 'invalid_yaml' and preparable:
+            summary += '；但当前数据集可以先进入 prepare_dataset_for_training 重新生成远端可用 YAML'
         if ready and warnings:
             summary = f"可以训练，但存在数据质量风险: {'; '.join(warnings)}"
 
@@ -1626,6 +1651,9 @@ def training_readiness(
             'resolved_label_dir': scan.get('resolved_label_dir', label_dir),
             'resolved_data_yaml': resolved_yaml,
             'data_yaml_source': data_yaml_source,
+            'data_yaml_usable': yaml_usable,
+            'data_yaml_issues': yaml_check.get('issues', []),
+            'data_yaml_targets': yaml_check.get('resolved_targets', {}),
             'detected_classes_txt': scan.get('detected_classes_txt', ''),
             'class_name_source': scan.get('class_name_source', ''),
             'recommended_start_training_args': {'data_yaml': resolved_yaml} if ready and resolved_yaml else {},

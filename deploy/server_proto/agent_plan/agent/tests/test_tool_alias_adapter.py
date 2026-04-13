@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import sys
+import types
 from pathlib import Path
-
-from langchain_core.tools import StructuredTool
 
 if __package__ in {None, ""}:
     repo_root = Path(__file__).resolve().parents[2]
@@ -12,6 +11,54 @@ if __package__ in {None, ""}:
         path = str(candidate)
         if path not in sys.path:
             sys.path.insert(0, path)
+
+
+def _install_fake_tool_dependencies() -> None:
+    core_mod = types.ModuleType('langchain_core')
+    tools_mod = types.ModuleType('langchain_core.tools')
+
+    class _BaseTool:
+        name = 'fake'
+        description = 'fake'
+        args_schema = None
+
+    class _StructuredTool(_BaseTool):
+        @classmethod
+        def from_function(cls, func=None, coroutine=None, name='', description='', args_schema=None, return_direct=False):
+            tool = cls()
+            tool.func = func
+            tool.coroutine = coroutine
+            tool.name = name
+            tool.description = description
+            tool.args_schema = args_schema
+            tool.return_direct = return_direct
+            return tool
+
+    tools_mod.BaseTool = _BaseTool
+    tools_mod.StructuredTool = _StructuredTool
+    core_mod.tools = tools_mod
+    sys.modules['langchain_core'] = core_mod
+    sys.modules['langchain_core.tools'] = tools_mod
+
+    pyd_mod = types.ModuleType('pydantic')
+
+    class _BaseModel:
+        def __init__(self, **kwargs):
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+
+    def _Field(default=None, **kwargs):
+        del kwargs
+        return default
+
+    pyd_mod.BaseModel = _BaseModel
+    pyd_mod.Field = _Field
+    sys.modules['pydantic'] = pyd_mod
+
+
+_install_fake_tool_dependencies()
+
+from langchain_core.tools import StructuredTool
 
 from yolostudio_agent.agent.client.tool_adapter import adapt_tools_for_chat_model, canonical_tool_name, normalize_tool_args
 
@@ -31,6 +78,14 @@ def main() -> None:
     assert canonical_tool_name('export_prediction_summary') == 'export_prediction_report'
     assert canonical_tool_name('export_prediction_paths') == 'export_prediction_path_lists'
     assert canonical_tool_name('collect_prediction_hits') == 'organize_prediction_results'
+    assert canonical_tool_name('scan_available_cameras') == 'scan_cameras'
+    assert canonical_tool_name('scan_available_screens') == 'scan_screens'
+    assert canonical_tool_name('probe_rtsp_stream') == 'test_rtsp_stream'
+    assert canonical_tool_name('start_live_camera_prediction') == 'start_camera_prediction'
+    assert canonical_tool_name('start_live_rtsp_prediction') == 'start_rtsp_prediction'
+    assert canonical_tool_name('start_live_screen_prediction') == 'start_screen_prediction'
+    assert canonical_tool_name('check_live_prediction_status') == 'check_realtime_prediction_status'
+    assert canonical_tool_name('stop_live_prediction') == 'stop_realtime_prediction'
     assert canonical_tool_name('preview_convert_labels') == 'preview_convert_format'
     assert canonical_tool_name('convert_labels_format') == 'convert_format'
     assert canonical_tool_name('preview_replace_labels') == 'preview_modify_labels'
@@ -39,6 +94,11 @@ def main() -> None:
     assert canonical_tool_name('create_empty_labels') == 'generate_empty_labels'
     assert canonical_tool_name('preview_group_by_class') == 'preview_categorize_by_class'
     assert canonical_tool_name('group_by_class') == 'categorize_by_class'
+    assert canonical_tool_name('list_remote_servers') == 'list_remote_profiles'
+    assert canonical_tool_name('upload_to_server') == 'upload_assets_to_remote'
+    assert canonical_tool_name('scp_to_server') == 'upload_assets_to_remote'
+    assert canonical_tool_name('download_from_server') == 'download_assets_from_remote'
+    assert canonical_tool_name('sync_remote_to_local') == 'download_assets_from_remote'
 
     health_args = normalize_tool_args('detect_corrupted_images', {'path': '/data/set'})
     assert health_args['dataset_path'] == '/data/set'
@@ -87,6 +147,17 @@ def main() -> None:
     assert organize_args['destination_dir'] == '/tmp/hits'
     assert organize_args['organize_by'] == 'by_class'
 
+    rtsp_probe_args = normalize_tool_args('probe_rtsp_stream', {'url': 'rtsp://demo/live'})
+    assert rtsp_probe_args['rtsp_url'] == 'rtsp://demo/live'
+
+    start_camera_args = normalize_tool_args('start_live_camera_prediction', {'source': 'demo.pt', 'camera_id': 1})
+    assert start_camera_args['model'] == 'demo.pt'
+    assert start_camera_args['camera_id'] == 1
+
+    start_rtsp_args = normalize_tool_args('start_live_rtsp_prediction', {'source': 'demo.pt', 'url': 'rtsp://demo/live'})
+    assert start_rtsp_args['model'] == 'demo.pt'
+    assert start_rtsp_args['rtsp_url'] == 'rtsp://demo/live'
+
     convert_args = normalize_tool_args('convert_labels_format', {'path': '/data/set', 'format': 'xml'})
     assert convert_args['dataset_path'] == '/data/set'
     assert convert_args['target_format'] == 'xml'
@@ -105,6 +176,49 @@ def main() -> None:
     assert categorize_args['dataset_path'] == '/data/set'
     assert categorize_args['output_dir'] == '/tmp/cats'
 
+    remote_list_args = normalize_tool_args('list_remote_servers', {})
+    assert remote_list_args == {}
+
+    remote_upload_args = normalize_tool_args(
+        'upload_to_server',
+        {
+            'path': r'D:\weights\best.pt',
+            'server_name': 'lab',
+            'remote_dir': '/srv/stage',
+            'user': 'tester',
+            'resume_transfer': False,
+            'verify': False,
+            'hash_algo': 'md5',
+            'threshold_mb': 32,
+            'chunk_mb': 8,
+            'progress': False,
+        },
+    )
+    assert remote_upload_args['paths_text'] == r'D:\weights\best.pt'
+    assert remote_upload_args['server'] == 'lab'
+    assert remote_upload_args['remote_root'] == '/srv/stage'
+    assert remote_upload_args['username'] == 'tester'
+    assert remote_upload_args['resume'] is False
+    assert remote_upload_args['verify_hash'] is False
+    assert remote_upload_args['hash_algorithm'] == 'md5'
+    assert remote_upload_args['large_file_threshold_mb'] == 32
+    assert remote_upload_args['chunk_size_mb'] == 8
+    assert remote_upload_args['show_progress'] is False
+
+    remote_download_args = normalize_tool_args(
+        'download_from_server',
+        {
+            'remote_path': '/srv/output/report.json',
+            'server_name': 'lab',
+            'user': 'tester',
+            'local_dir': r'D:\downloads',
+        },
+    )
+    assert remote_download_args['paths_text'] == '/srv/output/report.json'
+    assert remote_download_args['server'] == 'lab'
+    assert remote_download_args['username'] == 'tester'
+    assert remote_download_args['local_root'] == r'D:\downloads'
+
     tools = [
         StructuredTool.from_function(func=_noop, name='detect_duplicate_images', description='dup'),
         StructuredTool.from_function(func=_noop, name='run_dataset_health_check', description='health'),
@@ -116,6 +230,14 @@ def main() -> None:
         StructuredTool.from_function(func=_noop, name='export_prediction_report', description='predict-export'),
         StructuredTool.from_function(func=_noop, name='export_prediction_path_lists', description='predict-paths'),
         StructuredTool.from_function(func=_noop, name='organize_prediction_results', description='predict-organize'),
+        StructuredTool.from_function(func=_noop, name='scan_cameras', description='scan-cameras'),
+        StructuredTool.from_function(func=_noop, name='scan_screens', description='scan-screens'),
+        StructuredTool.from_function(func=_noop, name='test_rtsp_stream', description='probe-rtsp'),
+        StructuredTool.from_function(func=_noop, name='start_camera_prediction', description='start-camera'),
+        StructuredTool.from_function(func=_noop, name='start_rtsp_prediction', description='start-rtsp'),
+        StructuredTool.from_function(func=_noop, name='start_screen_prediction', description='start-screen'),
+        StructuredTool.from_function(func=_noop, name='check_realtime_prediction_status', description='check-realtime'),
+        StructuredTool.from_function(func=_noop, name='stop_realtime_prediction', description='stop-realtime'),
         StructuredTool.from_function(func=_noop, name='preview_convert_format', description='preview-convert'),
         StructuredTool.from_function(func=_noop, name='convert_format', description='convert'),
         StructuredTool.from_function(func=_noop, name='preview_modify_labels', description='preview-modify'),
@@ -124,6 +246,9 @@ def main() -> None:
         StructuredTool.from_function(func=_noop, name='generate_empty_labels', description='empty'),
         StructuredTool.from_function(func=_noop, name='preview_categorize_by_class', description='preview-categorize'),
         StructuredTool.from_function(func=_noop, name='categorize_by_class', description='categorize'),
+        StructuredTool.from_function(func=_noop, name='list_remote_profiles', description='remote-profiles'),
+        StructuredTool.from_function(func=_noop, name='upload_assets_to_remote', description='remote-upload'),
+        StructuredTool.from_function(func=_noop, name='download_assets_from_remote', description='remote-download'),
     ]
     adapted = adapt_tools_for_chat_model(tools)
     names = {tool.name for tool in adapted}
@@ -149,6 +274,14 @@ def main() -> None:
         'export_prediction_paths',
         'collect_prediction_hits',
         'group_prediction_results',
+        'scan_available_cameras',
+        'scan_available_screens',
+        'probe_rtsp_stream',
+        'start_live_camera_prediction',
+        'start_live_rtsp_prediction',
+        'start_live_screen_prediction',
+        'check_live_prediction_status',
+        'stop_live_prediction',
         'preview_convert_labels',
         'convert_labels_format',
         'preview_replace_labels',
@@ -157,6 +290,18 @@ def main() -> None:
         'create_empty_labels',
         'preview_group_by_class',
         'group_by_class',
+        'list_remote_servers',
+        'list_remote_targets',
+        'show_remote_profiles',
+        'upload_to_server',
+        'upload_to_remote',
+        'sync_local_to_remote',
+        'scp_to_server',
+        'download_from_server',
+        'download_from_remote',
+        'pull_from_server',
+        'sync_remote_to_local',
+        'scp_from_server',
     ):
         assert alias in names, names
 

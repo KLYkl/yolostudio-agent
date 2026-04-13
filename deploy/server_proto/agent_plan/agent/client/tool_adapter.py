@@ -29,6 +29,14 @@ TOOL_NAME_ALIASES: dict[str, str] = {
     'export_prediction_paths': 'export_prediction_path_lists',
     'collect_prediction_hits': 'organize_prediction_results',
     'group_prediction_results': 'organize_prediction_results',
+    'scan_available_cameras': 'scan_cameras',
+    'scan_available_screens': 'scan_screens',
+    'probe_rtsp_stream': 'test_rtsp_stream',
+    'start_live_camera_prediction': 'start_camera_prediction',
+    'start_live_rtsp_prediction': 'start_rtsp_prediction',
+    'start_live_screen_prediction': 'start_screen_prediction',
+    'check_live_prediction_status': 'check_realtime_prediction_status',
+    'stop_live_prediction': 'stop_realtime_prediction',
     'preview_extract': 'preview_extract_images',
     'extract_frames': 'extract_video_frames',
     'scan_video_directory': 'scan_videos',
@@ -50,6 +58,18 @@ TOOL_NAME_ALIASES: dict[str, str] = {
     'compare_training_results': 'compare_training_runs',
     'best_training_run': 'select_best_training_run',
     'pick_best_training_run': 'select_best_training_run',
+    'list_remote_servers': 'list_remote_profiles',
+    'list_remote_targets': 'list_remote_profiles',
+    'show_remote_profiles': 'list_remote_profiles',
+    'upload_to_server': 'upload_assets_to_remote',
+    'upload_to_remote': 'upload_assets_to_remote',
+    'sync_local_to_remote': 'upload_assets_to_remote',
+    'scp_to_server': 'upload_assets_to_remote',
+    'download_from_server': 'download_assets_from_remote',
+    'download_from_remote': 'download_assets_from_remote',
+    'pull_from_server': 'download_assets_from_remote',
+    'sync_remote_to_local': 'download_assets_from_remote',
+    'scp_from_server': 'download_assets_from_remote',
 }
 
 _ARG_ALIASES: dict[str, dict[str, str]] = {
@@ -153,6 +173,24 @@ _ARG_ALIASES: dict[str, dict[str, str]] = {
         'out_dir': 'destination_dir',
         'mode': 'organize_by',
         'format': 'artifact_preference',
+    },
+    'test_rtsp_stream': {
+        'path': 'rtsp_url',
+        'source': 'rtsp_url',
+        'url': 'rtsp_url',
+    },
+    'start_camera_prediction': {
+        'path': 'model',
+        'source': 'model',
+    },
+    'start_rtsp_prediction': {
+        'path': 'model',
+        'source': 'model',
+        'url': 'rtsp_url',
+    },
+    'start_screen_prediction': {
+        'path': 'model',
+        'source': 'model',
     },
     'preview_extract_images': {
         'path': 'source_path',
@@ -273,6 +311,42 @@ _ARG_ALIASES: dict[str, dict[str, str]] = {
         'img_dir': 'dataset_path',
         'out_dir': 'output_dir',
     },
+    'upload_assets_to_remote': {
+        'path': 'paths_text',
+        'paths': 'paths_text',
+        'local_path': 'paths_text',
+        'source': 'paths_text',
+        'server_alias': 'server',
+        'server_name': 'server',
+        'target': 'server',
+        'remote_dir': 'remote_root',
+        'remote_path': 'remote_root',
+        'remote_output_dir': 'remote_root',
+        'user': 'username',
+        'resume_upload': 'resume',
+        'resume_transfer': 'resume',
+        'verify': 'verify_hash',
+        'hash_algo': 'hash_algorithm',
+        'hash_name': 'hash_algorithm',
+        'threshold_mb': 'large_file_threshold_mb',
+        'large_file_mb': 'large_file_threshold_mb',
+        'chunk_mb': 'chunk_size_mb',
+        'progress': 'show_progress',
+    },
+    'download_assets_from_remote': {
+        'path': 'paths_text',
+        'paths': 'paths_text',
+        'remote_path': 'paths_text',
+        'remote_dir': 'paths_text',
+        'source': 'paths_text',
+        'server_alias': 'server',
+        'server_name': 'server',
+        'target': 'server',
+        'user': 'username',
+        'local_dir': 'local_root',
+        'local_path': 'local_root',
+        'out_dir': 'local_root',
+    },
 }
 
 
@@ -300,11 +374,21 @@ def canonical_tool_name(name: str) -> str:
     return TOOL_NAME_ALIASES.get(key, key)
 
 
+def _is_missing_tool_arg(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value == ''
+    if isinstance(value, (list, tuple, set, dict)):
+        return len(value) == 0
+    return False
+
+
 def normalize_tool_args(tool_name: str, args: dict[str, Any] | None) -> dict[str, Any]:
     canonical_name = canonical_tool_name(tool_name)
     payload = dict(args or {})
     for alias, target in _ARG_ALIASES.get(canonical_name, {}).items():
-        if not payload.get(target) and payload.get(alias):
+        if alias in payload and _is_missing_tool_arg(payload.get(target)) and not _is_missing_tool_arg(payload.get(alias)):
             payload[target] = payload[alias]
     return payload
 
@@ -397,6 +481,23 @@ class _PredictManagementAliasArgs(BaseModel):
     artifact_preference: str = Field(default='auto', description='产物优先级：auto / annotated / original / source / annotated_video / video_dir')
 
 
+class _RealtimePredictionAliasArgs(BaseModel):
+    model: str = Field(default='', description='预测模型路径或模型名')
+    camera_id: int = Field(default=0, description='摄像头 ID')
+    screen_id: int = Field(default=1, description='屏幕 ID')
+    rtsp_url: str = Field(default='', description='RTSP 地址')
+    url: str = Field(default='', description='旧参数兼容；等价于 rtsp_url')
+    source: str = Field(default='', description='旧参数兼容；等价于 rtsp_url 或 model')
+    conf: float = Field(default=0.25, description='置信度阈值')
+    iou: float = Field(default=0.45, description='NMS IoU 阈值')
+    output_dir: str = Field(default='', description='输出目录')
+    out_dir: str = Field(default='', description='旧参数兼容；等价于 output_dir')
+    frame_interval_ms: int = Field(default=100, description='采样间隔，毫秒')
+    max_frames: int = Field(default=0, description='最多处理多少帧，0 表示不限')
+    timeout_ms: int = Field(default=5000, description='RTSP 测试超时，毫秒')
+    session_id: str = Field(default='', description='实时预测会话 ID')
+
+
 class _DataGovernanceAliasArgs(BaseModel):
     dataset_path: str = Field(default='', description='数据集根目录或图片目录')
     path: str = Field(default='', description='旧参数兼容；等价于 dataset_path')
@@ -421,6 +522,39 @@ class _DataGovernanceAliasArgs(BaseModel):
     dry_run: bool = Field(default=True, description='是否仅预览')
     only_missing: bool = Field(default=True, description='是否仅处理缺失标签')
     include_no_label: bool = Field(default=True, description='分类时是否包含无标签图片')
+
+
+class _RemoteTransferAliasArgs(BaseModel):
+    server: str = Field(default='', description='远端 profile 名、SSH alias，或 user@host 形式的目标')
+    profile: str = Field(default='', description='显式 profile 名')
+    remote_root: str = Field(default='', description='远端目标根目录')
+    remote_dir: str = Field(default='', description='旧参数兼容；等价于 remote_root')
+    remote_path: str = Field(default='', description='旧参数兼容；等价于 remote_root')
+    local_paths: list[str] = Field(default=[], description='本地文件或目录路径列表')
+    local_path: str = Field(default='', description='旧参数兼容；单个本地路径')
+    paths_text: str = Field(default='', description='兼容字段；多个路径可用换行、逗号或分号分隔')
+    path: str = Field(default='', description='旧参数兼容；等价于 paths_text')
+    paths: str = Field(default='', description='旧参数兼容；等价于 paths_text')
+    source: str = Field(default='', description='旧参数兼容；等价于 paths_text')
+    host: str = Field(default='', description='显式主机名')
+    username: str = Field(default='', description='显式用户名')
+    user: str = Field(default='', description='旧参数兼容；等价于 username')
+    port: int = Field(default=0, description='SSH 端口')
+    recursive: bool = Field(default=True, description='目录上传时是否递归复制')
+    create_remote_root: bool = Field(default=True, description='上传前是否自动创建远端目录')
+    profiles_path: str = Field(default='', description='可选远端 profile 配置文件路径')
+    resume: bool | None = Field(default=None, description='是否启用断点续传')
+    resume_upload: bool | None = Field(default=None, description='旧参数兼容；等价于 resume')
+    verify_hash: bool | None = Field(default=None, description='上传完成后是否做哈希校验')
+    verify: bool | None = Field(default=None, description='旧参数兼容；等价于 verify_hash')
+    hash_algorithm: str = Field(default='sha256', description='哈希算法：sha256 / md5')
+    hash_algo: str = Field(default='', description='旧参数兼容；等价于 hash_algorithm')
+    large_file_threshold_mb: int | None = Field(default=None, description='达到该体积后切换到大文件分块模式')
+    threshold_mb: int | None = Field(default=None, description='旧参数兼容；等价于 large_file_threshold_mb')
+    chunk_size_mb: int | None = Field(default=None, description='大文件分块大小，单位 MB')
+    chunk_mb: int | None = Field(default=None, description='旧参数兼容；等价于 chunk_size_mb')
+    show_progress: bool | None = Field(default=None, description='是否打印上传进度')
+    progress: bool | None = Field(default=None, description='旧参数兼容；等价于 show_progress')
 
 def _build_alias_tool(alias_name: str, target_tool: BaseTool, *, description: str, args_schema: type[BaseModel]) -> BaseTool:
     async def _arun(**kwargs: Any) -> str:
@@ -553,6 +687,27 @@ def adapt_tools_for_chat_model(tools: list[BaseTool]) -> list[BaseTool]:
                 )
             )
     for canonical_name, aliases in (
+        ('scan_cameras', (('scan_available_cameras', '兼容旧工具名 scan_available_cameras。用于扫描可用摄像头。'),)),
+        ('scan_screens', (('scan_available_screens', '兼容旧工具名 scan_available_screens。用于扫描可用屏幕。'),)),
+        ('test_rtsp_stream', (('probe_rtsp_stream', '兼容旧工具名 probe_rtsp_stream。用于测试 RTSP 地址是否可用。'),)),
+        ('start_camera_prediction', (('start_live_camera_prediction', '兼容旧工具名 start_live_camera_prediction。用于启动摄像头实时预测。'),)),
+        ('start_rtsp_prediction', (('start_live_rtsp_prediction', '兼容旧工具名 start_live_rtsp_prediction。用于启动 RTSP 实时预测。'),)),
+        ('start_screen_prediction', (('start_live_screen_prediction', '兼容旧工具名 start_live_screen_prediction。用于启动屏幕实时预测。'),)),
+        ('check_realtime_prediction_status', (('check_live_prediction_status', '兼容旧工具名 check_live_prediction_status。用于查看实时预测状态。'),)),
+        ('stop_realtime_prediction', (('stop_live_prediction', '兼容旧工具名 stop_live_prediction。用于停止实时预测。'),)),
+    ):
+        if canonical_name not in tool_map:
+            continue
+        for alias_name, description in aliases:
+            alias_tools.append(
+                _build_alias_tool(
+                    alias_name,
+                    tool_map[canonical_name],
+                    description=description,
+                    args_schema=_RealtimePredictionAliasArgs,
+                )
+            )
+    for canonical_name, aliases in (
         ('preview_convert_format', (('preview_convert_labels', '兼容旧工具名 preview_convert_labels。用于预览标签格式转换范围。'),)),
         ('convert_format', (('convert_labels_format', '兼容旧工具名 convert_labels_format。用于执行标签格式转换。'),)),
         ('preview_modify_labels', (('preview_replace_labels', '兼容旧工具名 preview_replace_labels。用于预览标签批量替换/删除范围。'),)),
@@ -571,6 +726,38 @@ def adapt_tools_for_chat_model(tools: list[BaseTool]) -> list[BaseTool]:
                     tool_map[canonical_name],
                     description=description,
                     args_schema=_DataGovernanceAliasArgs,
+                )
+            )
+
+    for canonical_name, aliases in (
+        ('list_remote_profiles', (
+            ('list_remote_servers', '兼容旧工具名 list_remote_servers。用于列出当前可用的远端 profile/SSH alias。'),
+            ('list_remote_targets', '兼容旧工具名 list_remote_targets。用于列出当前可用的远端 profile/SSH alias。'),
+            ('show_remote_profiles', '兼容旧工具名 show_remote_profiles。用于列出当前可用的远端 profile/SSH alias。'),
+        )),
+        ('upload_assets_to_remote', (
+            ('upload_to_server', '兼容旧工具名 upload_to_server。用于把本地文件或目录上传到远端服务器。'),
+            ('upload_to_remote', '兼容旧工具名 upload_to_remote。用于把本地文件或目录上传到远端服务器。'),
+            ('sync_local_to_remote', '兼容旧工具名 sync_local_to_remote。用于把本地文件或目录上传到远端服务器。'),
+            ('scp_to_server', '兼容旧工具名 scp_to_server。用于把本地文件或目录上传到远端服务器。'),
+        )),
+        ('download_assets_from_remote', (
+            ('download_from_server', '兼容旧工具名 download_from_server。用于把远端文件或目录下载回本机。'),
+            ('download_from_remote', '兼容旧工具名 download_from_remote。用于把远端文件或目录下载回本机。'),
+            ('pull_from_server', '兼容旧工具名 pull_from_server。用于把远端文件或目录下载回本机。'),
+            ('sync_remote_to_local', '兼容旧工具名 sync_remote_to_local。用于把远端文件或目录下载回本机。'),
+            ('scp_from_server', '兼容旧工具名 scp_from_server。用于把远端文件或目录下载回本机。'),
+        )),
+    ):
+        if canonical_name not in tool_map:
+            continue
+        for alias_name, description in aliases:
+            alias_tools.append(
+                _build_alias_tool(
+                    alias_name,
+                    tool_map[canonical_name],
+                    description=description,
+                    args_schema=_RemoteTransferAliasArgs,
                 )
             )
 

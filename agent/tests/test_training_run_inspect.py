@@ -26,6 +26,7 @@ COMPLETED_LOG = '''
                  Class     Images  Instances      Box(P          R      mAP50  mAP50-95): 100% ━━━━━━━━━━━━ 1/1 26.9it/s 0.0s
                    all          5          5    0.420        0.55     0.365    0.210
 3 epochs completed in 0.001 hours.
+Results saved to /tmp/runs/train100
 '''
 
 RUNNING_LOG = '''
@@ -102,6 +103,7 @@ def main() -> None:
         assert explicit['status_source'] == 'last_run'
         assert explicit['analysis_ready'] is True
         assert explicit['progress']['epoch'] == 3
+        assert explicit['save_dir'] == '/tmp/runs/train100'
 
         missing = service.inspect_training_run('train_log_missing')
         assert missing['ok'] is False

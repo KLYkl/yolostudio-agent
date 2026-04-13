@@ -1,0 +1,16 @@
+{
+  "default_profile": "lab",
+  "profiles": {
+    "lab": {
+      "ssh_target": "user@example-host",
+      "remote_root": "/srv/yolostudio/stage",
+      "port": 22
+    },
+    "gpu-node-b": {
+      "host": "gpu-b.example.net",
+      "username": "worker",
+      "port": 22022,
+      "remote_root": "/data/agent_stage"
+    }
+  }
+}

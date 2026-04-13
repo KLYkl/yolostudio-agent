@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -123,6 +125,111 @@ def _read_yaml_names(yaml_path: Path) -> list[str]:
     except Exception:
         pass
     return []
+
+
+_WINDOWS_ABS_RE = re.compile(r'^[A-Za-z]:[\\/].*')
+
+
+def _resolve_yaml_target_path(value: str, *, base_dir: Path) -> tuple[str, bool]:
+    text = str(value or '').strip()
+    if not text:
+        return '', False
+    if _WINDOWS_ABS_RE.match(text):
+        return text.replace('\\', '/'), (os.name == 'nt' and Path(text).exists())
+    if text.startswith('/'):
+        target = Path(text)
+        return str(target), target.exists()
+    target = (base_dir / text).resolve()
+    return str(target), target.exists()
+
+
+def _inspect_training_yaml(yaml_path: str | Path) -> dict[str, Any]:
+    path = Path(yaml_path)
+    if not path.exists():
+        return {
+            'exists': False,
+            'usable': False,
+            'yaml_path': str(path),
+            'base_dir': '',
+            'issues': [{'field': 'yaml', 'raw': str(path), 'resolved': str(path), 'reason': 'missing_yaml_file'}],
+            'resolved_targets': {},
+            'warnings': ['data.yaml 文件不存在'],
+        }
+
+    try:
+        import yaml
+
+        payload = yaml.safe_load(path.read_text(encoding='utf-8')) or {}
+    except Exception as exc:
+        return {
+            'exists': True,
+            'usable': False,
+            'yaml_path': str(path.resolve()),
+            'base_dir': '',
+            'issues': [{'field': 'yaml', 'raw': str(path), 'resolved': str(path.resolve()), 'reason': f'invalid_yaml:{exc.__class__.__name__}'}],
+            'resolved_targets': {},
+            'warnings': [f'data.yaml 解析失败: {exc}'],
+        }
+
+    yaml_dir = path.resolve().parent
+    path_value = str(payload.get('path') or '').strip()
+    if path_value:
+        base_dir_text, base_exists = _resolve_yaml_target_path(path_value, base_dir=yaml_dir)
+        base_issue = ''
+        if _WINDOWS_ABS_RE.match(path_value) and os.name != 'nt':
+            base_issue = 'windows_absolute_path_on_non_windows'
+        elif base_dir_text and not base_exists:
+            base_issue = 'missing_base_path'
+        if base_issue:
+            base_dir = yaml_dir
+            issues = [{
+                'field': 'path',
+                'raw': path_value,
+                'resolved': base_dir_text,
+                'reason': base_issue,
+            }]
+        else:
+            base_dir = Path(base_dir_text) if base_dir_text else yaml_dir
+            issues = []
+    else:
+        base_dir_text = str(yaml_dir)
+        base_dir = yaml_dir
+        issues = []
+
+    resolved_targets: dict[str, list[str]] = {}
+    for field in ('train', 'val', 'test'):
+        raw_value = payload.get(field)
+        if not raw_value:
+            continue
+        values = raw_value if isinstance(raw_value, list) else [raw_value]
+        resolved_list: list[str] = []
+        for item in values:
+            resolved_text, exists = _resolve_yaml_target_path(str(item), base_dir=base_dir)
+            if resolved_text:
+                resolved_list.append(resolved_text)
+            if not exists:
+                issues.append({
+                    'field': field,
+                    'raw': str(item),
+                    'resolved': resolved_text,
+                    'reason': 'missing_target',
+                })
+        if resolved_list:
+            resolved_targets[field] = resolved_list
+
+    warnings: list[str] = []
+    if issues:
+        warnings.append('data.yaml 已存在，但其中 train/val 路径在当前机器不可用')
+
+    return {
+        'exists': True,
+        'usable': not issues,
+        'yaml_path': str(path.resolve()),
+        'base_dir': base_dir_text,
+        'issues': issues,
+        'resolved_targets': resolved_targets,
+        'warnings': warnings,
+    }
 
 
 def _read_classes_txt_lines(classes_txt_path: Path) -> list[str]:
