@@ -1213,10 +1213,23 @@ class TrainService:
 
     @staticmethod
     def _terminate_pid(pid: int) -> tuple[bool, int | None]:
-        os.kill(pid, signal.SIGTERM)
         if sys.platform == 'win32':
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except PermissionError:
+                completed = subprocess.run(
+                    ['taskkill', '/PID', str(pid), '/T', '/F'],
+                    capture_output=True,
+                    text=True,
+                )
+                if completed.returncode not in {0, 128}:
+                    raise
+                time.sleep(0.5)
+                return True, completed.returncode
             time.sleep(0.5)
             return False, signal.SIGTERM
+
+        os.kill(pid, signal.SIGTERM)
 
         deadline = time.time() + 5
         while time.time() < deadline:

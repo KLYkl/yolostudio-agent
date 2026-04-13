@@ -2,11 +2,11 @@ param(
     [string]$Server = "yolostudio",
     [ValidateSet("auto", "yolostudio-agent-server", "yolodo", "yolo")]
     [string]$EnvName = "auto",
-    [string]$RemoteAppRoot = "/home/kly/yolostudio_agent_proto",
-    [string]$RemoteOutputRoot = "/home/kly/training_real_lifecycle_output/codex_roundtrip",
-    [string]$LocalResultPath = "D:\yolodo2.0\agent_plan\agent\tests\test_zyb_long_training_lifecycle_output.json",
-    [string]$DatasetRoot = "/home/kly/agent_cap_tests/zyb",
-    [string]$ModelPath = "/home/kly/yolov8n.pt",
+    [string]$RemoteAppRoot = '$HOME/yolostudio_agent_proto',
+    [string]$RemoteOutputRoot = '$HOME/training_real_lifecycle_output/codex_roundtrip',
+    [string]$LocalResultPath = "",
+    [string]$DatasetRoot = '$HOME/agent_cap_tests/zyb',
+    [string]$ModelPath = '$HOME/yolov8n.pt',
     [int]$Epochs = 30,
     [int]$TargetEpoch = 2,
     [string]$StatusDelays = "15,35,60",
@@ -16,6 +16,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $true
+$RepoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
+
+if ([string]::IsNullOrWhiteSpace($LocalResultPath)) {
+    $LocalResultPath = Join-Path $RepoRoot "agent\tests\test_zyb_long_training_lifecycle_output.json"
+}
 
 function Invoke-NativeChecked {
     param(
@@ -68,47 +73,47 @@ foreach ($remoteCommand in $ensureCommands) {
 
 $syncItems = @(
     @{
-        Local = "D:\yolodo2.0\agent_plan\agent\server\services\knowledge_service.py"
+        Local = Join-Path $RepoRoot "agent\server\services\knowledge_service.py"
         Remote = "$Server`:$RemoteAppRoot/agent_plan/agent/server/services/knowledge_service.py"
     },
     @{
-        Local = "D:\yolodo2.0\agent_plan\agent\server\mcp_server.py"
+        Local = Join-Path $RepoRoot "agent\server\mcp_server.py"
         Remote = "$Server`:$RemoteAppRoot/agent_plan/agent/server/mcp_server.py"
     },
     @{
-        Local = "D:\yolodo2.0\agent_plan\agent\server\services\train_log_parser.py"
+        Local = Join-Path $RepoRoot "agent\server\services\train_log_parser.py"
         Remote = "$Server`:$RemoteAppRoot/agent_plan/agent/server/services/train_log_parser.py"
     },
     @{
-        Local = "D:\yolodo2.0\agent_plan\agent\server\services\train_service.py"
+        Local = Join-Path $RepoRoot "agent\server\services\train_service.py"
         Remote = "$Server`:$RemoteAppRoot/agent_plan/agent/server/services/train_service.py"
     },
     @{
-        Local = "D:\yolodo2.0\agent_plan\agent\server\services\training_result_helpers.py"
+        Local = Join-Path $RepoRoot "agent\server\services\training_result_helpers.py"
         Remote = "$Server`:$RemoteAppRoot/agent_plan/agent/server/services/training_result_helpers.py"
     },
     @{
-        Local = "D:\yolodo2.0\agent_plan\agent\server\tools\combo_tools.py"
+        Local = Join-Path $RepoRoot "agent\server\tools\combo_tools.py"
         Remote = "$Server`:$RemoteAppRoot/agent_plan/agent/server/tools/combo_tools.py"
     },
     @{
-        Local = "D:\yolodo2.0\agent_plan\agent\server\tools\data_tools.py"
+        Local = Join-Path $RepoRoot "agent\server\tools\data_tools.py"
         Remote = "$Server`:$RemoteAppRoot/agent_plan/agent/server/tools/data_tools.py"
     },
     @{
-        Local = "D:\yolodo2.0\agent_plan\agent\server\tools\knowledge_tools.py"
+        Local = Join-Path $RepoRoot "agent\server\tools\knowledge_tools.py"
         Remote = "$Server`:$RemoteAppRoot/agent_plan/agent/server/tools/knowledge_tools.py"
     },
     @{
-        Local = "D:\yolodo2.0\agent_plan\agent\server\tools\train_tools.py"
+        Local = Join-Path $RepoRoot "agent\server\tools\train_tools.py"
         Remote = "$Server`:$RemoteAppRoot/agent_plan/agent/server/tools/train_tools.py"
     },
     @{
-        Local = "D:\yolodo2.0\agent_plan\agent\tests\test_zyb_long_training_lifecycle.py"
+        Local = Join-Path $RepoRoot "agent\tests\test_zyb_long_training_lifecycle.py"
         Remote = "$Server`:$RemoteAppRoot/agent_plan/agent/tests/test_zyb_long_training_lifecycle.py"
     },
     @{
-        Local = "D:\yolodo2.0\agent_plan\deploy\scripts\run_training_remote_validation.sh"
+        Local = Join-Path $RepoRoot "deploy\scripts\run_training_remote_validation.sh"
         Remote = "$Server`:$RemoteAppRoot/deploy/scripts/run_training_remote_validation.sh"
     }
 )

@@ -42,3 +42,18 @@ D:/
 .tmp_prediction_real_media_stage/
 .tmp_debug_extract/
 outputs/
+
+# Local repo maintenance / remote probe scripts
+.codex_remote_*.sh
+.codex_rerun_remote_chaos.sh
+/NUL
+
+# Local validation outputs
+agent/tests/live_agent_*_results.json
+agent/tests/agent_server_chaos_remote_summary.json
+agent/tests/test_playbook_run_output_*.txt
+agent/tests/skyline_rtsp_bridge_output*.json
+deploy/server_proto/agent_plan/agent/tests/_tmp_*/
+deploy/server_proto/agent_plan/agent/tests/*_output.json
+.tmp_remote_rtsp_*.sh
+output/
