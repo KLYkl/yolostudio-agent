@@ -554,6 +554,76 @@ def build_grounded_tool_reply(applied_results: list[tuple[str, dict[str, Any]]])
             lines.append('建议:')
             lines.extend(f'- {item}' for item in next_actions[:2])
         return _join(lines)
+    if tool_name == 'inspect_prediction_outputs':
+        lines = [result.get('summary', '预测输出检查完成')]
+        if result.get('output_dir'):
+            lines.append(f"输出目录: {result.get('output_dir')}")
+        if result.get('report_path'):
+            lines.append(f"预测报告: {result.get('report_path')}")
+        artifact_roots = result.get('artifact_roots') or []
+        if artifact_roots:
+            lines.append('主要产物路径:')
+            lines.extend(f'- {item}' for item in artifact_roots[:3])
+        path_list_files = result.get('path_list_files') or {}
+        if path_list_files:
+            lines.append('已有路径清单:')
+            for name, path in list(path_list_files.items())[:3]:
+                lines.append(f'- {name}: {path}')
+        next_actions = result.get('next_actions') or []
+        if next_actions:
+            lines.append('建议:')
+            lines.extend(f'- {item}' for item in next_actions[:3])
+        return _join(lines)
+    if tool_name == 'export_prediction_report':
+        lines = [result.get('summary', '预测报告导出完成')]
+        if result.get('export_format'):
+            lines.append(f"导出格式: {result.get('export_format')}")
+        if result.get('export_path'):
+            lines.append(f"导出路径: {result.get('export_path')}")
+        next_actions = result.get('next_actions') or []
+        if next_actions:
+            lines.append('建议:')
+            lines.extend(f'- {item}' for item in next_actions[:2])
+        return _join(lines)
+    if tool_name == 'export_prediction_path_lists':
+        lines = [result.get('summary', '预测路径清单导出完成')]
+        lines.append(
+            f"统计: 命中 {result.get('detected_count', 0)} / 无命中 {result.get('empty_count', 0)} / 失败 {result.get('failed_count', 0)}"
+        )
+        if result.get('export_dir'):
+            lines.append(f"清单目录: {result.get('export_dir')}")
+        for key, label in (
+            ('detected_items_path', '命中清单'),
+            ('empty_items_path', '无命中清单'),
+            ('failed_items_path', '失败清单'),
+        ):
+            if result.get(key):
+                lines.append(f"{label}: {result.get(key)}")
+        next_actions = result.get('next_actions') or []
+        if next_actions:
+            lines.append('建议:')
+            lines.extend(f'- {item}' for item in next_actions[:2])
+        return _join(lines)
+    if tool_name == 'organize_prediction_results':
+        lines = [result.get('summary', '预测结果整理完成')]
+        if result.get('destination_dir'):
+            lines.append(f"整理目录: {result.get('destination_dir')}")
+        if result.get('organize_by'):
+            lines.append(f"整理方式: {result.get('organize_by')}")
+        bucket_stats = result.get('bucket_stats') or {}
+        if bucket_stats:
+            lines.append('目录桶统计:')
+            for bucket, count in list(bucket_stats.items())[:5]:
+                lines.append(f'- {bucket}: {count}')
+        sample_outputs = result.get('sample_outputs') or []
+        if sample_outputs:
+            lines.append('样例产物:')
+            lines.extend(f'- {item}' for item in sample_outputs[:3])
+        next_actions = result.get('next_actions') or []
+        if next_actions:
+            lines.append('建议:')
+            lines.extend(f'- {item}' for item in next_actions[:2])
+        return _join(lines)
     if tool_name == 'retrieve_training_knowledge':
         lines = [result.get('summary', '知识检索完成')]
         matched_rules = result.get('matched_rules') or []

@@ -35,6 +35,11 @@ class PredictionContext:
     output_dir: str = ""
     report_path: str = ""
     last_result: dict[str, Any] = field(default_factory=dict)
+    last_summary: dict[str, Any] = field(default_factory=dict)
+    last_inspection: dict[str, Any] = field(default_factory=dict)
+    last_export: dict[str, Any] = field(default_factory=dict)
+    last_path_lists: dict[str, Any] = field(default_factory=dict)
+    last_organized_result: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
