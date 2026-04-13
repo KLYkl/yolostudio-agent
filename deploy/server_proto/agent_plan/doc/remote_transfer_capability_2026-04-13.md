@@ -102,6 +102,8 @@
 
 本次新增主线回归：
 - 本地通过：
+  - `D:\yolodo2.0\agent_plan\agent\tests\test_data_tool_helpers.py`
+  - `D:\yolodo2.0\agent_plan\agent\tests\test_prepare_dataset_flow.py`
   - `D:\yolodo2.0\agent_plan\agent\tests\test_remote_transfer_tools.py`
   - `D:\yolodo2.0\agent_plan\agent\tests\test_remote_transfer_route.py`
   - `D:\yolodo2.0\agent_plan\agent\tests\test_tool_alias_adapter.py`
@@ -122,6 +124,61 @@
 过程中还修复了一个真实 smoke 暴露的问题：
 - 远端组包脚本原先会把 `part_*.sha256` 也误拼进最终文件
 - 现已改成只拼接 `part_数字` 正文分块
+
+### 4.3 真实短训练 + 自动回传 smoke
+本轮又补了一次真正的远端短训练闭环验证，目标是证明：
+- 本机上传权重 + 数据集
+- 远端自动识别训练前阻塞
+- 必要时自动修复数据集状态
+- 远端真实启动训练
+- 等待训练完成后把 run 目录自动拉回本机
+
+本次 smoke 输入：
+- 本地权重：
+  - `D:\yolodo2.0\agent_plan\.tmp_prediction_real_media_stage\weights\zq-4-2.pt`
+- 本地最小数据集：
+  - `D:\yolodo2.0\agent_plan\agent\tests\_tmp_remote_training_smoke_dataset`
+- 远端 staging：
+  - `/tmp/codex_remote_training_smoke_20260413_231324`
+- 本地回传目录：
+  - `D:\yolodo2.0\agent_plan\output\remote_training_roundtrip\20260413_231331`
+- 结果留痕：
+  - `D:\yolodo2.0\agent_plan\agent\tests\test_remote_training_pipeline_smoke_output.json`
+
+本次 smoke 特意把数据集里的 `data.yaml` 写成跨机器不可直接复用的形式：
+- `path: D:/...`
+
+真实暴露并修复的问题：
+- 旧逻辑只要发现现成 `data.yaml` 就倾向于认为可直接训练；
+- 但跨机器上传后，这种带本机绝对路径的 YAML 在远端 Linux 节点其实不可直接用。
+
+本轮已补成：
+- `training_readiness`
+  - 会显式检查 `data.yaml` 的 `path/train/val/test` 在**当前机器**是否真实可用
+  - 遇到 Windows 绝对路径上 Linux 节点时，会返回：
+    - `primary_blocker_type = invalid_yaml`
+- `prepare_dataset_for_training`
+  - 对“已经 split，但 YAML 不可用”的数据集不再强制重切分
+  - 会直接基于现有 `images/train`、`images/val` 重新生成远端可训练 YAML
+  - `data_yaml_source = regenerated_from_split`
+
+本次真实 smoke 最终结果：
+- 远端训练闭环成功完成
+- `pipeline_ok = true`
+- `wait_ok = true`
+- `download_ok = true`
+- `final_run_state = completed`
+- 远端产物目录：
+  - `/home/kly/yolostudio_agent_proto/runs/detect/train59`
+- 本地已自动回传：
+  - `D:\yolodo2.0\agent_plan\output\remote_training_roundtrip\20260413_231331\train59`
+
+补充说明：
+- 这次真实 smoke 明确指定了 **`yolodo`** conda 环境训练。
+- 当前服务器上的默认环境选择仍可能落到 `yolostudio-agent-server`；在该环境下如果 `torch.cuda.is_available()` 为 `False`，而 auto device 仍解析到 GPU 编号，就会导致真实训练启动时报 CUDA device invalid。
+- 所以当前关于“真实远端训练”的稳定建议是：
+  - 优先显式指定 `yolodo` 环境；
+  - 默认环境自动选择逻辑后续仍可继续收敛。
 
 结论：
 - 新能力已不再依赖当前机器硬编码脚本。
