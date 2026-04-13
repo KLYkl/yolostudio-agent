@@ -15,6 +15,7 @@ def apply_tool_result_to_state(
     tr = session_state.active_training
     pred = session_state.active_prediction
     kn = session_state.active_knowledge
+    rt = session_state.active_remote_transfer
 
     tool_args = tool_args or {}
     if tool_name == 'scan_dataset' and result.get('ok'):
@@ -522,6 +523,82 @@ def apply_tool_result_to_state(
             'bucket_stats': result.get('bucket_stats'),
             'sample_outputs': result.get('sample_outputs'),
         }
+    elif tool_name == 'scan_cameras' and result.get('ok'):
+        pred.last_realtime_status = {
+            'summary': result.get('summary'),
+            'camera_count': result.get('camera_count'),
+            'cameras': result.get('cameras'),
+        }
+    elif tool_name == 'scan_screens' and result.get('ok'):
+        pred.last_realtime_status = {
+            'summary': result.get('summary'),
+            'screen_count': result.get('screen_count'),
+            'screens': result.get('screens'),
+        }
+    elif tool_name == 'test_rtsp_stream':
+        pred.last_realtime_status = {
+            'summary': result.get('summary'),
+            'rtsp_url': result.get('rtsp_url'),
+            'ok': result.get('ok'),
+            'error': result.get('error'),
+        }
+    elif tool_name in {'start_camera_prediction', 'start_rtsp_prediction', 'start_screen_prediction'} and result.get('ok'):
+        pred.model = str(tool_args.get('model') or pred.model)
+        pred.output_dir = str(result.get('output_dir') or pred.output_dir)
+        pred.realtime_session_id = str(result.get('session_id') or pred.realtime_session_id)
+        pred.realtime_source_type = str(result.get('source_type') or pred.realtime_source_type)
+        pred.realtime_source_label = str(result.get('source_label') or pred.realtime_source_label)
+        pred.realtime_status = 'running'
+        pred.last_realtime_status = {
+            'summary': result.get('summary'),
+            'session_id': result.get('session_id'),
+            'source_type': result.get('source_type'),
+            'source_label': result.get('source_label'),
+            'output_dir': result.get('output_dir'),
+            'status': 'running',
+        }
+    elif tool_name == 'check_realtime_prediction_status' and result.get('ok'):
+        pred.output_dir = str(result.get('output_dir') or pred.output_dir)
+        pred.report_path = str(result.get('report_path') or pred.report_path)
+        pred.realtime_session_id = str(result.get('session_id') or pred.realtime_session_id)
+        pred.realtime_source_type = str(result.get('source_type') or pred.realtime_source_type)
+        pred.realtime_source_label = str(result.get('source_label') or pred.realtime_source_label)
+        pred.realtime_status = str(result.get('status') or pred.realtime_status)
+        pred.last_realtime_status = {
+            'summary': result.get('summary'),
+            'session_id': result.get('session_id'),
+            'source_type': result.get('source_type'),
+            'source_label': result.get('source_label'),
+            'status': result.get('status'),
+            'processed_frames': result.get('processed_frames'),
+            'detected_frames': result.get('detected_frames'),
+            'total_detections': result.get('total_detections'),
+            'class_counts': result.get('class_counts'),
+            'output_dir': result.get('output_dir'),
+            'report_path': result.get('report_path'),
+            'error': result.get('error'),
+        }
+    elif tool_name == 'stop_realtime_prediction' and result.get('ok'):
+        pred.output_dir = str(result.get('output_dir') or pred.output_dir)
+        pred.report_path = str(result.get('report_path') or pred.report_path)
+        pred.realtime_session_id = str(result.get('session_id') or pred.realtime_session_id)
+        pred.realtime_source_type = str(result.get('source_type') or pred.realtime_source_type)
+        pred.realtime_source_label = str(result.get('source_label') or pred.realtime_source_label)
+        pred.realtime_status = str(result.get('status') or 'stopped')
+        pred.last_realtime_status = {
+            'summary': result.get('summary'),
+            'session_id': result.get('session_id'),
+            'source_type': result.get('source_type'),
+            'source_label': result.get('source_label'),
+            'status': result.get('status'),
+            'processed_frames': result.get('processed_frames'),
+            'detected_frames': result.get('detected_frames'),
+            'total_detections': result.get('total_detections'),
+            'class_counts': result.get('class_counts'),
+            'output_dir': result.get('output_dir'),
+            'report_path': result.get('report_path'),
+            'error': result.get('error'),
+        }
     elif tool_name == 'retrieve_training_knowledge' and result.get('ok'):
         kn.last_retrieval = {
             'topic': result.get('topic'),
@@ -543,4 +620,59 @@ def apply_tool_result_to_state(
             'recommended_action': result.get('recommended_action'),
             'matched_rule_ids': result.get('matched_rule_ids'),
             'signals': result.get('signals'),
+        }
+    elif tool_name == 'list_remote_profiles' and result.get('ok'):
+        rt.last_profile_listing = {
+            'profiles_path': result.get('profiles_path'),
+            'default_profile': result.get('default_profile'),
+            'profile_count': len(result.get('profiles') or []),
+            'ssh_alias_count': len(result.get('ssh_aliases') or []),
+            'summary': result.get('summary'),
+        }
+        profiles = result.get('profiles') or []
+        default_profile = str(result.get('default_profile') or '').strip()
+        if default_profile:
+            rt.profile_name = default_profile
+            for item in profiles:
+                if str(item.get('name') or '').strip() == default_profile:
+                    rt.target_label = str(item.get('target_label') or rt.target_label or default_profile)
+                    rt.remote_root = str(item.get('remote_root') or rt.remote_root)
+                    break
+    elif tool_name == 'upload_assets_to_remote' and result.get('ok'):
+        rt.target_label = str(result.get('target_label') or rt.target_label)
+        rt.profile_name = str(result.get('profile_name') or rt.profile_name)
+        rt.remote_root = str(result.get('remote_root') or rt.remote_root)
+        rt.last_upload = {
+            'summary': result.get('summary'),
+            'target_label': rt.target_label,
+            'profile_name': rt.profile_name,
+            'remote_root': rt.remote_root,
+            'uploaded_count': result.get('uploaded_count'),
+            'uploaded_items': result.get('uploaded_items') or [],
+            'file_count': result.get('file_count'),
+            'verified_file_count': result.get('verified_file_count'),
+            'skipped_file_count': result.get('skipped_file_count'),
+            'chunked_file_count': result.get('chunked_file_count'),
+            'scp_file_count': result.get('scp_file_count'),
+            'transferred_bytes': result.get('transferred_bytes'),
+            'skipped_bytes': result.get('skipped_bytes'),
+            'total_bytes': result.get('total_bytes'),
+            'resume_enabled': result.get('resume_enabled'),
+            'verify_hash': result.get('verify_hash'),
+            'hash_algorithm': result.get('hash_algorithm'),
+            'large_file_threshold_mb': result.get('large_file_threshold_mb'),
+            'chunk_size_mb': result.get('chunk_size_mb'),
+            'transfer_strategy_summary': result.get('transfer_strategy_summary'),
+            'file_results_preview': result.get('file_results_preview') or [],
+        }
+    elif tool_name == 'download_assets_from_remote' and result.get('ok'):
+        rt.target_label = str(result.get('target_label') or rt.target_label)
+        rt.profile_name = str(result.get('profile_name') or rt.profile_name)
+        rt.last_download = {
+            'summary': result.get('summary'),
+            'target_label': rt.target_label,
+            'profile_name': rt.profile_name,
+            'local_root': result.get('local_root'),
+            'downloaded_count': result.get('downloaded_count'),
+            'downloaded_items': result.get('downloaded_items') or [],
         }

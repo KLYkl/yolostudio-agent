@@ -40,6 +40,12 @@ class PredictionContext:
     last_export: dict[str, Any] = field(default_factory=dict)
     last_path_lists: dict[str, Any] = field(default_factory=dict)
     last_organized_result: dict[str, Any] = field(default_factory=dict)
+    realtime_session_id: str = ""
+    realtime_source_type: str = ""
+    realtime_source_label: str = ""
+    realtime_status: str = ""
+    last_realtime_status: dict[str, Any] = field(default_factory=dict)
+    last_remote_roundtrip: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -47,6 +53,16 @@ class KnowledgeContext:
     last_retrieval: dict[str, Any] = field(default_factory=dict)
     last_analysis: dict[str, Any] = field(default_factory=dict)
     last_recommendation: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class RemoteTransferContext:
+    target_label: str = ""
+    profile_name: str = ""
+    remote_root: str = ""
+    last_profile_listing: dict[str, Any] = field(default_factory=dict)
+    last_upload: dict[str, Any] = field(default_factory=dict)
+    last_download: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -84,6 +100,7 @@ class TrainingContext:
     last_run_comparison: dict[str, Any] = field(default_factory=dict)
     best_run_selection: dict[str, Any] = field(default_factory=dict)
     training_plan_draft: dict[str, Any] = field(default_factory=dict)
+    last_remote_roundtrip: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -110,6 +127,7 @@ class SessionState:
     active_training: TrainingContext = field(default_factory=TrainingContext)
     active_prediction: PredictionContext = field(default_factory=PredictionContext)
     active_knowledge: KnowledgeContext = field(default_factory=KnowledgeContext)
+    active_remote_transfer: RemoteTransferContext = field(default_factory=RemoteTransferContext)
     pending_confirmation: PendingConfirmation = field(default_factory=PendingConfirmation)
     preferences: UserPreferences = field(default_factory=UserPreferences)
 
@@ -129,6 +147,7 @@ class SessionState:
             active_training=TrainingContext(**data.get('active_training', {})),
             active_prediction=PredictionContext(**data.get('active_prediction', {})),
             active_knowledge=KnowledgeContext(**data.get('active_knowledge', {})),
+            active_remote_transfer=RemoteTransferContext(**data.get('active_remote_transfer', {})),
             pending_confirmation=PendingConfirmation(**data.get('pending_confirmation', {})),
             preferences=UserPreferences(**data.get('preferences', {})),
         )
