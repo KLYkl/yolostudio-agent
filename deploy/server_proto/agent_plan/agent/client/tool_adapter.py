@@ -21,6 +21,14 @@ TOOL_NAME_ALIASES: dict[str, str] = {
     'summarize_predictions': 'summarize_prediction_results',
     'summarize_prediction_report': 'summarize_prediction_results',
     'analyze_prediction_report': 'summarize_prediction_results',
+    'inspect_prediction_output': 'inspect_prediction_outputs',
+    'show_prediction_outputs': 'inspect_prediction_outputs',
+    'prediction_output_overview': 'inspect_prediction_outputs',
+    'export_prediction_summary': 'export_prediction_report',
+    'write_prediction_report': 'export_prediction_report',
+    'export_prediction_paths': 'export_prediction_path_lists',
+    'collect_prediction_hits': 'organize_prediction_results',
+    'group_prediction_results': 'organize_prediction_results',
     'preview_extract': 'preview_extract_images',
     'extract_frames': 'extract_video_frames',
     'scan_video_directory': 'scan_videos',
@@ -103,6 +111,48 @@ _ARG_ALIASES: dict[str, dict[str, str]] = {
         'dir_path': 'output_dir',
         'folder': 'output_dir',
         'output': 'output_dir',
+    },
+    'inspect_prediction_outputs': {
+        'path': 'report_path',
+        'report': 'report_path',
+        'json_report': 'report_path',
+        'file': 'report_path',
+        'dir_path': 'output_dir',
+        'folder': 'output_dir',
+        'output': 'output_dir',
+    },
+    'export_prediction_report': {
+        'path': 'report_path',
+        'report': 'report_path',
+        'json_report': 'report_path',
+        'file': 'report_path',
+        'dir_path': 'output_dir',
+        'folder': 'output_dir',
+        'output': 'output_dir',
+        'out_dir': 'export_path',
+        'format': 'export_format',
+    },
+    'export_prediction_path_lists': {
+        'path': 'report_path',
+        'report': 'report_path',
+        'json_report': 'report_path',
+        'file': 'report_path',
+        'dir_path': 'output_dir',
+        'folder': 'output_dir',
+        'output': 'output_dir',
+        'out_dir': 'export_dir',
+    },
+    'organize_prediction_results': {
+        'path': 'report_path',
+        'report': 'report_path',
+        'json_report': 'report_path',
+        'file': 'report_path',
+        'dir_path': 'output_dir',
+        'folder': 'output_dir',
+        'output': 'output_dir',
+        'out_dir': 'destination_dir',
+        'mode': 'organize_by',
+        'format': 'artifact_preference',
     },
     'preview_extract_images': {
         'path': 'source_path',
@@ -325,6 +375,28 @@ class _PredictSummaryAliasArgs(BaseModel):
     folder: str = Field(default='', description='旧参数兼容；等价于 output_dir')
 
 
+class _PredictManagementAliasArgs(BaseModel):
+    report_path: str = Field(default='', description='预测报告 JSON 路径')
+    path: str = Field(default='', description='旧参数兼容；等价于 report_path')
+    report: str = Field(default='', description='旧参数兼容；等价于 report_path')
+    json_report: str = Field(default='', description='旧参数兼容；等价于 report_path')
+    file: str = Field(default='', description='旧参数兼容；等价于 report_path')
+    output_dir: str = Field(default='', description='预测输出目录')
+    dir_path: str = Field(default='', description='旧参数兼容；等价于 output_dir')
+    folder: str = Field(default='', description='旧参数兼容；等价于 output_dir')
+    output: str = Field(default='', description='旧参数兼容；等价于 output_dir')
+    export_path: str = Field(default='', description='报告导出路径')
+    export_dir: str = Field(default='', description='路径清单导出目录')
+    destination_dir: str = Field(default='', description='整理结果输出目录')
+    out_dir: str = Field(default='', description='旧参数兼容；用于 export_path / export_dir / destination_dir')
+    export_format: str = Field(default='markdown', description='报告导出格式')
+    format: str = Field(default='', description='旧参数兼容；用于 export_format 或 artifact_preference')
+    organize_by: str = Field(default='detected_only', description='整理方式：detected_only / by_class')
+    mode: str = Field(default='', description='旧参数兼容；等价于 organize_by')
+    include_empty: bool = Field(default=False, description='整理时是否保留无命中结果')
+    artifact_preference: str = Field(default='auto', description='产物优先级：auto / annotated / original / source / annotated_video / video_dir')
+
+
 class _DataGovernanceAliasArgs(BaseModel):
     dataset_path: str = Field(default='', description='数据集根目录或图片目录')
     path: str = Field(default='', description='旧参数兼容；等价于 dataset_path')
@@ -349,14 +421,6 @@ class _DataGovernanceAliasArgs(BaseModel):
     dry_run: bool = Field(default=True, description='是否仅预览')
     only_missing: bool = Field(default=True, description='是否仅处理缺失标签')
     include_no_label: bool = Field(default=True, description='分类时是否包含无标签图片')
-
-
-class _TrainingRunAliasArgs(BaseModel):
-    run_id: str = Field(default='', description='训练记录 ID')
-    left_run_id: str = Field(default='', description='左侧训练记录 ID')
-    right_run_id: str = Field(default='', description='右侧训练记录 ID')
-    limit: int = Field(default=5, description='候选训练记录数量')
-
 
 def _build_alias_tool(alias_name: str, target_tool: BaseTool, *, description: str, args_schema: type[BaseModel]) -> BaseTool:
     async def _arun(**kwargs: Any) -> str:
@@ -459,30 +523,33 @@ def adapt_tools_for_chat_model(tools: list[BaseTool]) -> list[BaseTool]:
                     args_schema=_PredictSummaryAliasArgs,
                 )
             )
-    if 'compare_training_runs' in tool_map:
-        for alias_name, description in (
-            ('compare_training_history', '兼容旧工具名 compare_training_history。用于对比两次训练记录。'),
-            ('compare_training_results', '兼容旧工具名 compare_training_results。用于对比两次训练结果。'),
-        ):
+    for canonical_name, aliases in (
+        ('inspect_prediction_outputs', (
+            ('inspect_prediction_output', '兼容旧工具名 inspect_prediction_output。用于检查 prediction 输出目录和产物结构。'),
+            ('show_prediction_outputs', '兼容旧工具名 show_prediction_outputs。用于检查 prediction 输出目录和产物结构。'),
+            ('prediction_output_overview', '兼容旧工具名 prediction_output_overview。用于检查 prediction 输出目录和产物结构。'),
+        )),
+        ('export_prediction_report', (
+            ('export_prediction_summary', '兼容旧工具名 export_prediction_summary。用于导出可读的 prediction 报告。'),
+            ('write_prediction_report', '兼容旧工具名 write_prediction_report。用于导出可读的 prediction 报告。'),
+        )),
+        ('export_prediction_path_lists', (
+            ('export_prediction_paths', '兼容旧工具名 export_prediction_paths。用于导出 prediction 命中/空结果路径清单。'),
+        )),
+        ('organize_prediction_results', (
+            ('collect_prediction_hits', '兼容旧工具名 collect_prediction_hits。用于把命中 prediction 结果整理到新目录。'),
+            ('group_prediction_results', '兼容旧工具名 group_prediction_results。用于按类别整理 prediction 结果。'),
+        )),
+    ):
+        if canonical_name not in tool_map:
+            continue
+        for alias_name, description in aliases:
             alias_tools.append(
                 _build_alias_tool(
                     alias_name,
-                    tool_map['compare_training_runs'],
+                    tool_map[canonical_name],
                     description=description,
-                    args_schema=_TrainingRunAliasArgs,
-                )
-            )
-    if 'select_best_training_run' in tool_map:
-        for alias_name, description in (
-            ('best_training_run', '兼容旧工具名 best_training_run。用于选出最值得参考的一次训练。'),
-            ('pick_best_training_run', '兼容旧工具名 pick_best_training_run。用于选出最值得参考的一次训练。'),
-        ):
-            alias_tools.append(
-                _build_alias_tool(
-                    alias_name,
-                    tool_map['select_best_training_run'],
-                    description=description,
-                    args_schema=_TrainingRunAliasArgs,
+                    args_schema=_PredictManagementAliasArgs,
                 )
             )
     for canonical_name, aliases in (

@@ -27,6 +27,10 @@ def main() -> None:
     assert canonical_tool_name('predict_directory') == 'predict_images'
     assert canonical_tool_name('predict_video_directory') == 'predict_videos'
     assert canonical_tool_name('summarize_predictions') == 'summarize_prediction_results'
+    assert canonical_tool_name('inspect_prediction_output') == 'inspect_prediction_outputs'
+    assert canonical_tool_name('export_prediction_summary') == 'export_prediction_report'
+    assert canonical_tool_name('export_prediction_paths') == 'export_prediction_path_lists'
+    assert canonical_tool_name('collect_prediction_hits') == 'organize_prediction_results'
     assert canonical_tool_name('preview_convert_labels') == 'preview_convert_format'
     assert canonical_tool_name('convert_labels_format') == 'convert_format'
     assert canonical_tool_name('preview_replace_labels') == 'preview_modify_labels'
@@ -35,8 +39,6 @@ def main() -> None:
     assert canonical_tool_name('create_empty_labels') == 'generate_empty_labels'
     assert canonical_tool_name('preview_group_by_class') == 'preview_categorize_by_class'
     assert canonical_tool_name('group_by_class') == 'categorize_by_class'
-    assert canonical_tool_name('compare_training_history') == 'compare_training_runs'
-    assert canonical_tool_name('best_training_run') == 'select_best_training_run'
 
     health_args = normalize_tool_args('detect_corrupted_images', {'path': '/data/set'})
     assert health_args['dataset_path'] == '/data/set'
@@ -65,6 +67,26 @@ def main() -> None:
     predict_summary_args = normalize_tool_args('summarize_predictions', {'path': '/tmp/predict/prediction_report.json'})
     assert predict_summary_args['report_path'] == '/tmp/predict/prediction_report.json'
 
+    inspect_args = normalize_tool_args('inspect_prediction_output', {'folder': '/tmp/predict'})
+    assert inspect_args['output_dir'] == '/tmp/predict'
+
+    export_report_args = normalize_tool_args(
+        'export_prediction_summary',
+        {'path': '/tmp/predict/prediction_report.json', 'out_dir': '/tmp/out/report.md', 'format': 'markdown'},
+    )
+    assert export_report_args['report_path'] == '/tmp/predict/prediction_report.json'
+    assert export_report_args['export_path'] == '/tmp/out/report.md'
+    assert export_report_args['export_format'] == 'markdown'
+
+    export_paths_args = normalize_tool_args('export_prediction_paths', {'folder': '/tmp/predict', 'out_dir': '/tmp/lists'})
+    assert export_paths_args['output_dir'] == '/tmp/predict'
+    assert export_paths_args['export_dir'] == '/tmp/lists'
+
+    organize_args = normalize_tool_args('collect_prediction_hits', {'folder': '/tmp/predict', 'out_dir': '/tmp/hits', 'mode': 'by_class'})
+    assert organize_args['output_dir'] == '/tmp/predict'
+    assert organize_args['destination_dir'] == '/tmp/hits'
+    assert organize_args['organize_by'] == 'by_class'
+
     convert_args = normalize_tool_args('convert_labels_format', {'path': '/data/set', 'format': 'xml'})
     assert convert_args['dataset_path'] == '/data/set'
     assert convert_args['target_format'] == 'xml'
@@ -90,6 +112,10 @@ def main() -> None:
         StructuredTool.from_function(func=_noop, name='predict_images', description='predict'),
         StructuredTool.from_function(func=_noop, name='predict_videos', description='predict-videos'),
         StructuredTool.from_function(func=_noop, name='summarize_prediction_results', description='predict-summary'),
+        StructuredTool.from_function(func=_noop, name='inspect_prediction_outputs', description='predict-inspect'),
+        StructuredTool.from_function(func=_noop, name='export_prediction_report', description='predict-export'),
+        StructuredTool.from_function(func=_noop, name='export_prediction_path_lists', description='predict-paths'),
+        StructuredTool.from_function(func=_noop, name='organize_prediction_results', description='predict-organize'),
         StructuredTool.from_function(func=_noop, name='preview_convert_format', description='preview-convert'),
         StructuredTool.from_function(func=_noop, name='convert_format', description='convert'),
         StructuredTool.from_function(func=_noop, name='preview_modify_labels', description='preview-modify'),
@@ -98,8 +124,6 @@ def main() -> None:
         StructuredTool.from_function(func=_noop, name='generate_empty_labels', description='empty'),
         StructuredTool.from_function(func=_noop, name='preview_categorize_by_class', description='preview-categorize'),
         StructuredTool.from_function(func=_noop, name='categorize_by_class', description='categorize'),
-        StructuredTool.from_function(func=_noop, name='compare_training_runs', description='compare-training'),
-        StructuredTool.from_function(func=_noop, name='select_best_training_run', description='best-training'),
     ]
     adapted = adapt_tools_for_chat_model(tools)
     names = {tool.name for tool in adapted}
@@ -117,6 +141,14 @@ def main() -> None:
         'summarize_predictions',
         'summarize_prediction_report',
         'analyze_prediction_report',
+        'inspect_prediction_output',
+        'show_prediction_outputs',
+        'prediction_output_overview',
+        'export_prediction_summary',
+        'write_prediction_report',
+        'export_prediction_paths',
+        'collect_prediction_hits',
+        'group_prediction_results',
         'preview_convert_labels',
         'convert_labels_format',
         'preview_replace_labels',
@@ -125,10 +157,6 @@ def main() -> None:
         'create_empty_labels',
         'preview_group_by_class',
         'group_by_class',
-        'compare_training_history',
-        'compare_training_results',
-        'best_training_run',
-        'pick_best_training_run',
     ):
         assert alias in names, names
 
