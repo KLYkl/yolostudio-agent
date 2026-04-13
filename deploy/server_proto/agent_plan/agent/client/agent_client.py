@@ -454,6 +454,11 @@ class YoloStudioAgentClient:
         prediction_path = self._extract_dataset_path_from_text(user_text) or self.session_state.active_prediction.source_path
         normalized_text = user_text.lower()
         metric_signals = self._extract_metric_signals_from_text(user_text)
+        has_training_context = bool(
+            self.session_state.active_training.training_run_summary
+            or self.session_state.active_training.last_summary
+            or self.session_state.active_training.last_status
+        )
         wants_train = any(token in normalized_text for token in ('train', 'fine-tune', 'fit')) or ('训练' in user_text)
         no_train = any(token in user_text for token in ('不要训练', '不训练', '只检查', '仅检查', '不要启动'))
         wants_duplicates = ('重复' in user_text) or ('duplicate' in normalized_text)
@@ -472,24 +477,111 @@ class YoloStudioAgentClient:
             '视频' in user_text and any(token in user_text for token in ('扫描', '统计', '多少'))
         ) or ('scan videos' in normalized_text)
         wants_extract_frames = any(token in user_text for token in ('抽帧', '提帧')) or ('extract frames' in normalized_text)
-        wants_predict = any(token in normalized_text for token in ('predict', 'infer')) or any(token in user_text for token in ('预测', '推理', '识别'))
+        wants_predict = bool(re.search(r'\b(predict|prediction|infer|inference)\b', normalized_text)) or any(token in user_text for token in ('预测', '推理', '识别'))
         wants_prediction_summary = any(token in user_text for token in ('预测结果', '预测摘要', '总结一下预测', '刚才预测'))
         asks_metric_terms = any(token in normalized_text for token in ('precision', 'recall', 'map', 'loss', 'epoch', 'epochs', 'batch', 'imgsz', 'patience', 'lr')) or any(token in user_text for token in ('精确率', '召回', '损失', '学习率', '轮数', '批大小'))
         wants_training_outcome_analysis = (
             any(token in user_text for token in ('训练效果怎么样', '这次训练效果怎么样', '训练结果怎么样', '训练效果如何', '结果更像', '训练效果'))
+            or any(token in user_text for token in ('是不是已经收敛了', '已经收敛了吗', '收敛了吗'))
+            or (
+                has_training_context
+                and any(token in user_text for token in ('效果怎么样', '结果怎么样', '效果如何', '结果如何'))
+            )
             or (asks_metric_terms and any(token in user_text for token in ('怎么看', '说明什么', '意味着什么', '结果如何')))
         )
         wants_training_status = (
             any(token in user_text for token in (
                 '训练状态', '当前训练状态', '训练进度', '当前进度',
-                '还在训练吗', '还在跑吗',
+                '还在训练吗', '训练还在吗', '刚才训练还在吗', '上次训练还在吗', '还在跑吗',
                 '训练到哪了', '训练到第几轮', '跑到第几轮',
-                '训练停了吗', '停了吗', '训练结束了吗', '结束了没', '跑完了吗', '训练完成了吗'
+                '第几轮了', '到第几轮了', '现在第几轮了',
+                '现在状态呢',
+                '训练停了吗', '停了吗', '训练结束了吗', '结束了没', '跑完了吗', '训练完成了吗',
+                '训练失败了吗', '失败了吗', '是不是训练失败了', '是不是失败了', '训练挂了吗'
             ))
-            or any(token in normalized_text for token in ('training status', 'training progress', 'check status', 'is training done', 'training finished'))
+            or any(token in normalized_text for token in ('training status', 'training progress', 'check status', 'is training done', 'training finished', 'training failed', 'did training fail'))
+        )
+        references_prior_statement = any(token in user_text for token in ('你上次不是说', '你不是说过'))
+        wants_training_run_compare = any(token in user_text for token in (
+            '对比最近两次训练', '比较最近两次训练', '最近两次训练对比',
+            '对比两次训练', '比较两次训练', '训练结果对比', '训练记录对比',
+            '刚刚那次和上次比哪个好',
+        )) or any(token in normalized_text for token in ('compare training runs', 'compare last two runs'))
+        wants_best_training_run = any(token in user_text for token in (
+            '最近哪次训练最好', '哪次训练最好', '最好的训练记录', '最好的训练结果',
+            '最近哪次最值得参考', '哪次最值得参考',
+            '最值得参考的训练记录', '最值得参考的训练结果',
+        )) or any(token in normalized_text for token in ('best training run', 'best run'))
+        if references_prior_statement:
+            wants_training_run_compare = False
+            wants_best_training_run = False
+        wants_stop_training = any(token in user_text for token in (
+            '停止训练', '停掉训练', '停一下训练', '先停训练', '先把训练停掉', '停止当前训练', '先停一下', '再停一次', '再停一下',
+        )) or any(token in normalized_text for token in ('stop training', 'stop current training'))
+        wants_training_run_list = any(token in user_text for token in (
+            '最近训练有哪些', '最近一次训练', '训练历史', '训练记录'
+        )) or any(token in normalized_text for token in ('recent training runs', 'training history', 'list training runs'))
+        wants_failed_training_run_list = any(token in user_text for token in ('失败的训练', '失败训练', '失败记录'))
+        wants_completed_training_run_list = any(token in user_text for token in ('已完成的训练', '完成的训练', '跑完的训练'))
+        wants_stopped_training_run_list = any(token in user_text for token in ('停止的训练', '中断的训练', '停掉的训练'))
+        wants_running_training_run_list = any(token in user_text for token in ('运行中的训练', '还在跑的训练', '正在训练的记录'))
+        wants_analysis_ready_run_list = any(token in user_text for token in ('可分析的训练', '有完整指标的训练', '值得分析的训练'))
+        explicit_run_ids = self._extract_training_run_ids_from_text(user_text)
+        explicit_run_outcome_phrase = bool(explicit_run_ids) and any(
+            token in user_text for token in (
+                '效果怎么样', '结果怎么样', '效果如何', '结果如何',
+                '怎么看', '说明什么', '意味着什么',
+                '是不是已经收敛了', '已经收敛了吗', '收敛了吗',
+            )
+        )
+        explicit_compare_hint = any(token in user_text for token in ('对比', '比较', '哪个好', '哪次更好'))
+        repeat_training_run_compare = any(
+            token in user_text
+            for token in (
+                '刚才那个对比再比较一次',
+                '刚才那个对比再来一次',
+                '把刚才那两次训练再比较一次',
+                '把刚才那两次训练重新比较',
+                '再比较一次',
+                '再对比一次',
+                '重新比较一下',
+                '重新对比一下',
+            )
+        )
+        comparison_run_ids: list[str] = list(explicit_run_ids)
+        if references_prior_statement:
+            comparison_run_ids = []
+        if repeat_training_run_compare and not comparison_run_ids:
+            last_comparison = self.session_state.active_training.last_run_comparison or {}
+            left_run = last_comparison.get('left_run') or {}
+            right_run = last_comparison.get('right_run') or {}
+            left_run_id = str(left_run.get('run_id') or left_run.get('log_file') or '').strip()
+            right_run_id = str(right_run.get('run_id') or right_run.get('log_file') or '').strip()
+            if left_run_id:
+                comparison_run_ids.append(left_run_id)
+            if right_run_id:
+                comparison_run_ids.append(right_run_id)
+        wants_training_run_compare = wants_training_run_compare or (bool(comparison_run_ids) and (repeat_training_run_compare or explicit_compare_hint))
+        wants_training_run_inspect = (not references_prior_statement) and bool(explicit_run_ids) and any(
+            token in user_text for token in ('详情', '记录', '具体情况')
         )
         wants_next_step_guidance = any(token in user_text for token in ('下一步', '先补数据还是先调参数', '先补数据', '先调参数', '怎么优化', '如何优化下一步训练', '下一轮怎么做'))
         wants_training_knowledge = bool(metric_signals) or (asks_metric_terms and any(token in user_text for token in ('说明什么', '什么意思', '意味着什么', '怎么看')))
+        wants_training_provenance = any(token in user_text for token in (
+            '你基于哪次训练说的', '你是基于哪次训练说的', '基于哪次训练', '根据哪次训练', '依据哪次训练',
+            '你上次不是说', '你不是说过',
+        )) and any(
+            token in user_text or token in normalized_text
+            for token in ('训练', 'run', '最好', '最值得参考', '分析', '结论')
+        )
+        wants_training_evidence = any(token in user_text for token in (
+            '依据是什么', '根据什么说的', '为什么这么说', '为什么说数据有问题',
+        ))
+        wants_best_training_run_analysis = wants_best_training_run and (
+            wants_training_outcome_analysis
+            or any(token in user_text for token in ('怎么看', '结果怎么样', '结果如何', '效果怎么样', '效果如何', '意味着什么'))
+        )
+        wants_training_outcome_analysis = wants_training_outcome_analysis or explicit_run_outcome_phrase
         readiness_only_query = wants_readiness and (no_train or any(token in user_text for token in ('吗', '是否', '能不能', '可不可以')))
         training_command_like = any(token in user_text for token in ('开始训练', '启动训练', '训练这个数据', '用这个数据训练', '直接开训', 'start_training'))
 
@@ -533,8 +625,77 @@ class YoloStudioAgentClient:
         if dataset_path and readiness_only_query:
             return await self._complete_readiness_knowledge_reply(dataset_path)
 
+        if wants_training_run_compare and wants_next_step_guidance and not wants_predict and not training_command_like:
+            compare_kwargs: dict[str, Any] = {}
+            if comparison_run_ids:
+                compare_kwargs['left_run_id'] = comparison_run_ids[0]
+                if len(comparison_run_ids) > 1:
+                    compare_kwargs['right_run_id'] = comparison_run_ids[1]
+            return await self._complete_training_compare_next_step_reply(**compare_kwargs)
+
+        if wants_best_training_run and wants_next_step_guidance and not wants_predict and not training_command_like:
+            return await self._complete_best_training_next_step_reply()
+
+        if wants_training_run_compare and wants_training_outcome_analysis and not wants_predict and not training_command_like:
+            compare_kwargs: dict[str, Any] = {}
+            if comparison_run_ids:
+                compare_kwargs['left_run_id'] = comparison_run_ids[0]
+                if len(comparison_run_ids) > 1:
+                    compare_kwargs['right_run_id'] = comparison_run_ids[1]
+            return await self._complete_training_compare_analysis_reply(**compare_kwargs)
+
+        if wants_best_training_run_analysis and not wants_predict and not training_command_like:
+            return await self._complete_best_training_outcome_analysis_reply()
+
+        if explicit_run_ids and wants_next_step_guidance and not wants_predict and not training_command_like and not wants_training_run_compare:
+            return await self._complete_specific_training_run_next_step_reply(explicit_run_ids[0])
+
+        if explicit_run_ids and wants_training_outcome_analysis and not wants_predict and not training_command_like and not wants_training_run_compare:
+            return await self._complete_specific_training_run_outcome_analysis_reply(explicit_run_ids[0])
+
+        if wants_training_run_compare and not wants_predict and not training_command_like:
+            compare_kwargs: dict[str, Any] = {}
+            if comparison_run_ids:
+                compare_kwargs['left_run_id'] = comparison_run_ids[0]
+                if len(comparison_run_ids) > 1:
+                    compare_kwargs['right_run_id'] = comparison_run_ids[1]
+            return await self._complete_direct_tool_reply('compare_training_runs', **compare_kwargs)
+
+        if wants_best_training_run and not wants_predict and not training_command_like:
+            return await self._complete_direct_tool_reply('select_best_training_run')
+
+        if wants_training_run_inspect and not wants_predict and not training_command_like:
+            return await self._complete_direct_tool_reply('inspect_training_run', run_id=explicit_run_ids[0])
+
+        if wants_failed_training_run_list and not wants_predict and not training_command_like:
+            return await self._complete_direct_tool_reply('list_training_runs', run_state='failed')
+
+        if wants_completed_training_run_list and not wants_predict and not training_command_like:
+            return await self._complete_direct_tool_reply('list_training_runs', run_state='completed')
+
+        if wants_stopped_training_run_list and not wants_predict and not training_command_like:
+            return await self._complete_direct_tool_reply('list_training_runs', run_state='stopped')
+
+        if wants_running_training_run_list and not wants_predict and not training_command_like:
+            return await self._complete_direct_tool_reply('list_training_runs', run_state='running')
+
+        if wants_analysis_ready_run_list and not wants_predict and not training_command_like:
+            return await self._complete_direct_tool_reply('list_training_runs', analysis_ready=True)
+
+        if wants_training_run_list and not wants_predict and not training_command_like:
+            return await self._complete_direct_tool_reply('list_training_runs')
+
         if wants_training_status and not wants_predict and not training_command_like:
             return await self._complete_direct_tool_reply('check_training_status')
+
+        if wants_stop_training and not wants_predict and not training_command_like:
+            return await self._complete_direct_tool_reply('stop_training')
+
+        if not wants_predict and not training_command_like and wants_training_provenance:
+            return self._complete_training_provenance_reply()
+
+        if not wants_predict and not training_command_like and wants_training_evidence:
+            return self._complete_training_evidence_reply()
 
         if not wants_predict and not training_command_like and wants_next_step_guidance:
             return await self._complete_next_training_step_reply(dataset_path if dataset_path else '')
@@ -810,6 +971,7 @@ class YoloStudioAgentClient:
             'analyze_training_outcome',
             metrics=training_summary,
             data_quality=self.session_state.active_dataset.last_health_check or self.session_state.active_dataset.last_validate,
+            comparison=self.session_state.active_training.last_run_comparison,
             prediction_summary=self.session_state.active_prediction.last_result,
             model_family='yolo',
             task_type='detection',
@@ -827,6 +989,129 @@ class YoloStudioAgentClient:
             'tool_call': None,
         }
 
+    async def _complete_specific_training_run_outcome_analysis_reply(self, run_id: str) -> dict[str, Any]:
+        inspection = await self.direct_tool('inspect_training_run', run_id=run_id)
+        result = await self.direct_tool(
+            'analyze_training_outcome',
+            metrics=inspection,
+            data_quality=self.session_state.active_dataset.last_health_check or self.session_state.active_dataset.last_validate,
+            comparison=self.session_state.active_training.last_run_comparison,
+            prediction_summary=self.session_state.active_prediction.last_result,
+            model_family='yolo',
+            task_type='detection',
+        )
+        reply = self._merge_grounded_sections([
+            self._build_grounded_tool_reply([('inspect_training_run', inspection)]),
+            self._build_grounded_tool_reply([('analyze_training_outcome', result)]),
+        ])
+        if not reply:
+            reply = result.get('summary') or inspection.get('summary') or result.get('error') or '指定训练结果分析已完成'
+        self._messages.append(AIMessage(content=reply))
+        return {
+            'status': 'completed' if inspection.get('ok', True) and result.get('ok', True) else 'error',
+            'message': reply,
+            'tool_call': None,
+        }
+
+    async def _complete_best_training_outcome_analysis_reply(self) -> dict[str, Any]:
+        selection = await self.direct_tool('select_best_training_run')
+        best_run = selection.get('best_run') if selection.get('ok') else None
+        result = await self.direct_tool(
+            'analyze_training_outcome',
+            metrics=best_run or self.session_state.active_training.training_run_summary or self.session_state.active_training.last_summary or self.session_state.active_training.last_status,
+            data_quality=self.session_state.active_dataset.last_health_check or self.session_state.active_dataset.last_validate,
+            prediction_summary=self.session_state.active_prediction.last_result,
+            model_family='yolo',
+            task_type='detection',
+        )
+        reply = self._merge_grounded_sections([
+            self._build_grounded_tool_reply([('select_best_training_run', selection)]),
+            self._build_grounded_tool_reply([('analyze_training_outcome', result)]),
+        ])
+        if not reply:
+            reply = result.get('summary') or selection.get('summary') or result.get('error') or '最佳训练结果分析已完成'
+        self._messages.append(AIMessage(content=reply))
+        return {
+            'status': 'completed' if selection.get('ok', True) and result.get('ok', True) else 'error',
+            'message': reply,
+            'tool_call': None,
+        }
+
+    async def _complete_training_compare_analysis_reply(self, left_run_id: str = '', right_run_id: str = '') -> dict[str, Any]:
+        comparison = await self.direct_tool('compare_training_runs', left_run_id=left_run_id, right_run_id=right_run_id)
+        latest_run = comparison.get('left_run') if comparison.get('ok') else None
+        result = await self.direct_tool(
+            'analyze_training_outcome',
+            metrics=latest_run or self.session_state.active_training.training_run_summary or self.session_state.active_training.last_summary or self.session_state.active_training.last_status,
+            data_quality=self.session_state.active_dataset.last_health_check or self.session_state.active_dataset.last_validate,
+            comparison=comparison if comparison.get('ok') else None,
+            prediction_summary=self.session_state.active_prediction.last_result,
+            model_family='yolo',
+            task_type='detection',
+        )
+        reply = self._merge_grounded_sections([
+            self._build_grounded_tool_reply([('compare_training_runs', comparison)]),
+            self._build_grounded_tool_reply([('analyze_training_outcome', result)]),
+        ])
+        if not reply:
+            reply = result.get('summary') or comparison.get('summary') or result.get('error') or '训练对比分析已完成'
+        self._messages.append(AIMessage(content=reply))
+        return {
+            'status': 'completed' if comparison.get('ok', True) and result.get('ok', True) else 'error',
+            'message': reply,
+            'tool_call': None,
+        }
+
+    async def _complete_specific_training_run_next_step_reply(self, run_id: str) -> dict[str, Any]:
+        inspection = await self.direct_tool('inspect_training_run', run_id=run_id)
+        result = await self.direct_tool(
+            'recommend_next_training_step',
+            readiness=self.session_state.active_dataset.last_readiness,
+            health=self.session_state.active_dataset.last_health_check,
+            status=inspection,
+            comparison=self.session_state.active_training.last_run_comparison,
+            prediction_summary=self.session_state.active_prediction.last_result,
+            model_family='yolo',
+            task_type='detection',
+        )
+        reply = self._merge_grounded_sections([
+            self._build_grounded_tool_reply([('inspect_training_run', inspection)]),
+            self._build_grounded_tool_reply([('recommend_next_training_step', result)]),
+        ])
+        if not reply:
+            reply = result.get('summary') or inspection.get('summary') or result.get('error') or '指定训练的下一步建议已生成'
+        self._messages.append(AIMessage(content=reply))
+        return {
+            'status': 'completed' if inspection.get('ok', True) and result.get('ok', True) else 'error',
+            'message': reply,
+            'tool_call': None,
+        }
+
+    async def _complete_best_training_next_step_reply(self) -> dict[str, Any]:
+        selection = await self.direct_tool('select_best_training_run')
+        best_run = selection.get('best_run') if selection.get('ok') else None
+        result = await self.direct_tool(
+            'recommend_next_training_step',
+            readiness=self.session_state.active_dataset.last_readiness,
+            health=self.session_state.active_dataset.last_health_check,
+            status=best_run or self.session_state.active_training.training_run_summary or self.session_state.active_training.last_summary or self.session_state.active_training.last_status,
+            prediction_summary=self.session_state.active_prediction.last_result,
+            model_family='yolo',
+            task_type='detection',
+        )
+        reply = self._merge_grounded_sections([
+            self._build_grounded_tool_reply([('select_best_training_run', selection)]),
+            self._build_grounded_tool_reply([('recommend_next_training_step', result)]),
+        ])
+        if not reply:
+            reply = result.get('summary') or selection.get('summary') or result.get('error') or '最佳训练的下一步建议已生成'
+        self._messages.append(AIMessage(content=reply))
+        return {
+            'status': 'completed' if selection.get('ok', True) and result.get('ok', True) else 'error',
+            'message': reply,
+            'tool_call': None,
+        }
+
     async def _complete_next_training_step_reply(self, dataset_path: str = '') -> dict[str, Any]:
         readiness: dict[str, Any] | None = None
         if dataset_path:
@@ -837,6 +1122,7 @@ class YoloStudioAgentClient:
             readiness=readiness or self.session_state.active_dataset.last_readiness,
             health=self.session_state.active_dataset.last_health_check,
             status=training_summary,
+            comparison=self.session_state.active_training.last_run_comparison,
             prediction_summary=self.session_state.active_prediction.last_result,
             model_family='yolo',
             task_type='detection',
@@ -855,6 +1141,105 @@ class YoloStudioAgentClient:
             'message': reply,
             'tool_call': None,
         }
+
+    async def _complete_training_compare_next_step_reply(self, left_run_id: str = '', right_run_id: str = '') -> dict[str, Any]:
+        comparison = await self.direct_tool('compare_training_runs', left_run_id=left_run_id, right_run_id=right_run_id)
+        latest_run = comparison.get('left_run') if comparison.get('ok') else None
+        result = await self.direct_tool(
+            'recommend_next_training_step',
+            readiness=self.session_state.active_dataset.last_readiness,
+            health=self.session_state.active_dataset.last_health_check,
+            status=latest_run or self.session_state.active_training.training_run_summary or self.session_state.active_training.last_summary or self.session_state.active_training.last_status,
+            comparison=comparison if comparison.get('ok') else None,
+            prediction_summary=self.session_state.active_prediction.last_result,
+            model_family='yolo',
+            task_type='detection',
+        )
+        reply = self._merge_grounded_sections([
+            self._build_grounded_tool_reply([('compare_training_runs', comparison)]),
+            self._build_grounded_tool_reply([('recommend_next_training_step', result)]),
+        ])
+        if not reply:
+            reply = result.get('summary') or comparison.get('summary') or result.get('error') or '训练对比后的下一步建议已生成'
+        self._messages.append(AIMessage(content=reply))
+        return {
+            'status': 'completed' if comparison.get('ok', True) and result.get('ok', True) else 'error',
+            'message': reply,
+            'tool_call': None,
+        }
+
+    def _complete_training_provenance_reply(self) -> dict[str, Any]:
+        tr = self.session_state.active_training
+        lines: list[str] = []
+        comparison = tr.last_run_comparison or {}
+        best_selection = tr.best_run_selection or {}
+        inspected = tr.last_run_inspection or {}
+        summary = tr.training_run_summary or tr.last_summary or tr.last_status or {}
+
+        if comparison:
+            left_run = comparison.get('left_run') or {}
+            right_run = comparison.get('right_run') or {}
+            left_id = str(left_run.get('run_id') or left_run.get('log_file') or '最近一次训练').strip()
+            right_id = str(right_run.get('run_id') or right_run.get('log_file') or '上一次训练').strip()
+            lines.append(f'我当前主要基于训练对比结果：{left_id} 对比 {right_id}。')
+            if comparison.get('summary'):
+                lines.append(f"- 对比摘要: {comparison.get('summary')}")
+        elif best_selection:
+            best_run = best_selection.get('best_run') or {}
+            best_id = str(best_run.get('run_id') or best_run.get('log_file') or '最近最佳训练').strip()
+            lines.append(f'我当前主要基于最值得参考的训练记录：{best_id}。')
+            if best_selection.get('summary'):
+                lines.append(f"- 选择依据: {best_selection.get('summary')}")
+        elif inspected:
+            selected_id = str(inspected.get('selected_run_id') or inspected.get('log_file') or '指定训练记录').strip()
+            lines.append(f'我当前主要基于你刚查看的训练记录：{selected_id}。')
+            if inspected.get('summary'):
+                lines.append(f"- 记录摘要: {inspected.get('summary')}")
+        elif summary:
+            run_label = str(summary.get('run_id') or summary.get('log_file') or summary.get('summary') or '最近一次训练').strip()
+            lines.append(f'我当前主要基于最近一次训练结果：{run_label}。')
+        else:
+            lines.append('我当前没有可追溯的训练依据；请先查看训练状态、训练详情、训练对比或最佳训练。')
+
+        reply = '\n'.join(lines)
+        self._messages.append(AIMessage(content=reply))
+        return {'status': 'completed', 'message': reply, 'tool_call': None}
+
+    def _complete_training_evidence_reply(self) -> dict[str, Any]:
+        tr = self.session_state.active_training
+        kn = self.session_state.active_knowledge
+        lines = ['当前判断主要基于这些事实：']
+
+        summary = tr.training_run_summary or tr.last_summary or tr.last_status or {}
+        if summary.get('summary'):
+            lines.append(f"- 训练事实: {summary.get('summary')}")
+        if summary.get('signals'):
+            lines.append(f"- 训练信号: {', '.join(str(item) for item in list(summary.get('signals') or [])[:4])}")
+
+        comparison = tr.last_run_comparison or {}
+        if comparison.get('summary'):
+            lines.append(f"- 对比依据: {comparison.get('summary')}")
+        if comparison.get('signals'):
+            lines.append(f"- 对比信号: {', '.join(str(item) for item in list(comparison.get('signals') or [])[:4])}")
+
+        analysis = kn.last_analysis or {}
+        if analysis.get('summary'):
+            lines.append(f"- 分析结论: {analysis.get('summary')}")
+        if analysis.get('signals'):
+            lines.append(f"- 分析信号: {', '.join(str(item) for item in list(analysis.get('signals') or [])[:4])}")
+
+        recommendation = kn.last_recommendation or {}
+        if recommendation.get('summary'):
+            lines.append(f"- 建议依据: {recommendation.get('summary')}")
+        if recommendation.get('recommended_action'):
+            lines.append(f"- 当前建议动作: {recommendation.get('recommended_action')}")
+
+        if len(lines) == 1:
+            lines.append('- 当前没有足够的训练分析上下文；请先查看训练结果或重新分析。')
+
+        reply = '\n'.join(lines)
+        self._messages.append(AIMessage(content=reply))
+        return {'status': 'completed', 'message': reply, 'tool_call': None}
 
     @staticmethod
     def _merge_grounded_sections(sections: list[str]) -> str:
@@ -895,6 +1280,10 @@ class YoloStudioAgentClient:
     @staticmethod
     def _extract_all_paths_from_text(text: str) -> list[str]:
         return extract_all_paths_from_text(text)
+
+    @staticmethod
+    def _extract_training_run_ids_from_text(text: str) -> list[str]:
+        return re.findall(r'train_log_[A-Za-z0-9_-]+', text)
 
     @staticmethod
     def _looks_like_model_path(path: str) -> bool:

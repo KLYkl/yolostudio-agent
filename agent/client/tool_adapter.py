@@ -38,6 +38,10 @@ TOOL_NAME_ALIASES: dict[str, str] = {
     'get_training_run': 'inspect_training_run',
     'show_training_run': 'inspect_training_run',
     'training_run_detail': 'inspect_training_run',
+    'compare_training_history': 'compare_training_runs',
+    'compare_training_results': 'compare_training_runs',
+    'best_training_run': 'select_best_training_run',
+    'pick_best_training_run': 'select_best_training_run',
 }
 
 _ARG_ALIASES: dict[str, dict[str, str]] = {
@@ -346,6 +350,14 @@ class _DataGovernanceAliasArgs(BaseModel):
     only_missing: bool = Field(default=True, description='是否仅处理缺失标签')
     include_no_label: bool = Field(default=True, description='分类时是否包含无标签图片')
 
+
+class _TrainingRunAliasArgs(BaseModel):
+    run_id: str = Field(default='', description='训练记录 ID')
+    left_run_id: str = Field(default='', description='左侧训练记录 ID')
+    right_run_id: str = Field(default='', description='右侧训练记录 ID')
+    limit: int = Field(default=5, description='候选训练记录数量')
+
+
 def _build_alias_tool(alias_name: str, target_tool: BaseTool, *, description: str, args_schema: type[BaseModel]) -> BaseTool:
     async def _arun(**kwargs: Any) -> str:
         result = await target_tool.ainvoke(normalize_tool_args(alias_name, kwargs))
@@ -445,6 +457,32 @@ def adapt_tools_for_chat_model(tools: list[BaseTool]) -> list[BaseTool]:
                     tool_map['summarize_prediction_results'],
                     description=description,
                     args_schema=_PredictSummaryAliasArgs,
+                )
+            )
+    if 'compare_training_runs' in tool_map:
+        for alias_name, description in (
+            ('compare_training_history', '兼容旧工具名 compare_training_history。用于对比两次训练记录。'),
+            ('compare_training_results', '兼容旧工具名 compare_training_results。用于对比两次训练结果。'),
+        ):
+            alias_tools.append(
+                _build_alias_tool(
+                    alias_name,
+                    tool_map['compare_training_runs'],
+                    description=description,
+                    args_schema=_TrainingRunAliasArgs,
+                )
+            )
+    if 'select_best_training_run' in tool_map:
+        for alias_name, description in (
+            ('best_training_run', '兼容旧工具名 best_training_run。用于选出最值得参考的一次训练。'),
+            ('pick_best_training_run', '兼容旧工具名 pick_best_training_run。用于选出最值得参考的一次训练。'),
+        ):
+            alias_tools.append(
+                _build_alias_tool(
+                    alias_name,
+                    tool_map['select_best_training_run'],
+                    description=description,
+                    args_schema=_TrainingRunAliasArgs,
                 )
             )
     for canonical_name, aliases in (

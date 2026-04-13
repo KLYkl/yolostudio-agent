@@ -83,6 +83,8 @@ class ContextBuilder:
             f'  last_summary: {_fmt_mapping(tr.last_summary)}\n'
             f'  training_run_summary: {_fmt_mapping(tr.training_run_summary)}\n'
             f'  last_run_inspection: {_fmt_mapping(tr.last_run_inspection)}\n'
+            f'  last_run_comparison: {_fmt_mapping(tr.last_run_comparison)}\n'
+            f'  best_run_selection: {_fmt_mapping(tr.best_run_selection)}\n'
             f'  training_plan_draft: {_fmt_mapping(tr.training_plan_draft)}\n'
             '预测:\n'
             f'  source_path: {pred.source_path or "未设置"}\n'

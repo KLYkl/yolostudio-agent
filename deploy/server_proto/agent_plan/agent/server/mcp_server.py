@@ -39,9 +39,11 @@ from yolostudio_agent.agent.server.tools.predict_tools import predict_images, pr
 from yolostudio_agent.agent.server.tools.train_tools import (
     check_gpu_status,
     check_training_status,
+    compare_training_runs,
     inspect_training_run,
     list_training_environments,
     list_training_runs,
+    select_best_training_run,
     start_training,
     stop_training,
     summarize_training_run,
@@ -84,6 +86,8 @@ mcp.tool()(list_training_environments)
 mcp.tool()(training_preflight)
 mcp.tool()(list_training_runs)
 mcp.tool()(inspect_training_run)
+mcp.tool()(compare_training_runs)
+mcp.tool()(select_best_training_run)
 mcp.tool()(start_training)
 mcp.tool()(check_training_status)
 mcp.tool()(summarize_training_run)

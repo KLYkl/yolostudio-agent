@@ -35,6 +35,8 @@ def main() -> None:
     assert canonical_tool_name('create_empty_labels') == 'generate_empty_labels'
     assert canonical_tool_name('preview_group_by_class') == 'preview_categorize_by_class'
     assert canonical_tool_name('group_by_class') == 'categorize_by_class'
+    assert canonical_tool_name('compare_training_history') == 'compare_training_runs'
+    assert canonical_tool_name('best_training_run') == 'select_best_training_run'
 
     health_args = normalize_tool_args('detect_corrupted_images', {'path': '/data/set'})
     assert health_args['dataset_path'] == '/data/set'
@@ -96,6 +98,8 @@ def main() -> None:
         StructuredTool.from_function(func=_noop, name='generate_empty_labels', description='empty'),
         StructuredTool.from_function(func=_noop, name='preview_categorize_by_class', description='preview-categorize'),
         StructuredTool.from_function(func=_noop, name='categorize_by_class', description='categorize'),
+        StructuredTool.from_function(func=_noop, name='compare_training_runs', description='compare-training'),
+        StructuredTool.from_function(func=_noop, name='select_best_training_run', description='best-training'),
     ]
     adapted = adapt_tools_for_chat_model(tools)
     names = {tool.name for tool in adapted}
@@ -121,6 +125,10 @@ def main() -> None:
         'create_empty_labels',
         'preview_group_by_class',
         'group_by_class',
+        'compare_training_history',
+        'compare_training_results',
+        'best_training_run',
+        'pick_best_training_run',
     ):
         assert alias in names, names
 

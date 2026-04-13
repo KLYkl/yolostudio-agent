@@ -100,23 +100,35 @@ def main() -> None:
         'resolved_args': {
             'model': '/models/yolov8n.pt',
             'data_yaml': '/data/dataset.yaml',
+            'project': '/runs/ablation',
+            'name': 'exp-blue',
             'batch': 16,
             'imgsz': 960,
+            'fraction': 0.5,
+            'classes': [1, 3],
+            'single_cls': False,
             'optimizer': 'AdamW',
             'freeze': 6,
             'resume': True,
+            'lr0': 0.003,
+            'patience': 12,
+            'workers': 2,
+            'amp': False,
         },
         'training_environment': {'name': 'yolodo', 'display_name': 'yolodo'},
-        'command_preview': ['yolo', 'train', 'model=/models/yolov8n.pt', 'data=/data/dataset.yaml', 'epochs=30', 'device=1', 'batch=16', 'imgsz=960', 'optimizer=AdamW', 'freeze=6', 'resume=True'],
+        'command_preview': ['yolo', 'train', 'model=/models/yolov8n.pt', 'data=/data/dataset.yaml', 'epochs=30', 'device=1', 'batch=16', 'imgsz=960', 'optimizer=AdamW', 'freeze=6', 'resume=True', 'lr0=0.003', 'patience=12', 'workers=2', 'amp=False'],
     })])
     assert '训练环境: yolodo' in preflight
+    assert '输出组织: project=/runs/ablation, name=exp-blue' in preflight
     assert '批大小: 16' in preflight
     assert '输入尺寸: 960' in preflight
-    assert '高级参数: optimizer=AdamW, freeze=6, resume=True' in preflight
+    assert '采样比例: 0.5' in preflight
+    assert '高级参数: classes=[1, 3], single_cls=False, optimizer=AdamW, freeze=6, resume=True, lr0=0.003, patience=12, workers=2, amp=False' in preflight
 
     runs = build_grounded_tool_reply([('list_training_runs', {
         'ok': True,
         'summary': '找到 2 条最近训练记录',
+        'applied_filters': {'run_state': 'failed', 'analysis_ready': True},
         'runs': [
             {
                 'run_id': 'train_log_111',
@@ -132,6 +144,7 @@ def main() -> None:
             },
         ],
     })])
+    assert '筛选: 状态=failed, 仅可分析训练' in runs
     assert '最近训练:' in runs
     assert 'train_log_111: stopped / 最终状态，进度 2/30' in runs
 
@@ -153,6 +166,22 @@ def main() -> None:
     assert '观察阶段: 最终状态' in inspect_run
     assert '模型: /models/yolov8n.pt' in inspect_run
     assert '事实:' in inspect_run
+
+    compare_runs = build_grounded_tool_reply([('compare_training_runs', {
+        'ok': True,
+        'summary': '训练对比完成: train_log_200 相比 train_log_100，precision提升 +0.1000；mAP50提升 +0.1000',
+        'left_run_id': 'train_log_200',
+        'right_run_id': 'train_log_100',
+        'highlights': ['precision提升 +0.1000', 'mAP50提升 +0.1000'],
+        'metric_deltas': {
+            'precision': {'left': 0.52, 'right': 0.42, 'delta': 0.1},
+            'map50': {'left': 0.465, 'right': 0.365, 'delta': 0.1},
+        },
+        'next_actions': ['可继续调用 inspect_training_run'],
+    })])
+    assert '对比对象: train_log_200 vs train_log_100' in compare_runs
+    assert '主要变化:' in compare_runs
+    assert '关键差异: precision=+0.1000，mAP50=+0.1000' in compare_runs
     print('grounded reply builder ok')
 
 

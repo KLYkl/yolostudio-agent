@@ -197,6 +197,16 @@ def build_grounded_tool_reply(applied_results: list[tuple[str, dict[str, Any]]])
         return _join(lines)
     if tool_name == 'list_training_runs':
         lines = [result.get('summary', '训练历史查询完成')]
+        applied_filters = result.get('applied_filters') or {}
+        filter_bits: list[str] = []
+        if applied_filters.get('run_state'):
+            filter_bits.append(f"状态={applied_filters.get('run_state')}")
+        if applied_filters.get('analysis_ready') is True:
+            filter_bits.append('仅可分析训练')
+        elif applied_filters.get('analysis_ready') is False:
+            filter_bits.append('仅未具备分析条件')
+        if filter_bits:
+            lines.append(f"筛选: {', '.join(str(item) for item in filter_bits)}")
         runs = result.get('runs') or []
         if runs:
             lines.append('最近训练:')
@@ -239,6 +249,43 @@ def build_grounded_tool_reply(applied_results: list[tuple[str, dict[str, Any]]])
         if facts:
             lines.append('事实:')
             lines.extend(f'- {item}' for item in facts[:3])
+        next_actions = result.get('next_actions') or []
+        if next_actions:
+            lines.append('建议:')
+            lines.extend(f'- {item}' for item in next_actions[:2])
+        return _join(lines)
+    if tool_name == 'compare_training_runs':
+        lines = [result.get('summary', '训练记录对比已完成')]
+        if result.get('left_run_id') and result.get('right_run_id'):
+            lines.append(f"对比对象: {result.get('left_run_id')} vs {result.get('right_run_id')}")
+        highlights = result.get('highlights') or []
+        if highlights:
+            lines.append('主要变化:')
+            lines.extend(f'- {item}' for item in highlights[:4])
+        metric_deltas = result.get('metric_deltas') or {}
+        preferred = []
+        for key, label in (('precision', 'precision'), ('recall', 'recall'), ('map50', 'mAP50'), ('map', 'mAP50-95')):
+            item = metric_deltas.get(key)
+            if isinstance(item, dict) and isinstance(item.get('delta'), (int, float)):
+                preferred.append(f"{label}={item.get('delta'):+.4f}")
+        if preferred:
+            lines.append('关键差异: ' + '，'.join(preferred))
+        next_actions = result.get('next_actions') or []
+        if next_actions:
+            lines.append('建议:')
+            lines.extend(f'- {item}' for item in next_actions[:2])
+        return _join(lines)
+    if tool_name == 'select_best_training_run':
+        lines = [result.get('summary', '最佳训练记录已选出')]
+        if result.get('best_run_id'):
+            lines.append(f"最佳训练: {result.get('best_run_id')}")
+        if result.get('ranking_basis'):
+            lines.append(f"选择依据: {result.get('ranking_basis')}")
+        candidates = result.get('candidates') or []
+        if candidates:
+            lines.append('候选记录:')
+            for item in candidates[:3]:
+                lines.append(f"- {item.get('run_id')}: {item.get('run_state')}")
         next_actions = result.get('next_actions') or []
         if next_actions:
             lines.append('建议:')

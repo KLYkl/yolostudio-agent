@@ -206,7 +206,11 @@ async def _run() -> None:
                 }
             elif tool_name == 'recommend_next_training_step':
                 status_payload = kwargs.get('status') or {}
-                if status_payload.get('run_state') == 'completed':
+                comparison_payload = kwargs.get('comparison') or {}
+                if comparison_payload:
+                    assert comparison_payload == client.session_state.active_training.last_run_comparison
+                    assert status_payload == comparison_payload.get('left_run')
+                elif status_payload.get('run_state') == 'completed':
                     assert status_payload == client.session_state.active_training.last_summary
                 else:
                     assert status_payload == client.session_state.active_training.last_status
@@ -250,8 +254,36 @@ async def _run() -> None:
                     'facts': ['precision=0.820', 'recall=0.360'],
                     'next_actions': ['可继续调用 analyze_training_outcome 解释训练效果'],
                 }
+            elif tool_name == 'compare_training_runs':
+                result = {
+                    'ok': True,
+                    'summary': '训练对比完成: train_log_200 相比 train_log_100，precision提升 +0.1000',
+                    'left_run_id': kwargs.get('left_run_id') or 'train_log_200',
+                    'right_run_id': kwargs.get('right_run_id') or 'train_log_100',
+                    'left_run': {
+                        'run_id': kwargs.get('left_run_id') or 'train_log_200',
+                        'run_state': 'completed',
+                        'observation_stage': 'final',
+                        'metrics': {'precision': 0.82, 'recall': 0.36, 'map50': 0.33, 'map': 0.18},
+                        'signals': ['training_completed', 'high_precision_low_recall'],
+                    },
+                    'right_run': {
+                        'run_id': kwargs.get('right_run_id') or 'train_log_100',
+                        'run_state': 'completed',
+                        'observation_stage': 'final',
+                        'metrics': {'precision': 0.72, 'recall': 0.35, 'map50': 0.27, 'map': 0.14},
+                    },
+                    'metric_deltas': {'precision': {'left': 0.82, 'right': 0.72, 'delta': 0.1}},
+                    'highlights': ['precision提升 +0.1000'],
+                    'next_actions': ['可继续调用 recommend_next_training_step'],
+                }
             elif tool_name == 'analyze_training_outcome':
-                assert kwargs['metrics'] == client.session_state.active_training.last_summary
+                comparison_payload = kwargs.get('comparison') or {}
+                if comparison_payload:
+                    assert comparison_payload == client.session_state.active_training.last_run_comparison
+                    assert kwargs['metrics'] == comparison_payload.get('left_run')
+                else:
+                    assert kwargs['metrics'] == client.session_state.active_training.last_summary
                 result = {
                     'ok': True,
                     'summary': '训练结果分析: 当前更像漏检问题。',
@@ -303,6 +335,22 @@ async def _run() -> None:
         assert '优先动作' in routed4['message']
         assert calls[-2][0] == 'summarize_training_run'
         assert calls[-1][0] == 'recommend_next_training_step'
+
+        routed5 = await client._try_handle_mainline_intent('对比最近两次训练后下一步怎么做？', 'thread-5')
+        assert routed5 is not None
+        assert routed5['status'] == 'completed'
+        assert '对比对象: train_log_200 vs train_log_100' in routed5['message']
+        assert '优先动作' in routed5['message']
+        assert calls[-2][0] == 'compare_training_runs'
+        assert calls[-1][0] == 'recommend_next_training_step'
+
+        routed6 = await client._try_handle_mainline_intent('对比最近两次训练效果怎么看？', 'thread-6')
+        assert routed6 is not None
+        assert routed6['status'] == 'completed'
+        assert '对比对象: train_log_200 vs train_log_100' in routed6['message']
+        assert '训练结果分析' in routed6['message']
+        assert calls[-2][0] == 'compare_training_runs'
+        assert calls[-1][0] == 'analyze_training_outcome'
         print('knowledge route smoke ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)
