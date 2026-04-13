@@ -177,6 +177,196 @@ def organize_prediction_results(
     return result
 
 
+def scan_cameras(max_devices: int = 5) -> dict[str, Any]:
+    """扫描当前环境可用的本地摄像头设备，返回 camera_id 列表，便于后续启动实时预测。"""
+    result = _wrap(
+        '摄像头扫描',
+        service.scan_cameras,
+        max_devices=max_devices,
+    )
+    if result.get('ok'):
+        result.setdefault('next_actions', [])
+        if result.get('camera_count', 0) > 0:
+            suggestion = '如需开始实时预测，可继续调用 start_camera_prediction'
+            if suggestion not in result['next_actions']:
+                result['next_actions'].insert(0, suggestion)
+    else:
+        result.setdefault('summary', '摄像头扫描未完成')
+        result.setdefault('next_actions', ['请确认当前环境已安装 opencv-python，且允许访问摄像头'])
+    return result
+
+
+def scan_screens() -> dict[str, Any]:
+    """扫描当前环境可用的屏幕/显示器，返回 screen_id 列表，便于后续启动屏幕预测。"""
+    result = _wrap(
+        '屏幕扫描',
+        service.scan_screens,
+    )
+    if result.get('ok'):
+        result.setdefault('next_actions', [])
+        if result.get('screen_count', 0) > 0:
+            suggestion = '如需开始屏幕预测，可继续调用 start_screen_prediction'
+            if suggestion not in result['next_actions']:
+                result['next_actions'].insert(0, suggestion)
+    else:
+        result.setdefault('summary', '屏幕扫描未完成')
+        result.setdefault('next_actions', ['请确认当前环境已安装 mss，且允许运行屏幕采集'])
+    return result
+
+
+def test_rtsp_stream(rtsp_url: str, timeout_ms: int = 5000) -> dict[str, Any]:
+    """测试 RTSP 地址是否可连通并能读取视频帧，不启动长时间预测。"""
+    result = _wrap(
+        'RTSP 流测试',
+        service.test_rtsp_stream,
+        rtsp_url=rtsp_url,
+        timeout_ms=timeout_ms,
+    )
+    if result.get('ok'):
+        result.setdefault('next_actions', [])
+        suggestion = '如需开始实时预测，可继续调用 start_rtsp_prediction'
+        if suggestion not in result['next_actions']:
+            result['next_actions'].insert(0, suggestion)
+    else:
+        result.setdefault('summary', 'RTSP 流测试未完成')
+        result.setdefault('next_actions', ['请确认 rtsp_url 是否可用，或先在当前环境做网络连通性检查'])
+    return result
+
+
+def start_camera_prediction(
+    model: str,
+    camera_id: int = 0,
+    conf: float = 0.25,
+    iou: float = 0.45,
+    output_dir: str = '',
+    frame_interval_ms: int = 100,
+    max_frames: int = 0,
+) -> dict[str, Any]:
+    """启动摄像头实时预测。默认只记录统计和 report，不改原始输入；需要结束时调用 stop_realtime_prediction。"""
+    result = _wrap(
+        '摄像头实时预测启动',
+        service.start_camera_prediction,
+        model=model,
+        camera_id=camera_id,
+        conf=conf,
+        iou=iou,
+        output_dir=output_dir,
+        frame_interval_ms=frame_interval_ms,
+        max_frames=max_frames,
+    )
+    if result.get('ok'):
+        result.setdefault('next_actions', [])
+        suggestion = '可继续调用 check_realtime_prediction_status 查看实时进度'
+        if suggestion not in result['next_actions']:
+            result['next_actions'].insert(0, suggestion)
+    else:
+        result.setdefault('summary', '摄像头实时预测未启动')
+        result.setdefault('next_actions', ['请先 scan_cameras 确认可用 camera_id，并检查模型路径'])
+    return result
+
+
+def start_rtsp_prediction(
+    model: str,
+    rtsp_url: str,
+    conf: float = 0.25,
+    iou: float = 0.45,
+    output_dir: str = '',
+    frame_interval_ms: int = 100,
+    max_frames: int = 0,
+) -> dict[str, Any]:
+    """启动 RTSP 实时预测。建议先用 test_rtsp_stream 确认地址可用。"""
+    result = _wrap(
+        'RTSP 实时预测启动',
+        service.start_rtsp_prediction,
+        model=model,
+        rtsp_url=rtsp_url,
+        conf=conf,
+        iou=iou,
+        output_dir=output_dir,
+        frame_interval_ms=frame_interval_ms,
+        max_frames=max_frames,
+    )
+    if result.get('ok'):
+        result.setdefault('next_actions', [])
+        suggestion = '可继续调用 check_realtime_prediction_status 查看实时进度'
+        if suggestion not in result['next_actions']:
+            result['next_actions'].insert(0, suggestion)
+    else:
+        result.setdefault('summary', 'RTSP 实时预测未启动')
+        result.setdefault('next_actions', ['建议先调用 test_rtsp_stream 验证地址可用，再启动 RTSP 预测'])
+    return result
+
+
+def start_screen_prediction(
+    model: str,
+    screen_id: int = 1,
+    conf: float = 0.25,
+    iou: float = 0.45,
+    output_dir: str = '',
+    frame_interval_ms: int = 100,
+    max_frames: int = 0,
+) -> dict[str, Any]:
+    """启动屏幕实时预测。默认按 screen_id 选择显示器并持续采集，直到 stop_realtime_prediction。"""
+    result = _wrap(
+        '屏幕实时预测启动',
+        service.start_screen_prediction,
+        model=model,
+        screen_id=screen_id,
+        conf=conf,
+        iou=iou,
+        output_dir=output_dir,
+        frame_interval_ms=frame_interval_ms,
+        max_frames=max_frames,
+    )
+    if result.get('ok'):
+        result.setdefault('next_actions', [])
+        suggestion = '可继续调用 check_realtime_prediction_status 查看实时进度'
+        if suggestion not in result['next_actions']:
+            result['next_actions'].insert(0, suggestion)
+    else:
+        result.setdefault('summary', '屏幕实时预测未启动')
+        result.setdefault('next_actions', ['建议先调用 scan_screens 确认可用 screen_id，再启动屏幕预测'])
+    return result
+
+
+def check_realtime_prediction_status(session_id: str = '') -> dict[str, Any]:
+    """查看当前或指定实时预测会话的运行状态、已处理帧数和检测统计。"""
+    result = _wrap(
+        '实时预测状态查询',
+        service.check_realtime_prediction_status,
+        session_id=session_id,
+    )
+    if result.get('ok'):
+        result.setdefault('next_actions', [])
+        if result.get('running'):
+            suggestion = '如需结束，可继续调用 stop_realtime_prediction'
+            if suggestion not in result['next_actions']:
+                result['next_actions'].insert(0, suggestion)
+    else:
+        result.setdefault('summary', '实时预测状态查询未完成')
+        result.setdefault('next_actions', ['请先启动摄像头 / RTSP / 屏幕实时预测'])
+    return result
+
+
+def stop_realtime_prediction(session_id: str = '') -> dict[str, Any]:
+    """停止当前或指定实时预测会话，并返回最终统计。"""
+    result = _wrap(
+        '实时预测停止',
+        service.stop_realtime_prediction,
+        session_id=session_id,
+    )
+    if result.get('ok'):
+        result.setdefault('next_actions', [])
+        if result.get('report_path'):
+            suggestion = f"可查看实时预测报告: {result.get('report_path')}"
+            if suggestion not in result['next_actions']:
+                result['next_actions'].insert(0, suggestion)
+    else:
+        result.setdefault('summary', '停止实时预测未完成')
+        result.setdefault('next_actions', ['当前没有运行中的实时预测会话'])
+    return result
+
+
 def predict_videos(
     source_path: str,
     model: str,

@@ -23,6 +23,7 @@ from yolostudio_agent.agent.server.services.prediction_runtime_helpers import (
 )
 from yolostudio_agent.agent.server.services.prediction_video_batch_helpers import predict_videos_batch
 from yolostudio_agent.agent.server.services.prediction_video_helpers import predict_single_video
+from yolostudio_agent.agent.server.services.realtime_predict_service import RealtimePredictService
 
 try:
     import cv2  # type: ignore
@@ -81,6 +82,7 @@ class PredictService:
         )
         self._output_root = root
         self._output_root.mkdir(parents=True, exist_ok=True)
+        self._realtime = RealtimePredictService(self._output_root)
 
     def predict_images(
         self,
@@ -224,6 +226,84 @@ class PredictService:
             include_empty=include_empty,
             artifact_preference=artifact_preference,
         )
+
+    def scan_cameras(self, *, max_devices: int = 5) -> dict[str, Any]:
+        return self._realtime.scan_cameras(max_devices=max_devices)
+
+    def scan_screens(self) -> dict[str, Any]:
+        return self._realtime.scan_screens()
+
+    def test_rtsp_stream(self, *, rtsp_url: str, timeout_ms: int = 5000) -> dict[str, Any]:
+        return self._realtime.test_rtsp_stream(rtsp_url=rtsp_url, timeout_ms=timeout_ms)
+
+    def start_camera_prediction(
+        self,
+        *,
+        model: str,
+        camera_id: int = 0,
+        conf: float = 0.25,
+        iou: float = 0.45,
+        output_dir: str = '',
+        frame_interval_ms: int = 100,
+        max_frames: int = 0,
+    ) -> dict[str, Any]:
+        return self._realtime.start_camera_prediction(
+            model=model,
+            camera_id=camera_id,
+            conf=conf,
+            iou=iou,
+            output_dir=output_dir,
+            frame_interval_ms=frame_interval_ms,
+            max_frames=max_frames,
+        )
+
+    def start_rtsp_prediction(
+        self,
+        *,
+        model: str,
+        rtsp_url: str,
+        conf: float = 0.25,
+        iou: float = 0.45,
+        output_dir: str = '',
+        frame_interval_ms: int = 100,
+        max_frames: int = 0,
+    ) -> dict[str, Any]:
+        return self._realtime.start_rtsp_prediction(
+            model=model,
+            rtsp_url=rtsp_url,
+            conf=conf,
+            iou=iou,
+            output_dir=output_dir,
+            frame_interval_ms=frame_interval_ms,
+            max_frames=max_frames,
+        )
+
+    def start_screen_prediction(
+        self,
+        *,
+        model: str,
+        screen_id: int = 1,
+        conf: float = 0.25,
+        iou: float = 0.45,
+        output_dir: str = '',
+        frame_interval_ms: int = 100,
+        max_frames: int = 0,
+    ) -> dict[str, Any]:
+        return self._realtime.start_screen_prediction(
+            model=model,
+            screen_id=screen_id,
+            conf=conf,
+            iou=iou,
+            output_dir=output_dir,
+            frame_interval_ms=frame_interval_ms,
+            max_frames=max_frames,
+        )
+
+    def check_realtime_prediction_status(self, *, session_id: str = '') -> dict[str, Any]:
+        return self._realtime.check_realtime_prediction_status(session_id=session_id)
+
+    def stop_realtime_prediction(self, *, session_id: str = '') -> dict[str, Any]:
+        return self._realtime.stop_realtime_prediction(session_id=session_id)
 
 
     def predict_videos(

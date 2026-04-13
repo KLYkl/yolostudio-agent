@@ -715,10 +715,21 @@ class YoloStudioAgentClient:
             token in user_text or token in normalized_text
             for token in ('分割', 'segmentation', 'segment', 'sam')
         )
-        wants_prediction_and_training_mix = wants_predict and (
+        prediction_only_with_training_exclusion = wants_predict and any(
+            token in user_text
+            for token in (
+                '不要把训练',
+                '别把训练',
+                '不要混进训练',
+                '训练准备的内容混进来',
+                '排除训练',
+                '只总结预测结果',
+            )
+        )
+        wants_prediction_and_training_mix = wants_predict and not prediction_only_with_training_exclusion and (
             wants_train or wants_training_run_compare or wants_best_training_run
         ) and any(token in user_text for token in ('然后', '再', '同时', '边训练边', '一边'))
-        wants_prediction_result_as_training_data = wants_train and any(
+        wants_prediction_result_as_training_data = not prediction_only_with_training_exclusion and wants_train and any(
             token in user_text for token in ('预测结果', 'prediction 结果', '预测输出', '推理结果', '识别结果')
         )
         wants_merge_extract_into_training = any(token in user_text for token in ('合并', '并到', '合到')) and any(
@@ -3082,7 +3093,21 @@ class YoloStudioAgentClient:
         normalized = user_text.lower()
         clear_fields = self._collect_training_clear_fields(user_text)
         discussion_only_hint = self._is_training_discussion_only(user_text) or any(token in user_text for token in ('不执行', '不要执行', '暂不执行', '先不执行'))
-        contradictory_train_intent = any(token in user_text for token in ('不要训练', '先不要训练', '不训练了')) and any(
+        training_readiness_question = any(
+            token in user_text
+            for token in (
+                '能不能直接训练',
+                '能否直接训练',
+                '可不可以直接训练',
+                '可以直接训练吗',
+                '是否可以直接训练',
+                '是否能直接训练',
+                '还能不能直接训练',
+                '可否直接训练',
+                '能直接训练吗',
+            )
+        )
+        contradictory_train_intent = not training_readiness_question and any(token in user_text for token in ('不要训练', '先不要训练', '不训练了')) and any(
             token in user_text for token in ('开始训练', '启动训练', '直接训练', '直接开始训练', '开训', '执行')
         )
         requested_execute = (

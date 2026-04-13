@@ -37,6 +37,7 @@ class ContextBuilder:
         pc = state.pending_confirmation
         pred = state.active_prediction
         kn = state.active_knowledge
+        rt = state.active_remote_transfer
         pref = state.preferences
         digest_text = digest.to_text() if digest else '无历史摘要'
         return (
@@ -90,10 +91,21 @@ class ContextBuilder:
             f'  output_dir: {pred.output_dir or "无"}\n'
             f'  report_path: {pred.report_path or "无"}\n'
             f'  last_result: {_fmt_mapping(pred.last_result)}\n'
+            f'  realtime_session_id: {pred.realtime_session_id or "无"}\n'
+            f'  realtime_source_type: {pred.realtime_source_type or "无"}\n'
+            f'  realtime_source_label: {pred.realtime_source_label or "无"}\n'
+            f'  realtime_status: {pred.realtime_status or "无"}\n'
+            f'  last_realtime_status: {_fmt_mapping(pred.last_realtime_status)}\n'
             '知识:\n'
             f'  last_retrieval: {_fmt_mapping(kn.last_retrieval)}\n'
             f'  last_analysis: {_fmt_mapping(kn.last_analysis)}\n'
             f'  last_recommendation: {_fmt_mapping(kn.last_recommendation)}\n'
+            '远端传输:\n'
+            f'  target_label: {rt.target_label or "无"}\n'
+            f'  profile_name: {rt.profile_name or "无"}\n'
+            f'  remote_root: {rt.remote_root or "无"}\n'
+            f'  last_profile_listing: {_fmt_mapping(rt.last_profile_listing)}\n'
+            f'  last_upload: {_fmt_mapping(rt.last_upload)}\n'
             '待确认操作:\n'
             f'  tool: {pc.tool_name or "无"}\n'
             f'  args: {_fmt_mapping(pc.tool_args)}\n'
