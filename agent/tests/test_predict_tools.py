@@ -106,6 +106,40 @@ def main() -> None:
         assert summary_by_dir['ok'] is True, summary_by_dir
         assert summary_by_dir['report_path'] == result['report_path'], summary_by_dir
 
+        inspection = predict_tools.inspect_prediction_outputs(output_dir=str(output_dir))
+        assert inspection['ok'] is True, inspection
+        assert inspection['output_dir'] == result['output_dir'], inspection
+        assert inspection['artifact_root_count'] >= 2, inspection
+
+        exported_report = predict_tools.export_prediction_report(
+            output_dir=str(output_dir),
+            export_format='markdown',
+        )
+        assert exported_report['ok'] is True, exported_report
+        assert Path(exported_report['export_path']).exists(), exported_report
+        assert exported_report['export_path'].endswith('.md'), exported_report
+
+        path_lists = predict_tools.export_prediction_path_lists(output_dir=str(output_dir))
+        assert path_lists['ok'] is True, path_lists
+        assert path_lists['detected_count'] == 2, path_lists
+        assert path_lists['empty_count'] == 1, path_lists
+        assert Path(path_lists['detected_items_path']).exists(), path_lists
+        assert Path(path_lists['empty_items_path']).exists(), path_lists
+
+        inspection_after_lists = predict_tools.inspect_prediction_outputs(output_dir=str(output_dir))
+        assert inspection_after_lists['ok'] is True, inspection_after_lists
+        assert inspection_after_lists['path_list_count'] >= 2, inspection_after_lists
+
+        organized = predict_tools.organize_prediction_results(
+            output_dir=str(output_dir),
+            organize_by='by_class',
+        )
+        assert organized['ok'] is True, organized
+        assert organized['copied_items'] == 2, organized
+        assert organized['bucket_stats']['Excavator'] == 1, organized
+        assert organized['bucket_stats']['bulldozer'] == 1, organized
+        assert Path(organized['destination_dir']).exists(), organized
+
         missing_model = predict_tools.predict_images(source_path=str(source_dir), model='')
         assert missing_model['ok'] is False, missing_model
         assert '缺少模型参数' in missing_model['summary'], missing_model
@@ -125,4 +159,3 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
-

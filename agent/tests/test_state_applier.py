@@ -215,6 +215,32 @@ def main() -> None:
 
     apply_tool_result_to_state(
         state,
+        'compare_training_runs',
+        {
+            'ok': True,
+            'summary': '训练对比完成',
+            'left_run_id': 'train_log_2',
+            'right_run_id': 'train_log_1',
+            'metric_deltas': {'precision': {'left': 0.8, 'right': 0.6, 'delta': 0.2}},
+            'highlights': ['precision提升 +0.2000'],
+        },
+    )
+    assert state.active_training.last_run_comparison['left_run_id'] == 'train_log_2'
+
+    apply_tool_result_to_state(
+        state,
+        'select_best_training_run',
+        {
+            'ok': True,
+            'summary': '最佳训练记录: train_log_2',
+            'best_run_id': 'train_log_2',
+            'best_run': {'run_id': 'train_log_2', 'run_state': 'completed'},
+        },
+    )
+    assert state.active_training.best_run_selection['best_run_id'] == 'train_log_2'
+
+    apply_tool_result_to_state(
+        state,
         'recommend_next_training_step',
         {
             'ok': True,

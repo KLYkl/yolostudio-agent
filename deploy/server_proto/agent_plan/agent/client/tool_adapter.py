@@ -21,15 +21,35 @@ TOOL_NAME_ALIASES: dict[str, str] = {
     'summarize_predictions': 'summarize_prediction_results',
     'summarize_prediction_report': 'summarize_prediction_results',
     'analyze_prediction_report': 'summarize_prediction_results',
+    'inspect_prediction_output': 'inspect_prediction_outputs',
+    'show_prediction_outputs': 'inspect_prediction_outputs',
+    'prediction_output_overview': 'inspect_prediction_outputs',
+    'export_prediction_summary': 'export_prediction_report',
+    'write_prediction_report': 'export_prediction_report',
+    'export_prediction_paths': 'export_prediction_path_lists',
+    'collect_prediction_hits': 'organize_prediction_results',
+    'group_prediction_results': 'organize_prediction_results',
     'preview_extract': 'preview_extract_images',
     'extract_frames': 'extract_video_frames',
     'scan_video_directory': 'scan_videos',
+    'preview_convert_labels': 'preview_convert_format',
+    'convert_labels_format': 'convert_format',
+    'preview_replace_labels': 'preview_modify_labels',
+    'replace_labels': 'modify_labels',
+    'fill_missing_labels': 'generate_missing_labels',
+    'create_empty_labels': 'generate_empty_labels',
+    'preview_group_by_class': 'preview_categorize_by_class',
+    'group_by_class': 'categorize_by_class',
     'search_training_knowledge': 'retrieve_training_knowledge',
     'explain_training_metrics': 'analyze_training_outcome',
     'recommend_training_next_step': 'recommend_next_training_step',
     'get_training_run': 'inspect_training_run',
     'show_training_run': 'inspect_training_run',
     'training_run_detail': 'inspect_training_run',
+    'compare_training_history': 'compare_training_runs',
+    'compare_training_results': 'compare_training_runs',
+    'best_training_run': 'select_best_training_run',
+    'pick_best_training_run': 'select_best_training_run',
 }
 
 _ARG_ALIASES: dict[str, dict[str, str]] = {
@@ -92,6 +112,48 @@ _ARG_ALIASES: dict[str, dict[str, str]] = {
         'folder': 'output_dir',
         'output': 'output_dir',
     },
+    'inspect_prediction_outputs': {
+        'path': 'report_path',
+        'report': 'report_path',
+        'json_report': 'report_path',
+        'file': 'report_path',
+        'dir_path': 'output_dir',
+        'folder': 'output_dir',
+        'output': 'output_dir',
+    },
+    'export_prediction_report': {
+        'path': 'report_path',
+        'report': 'report_path',
+        'json_report': 'report_path',
+        'file': 'report_path',
+        'dir_path': 'output_dir',
+        'folder': 'output_dir',
+        'output': 'output_dir',
+        'out_dir': 'export_path',
+        'format': 'export_format',
+    },
+    'export_prediction_path_lists': {
+        'path': 'report_path',
+        'report': 'report_path',
+        'json_report': 'report_path',
+        'file': 'report_path',
+        'dir_path': 'output_dir',
+        'folder': 'output_dir',
+        'output': 'output_dir',
+        'out_dir': 'export_dir',
+    },
+    'organize_prediction_results': {
+        'path': 'report_path',
+        'report': 'report_path',
+        'json_report': 'report_path',
+        'file': 'report_path',
+        'dir_path': 'output_dir',
+        'folder': 'output_dir',
+        'output': 'output_dir',
+        'out_dir': 'destination_dir',
+        'mode': 'organize_by',
+        'format': 'artifact_preference',
+    },
     'preview_extract_images': {
         'path': 'source_path',
         'source': 'source_path',
@@ -121,6 +183,94 @@ _ARG_ALIASES: dict[str, dict[str, str]] = {
         'input_path': 'source_path',
         'dir_path': 'source_path',
         'folder': 'source_path',
+        'out_dir': 'output_dir',
+    },
+    'preview_convert_format': {
+        'path': 'dataset_path',
+        'dataset': 'dataset_path',
+        'root': 'dataset_path',
+        'img_dir': 'dataset_path',
+        'out_dir': 'output_dir',
+        'format': 'target_format',
+    },
+    'convert_format': {
+        'path': 'dataset_path',
+        'dataset': 'dataset_path',
+        'root': 'dataset_path',
+        'img_dir': 'dataset_path',
+        'out_dir': 'output_dir',
+        'format': 'target_format',
+    },
+    'preview_modify_labels': {
+        'path': 'dataset_path',
+        'dataset': 'dataset_path',
+        'root': 'dataset_path',
+        'img_dir': 'dataset_path',
+        'out_dir': 'output_dir',
+        'from': 'old_value',
+        'to': 'new_value',
+        'operation': 'action',
+    },
+    'modify_labels': {
+        'path': 'dataset_path',
+        'dataset': 'dataset_path',
+        'root': 'dataset_path',
+        'img_dir': 'dataset_path',
+        'out_dir': 'output_dir',
+        'from': 'old_value',
+        'to': 'new_value',
+        'operation': 'action',
+    },
+    'clean_orphan_labels': {
+        'path': 'dataset_path',
+        'dataset': 'dataset_path',
+        'root': 'dataset_path',
+        'img_dir': 'dataset_path',
+    },
+    'preview_generate_empty_labels': {
+        'path': 'dataset_path',
+        'dataset': 'dataset_path',
+        'root': 'dataset_path',
+        'img_dir': 'dataset_path',
+        'out_dir': 'output_dir',
+        'format': 'label_format',
+    },
+    'generate_empty_labels': {
+        'path': 'dataset_path',
+        'dataset': 'dataset_path',
+        'root': 'dataset_path',
+        'img_dir': 'dataset_path',
+        'out_dir': 'output_dir',
+        'format': 'label_format',
+    },
+    'preview_generate_missing_labels': {
+        'path': 'dataset_path',
+        'dataset': 'dataset_path',
+        'root': 'dataset_path',
+        'img_dir': 'dataset_path',
+        'out_dir': 'output_dir',
+        'format': 'label_format',
+    },
+    'generate_missing_labels': {
+        'path': 'dataset_path',
+        'dataset': 'dataset_path',
+        'root': 'dataset_path',
+        'img_dir': 'dataset_path',
+        'out_dir': 'output_dir',
+        'format': 'label_format',
+    },
+    'preview_categorize_by_class': {
+        'path': 'dataset_path',
+        'dataset': 'dataset_path',
+        'root': 'dataset_path',
+        'img_dir': 'dataset_path',
+        'out_dir': 'output_dir',
+    },
+    'categorize_by_class': {
+        'path': 'dataset_path',
+        'dataset': 'dataset_path',
+        'root': 'dataset_path',
+        'img_dir': 'dataset_path',
         'out_dir': 'output_dir',
     },
 }
@@ -224,6 +374,54 @@ class _PredictSummaryAliasArgs(BaseModel):
     dir_path: str = Field(default='', description='旧参数兼容；等价于 output_dir')
     folder: str = Field(default='', description='旧参数兼容；等价于 output_dir')
 
+
+class _PredictManagementAliasArgs(BaseModel):
+    report_path: str = Field(default='', description='预测报告 JSON 路径')
+    path: str = Field(default='', description='旧参数兼容；等价于 report_path')
+    report: str = Field(default='', description='旧参数兼容；等价于 report_path')
+    json_report: str = Field(default='', description='旧参数兼容；等价于 report_path')
+    file: str = Field(default='', description='旧参数兼容；等价于 report_path')
+    output_dir: str = Field(default='', description='预测输出目录')
+    dir_path: str = Field(default='', description='旧参数兼容；等价于 output_dir')
+    folder: str = Field(default='', description='旧参数兼容；等价于 output_dir')
+    output: str = Field(default='', description='旧参数兼容；等价于 output_dir')
+    export_path: str = Field(default='', description='报告导出路径')
+    export_dir: str = Field(default='', description='路径清单导出目录')
+    destination_dir: str = Field(default='', description='整理结果输出目录')
+    out_dir: str = Field(default='', description='旧参数兼容；用于 export_path / export_dir / destination_dir')
+    export_format: str = Field(default='markdown', description='报告导出格式')
+    format: str = Field(default='', description='旧参数兼容；用于 export_format 或 artifact_preference')
+    organize_by: str = Field(default='detected_only', description='整理方式：detected_only / by_class')
+    mode: str = Field(default='', description='旧参数兼容；等价于 organize_by')
+    include_empty: bool = Field(default=False, description='整理时是否保留无命中结果')
+    artifact_preference: str = Field(default='auto', description='产物优先级：auto / annotated / original / source / annotated_video / video_dir')
+
+
+class _DataGovernanceAliasArgs(BaseModel):
+    dataset_path: str = Field(default='', description='数据集根目录或图片目录')
+    path: str = Field(default='', description='旧参数兼容；等价于 dataset_path')
+    dataset: str = Field(default='', description='旧参数兼容；等价于 dataset_path')
+    root: str = Field(default='', description='旧参数兼容；等价于 dataset_path')
+    img_dir: str = Field(default='', description='旧参数兼容；等价于 dataset_path')
+    label_dir: str = Field(default='', description='可选标签目录')
+    output_dir: str = Field(default='', description='可选输出目录')
+    out_dir: str = Field(default='', description='旧参数兼容；等价于 output_dir')
+    target_format: str = Field(default='', description='目标格式')
+    format: str = Field(default='', description='旧参数兼容；等价于 target_format 或 label_format')
+    action: str = Field(default='', description='modify 动作')
+    operation: str = Field(default='', description='旧参数兼容；等价于 action')
+    old_value: str = Field(default='', description='旧类别值')
+    new_value: str = Field(default='', description='新类别值')
+    from_: str = Field(default='', alias='from', description='旧参数兼容；等价于 old_value')
+    to: str = Field(default='', description='旧参数兼容；等价于 new_value')
+    label_format: str = Field(default='', description='生成标签格式')
+    classes_txt: str = Field(default='', description='classes.txt 路径')
+    data_yaml: str = Field(default='', description='data.yaml 路径')
+    backup: bool = Field(default=True, description='是否备份')
+    dry_run: bool = Field(default=True, description='是否仅预览')
+    only_missing: bool = Field(default=True, description='是否仅处理缺失标签')
+    include_no_label: bool = Field(default=True, description='分类时是否包含无标签图片')
+
 def _build_alias_tool(alias_name: str, target_tool: BaseTool, *, description: str, args_schema: type[BaseModel]) -> BaseTool:
     async def _arun(**kwargs: Any) -> str:
         result = await target_tool.ainvoke(normalize_tool_args(alias_name, kwargs))
@@ -323,6 +521,56 @@ def adapt_tools_for_chat_model(tools: list[BaseTool]) -> list[BaseTool]:
                     tool_map['summarize_prediction_results'],
                     description=description,
                     args_schema=_PredictSummaryAliasArgs,
+                )
+            )
+    for canonical_name, aliases in (
+        ('inspect_prediction_outputs', (
+            ('inspect_prediction_output', '兼容旧工具名 inspect_prediction_output。用于检查 prediction 输出目录和产物结构。'),
+            ('show_prediction_outputs', '兼容旧工具名 show_prediction_outputs。用于检查 prediction 输出目录和产物结构。'),
+            ('prediction_output_overview', '兼容旧工具名 prediction_output_overview。用于检查 prediction 输出目录和产物结构。'),
+        )),
+        ('export_prediction_report', (
+            ('export_prediction_summary', '兼容旧工具名 export_prediction_summary。用于导出可读的 prediction 报告。'),
+            ('write_prediction_report', '兼容旧工具名 write_prediction_report。用于导出可读的 prediction 报告。'),
+        )),
+        ('export_prediction_path_lists', (
+            ('export_prediction_paths', '兼容旧工具名 export_prediction_paths。用于导出 prediction 命中/空结果路径清单。'),
+        )),
+        ('organize_prediction_results', (
+            ('collect_prediction_hits', '兼容旧工具名 collect_prediction_hits。用于把命中 prediction 结果整理到新目录。'),
+            ('group_prediction_results', '兼容旧工具名 group_prediction_results。用于按类别整理 prediction 结果。'),
+        )),
+    ):
+        if canonical_name not in tool_map:
+            continue
+        for alias_name, description in aliases:
+            alias_tools.append(
+                _build_alias_tool(
+                    alias_name,
+                    tool_map[canonical_name],
+                    description=description,
+                    args_schema=_PredictManagementAliasArgs,
+                )
+            )
+    for canonical_name, aliases in (
+        ('preview_convert_format', (('preview_convert_labels', '兼容旧工具名 preview_convert_labels。用于预览标签格式转换范围。'),)),
+        ('convert_format', (('convert_labels_format', '兼容旧工具名 convert_labels_format。用于执行标签格式转换。'),)),
+        ('preview_modify_labels', (('preview_replace_labels', '兼容旧工具名 preview_replace_labels。用于预览标签批量替换/删除范围。'),)),
+        ('modify_labels', (('replace_labels', '兼容旧工具名 replace_labels。用于执行标签批量替换/删除。'),)),
+        ('generate_missing_labels', (('fill_missing_labels', '兼容旧工具名 fill_missing_labels。用于补齐缺失标签。'),)),
+        ('generate_empty_labels', (('create_empty_labels', '兼容旧工具名 create_empty_labels。用于生成空标签。'),)),
+        ('preview_categorize_by_class', (('preview_group_by_class', '兼容旧工具名 preview_group_by_class。用于预览按类别整理结果。'),)),
+        ('categorize_by_class', (('group_by_class', '兼容旧工具名 group_by_class。用于按类别整理数据。'),)),
+    ):
+        if canonical_name not in tool_map:
+            continue
+        for alias_name, description in aliases:
+            alias_tools.append(
+                _build_alias_tool(
+                    alias_name,
+                    tool_map[canonical_name],
+                    description=description,
+                    args_schema=_DataGovernanceAliasArgs,
                 )
             )
 

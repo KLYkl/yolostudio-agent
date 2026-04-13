@@ -30,8 +30,13 @@ def start_training(
     epochs: int = 100,
     device: str = "auto",
     training_environment: str = "",
+    project: str = "",
+    name: str = "",
     batch: int | None = None,
     imgsz: int | None = None,
+    fraction: float | None = None,
+    classes: list[int] | str | None = None,
+    single_cls: bool | None = None,
     optimizer: str = "",
     freeze: int | None = None,
     resume: bool | None = None,
@@ -49,8 +54,13 @@ def start_training(
         epochs=epochs,
         device=device,
         training_environment=training_environment,
+        project=project,
+        name=name,
         batch=batch,
         imgsz=imgsz,
+        fraction=fraction,
+        classes=classes,
+        single_cls=single_cls,
         optimizer=optimizer,
         freeze=freeze,
         resume=resume,
@@ -103,8 +113,13 @@ def training_preflight(
     epochs: int = 100,
     device: str = "auto",
     training_environment: str = "",
+    project: str = "",
+    name: str = "",
     batch: int | None = None,
     imgsz: int | None = None,
+    fraction: float | None = None,
+    classes: list[int] | str | None = None,
+    single_cls: bool | None = None,
     optimizer: str = "",
     freeze: int | None = None,
     resume: bool | None = None,
@@ -122,8 +137,13 @@ def training_preflight(
         epochs=epochs,
         device=device,
         training_environment=training_environment,
+        project=project,
+        name=name,
         batch=batch,
         imgsz=imgsz,
+        fraction=fraction,
+        classes=classes,
+        single_cls=single_cls,
         optimizer=optimizer,
         freeze=freeze,
         resume=resume,
@@ -145,9 +165,23 @@ def training_preflight(
     return result
 
 
-def list_training_runs(limit: int = 5) -> dict[str, Any]:
+def list_training_runs(
+    limit: int = 5,
+    run_state: str = '',
+    analysis_ready: bool | None = None,
+    model_keyword: str = '',
+    data_keyword: str = '',
+) -> dict[str, Any]:
     """列出最近训练记录，便于查看最近一次训练、手动停止的训练或仅有日志的历史训练。"""
-    result = _wrap("查询训练历史", service.list_training_runs, limit=limit)
+    result = _wrap(
+        "查询训练历史",
+        service.list_training_runs,
+        limit=limit,
+        run_state=run_state,
+        analysis_ready=analysis_ready,
+        model_keyword=model_keyword,
+        data_keyword=data_keyword,
+    )
     if result.get('ok'):
         runs = result.get('runs') or []
         if runs:
@@ -190,6 +224,38 @@ def inspect_training_run(run_id: str = '') -> dict[str, Any]:
         result.setdefault('next_actions', [
             '可先调用 list_training_runs 查看最近训练记录',
             '如果当前没有训练记录，可先调用 training_preflight 或 start_training',
+        ])
+    return result
+
+
+def compare_training_runs(left_run_id: str = '', right_run_id: str = '') -> dict[str, Any]:
+    """对比两次训练记录的状态、关键指标和差异摘要。默认比较最近两次可读训练。"""
+    result = _wrap("对比训练记录", service.compare_training_runs, left_run_id=left_run_id, right_run_id=right_run_id)
+    if result.get('ok'):
+        result.setdefault('next_actions', [
+            '如需查看其中某次训练详情，可继续调用 inspect_training_run',
+            '如需解释这次差异意味着什么，可继续调用 analyze_training_outcome',
+        ])
+    else:
+        result.setdefault('next_actions', [
+            '可先调用 list_training_runs 查看最近训练记录',
+            '如当前记录不足，可先完成一次训练后再比较',
+        ])
+    return result
+
+
+def select_best_training_run(limit: int = 5) -> dict[str, Any]:
+    """从最近若干条训练记录里选出最值得参考的一次。"""
+    result = _wrap("选择最佳训练记录", service.select_best_training_run, limit=limit)
+    if result.get('ok'):
+        result.setdefault('next_actions', [
+            '如需查看最佳训练详情，可继续调用 inspect_training_run',
+            '如需和最近一次训练做对比，可继续调用 compare_training_runs',
+        ])
+    else:
+        result.setdefault('next_actions', [
+            '可先调用 list_training_runs 查看最近训练记录',
+            '如当前还没有可评估记录，可先完成一次训练',
         ])
     return result
 

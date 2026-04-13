@@ -27,6 +27,18 @@ def main() -> None:
     assert canonical_tool_name('predict_directory') == 'predict_images'
     assert canonical_tool_name('predict_video_directory') == 'predict_videos'
     assert canonical_tool_name('summarize_predictions') == 'summarize_prediction_results'
+    assert canonical_tool_name('inspect_prediction_output') == 'inspect_prediction_outputs'
+    assert canonical_tool_name('export_prediction_summary') == 'export_prediction_report'
+    assert canonical_tool_name('export_prediction_paths') == 'export_prediction_path_lists'
+    assert canonical_tool_name('collect_prediction_hits') == 'organize_prediction_results'
+    assert canonical_tool_name('preview_convert_labels') == 'preview_convert_format'
+    assert canonical_tool_name('convert_labels_format') == 'convert_format'
+    assert canonical_tool_name('preview_replace_labels') == 'preview_modify_labels'
+    assert canonical_tool_name('replace_labels') == 'modify_labels'
+    assert canonical_tool_name('fill_missing_labels') == 'generate_missing_labels'
+    assert canonical_tool_name('create_empty_labels') == 'generate_empty_labels'
+    assert canonical_tool_name('preview_group_by_class') == 'preview_categorize_by_class'
+    assert canonical_tool_name('group_by_class') == 'categorize_by_class'
 
     health_args = normalize_tool_args('detect_corrupted_images', {'path': '/data/set'})
     assert health_args['dataset_path'] == '/data/set'
@@ -55,6 +67,44 @@ def main() -> None:
     predict_summary_args = normalize_tool_args('summarize_predictions', {'path': '/tmp/predict/prediction_report.json'})
     assert predict_summary_args['report_path'] == '/tmp/predict/prediction_report.json'
 
+    inspect_args = normalize_tool_args('inspect_prediction_output', {'folder': '/tmp/predict'})
+    assert inspect_args['output_dir'] == '/tmp/predict'
+
+    export_report_args = normalize_tool_args(
+        'export_prediction_summary',
+        {'path': '/tmp/predict/prediction_report.json', 'out_dir': '/tmp/out/report.md', 'format': 'markdown'},
+    )
+    assert export_report_args['report_path'] == '/tmp/predict/prediction_report.json'
+    assert export_report_args['export_path'] == '/tmp/out/report.md'
+    assert export_report_args['export_format'] == 'markdown'
+
+    export_paths_args = normalize_tool_args('export_prediction_paths', {'folder': '/tmp/predict', 'out_dir': '/tmp/lists'})
+    assert export_paths_args['output_dir'] == '/tmp/predict'
+    assert export_paths_args['export_dir'] == '/tmp/lists'
+
+    organize_args = normalize_tool_args('collect_prediction_hits', {'folder': '/tmp/predict', 'out_dir': '/tmp/hits', 'mode': 'by_class'})
+    assert organize_args['output_dir'] == '/tmp/predict'
+    assert organize_args['destination_dir'] == '/tmp/hits'
+    assert organize_args['organize_by'] == 'by_class'
+
+    convert_args = normalize_tool_args('convert_labels_format', {'path': '/data/set', 'format': 'xml'})
+    assert convert_args['dataset_path'] == '/data/set'
+    assert convert_args['target_format'] == 'xml'
+
+    modify_args = normalize_tool_args('replace_labels', {'path': '/data/set', 'from': 'car', 'to': 'truck', 'operation': 'replace'})
+    assert modify_args['dataset_path'] == '/data/set'
+    assert modify_args['old_value'] == 'car'
+    assert modify_args['new_value'] == 'truck'
+    assert modify_args['action'] == 'replace'
+
+    missing_args = normalize_tool_args('fill_missing_labels', {'path': '/data/set', 'format': 'xml'})
+    assert missing_args['dataset_path'] == '/data/set'
+    assert missing_args['label_format'] == 'xml'
+
+    categorize_args = normalize_tool_args('group_by_class', {'path': '/data/set', 'out_dir': '/tmp/cats'})
+    assert categorize_args['dataset_path'] == '/data/set'
+    assert categorize_args['output_dir'] == '/tmp/cats'
+
     tools = [
         StructuredTool.from_function(func=_noop, name='detect_duplicate_images', description='dup'),
         StructuredTool.from_function(func=_noop, name='run_dataset_health_check', description='health'),
@@ -62,6 +112,18 @@ def main() -> None:
         StructuredTool.from_function(func=_noop, name='predict_images', description='predict'),
         StructuredTool.from_function(func=_noop, name='predict_videos', description='predict-videos'),
         StructuredTool.from_function(func=_noop, name='summarize_prediction_results', description='predict-summary'),
+        StructuredTool.from_function(func=_noop, name='inspect_prediction_outputs', description='predict-inspect'),
+        StructuredTool.from_function(func=_noop, name='export_prediction_report', description='predict-export'),
+        StructuredTool.from_function(func=_noop, name='export_prediction_path_lists', description='predict-paths'),
+        StructuredTool.from_function(func=_noop, name='organize_prediction_results', description='predict-organize'),
+        StructuredTool.from_function(func=_noop, name='preview_convert_format', description='preview-convert'),
+        StructuredTool.from_function(func=_noop, name='convert_format', description='convert'),
+        StructuredTool.from_function(func=_noop, name='preview_modify_labels', description='preview-modify'),
+        StructuredTool.from_function(func=_noop, name='modify_labels', description='modify'),
+        StructuredTool.from_function(func=_noop, name='generate_missing_labels', description='missing'),
+        StructuredTool.from_function(func=_noop, name='generate_empty_labels', description='empty'),
+        StructuredTool.from_function(func=_noop, name='preview_categorize_by_class', description='preview-categorize'),
+        StructuredTool.from_function(func=_noop, name='categorize_by_class', description='categorize'),
     ]
     adapted = adapt_tools_for_chat_model(tools)
     names = {tool.name for tool in adapted}
@@ -79,6 +141,22 @@ def main() -> None:
         'summarize_predictions',
         'summarize_prediction_report',
         'analyze_prediction_report',
+        'inspect_prediction_output',
+        'show_prediction_outputs',
+        'prediction_output_overview',
+        'export_prediction_summary',
+        'write_prediction_report',
+        'export_prediction_paths',
+        'collect_prediction_hits',
+        'group_prediction_results',
+        'preview_convert_labels',
+        'convert_labels_format',
+        'preview_replace_labels',
+        'replace_labels',
+        'fill_missing_labels',
+        'create_empty_labels',
+        'preview_group_by_class',
+        'group_by_class',
     ):
         assert alias in names, names
 

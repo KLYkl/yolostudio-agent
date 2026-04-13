@@ -119,6 +119,8 @@ def apply_tool_result_to_state(
         resolved_yaml = result.get('resolved_data_yaml') or ''
         if resolved_yaml:
             ds.data_yaml = str(resolved_yaml)
+        else:
+            ds.data_yaml = ''
         ds.last_readiness = {
             'ready': result.get('ready'),
             'preparable': result.get('preparable'),
@@ -269,6 +271,10 @@ def apply_tool_result_to_state(
             )
             if matched is None:
                 tr.recent_runs = [result, *tr.recent_runs[:9]]
+    elif tool_name == 'compare_training_runs' and result.get('ok'):
+        tr.last_run_comparison = result
+    elif tool_name == 'select_best_training_run' and result.get('ok'):
+        tr.best_run_selection = result
     elif tool_name == 'check_training_status':
         tr.last_status = result
         is_running = bool(result.get('running'))
@@ -447,7 +453,7 @@ def apply_tool_result_to_state(
             pred.model = str(result.get('model'))
         if result.get('source_path'):
             pred.source_path = str(result.get('source_path'))
-        pred.last_result = {
+        pred.last_summary = {
             'summary': result.get('summary'),
             'processed_images': result.get('processed_images'),
             'detected_images': result.get('detected_images'),
@@ -465,6 +471,56 @@ def apply_tool_result_to_state(
             'total_frames': result.get('total_frames'),
             'detected_frames': result.get('detected_frames'),
             'mode': result.get('mode') or 'images',
+        }
+        pred.last_result = dict(pred.last_summary)
+    elif tool_name == 'inspect_prediction_outputs' and result.get('ok'):
+        pred.output_dir = str(result.get('output_dir') or pred.output_dir)
+        pred.report_path = str(result.get('report_path') or pred.report_path)
+        pred.last_inspection = {
+            'summary': result.get('summary'),
+            'mode': result.get('mode'),
+            'artifact_roots': result.get('artifact_roots'),
+            'path_list_files': result.get('path_list_files'),
+            'output_dir': result.get('output_dir'),
+            'report_path': result.get('report_path'),
+        }
+    elif tool_name == 'export_prediction_report' and result.get('ok'):
+        pred.output_dir = str(result.get('output_dir') or pred.output_dir)
+        pred.report_path = str(result.get('report_path') or pred.report_path)
+        pred.last_export = {
+            'summary': result.get('summary'),
+            'mode': result.get('mode'),
+            'export_path': result.get('export_path'),
+            'export_format': result.get('export_format'),
+            'output_dir': result.get('output_dir'),
+            'report_path': result.get('report_path'),
+        }
+    elif tool_name == 'export_prediction_path_lists' and result.get('ok'):
+        pred.output_dir = str(result.get('output_dir') or pred.output_dir)
+        pred.report_path = str(result.get('report_path') or pred.report_path)
+        pred.last_path_lists = {
+            'summary': result.get('summary'),
+            'mode': result.get('mode'),
+            'export_dir': result.get('export_dir'),
+            'detected_items_path': result.get('detected_items_path'),
+            'empty_items_path': result.get('empty_items_path'),
+            'failed_items_path': result.get('failed_items_path'),
+            'detected_count': result.get('detected_count'),
+            'empty_count': result.get('empty_count'),
+            'failed_count': result.get('failed_count'),
+        }
+    elif tool_name == 'organize_prediction_results' and result.get('ok'):
+        pred.output_dir = str(result.get('source_output_dir') or pred.output_dir)
+        pred.report_path = str(result.get('source_report_path') or pred.report_path)
+        pred.last_organized_result = {
+            'summary': result.get('summary'),
+            'mode': result.get('mode'),
+            'destination_dir': result.get('destination_dir'),
+            'organize_by': result.get('organize_by'),
+            'artifact_preference': result.get('artifact_preference'),
+            'copied_items': result.get('copied_items'),
+            'bucket_stats': result.get('bucket_stats'),
+            'sample_outputs': result.get('sample_outputs'),
         }
     elif tool_name == 'retrieve_training_knowledge' and result.get('ok'):
         kn.last_retrieval = {

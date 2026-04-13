@@ -147,6 +147,10 @@ def main() -> None:
         assert invalid_batch['ready_to_start'] is False
         assert any('batch 必须大于 0' in blocker for blocker in invalid_batch['blockers'])
 
+        oversized_batch = service.training_preflight(model='yolov8n.pt', data_yaml=str(tmp_yaml), epochs=5, device='auto', batch=512)
+        assert oversized_batch['ready_to_start'] is False
+        assert any('batch=512 过大' in blocker for blocker in oversized_batch['blockers'])
+
         invalid_freeze = service.training_preflight(model='yolov8n.pt', data_yaml=str(tmp_yaml), epochs=5, device='auto', freeze=-1)
         assert invalid_freeze['ready_to_start'] is False
         assert any('freeze 不能小于 0' in blocker for blocker in invalid_freeze['blockers'])
@@ -162,6 +166,20 @@ def main() -> None:
         invalid_classes = service.training_preflight(model='yolov8n.pt', data_yaml=str(tmp_yaml), epochs=5, device='auto', classes='a,b')
         assert invalid_classes['ready_to_start'] is False
         assert any('classes 必须是非负整数列表' in blocker for blocker in invalid_classes['blockers'])
+
+        tmp_yaml.write_text(
+            'path: /dataset\ntrain: images/train\nval: images/val\nnames:\n  0: cat\n  1: dog\n',
+            encoding='utf-8',
+        )
+        out_of_range_classes = service.training_preflight(
+            model='yolov8n.pt',
+            data_yaml=str(tmp_yaml),
+            epochs=5,
+            device='auto',
+            classes=[0, 2],
+        )
+        assert out_of_range_classes['ready_to_start'] is False
+        assert any('classes 超出当前数据集类别范围' in blocker for blocker in out_of_range_classes['blockers'])
 
         invalid_environment = service.training_preflight(
             model='yolov8n.pt',

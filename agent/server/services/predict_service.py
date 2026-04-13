@@ -7,7 +7,13 @@ from pathlib import Path
 from typing import Any
 
 from yolostudio_agent.agent.server.services.prediction_image_helpers import predict_images_batch
-from yolostudio_agent.agent.server.services.prediction_report_helpers import summarize_prediction_report
+from yolostudio_agent.agent.server.services.prediction_report_helpers import (
+    export_prediction_path_lists as _export_prediction_path_lists,
+    export_prediction_report as _export_prediction_report,
+    inspect_prediction_outputs as _inspect_prediction_outputs,
+    organize_prediction_results as _organize_prediction_results,
+    summarize_prediction_report,
+)
 from yolostudio_agent.agent.server.services.prediction_runtime_helpers import (
     draw_detections,
     load_prediction_model,
@@ -168,6 +174,56 @@ class PredictService:
 
     def summarize_prediction_results(self, *, report_path: str = '', output_dir: str = '') -> dict[str, Any]:
         return summarize_prediction_report(report_path=report_path, output_dir=output_dir)
+
+    def inspect_prediction_outputs(self, *, report_path: str = '', output_dir: str = '') -> dict[str, Any]:
+        return _inspect_prediction_outputs(report_path=report_path, output_dir=output_dir)
+
+    def export_prediction_report(
+        self,
+        *,
+        report_path: str = '',
+        output_dir: str = '',
+        export_path: str = '',
+        export_format: str = 'markdown',
+    ) -> dict[str, Any]:
+        return _export_prediction_report(
+            report_path=report_path,
+            output_dir=output_dir,
+            export_path=export_path,
+            export_format=export_format,
+        )
+
+    def export_prediction_path_lists(
+        self,
+        *,
+        report_path: str = '',
+        output_dir: str = '',
+        export_dir: str = '',
+    ) -> dict[str, Any]:
+        return _export_prediction_path_lists(
+            report_path=report_path,
+            output_dir=output_dir,
+            export_dir=export_dir,
+        )
+
+    def organize_prediction_results(
+        self,
+        *,
+        report_path: str = '',
+        output_dir: str = '',
+        destination_dir: str = '',
+        organize_by: str = 'detected_only',
+        include_empty: bool = False,
+        artifact_preference: str = 'auto',
+    ) -> dict[str, Any]:
+        return _organize_prediction_results(
+            report_path=report_path,
+            output_dir=output_dir,
+            destination_dir=destination_dir,
+            organize_by=organize_by,
+            include_empty=include_empty,
+            artifact_preference=artifact_preference,
+        )
 
 
     def predict_videos(

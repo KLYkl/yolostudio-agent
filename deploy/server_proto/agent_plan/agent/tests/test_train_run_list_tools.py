@@ -15,12 +15,25 @@ import yolostudio_agent.agent.server.tools.train_tools as train_tools
 
 
 class _DummyService:
-    def list_training_runs(self, limit: int = 5):
+    def list_training_runs(
+        self,
+        limit: int = 5,
+        run_state: str = '',
+        analysis_ready: bool | None = None,
+        model_keyword: str = '',
+        data_keyword: str = '',
+    ):
         return {
             'ok': True,
             'summary': '找到 2 条最近训练记录',
             'count': 2,
             'limit': limit,
+            'applied_filters': {
+                'run_state': run_state or None,
+                'analysis_ready': analysis_ready,
+                'model_keyword': model_keyword or None,
+                'data_keyword': data_keyword or None,
+            },
             'runs': [
                 {'run_id': 'train_log_100', 'run_state': 'stopped', 'observation_stage': 'final'},
                 {'run_id': 'train_log_090', 'run_state': 'completed', 'observation_stage': 'final'},
@@ -36,6 +49,7 @@ def main() -> None:
         result = train_tools.list_training_runs(limit=2)
         assert result['ok'] is True
         assert result['count'] == 2
+        assert result['applied_filters']['run_state'] is None
         assert result['runs'][0]['run_id'] == 'train_log_100'
         assert result['next_actions']
         print('train run list tools ok')

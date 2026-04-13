@@ -5,8 +5,19 @@ from mcp.server.fastmcp import FastMCP
 from yolostudio_agent.agent.server.tools.combo_tools import prepare_dataset_for_training
 from yolostudio_agent.agent.server.tools.data_tools import (
     augment_dataset,
+    categorize_by_class,
+    clean_orphan_labels,
+    convert_format,
     detect_duplicate_images,
+    generate_empty_labels,
     generate_yaml,
+    generate_missing_labels,
+    modify_labels,
+    preview_categorize_by_class,
+    preview_convert_format,
+    preview_generate_empty_labels,
+    preview_generate_missing_labels,
+    preview_modify_labels,
     run_dataset_health_check,
     scan_dataset,
     split_dataset,
@@ -24,13 +35,23 @@ from yolostudio_agent.agent.server.tools.knowledge_tools import (
     recommend_next_training_step,
     retrieve_training_knowledge,
 )
-from yolostudio_agent.agent.server.tools.predict_tools import predict_images, predict_videos, summarize_prediction_results
+from yolostudio_agent.agent.server.tools.predict_tools import (
+    export_prediction_path_lists,
+    export_prediction_report,
+    inspect_prediction_outputs,
+    organize_prediction_results,
+    predict_images,
+    predict_videos,
+    summarize_prediction_results,
+)
 from yolostudio_agent.agent.server.tools.train_tools import (
     check_gpu_status,
     check_training_status,
+    compare_training_runs,
     inspect_training_run,
     list_training_environments,
     list_training_runs,
+    select_best_training_run,
     start_training,
     stop_training,
     summarize_training_run,
@@ -45,6 +66,17 @@ mcp.tool()(validate_dataset)
 mcp.tool()(run_dataset_health_check)
 mcp.tool()(detect_duplicate_images)
 mcp.tool()(augment_dataset)
+mcp.tool()(preview_convert_format)
+mcp.tool()(convert_format)
+mcp.tool()(preview_modify_labels)
+mcp.tool()(modify_labels)
+mcp.tool()(clean_orphan_labels)
+mcp.tool()(preview_generate_empty_labels)
+mcp.tool()(generate_empty_labels)
+mcp.tool()(preview_generate_missing_labels)
+mcp.tool()(generate_missing_labels)
+mcp.tool()(preview_categorize_by_class)
+mcp.tool()(categorize_by_class)
 mcp.tool()(generate_yaml)
 mcp.tool()(training_readiness)
 mcp.tool()(prepare_dataset_for_training)
@@ -58,10 +90,16 @@ mcp.tool()(recommend_next_training_step)
 mcp.tool()(predict_images)
 mcp.tool()(predict_videos)
 mcp.tool()(summarize_prediction_results)
+mcp.tool()(inspect_prediction_outputs)
+mcp.tool()(export_prediction_report)
+mcp.tool()(export_prediction_path_lists)
+mcp.tool()(organize_prediction_results)
 mcp.tool()(list_training_environments)
 mcp.tool()(training_preflight)
 mcp.tool()(list_training_runs)
 mcp.tool()(inspect_training_run)
+mcp.tool()(compare_training_runs)
+mcp.tool()(select_best_training_run)
 mcp.tool()(start_training)
 mcp.tool()(check_training_status)
 mcp.tool()(summarize_training_run)

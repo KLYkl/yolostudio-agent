@@ -159,7 +159,7 @@ def main() -> None:
         {
             'ok': True,
             'summary': '训练预检通过',
-            'resolved_args': {'model': '/tmp/yolov8n.pt', 'data_yaml': '/tmp/data.yaml', 'epochs': 5, 'device': '1', 'training_environment': 'yolodo', 'batch': 8, 'imgsz': 1280, 'optimizer': 'SGD', 'freeze': 4, 'resume': False, 'lr0': 0.01, 'patience': 8, 'workers': 2, 'amp': True},
+            'resolved_args': {'model': '/tmp/yolov8n.pt', 'data_yaml': '/tmp/data.yaml', 'epochs': 5, 'device': '1', 'training_environment': 'yolodo', 'project': '/runs/ablation', 'name': 'exp-blue', 'batch': 8, 'imgsz': 1280, 'fraction': 0.5, 'classes': [1, 3], 'single_cls': False, 'optimizer': 'SGD', 'freeze': 4, 'resume': False, 'lr0': 0.01, 'patience': 8, 'workers': 2, 'amp': True},
             'training_environment': {'name': 'yolodo'},
             'ready_to_start': True,
         },
@@ -167,8 +167,13 @@ def main() -> None:
     assert state.active_training.last_preflight['ready_to_start'] is True
     assert state.active_training.model == '/tmp/yolov8n.pt'
     assert state.active_training.training_environment == 'yolodo'
+    assert state.active_training.project == '/runs/ablation'
+    assert state.active_training.run_name == 'exp-blue'
     assert state.active_training.batch == 8
     assert state.active_training.imgsz == 1280
+    assert state.active_training.fraction == 0.5
+    assert state.active_training.classes == [1, 3]
+    assert state.active_training.single_cls is False
     assert state.active_training.optimizer == 'SGD'
     assert state.active_training.freeze == 4
     assert state.active_training.resume is False
@@ -207,6 +212,32 @@ def main() -> None:
         },
     )
     assert state.active_training.last_run_inspection['selected_run_id'] == 'train_log_2'
+
+    apply_tool_result_to_state(
+        state,
+        'compare_training_runs',
+        {
+            'ok': True,
+            'summary': '训练对比完成',
+            'left_run_id': 'train_log_2',
+            'right_run_id': 'train_log_1',
+            'metric_deltas': {'precision': {'left': 0.8, 'right': 0.6, 'delta': 0.2}},
+            'highlights': ['precision提升 +0.2000'],
+        },
+    )
+    assert state.active_training.last_run_comparison['left_run_id'] == 'train_log_2'
+
+    apply_tool_result_to_state(
+        state,
+        'select_best_training_run',
+        {
+            'ok': True,
+            'summary': '最佳训练记录: train_log_2',
+            'best_run_id': 'train_log_2',
+            'best_run': {'run_id': 'train_log_2', 'run_state': 'completed'},
+        },
+    )
+    assert state.active_training.best_run_selection['best_run_id'] == 'train_log_2'
 
     apply_tool_result_to_state(
         state,
