@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from yolostudio_agent.agent.server.services.dataset_root import resolve_dataset_root
+from yolostudio_agent.agent.server.tools.data_tool_helpers import _inspect_training_yaml
 from yolostudio_agent.agent.server.tools.data_tools import generate_yaml, scan_dataset, split_dataset, training_readiness, validate_dataset
 
 _EARLY_BLOCK_TYPES = {'unknown', 'images_only', 'flat'}
@@ -78,8 +79,14 @@ def prepare_dataset_for_training(
         }
 
     detected_yaml = scan.get('detected_data_yaml') or ''
-    has_yaml = bool(detected_yaml and Path(detected_yaml).exists())
+    yaml_check = _inspect_training_yaml(detected_yaml) if detected_yaml and Path(detected_yaml).exists() else {
+        'exists': False,
+        'usable': False,
+        'issues': [],
+    }
+    has_yaml = bool(detected_yaml and Path(detected_yaml).exists() and yaml_check.get('usable'))
     should_split = force_split or (not has_yaml and not resolution.get('is_split', False))
+    should_regenerate_yaml = bool(not has_yaml and resolution.get('is_split', False))
 
     generated_yaml = detected_yaml
     split_reason = 'user_requested' if force_split else ('missing_yaml' if should_split else ('already_split' if resolution.get('is_split', False) else 'existing_yaml'))
@@ -120,6 +127,42 @@ def prepare_dataset_for_training(
             }
         generated_yaml = yaml_result.get('output_path', generated_yaml)
         data_yaml_source = 'generated_from_split'
+    elif should_regenerate_yaml:
+        split_info = dict(resolution.get('split_info') or {})
+        train_path = str(split_info.get('train_img_dir') or '')
+        val_path = str(split_info.get('val_img_dir') or '')
+        if not train_path or not val_path:
+            return {
+                'ok': False,
+                'summary': '准备失败：当前已识别为 split 数据集，但无法解析 train/val 路径来重建 YAML',
+                'blocked_at': 'generate_yaml',
+                'dataset_root': dataset_root,
+                'img_dir': img_dir,
+                'label_dir': label_dir,
+                'steps_completed': steps_completed,
+                'next_actions': ['请显式提供可用的 data.yaml，或检查 images/train / images/val 结构'],
+            }
+
+        yaml_result = generate_yaml(
+            train_path=train_path,
+            val_path=val_path,
+            classes=scan.get('classes', []),
+            classes_txt=scan.get('detected_classes_txt', ''),
+            img_dir=img_dir,
+            label_dir=label_dir,
+            output_path=str((Path(dataset_root) / 'data.yaml').resolve()),
+        )
+        steps_completed.append({'step': 'generate_yaml', **yaml_result})
+        if not yaml_result.get('ok'):
+            return {
+                'ok': False,
+                'summary': '准备失败：generate_yaml 执行失败',
+                'blocked_at': 'generate_yaml',
+                'steps_completed': steps_completed,
+                'next_actions': ['请检查 split 结果路径和 classes / classes.txt 信息'],
+            }
+        generated_yaml = yaml_result.get('output_path', generated_yaml)
+        data_yaml_source = 'regenerated_from_split'
 
     readiness = training_readiness(
         img_dir=img_dir,
