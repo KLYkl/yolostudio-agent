@@ -195,6 +195,21 @@ def build_grounded_tool_reply(applied_results: list[tuple[str, dict[str, Any]]])
             lines.append('建议:')
             lines.extend(f'- {item}' for item in next_actions[:2])
         return _join(lines)
+    if tool_name == 'start_training':
+        lines = [result.get('summary', '训练已启动')]
+        resolved_args = result.get('resolved_args') or {}
+        output_bits: list[str] = []
+        if resolved_args.get('project'):
+            output_bits.append(f"project={resolved_args.get('project')}")
+        if resolved_args.get('name'):
+            output_bits.append(f"name={resolved_args.get('name')}")
+        if output_bits:
+            lines.append(f"输出组织: {', '.join(output_bits)}")
+        if result.get('pid') is not None:
+            lines.append(f"进程 PID: {result.get('pid')}")
+        if result.get('log_file'):
+            lines.append(f"日志文件: {result.get('log_file')}")
+        return _join(lines)
     if tool_name == 'list_training_runs':
         lines = [result.get('summary', '训练历史查询完成')]
         applied_filters = result.get('applied_filters') or {}
@@ -373,6 +388,8 @@ def build_grounded_tool_reply(applied_results: list[tuple[str, dict[str, Any]]])
         lines = [result.get('summary', '训练结果汇总完成')]
         if result.get('run_state'):
             lines.append(f"运行状态: {result.get('run_state')}")
+        if result.get('save_dir'):
+            lines.append(f"结果目录: {result.get('save_dir')}")
         if result.get('observation_stage'):
             lines.append(f"观察阶段: {_observation_stage_label(result.get('observation_stage'))}")
         progress = result.get('progress') or {}
@@ -418,6 +435,8 @@ def build_grounded_tool_reply(applied_results: list[tuple[str, dict[str, Any]]])
         lines = [result.get('summary', '训练状态已更新')]
         if result.get('run_state'):
             lines.append(f"运行状态: {result.get('run_state')}")
+        if result.get('save_dir'):
+            lines.append(f"结果目录: {result.get('save_dir')}")
         if result.get('observation_stage'):
             lines.append(f"观察阶段: {_observation_stage_label(result.get('observation_stage'))}")
         progress = result.get('progress') or {}
@@ -623,6 +642,152 @@ def build_grounded_tool_reply(applied_results: list[tuple[str, dict[str, Any]]])
         if next_actions:
             lines.append('建议:')
             lines.extend(f'- {item}' for item in next_actions[:2])
+        return _join(lines)
+    if tool_name == 'list_remote_profiles':
+        lines = [result.get('summary', '远端配置查询完成')]
+        profiles = result.get('profiles') or []
+        if profiles:
+            lines.append('远端 profile:')
+            for item in profiles[:5]:
+                suffix = ' (默认)' if item.get('is_default') else ''
+                remote_root = f" / {item.get('remote_root')}" if item.get('remote_root') else ''
+                lines.append(f"- {item.get('name')}{suffix}{remote_root}")
+        aliases = result.get('ssh_aliases') or []
+        if aliases:
+            lines.append('SSH alias:')
+            for item in aliases[:5]:
+                label = item.get('name') or ''
+                host = item.get('hostname') or ''
+                port = item.get('port') or ''
+                extra = f" -> {host}" if host else ''
+                if port:
+                    extra += f":{port}"
+                lines.append(f"- {label}{extra}")
+        if result.get('profiles_path'):
+            lines.append(f"配置文件: {result.get('profiles_path')}")
+        return _join(lines)
+    if tool_name == 'upload_assets_to_remote':
+        lines = [result.get('summary', '远端上传完成')]
+        if result.get('profile_name'):
+            lines.append(f"远端 profile: {result.get('profile_name')}")
+        if result.get('target_label'):
+            lines.append(f"目标: {result.get('target_label')}")
+        if result.get('remote_root'):
+            lines.append(f"远端目录: {result.get('remote_root')}")
+        if result.get('transfer_strategy_summary'):
+            lines.append(f"策略: {result.get('transfer_strategy_summary')}")
+        if result.get('file_count') is not None:
+            lines.append(
+                f"文件统计: 总计 {result.get('file_count', 0)} / 已校验 {result.get('verified_file_count', 0)} / "
+                f"复用 {result.get('skipped_file_count', 0)}"
+            )
+        if result.get('total_bytes') is not None:
+            lines.append(
+                f"传输体积: 实传 {result.get('transferred_bytes', 0)}B / "
+                f"复用 {result.get('skipped_bytes', 0)}B / 总计 {result.get('total_bytes', 0)}B"
+            )
+        uploaded_items = result.get('uploaded_items') or []
+        if uploaded_items:
+            lines.append('已上传:')
+            for item in uploaded_items[:5]:
+                lines.append(f"- {item.get('local_path')} -> {item.get('remote_path')}")
+        preview = result.get('file_results_preview') or []
+        if preview:
+            lines.append('文件样例:')
+            for item in preview[:5]:
+                lines.append(
+                    f"- {item.get('relative_path') or item.get('local_path')} / {item.get('mode')} / "
+                    f"{item.get('size_bytes', 0)}B"
+                )
+        return _join(lines)
+    if tool_name == 'download_assets_from_remote':
+        lines = [result.get('summary', '远端下载完成')]
+        if result.get('target_label'):
+            lines.append(f"来源: {result.get('target_label')}")
+        if result.get('local_root'):
+            lines.append(f"本地目录: {result.get('local_root')}")
+        downloaded_items = result.get('downloaded_items') or []
+        if downloaded_items:
+            lines.append('已下载:')
+            for item in downloaded_items[:5]:
+                lines.append(f"- {item.get('remote_path')} -> {item.get('local_path')}")
+        return _join(lines)
+    if tool_name == 'scan_cameras':
+        lines = [result.get('summary', '摄像头扫描完成')]
+        cameras = result.get('cameras') or []
+        if cameras:
+            lines.append('可用摄像头:')
+            for item in cameras[:5]:
+                lines.append(f"- id={item.get('id')} / {item.get('name')}")
+        next_actions = result.get('next_actions') or []
+        if next_actions:
+            lines.append('建议:')
+            lines.extend(f'- {item}' for item in next_actions[:2])
+        return _join(lines)
+    if tool_name == 'scan_screens':
+        lines = [result.get('summary', '屏幕扫描完成')]
+        screens = result.get('screens') or []
+        if screens:
+            lines.append('可用屏幕:')
+            for item in screens[:5]:
+                size = ''
+                if item.get('width') and item.get('height'):
+                    size = f" ({item.get('width')}x{item.get('height')})"
+                lines.append(f"- id={item.get('id')} / {item.get('name')}{size}")
+        next_actions = result.get('next_actions') or []
+        if next_actions:
+            lines.append('建议:')
+            lines.extend(f'- {item}' for item in next_actions[:2])
+        return _join(lines)
+    if tool_name == 'test_rtsp_stream':
+        lines = [result.get('summary', 'RTSP 流测试完成')]
+        if result.get('rtsp_url'):
+            lines.append(f"RTSP 地址: {result.get('rtsp_url')}")
+        if result.get('error'):
+            lines.append(f"失败原因: {result.get('error')}")
+        next_actions = result.get('next_actions') or []
+        if next_actions:
+            lines.append('建议:')
+            lines.extend(f'- {item}' for item in next_actions[:2])
+        return _join(lines)
+    if tool_name in {'start_camera_prediction', 'start_rtsp_prediction', 'start_screen_prediction'}:
+        lines = [result.get('summary', '实时预测已启动')]
+        if result.get('session_id'):
+            lines.append(f"会话 ID: {result.get('session_id')}")
+        if result.get('source_type'):
+            lines.append(f"来源类型: {result.get('source_type')}")
+        if result.get('source_label'):
+            lines.append(f"来源: {result.get('source_label')}")
+        if result.get('output_dir'):
+            lines.append(f"输出目录: {result.get('output_dir')}")
+        next_actions = result.get('next_actions') or []
+        if next_actions:
+            lines.append('建议:')
+            lines.extend(f'- {item}' for item in next_actions[:2])
+        return _join(lines)
+    if tool_name in {'check_realtime_prediction_status', 'stop_realtime_prediction'}:
+        lines = [result.get('summary', '实时预测状态已更新')]
+        if result.get('session_id'):
+            lines.append(f"会话 ID: {result.get('session_id')}")
+        if result.get('source_type'):
+            lines.append(f"来源类型: {result.get('source_type')}")
+        if result.get('status'):
+            lines.append(f"状态: {result.get('status')}")
+        lines.append(
+            f"统计: 已处理 {result.get('processed_frames', 0)} 帧 / 有检测 {result.get('detected_frames', 0)} 帧 / 总检测 {result.get('total_detections', 0)}"
+        )
+        class_counts = result.get('class_counts') or {}
+        if class_counts:
+            preview = '，'.join(f"{k}={v}" for k, v in list(class_counts.items())[:4])
+            lines.append(f'主要类别: {preview}')
+        if result.get('report_path'):
+            lines.append(f"实时预测报告: {result.get('report_path')}")
+        if result.get('error'):
+            lines.append(f"异常: {result.get('error')}")
+        next_actions = result.get('next_actions') or []
+        if next_actions:
+            lines.append('建议:')
+            lines.extend(f'- {item}' for item in next_actions[:3])
         return _join(lines)
     if tool_name == 'retrieve_training_knowledge':
         lines = [result.get('summary', '知识检索完成')]

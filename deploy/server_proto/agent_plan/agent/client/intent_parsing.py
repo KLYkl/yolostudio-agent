@@ -24,6 +24,40 @@ def extract_all_paths_from_text(text: str) -> list[str]:
     return items
 
 
+def extract_remote_root_from_text(text: str) -> str:
+    patterns = (
+        r'(?:remote_root|remote_dir|remote_path)\s*[=:：]?\s*(/[^\s，,。；;\"\'<>]+)',
+        r'(?:远端目录|服务器目录|目标目录)\s*[=:：]?\s*(/[^\s，,。；;\"\'<>]+)',
+        r'(?:上传到|传到|同步到|放到)\s*(/[^\s，,。；;\"\'<>]+)',
+        r'(?:上传到|传到|同步到|放到)(?:[^\n]{0,80}?)(/[^\s，,。；;\"\'<>]+)',
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.I)
+        if match:
+            return match.group(1).rstrip('。，“”,,;；')
+    paths = extract_all_paths_from_text(text)
+    for item in reversed(paths):
+        if item.startswith('/'):
+            return item
+    return ''
+
+
+def extract_remote_server_from_text(text: str) -> str:
+    patterns = (
+        r'(?:服务器|远端|节点)\s*(?:[:=：]|是|为|用|走|到)?\s*([A-Za-z0-9_.@-]+)',
+        r'(?:\bserver\b|\bremote\b)\s*(?:[:=：]|is|=|to)?\s*([A-Za-z0-9_.@-]+)',
+        r'到\s*([A-Za-z0-9_.@-]+)\s*(?:服务器|节点)',
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.I)
+        if not match:
+            continue
+        value = match.group(1).strip().strip('。，“”,,;；')
+        if value and not any(ch in value for ch in ('\\', '/', ':')):
+            return value
+    return ''
+
+
 def looks_like_model_path(path: str) -> bool:
     return str(path).lower().endswith(MODEL_SUFFIXES)
 
@@ -52,6 +86,83 @@ def looks_like_video_path(path: str) -> bool:
     return str(path).lower().endswith(VIDEO_SUFFIXES)
 
 
+def extract_rtsp_url_from_text(text: str) -> str:
+    match = re.search(r'(rtsp://[^\s，,。；;\"\'<>]+)', text, flags=re.I)
+    if match:
+        return match.group(1)
+    return ''
+
+
+def extract_realtime_session_id_from_text(text: str) -> str:
+    match = re.search(r'\b(realtime-[a-z]+-[0-9a-f]{6,})\b', text, flags=re.I)
+    if match:
+        return match.group(1)
+    return ''
+
+
+def extract_camera_id_from_text(text: str) -> int | None:
+    patterns = (
+        r'camera(?:_id)?\s*[=:]?\s*(\d+)',
+        r'摄像头\s*(?:id)?\s*[=:：]?\s*(\d+)',
+        r'(\d+)\s*号摄像头',
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.I)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def extract_screen_id_from_text(text: str) -> int | None:
+    patterns = (
+        r'screen(?:_id)?\s*[=:]?\s*(\d+)',
+        r'屏幕\s*(?:id)?\s*[=:：]?\s*(\d+)',
+        r'(\d+)\s*号屏幕',
+        r'第\s*(\d+)\s*块屏幕',
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.I)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def extract_frame_interval_ms_from_text(text: str) -> int | None:
+    match = re.search(r'frame(?:_interval)?(?:_ms)?\s*[=:]?\s*(\d+)', text, flags=re.I)
+    if match:
+        return int(match.group(1))
+    match = re.search(r'(?:每|间隔)\s*(\d+(?:\.\d+)?)\s*(毫秒|ms|秒|s)\b', text, flags=re.I)
+    if not match:
+        return None
+    value = float(match.group(1))
+    unit = match.group(2).lower()
+    return int(value * 1000) if unit in {'秒', 's'} else int(value)
+
+
+def extract_max_frames_from_text(text: str) -> int | None:
+    match = re.search(r'max_frames?\s*[=:]?\s*(\d+)', text, flags=re.I)
+    if match:
+        return int(match.group(1))
+    match = re.search(r'最多\s*(\d+)\s*帧', text)
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def extract_timeout_ms_from_text(text: str) -> int | None:
+    match = re.search(r'timeout(?:_ms)?\s*[=:]?\s*(\d+(?:\.\d+)?)\s*(毫秒|ms|秒|s)?', text, flags=re.I)
+    if match:
+        value = float(match.group(1))
+        unit = (match.group(2) or 'ms').lower()
+        return int(value * 1000) if unit in {'秒', 's'} else int(value)
+    match = re.search(r'超时\s*(\d+(?:\.\d+)?)\s*(毫秒|ms|秒|s)', text, flags=re.I)
+    if match:
+        value = float(match.group(1))
+        unit = match.group(2).lower()
+        return int(value * 1000) if unit in {'秒', 's'} else int(value)
+    return None
+
+
 def should_use_video_prediction(user_text: str, path: str) -> bool:
     normalized = user_text.lower()
     if looks_like_video_path(path):
@@ -63,6 +174,8 @@ def extract_output_path_from_text(text: str, source_path: str = '') -> str:
     paths = extract_all_paths_from_text(text)
     source_key = str(source_path or '')
     candidates = [item for item in paths if not looks_like_model_path(item) and item != source_key]
+    if '://' in source_key:
+        candidates = [item for item in candidates if not source_key.endswith(item)]
     return candidates[0] if candidates else ''
 
 

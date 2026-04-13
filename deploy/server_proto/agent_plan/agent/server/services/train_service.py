@@ -293,6 +293,7 @@ class TrainService:
         result['minimum_facts_ready'] = bool(result['training_facts'].get('minimum_facts_ready'))
         result['latest_eval_metrics'] = result['training_facts'].get('latest_eval_metrics')
         result['latest_train_metrics'] = result['training_facts'].get('latest_train_metrics')
+        result['save_dir'] = result['training_facts'].get('save_dir')
         result['error_lines'] = result['training_facts'].get('error_lines') or []
         if not result['latest_metrics'].get('metrics'):
             result['latest_metrics'] = result['training_facts'].get('latest_metrics') or result['latest_metrics']
@@ -637,6 +638,7 @@ class TrainService:
             'signals': summary.get('signals'),
             'facts': summary.get('facts'),
             'latest_metrics': summary.get('latest_metrics'),
+            'save_dir': summary.get('save_dir'),
             'next_actions': next_actions,
         }
 

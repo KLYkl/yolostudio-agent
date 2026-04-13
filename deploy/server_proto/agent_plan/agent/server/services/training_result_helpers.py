@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 
@@ -42,6 +43,18 @@ def _normalize_run_state(status: dict[str, Any], parsed_log: dict[str, Any]) -> 
     return 'stopped'
 
 
+def _resolve_save_dir(status: dict[str, Any], parsed_log: dict[str, Any]) -> str:
+    save_dir = str(parsed_log.get('save_dir') or '').strip()
+    if save_dir:
+        return save_dir
+    resolved_args = status.get('resolved_args') or {}
+    project = str(resolved_args.get('project') or '').strip()
+    name = str(resolved_args.get('name') or '').strip()
+    if project and name:
+        return str(Path(project) / name)
+    return ''
+
+
 def _derive_observation_stage(run_state: str, progress: dict[str, Any]) -> str:
     if run_state in {'completed', 'stopped', 'failed'}:
         return 'final'
@@ -80,6 +93,7 @@ def build_training_facts(status: dict[str, Any], parsed_log: dict[str, Any] | No
     facts = list(parsed_facts)
     run_state = _normalize_run_state(status, parsed)
     status_source = _normalize_status_source(status)
+    save_dir = _resolve_save_dir(status, parsed)
 
     if run_state == 'running':
         signals.append('training_running')
@@ -127,8 +141,8 @@ def build_training_facts(status: dict[str, Any], parsed_log: dict[str, Any] | No
         facts.append(f"stop_reason={status.get('stop_reason')}")
     if status.get('device'):
         facts.append(f"device={status.get('device')}")
-    if parsed.get('save_dir'):
-        facts.append(f"save_dir={parsed.get('save_dir')}")
+    if save_dir:
+        facts.append(f"save_dir={save_dir}")
 
     next_actions: list[str] = []
     if run_state == 'running':
@@ -169,6 +183,7 @@ def build_training_facts(status: dict[str, Any], parsed_log: dict[str, Any] | No
         'latest_eval_metrics': parsed.get('latest_eval_metrics') or None,
         'latest_train_metrics': parsed.get('latest_train_metrics') or None,
         'error_lines': parsed.get('error_lines') or [],
+        'save_dir': save_dir or None,
         'next_actions': next_actions,
     }
 
@@ -228,6 +243,7 @@ def summarize_training_run(status: dict[str, Any], parsed_log: dict[str, Any] | 
         'latest_eval_metrics': facts['latest_eval_metrics'],
         'latest_train_metrics': facts['latest_train_metrics'],
         'error_lines': facts['error_lines'],
+        'save_dir': facts['save_dir'],
         'log_file': status.get('log_file'),
         'return_code': status.get('return_code'),
         'stop_reason': status.get('stop_reason'),
