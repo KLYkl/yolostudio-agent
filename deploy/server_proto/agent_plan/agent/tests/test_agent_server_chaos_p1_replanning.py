@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import shutil
 import sys
 from pathlib import Path
@@ -16,6 +15,7 @@ if __package__ in {None, ''}:
 
 from yolostudio_agent.agent.tests.test_agent_server_chaos_p0 import WORK as P0_WORK
 from yolostudio_agent.agent.tests.test_agent_server_chaos_p0 import _make_client
+from yolostudio_agent.agent.tests._coroutine_runner import run
 
 
 def _fresh_client(session_id: str):
@@ -164,4 +164,4 @@ async def _run() -> None:
 
 
 if __name__ == '__main__':
-    asyncio.run(_run())
+    run(_run())

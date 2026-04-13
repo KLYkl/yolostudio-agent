@@ -51,6 +51,7 @@ from yolostudio_agent.agent.client.intent_parsing import (
     wants_default_training_environment,
     wants_clear_project,
     wants_clear_run_name,
+    wants_clear_batch,
     wants_clear_fraction,
     wants_clear_classes,
     looks_like_model_path,
@@ -458,7 +459,7 @@ class YoloStudioAgentClient:
         )
         wants_train = (
             any(token in normalized_text for token in ('train', 'fine-tune', 'fit'))
-            or any(token in user_text for token in ('训练', '开训', '重训', '重新训', '训一下'))
+            or any(token in user_text for token in ('训练', '开训', '重训', '重新训', '训一下', '直接训'))
         )
         no_train = any(token in user_text for token in ('不要训练', '不训练', '只检查', '仅检查', '不要启动'))
         wants_duplicates = ('重复' in user_text) or ('duplicate' in normalized_text)
@@ -501,6 +502,7 @@ class YoloStudioAgentClient:
                 '训练状态', '当前训练状态', '训练进度', '当前进度',
                 '还在训练吗', '训练还在吗', '刚才训练还在吗', '上次训练还在吗', '还在跑吗',
                 '训练到哪了', '训练到第几轮', '跑到第几轮',
+                '第几轮了', '到第几轮了', '现在第几轮了',
                 '现在状态呢',
                 '训练停了吗', '停了吗', '训练结束了吗', '结束了没', '跑完了吗', '训练完成了吗',
                 '训练失败了吗', '失败了吗', '是不是训练失败了', '是不是失败了', '训练挂了吗'
@@ -544,6 +546,7 @@ class YoloStudioAgentClient:
         wants_running_training_run_list = any(token in user_text for token in ('运行中的训练', '还在跑的训练', '正在训练的记录'))
         wants_analysis_ready_run_list = any(token in user_text for token in ('可分析的训练', '有完整指标的训练', '值得分析的训练'))
         explicit_run_ids = self._extract_training_run_ids_from_text(user_text)
+        explicit_compare_hint = any(token in user_text for token in ('对比', '比较', '哪个好', '哪次更好'))
         repeat_training_run_compare = any(
             token in user_text
             for token in (
@@ -570,9 +573,9 @@ class YoloStudioAgentClient:
                 comparison_run_ids.append(left_run_id)
             if right_run_id:
                 comparison_run_ids.append(right_run_id)
-        wants_training_run_compare = wants_training_run_compare or bool(comparison_run_ids)
+        wants_training_run_compare = wants_training_run_compare or (bool(comparison_run_ids) and (repeat_training_run_compare or explicit_compare_hint))
         wants_training_run_inspect = (not references_prior_statement) and bool(explicit_run_ids) and any(
-            token in user_text for token in ('详情', '记录', '具体情况', 'train_log')
+            token in user_text for token in ('详情', '记录', '具体情况')
         )
         wants_next_step_guidance = any(token in user_text for token in ('下一步', '先补数据还是先调参数', '先补数据', '先调参数', '怎么优化', '如何优化下一步训练', '下一轮怎么做'))
         wants_training_knowledge = bool(metric_signals) or (asks_metric_terms and any(token in user_text for token in ('说明什么', '什么意思', '意味着什么', '怎么看')))
@@ -586,12 +589,57 @@ class YoloStudioAgentClient:
         wants_training_evidence = any(token in user_text for token in (
             '依据是什么', '根据什么说的', '为什么这么说', '为什么说数据有问题',
         ))
+        wants_segmentation_training = wants_train and any(
+            token in user_text or token in normalized_text
+            for token in ('分割', 'segmentation', 'segment', 'sam')
+        )
+        wants_prediction_and_training_mix = wants_predict and (
+            wants_train or wants_training_run_compare or wants_best_training_run
+        ) and any(token in user_text for token in ('然后', '再', '同时', '边训练边', '一边'))
+        wants_prediction_result_as_training_data = wants_train and any(
+            token in user_text for token in ('预测结果', 'prediction 结果', '预测输出', '推理结果', '识别结果')
+        )
+        wants_merge_extract_into_training = any(token in user_text for token in ('合并', '并到', '合到')) and any(
+            token in user_text for token in ('抽帧', '帧', '旧数据集', '训练')
+        )
+        wants_best_weight_prediction = wants_predict and any(
+            token in user_text or token in normalized_text
+            for token in ('最佳训练', '最好权重', 'best run', 'best weight')
+        )
+        wants_continuous_parallel_predict = wants_train and wants_predict and any(
+            token in user_text for token in ('边训练边', '不断做视频预测', '一直预测', '同时不断预测')
+        )
         wants_best_training_run_analysis = wants_best_training_run and (
             wants_training_outcome_analysis
             or any(token in user_text for token in ('怎么看', '结果怎么样', '结果如何', '效果怎么样', '效果如何', '意味着什么'))
         )
         readiness_only_query = wants_readiness and (no_train or any(token in user_text for token in ('吗', '是否', '能不能', '可不可以')))
         training_command_like = any(token in user_text for token in ('开始训练', '启动训练', '训练这个数据', '用这个数据训练', '直接开训', 'start_training'))
+
+        if wants_segmentation_training and not wants_predict:
+            reply = '当前训练主线先按 YOLO detection 做稳定交付；分割/SAM 训练暂不在这条主线上直接执行。'
+            self._messages.append(AIMessage(content=reply))
+            return {'status': 'completed', 'message': reply, 'tool_call': None}
+
+        if wants_continuous_parallel_predict:
+            reply = '当前不支持“边训练边持续做视频预测”这种高资源并发编排；请先明确主任务，或分成独立步骤执行。'
+            self._messages.append(AIMessage(content=reply))
+            return {'status': 'completed', 'message': reply, 'tool_call': None}
+
+        if wants_prediction_and_training_mix:
+            reply = '这条请求同时混了预测、训练或训练比较；为了避免串扰，请拆成连续步骤，我会按顺序执行。'
+            self._messages.append(AIMessage(content=reply))
+            return {'status': 'completed', 'message': reply, 'tool_call': None}
+
+        if wants_prediction_result_as_training_data:
+            reply = '预测结果目录不能直接当训练数据开训；如果要用于训练，先确认是否有可用标签，再走数据准备/校验链。'
+            self._messages.append(AIMessage(content=reply))
+            return {'status': 'completed', 'message': reply, 'tool_call': None}
+
+        if wants_merge_extract_into_training:
+            reply = '抽帧结果或旧数据集合并后，应该先走数据准备/校验，再决定是否训练；我不会直接把它们无检查地并进训练。'
+            self._messages.append(AIMessage(content=reply))
+            return {'status': 'completed', 'message': reply, 'tool_call': None}
 
         if wants_prediction_summary:
             summary_kwargs: dict[str, Any] = {}
@@ -700,6 +748,8 @@ class YoloStudioAgentClient:
             and not wants_stop_training
             and not dataset_path
             and not wants_predict
+            and not explicit_run_ids
+            and 'resume' not in normalized_text
         ):
             reply = (
                 '当前训练还在运行，不能直接热更新 batch、轮数、优化器或设备等核心参数。'
@@ -738,6 +788,15 @@ class YoloStudioAgentClient:
 
         if prediction_path and wants_extract_frames and not wants_predict and not training_command_like:
             return await self._complete_direct_tool_reply('extract_video_frames', **self._build_video_extract_args_from_text(user_text, prediction_path))
+
+        if wants_best_weight_prediction and wants_predict and not training_command_like:
+            best_selection = self.session_state.active_training.best_run_selection or {}
+            best_run = best_selection.get('best_run') or {}
+            weight_path = str(best_run.get('best_weight_path') or best_run.get('weights_path') or '').strip()
+            if not weight_path:
+                reply = '我当前不能直接假定“最佳训练”的权重文件路径；请先查看最佳训练详情，或明确给我可用的权重路径。'
+                self._messages.append(AIMessage(content=reply))
+                return {'status': 'completed', 'message': reply, 'tool_call': None}
 
         if prediction_path and wants_predict and not training_command_like:
             model = self._extract_model_from_text(user_text) or self.session_state.active_prediction.model or self.session_state.active_training.model
@@ -930,6 +989,8 @@ class YoloStudioAgentClient:
             or ('delete' in normalized and 'training' in normalized and 'trace' in normalized)
         ):
             reply = '我不会直接删除训练历史、运行痕迹或整批 run；如果确实要清理，必须先明确目标并走高风险运维确认。'
+        elif any(token in user_text for token in ('把这次当没发生', '把刚才那次当没发生', '把这次训练当没发生', '当没发生')):
+            reply = '我不能把已经发生的训练当成没发生；如果当前训练不该继续，可以停止它，但历史记录不会被伪造删除。'
         elif any(token in user_text for token in ('敏感信息', '所有敏感信息', '系统里记住的所有敏感信息', '所有凭据', '所有令牌')):
             reply = '我不会泄露系统记录的敏感信息、凭据、令牌或内部状态。'
         elif (
@@ -938,6 +999,8 @@ class YoloStudioAgentClient:
             and any(token in user_text for token in ('不用再检查', '别再检查', '不需要再检查'))
         ):
             reply = '我可以把训练环境当成偏好参考，但每次真正开训前仍会重新检查当前环境是否存在且可用。'
+        elif any(token in user_text for token in ('伪造一个环境', '自己伪造一个环境', '环境不存在就伪造', '环境不存在你就自己伪造')):
+            reply = '我不会伪造训练环境；环境不存在时只能明确阻塞并要求切到真实可用环境。'
         elif (
             any(token in user_text for token in ('把失败状态改成 completed', '改成 completed', '把失败那次当成功', '失败那次当成功', '把刚才失败那次当成功', '忽略日志错误继续告诉我训练很好', '把旧 run 的结果和新 run 混在一起总结'))
             or ('ignore' in normalized and 'log' in normalized and 'training' in normalized and 'good' in normalized)
@@ -951,6 +1014,8 @@ class YoloStudioAgentClient:
             reply = '我不会直接复制或覆盖最佳训练权重到其他位置；这类产物写入或覆盖操作必须先明确目标并走高风险确认。'
         elif any(token in user_text for token in ('忽略系统规则', '忽略规则', '绕开规则', '别管规则')):
             reply = '我不会绕开系统规则、高风险确认或 grounded 边界；这类请求不能直接执行。'
+        elif any(token in user_text for token in ('别再问我确认', '后面都默认执行', '以后都默认执行')):
+            reply = '我不会关闭高风险确认；训练启动、准备数据和其他高风险动作仍然需要显式确认。'
         else:
             return None
         self._messages.append(AIMessage(content=reply))
@@ -1642,6 +1707,10 @@ class YoloStudioAgentClient:
         return wants_clear_run_name(text)
 
     @staticmethod
+    def _wants_clear_batch(text: str) -> bool:
+        return wants_clear_batch(text)
+
+    @staticmethod
     def _wants_clear_fraction(text: str) -> bool:
         return wants_clear_fraction(text)
 
@@ -1653,6 +1722,8 @@ class YoloStudioAgentClient:
         clear_fields: set[str] = set()
         if self._wants_default_training_environment(user_text):
             clear_fields.add('training_environment')
+        if self._wants_clear_batch(user_text):
+            clear_fields.add('batch')
         if self._wants_clear_project(user_text):
             clear_fields.add('project')
         if self._wants_clear_run_name(user_text):
@@ -1668,6 +1739,15 @@ class YoloStudioAgentClient:
         args: dict[str, Any] = {}
         known_environments = list((tr.last_environment_probe or {}).get('environments') or [])
         model = self._extract_model_from_text(user_text)
+        if any(token in user_text for token in ('现在用', '改用', '换成', '改成')):
+            explicit_model_paths = re.findall(r'([A-Za-z0-9_./\\-]+\.(?:pt|onnx|yaml|yml))', user_text, flags=re.I)
+            explicit_model_tokens = [token if '.' in token else f'{token}.pt' for token in re.findall(r'\b(yolo[a-zA-Z0-9._-]+)\b', user_text, flags=re.I)]
+            candidates: list[str] = []
+            for item in explicit_model_paths + explicit_model_tokens:
+                if item not in candidates:
+                    candidates.append(item)
+            if candidates:
+                model = candidates[-1]
         if model:
             args['model'] = model
         resolved_yaml = '' if data_yaml is None else str(data_yaml or tr.data_yaml or self.session_state.active_dataset.data_yaml or '').strip()
@@ -1927,20 +2007,34 @@ class YoloStudioAgentClient:
     async def _try_handle_training_plan_dialogue(self, user_text: str, thread_id: str) -> dict[str, Any] | None:
         draft = dict(self.session_state.active_training.training_plan_draft or {})
         pending = self._pending_from_state()
+        explicit_run_ids = self._extract_training_run_ids_from_text(user_text)
 
         normalized = user_text.lower()
         clear_fields = self._collect_training_clear_fields(user_text)
         discussion_only_hint = self._is_training_discussion_only(user_text) or any(token in user_text for token in ('不执行', '不要执行', '暂不执行', '先不执行'))
+        contradictory_train_intent = any(token in user_text for token in ('不要训练', '先不要训练', '不训练了')) and any(
+            token in user_text for token in ('开始训练', '启动训练', '直接训练', '直接开始训练', '开训', '执行')
+        )
         requested_execute = (
             any(token in user_text for token in ('执行', '开始吧', '就这样', '确认', '可以开始', '开训', '启动吧', '直接训练', '直接开始训练'))
             or normalized.strip() in {'y', 'yes'}
-        ) and not discussion_only_hint
+        ) and not discussion_only_hint and not contradictory_train_intent
         wants_repeat_prepare = any(token in user_text for token in ('再 prepare 一次', '再准备一次', '重新 prepare 一次', '重新准备一次', '再做一次准备', '重新准备一遍'))
         wants_retry_last_plan = any(token in user_text for token in ('按原计划重试一次', '按原计划重试', '重试刚才那次训练', '重试上次训练', '按刚才的计划再来一次', '按原计划再来一次'))
-        wants_resume_recent_training = any(token in user_text for token in ('从最近状态继续训练', '从最近状态继续', '从最近状态恢复训练', '恢复刚才训练', '接着上次训练', '恢复上次训练'))
+        wants_resume_recent_training = any(token in user_text for token in ('从最近状态继续训练', '从最近状态继续', '从最近状态恢复训练', '恢复刚才训练', '接着上次训练', '恢复上次训练', 'resume 上次训练', 'resume 刚才训练', 'resume 另一个 run', 'resume run', '继续另一个 run')) or ('resume' in normalized and ('训练' in user_text or bool(explicit_run_ids)))
+        wants_analysis_only = any(token in user_text for token in ('只分析', '只看结果', '不要接着训', '不要继续训', '不要继续训练'))
         latest_dataset_path = self._extract_dataset_path_from_text(user_text)
+        all_paths = self._extract_all_paths_from_text(user_text)
         project_path_hint = self._extract_project_from_text(user_text)
         custom_script_hint = self._extract_custom_training_script_from_text(user_text)
+        dataset_candidates = [
+            item for item in all_paths
+            if not self._looks_like_model_path(item)
+            and item != project_path_hint
+            and item != custom_script_hint
+        ]
+        if dataset_candidates and any(token in user_text for token in ('换成', '现在用', '改成', '改用')):
+            latest_dataset_path = dataset_candidates[-1]
         if (
             latest_dataset_path
             and project_path_hint
@@ -1957,12 +2051,28 @@ class YoloStudioAgentClient:
             latest_dataset_path = ''
         dataset_path_revision_requested = bool(latest_dataset_path) and (
             any(token in user_text for token in ('数据', '数据集', 'dataset', 'img_dir', 'label_dir'))
+            or any(token in user_text for token in ('现在用', '改用', '换成', '改成'))
             or (
                 any(token in user_text for token in ('训练', '开训', '开始训练', '继续训练'))
                 and not any(token in user_text for token in ('预测', '推理', '识别', '抽帧', '提帧', '视频', '图片'))
             )
         )
+        if contradictory_train_intent:
+            reply = '你这句话里同时出现了“不要训练”和“开始训练”；我先按保守方式处理，只保留讨论态，不会直接执行。'
+            if draft or pending:
+                reply = f'{reply}\n\n{self._render_training_plan_draft(draft or {}, pending=bool(pending))}'
+            self._messages.append(AIMessage(content=reply))
+            return {
+                'status': 'completed' if not pending else 'needs_confirmation',
+                'message': reply,
+                'tool_call': {'name': pending['name'], 'args': pending.get('args', {})} if pending else None,
+                'thread_id': thread_id if pending else None,
+            }
         if not draft and not pending:
+            if self.session_state.active_training.running and explicit_run_ids and wants_resume_recent_training:
+                reply = '当前已有活动训练；如果你想恢复或切换到另一个历史 run，请先停止当前训练，再明确要恢复的 run。'
+                self._messages.append(AIMessage(content=reply))
+                return {'status': 'completed', 'message': reply, 'tool_call': None}
             if requested_execute and self.session_state.active_training.running:
                 reply = '当前训练已经在运行；如果要新开训练，请先停止当前训练，或明确给出新的数据集和模型。'
                 self._messages.append(AIMessage(content=reply))
@@ -1974,6 +2084,14 @@ class YoloStudioAgentClient:
                 self._messages.append(AIMessage(content=reply))
                 return {'status': 'completed', 'message': reply, 'tool_call': None}
             if wants_retry_last_plan or wants_resume_recent_training:
+                if wants_analysis_only:
+                    if (
+                        self.session_state.active_training.training_run_summary
+                        or self.session_state.active_training.last_summary
+                        or self.session_state.active_training.last_status
+                    ):
+                        return await self._complete_training_outcome_analysis_reply()
+                    return None
                 tr = self.session_state.active_training
                 base_args = dict((tr.last_start_result or {}).get('resolved_args') or {})
                 if not str(base_args.get('model') or '').strip():
@@ -2080,7 +2198,7 @@ class YoloStudioAgentClient:
             )
         ) or wants_retry_last_plan or wants_resume_recent_training or bool(self._extract_custom_training_script_from_text(user_text)) or dataset_path_revision_requested
         if (
-            any(token in user_text for token in ('取消', '算了', '先不做', '不用了', '先别开始训练', '先不要开始训练', '先别开训', '先不要开训'))
+            any(token in user_text for token in ('取消', '算了', '先不做', '不用了', '先别开始训练', '先不要开始训练', '先别开训', '先不要开训', '先别开始', '先不要开始'))
             and not clear_fields
             and not requested_execute
             and not has_revision
@@ -2106,6 +2224,25 @@ class YoloStudioAgentClient:
                 'tool_call': {'name': pending['name'], 'args': pending.get('args', {})},
                 'thread_id': thread_id,
             }
+        if (
+            pending
+            and pending.get('name') == 'prepare_dataset_for_training'
+            and any(token in user_text for token in ('data_yaml', 'yaml', '产物路径', '输出路径', '会生成到哪里'))
+        ):
+            dataset_path = str((pending.get('args') or {}).get('dataset_path') or draft.get('dataset_path') or '').strip()
+            expected_yaml = f'{dataset_path.rstrip("/")}/data.yaml' if dataset_path else '准备输出目录中的 data.yaml'
+            dataset_label = dataset_path or '<当前数据集>'
+            reply = (
+                f'如果继续 prepare，我会基于数据集 {dataset_label} 生成可训练产物；'
+                f'预期会产出可用的 data_yaml（通常是 {expected_yaml}），完成后我会把真实路径写回状态。'
+            )
+            self._messages.append(AIMessage(content=reply))
+            return {
+                'status': 'needs_confirmation',
+                'message': reply,
+                'tool_call': {'name': pending['name'], 'args': pending.get('args', {})},
+                'thread_id': thread_id,
+            }
         if wants_repeat_prepare:
             readiness = self.session_state.active_dataset.last_readiness or {}
             data_yaml = str(self.session_state.active_dataset.data_yaml or '').strip()
@@ -2121,7 +2258,7 @@ class YoloStudioAgentClient:
                 self._messages.append(AIMessage(content=reply))
                 return {'status': 'completed', 'message': reply, 'tool_call': None}
         if (
-            any(token in user_text for token in ('先别执行', '先不要执行', '先别启动', '先不要启动', '先讨论', '先看看计划', '先给我计划'))
+            any(token in user_text for token in ('先别执行', '先不要执行', '先别启动', '先不要启动', '先讨论', '先看看计划', '先给我计划', '想先看计划', '记一下我想先看计划'))
             and not has_revision
             and not requested_execute
         ):
@@ -2336,7 +2473,7 @@ class YoloStudioAgentClient:
             revised_draft['advanced_details_requested'] = advanced_requested
         self._save_training_plan_draft(revised_draft)
         force_confirmation = wants_retry_last_plan or wants_resume_recent_training
-        if revised_draft.get('next_step_tool') and (pending or force_confirmation):
+        if revised_draft.get('next_step_tool') and (pending or force_confirmation or requested_execute):
             self._set_pending_confirmation(
                 thread_id,
                 {

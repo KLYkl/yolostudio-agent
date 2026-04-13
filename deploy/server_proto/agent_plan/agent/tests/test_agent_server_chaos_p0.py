@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import shutil
 import sys
 import types
@@ -15,35 +14,27 @@ if __package__ in {None, ''}:
         if path not in sys.path:
             sys.path.insert(0, path)
 
-try:
-    import langchain_openai  # type: ignore  # noqa: F401
-except Exception:
-    fake_mod = types.ModuleType('langchain_openai')
+def _install_fake_test_dependencies() -> None:
+    fake_openai = types.ModuleType('langchain_openai')
 
     class _FakeChatOpenAI:
         def __init__(self, *args, **kwargs):
             self.args = args
             self.kwargs = kwargs
 
-    fake_mod.ChatOpenAI = _FakeChatOpenAI
-    sys.modules['langchain_openai'] = fake_mod
+    fake_openai.ChatOpenAI = _FakeChatOpenAI
+    sys.modules['langchain_openai'] = fake_openai
 
-try:
-    import langchain_ollama  # type: ignore  # noqa: F401
-except Exception:
-    fake_mod = types.ModuleType('langchain_ollama')
+    fake_ollama = types.ModuleType('langchain_ollama')
 
     class _FakeChatOllama:
         def __init__(self, *args, **kwargs):
             self.args = args
             self.kwargs = kwargs
 
-    fake_mod.ChatOllama = _FakeChatOllama
-    sys.modules['langchain_ollama'] = fake_mod
+    fake_ollama.ChatOllama = _FakeChatOllama
+    sys.modules['langchain_ollama'] = fake_ollama
 
-try:
-    import langchain_core.messages  # type: ignore  # noqa: F401
-except Exception:
     core_mod = types.ModuleType('langchain_core')
     messages_mod = types.ModuleType('langchain_core.messages')
     tools_mod = types.ModuleType('langchain_core.tools')
@@ -99,9 +90,6 @@ except Exception:
     sys.modules['langchain_core.messages'] = messages_mod
     sys.modules['langchain_core.tools'] = tools_mod
 
-try:
-    import langchain_mcp_adapters.client  # type: ignore  # noqa: F401
-except Exception:
     client_mod = types.ModuleType('langchain_mcp_adapters.client')
 
     class _FakeMCPClient:
@@ -115,9 +103,6 @@ except Exception:
     client_mod.MultiServerMCPClient = _FakeMCPClient
     sys.modules['langchain_mcp_adapters.client'] = client_mod
 
-try:
-    import pydantic  # type: ignore  # noqa: F401
-except Exception:
     pyd_mod = types.ModuleType('pydantic')
 
     class _BaseModel:
@@ -133,17 +118,12 @@ except Exception:
     pyd_mod.Field = _Field
     sys.modules['pydantic'] = pyd_mod
 
-try:
-    import langgraph.prebuilt  # type: ignore  # noqa: F401
-    import langgraph.types  # type: ignore  # noqa: F401
-    import langgraph.checkpoint.memory  # type: ignore  # noqa: F401
-except Exception:
     prebuilt_mod = types.ModuleType('langgraph.prebuilt')
     types_mod = types.ModuleType('langgraph.types')
     checkpoint_mod = types.ModuleType('langgraph.checkpoint.memory')
 
     def _fake_create_react_agent(*args, **kwargs):
-        raise AssertionError('create_react_agent should not be called in chaos p0 tests')
+        raise AssertionError('create_react_agent should not be called in chaos tests')
 
     class _Command:
         def __init__(self, resume=None):
@@ -162,7 +142,11 @@ except Exception:
     sys.modules['langgraph.types'] = types_mod
     sys.modules['langgraph.checkpoint.memory'] = checkpoint_mod
 
+
+_install_fake_test_dependencies()
+
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from yolostudio_agent.agent.tests._coroutine_runner import run
 
 
 class _NoLLMGraph:
@@ -1500,4 +1484,4 @@ async def _run() -> None:
 
 
 if __name__ == '__main__':
-    asyncio.run(_run())
+    run(_run())

@@ -251,10 +251,10 @@ def extract_run_name_from_text(text: str) -> str:
 
 
 def extract_fraction_from_text(text: str) -> float | None:
-    match = re.search(r'fraction\s*[=:]?\s*(0?\.\d+|1(?:\.0+)?)', text, flags=re.I)
+    match = re.search(r'fraction\s*[=:]?\s*(-?\d+(?:\.\d+)?)', text, flags=re.I)
     if match:
         return float(match.group(1))
-    match = re.search(r'fraction\s*(?:改成|改为|改|设成|设置为|为|用)?\s*(0?\.\d+|1(?:\.0+)?)', text, flags=re.I)
+    match = re.search(r'fraction\s*(?:改成|改为|改|设成|设置为|为|用)?\s*(-?\d+(?:\.\d+)?)', text, flags=re.I)
     if match:
         return float(match.group(1))
     match = re.search(r'只用\s*(\d+(?:\.\d+)?)\s*%\s*数据', text)
@@ -264,6 +264,22 @@ def extract_fraction_from_text(text: str) -> float | None:
     if match:
         return float(match.group(1)) / 100.0
     return None
+
+
+def wants_clear_batch(text: str) -> bool:
+    lowered = text.lower()
+    return any(
+        token in text or token in lowered
+        for token in (
+            '恢复默认 batch',
+            'batch 恢复默认',
+            'batch 不要了',
+            '不要 batch',
+            'batch 清掉',
+            'batch 取消',
+            'batch 先取消',
+        )
+    )
 
 
 def extract_classes_from_text(text: str) -> list[int] | None:
