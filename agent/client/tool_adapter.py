@@ -24,6 +24,14 @@ TOOL_NAME_ALIASES: dict[str, str] = {
     'preview_extract': 'preview_extract_images',
     'extract_frames': 'extract_video_frames',
     'scan_video_directory': 'scan_videos',
+    'preview_convert_labels': 'preview_convert_format',
+    'convert_labels_format': 'convert_format',
+    'preview_replace_labels': 'preview_modify_labels',
+    'replace_labels': 'modify_labels',
+    'fill_missing_labels': 'generate_missing_labels',
+    'create_empty_labels': 'generate_empty_labels',
+    'preview_group_by_class': 'preview_categorize_by_class',
+    'group_by_class': 'categorize_by_class',
     'search_training_knowledge': 'retrieve_training_knowledge',
     'explain_training_metrics': 'analyze_training_outcome',
     'recommend_training_next_step': 'recommend_next_training_step',
@@ -121,6 +129,94 @@ _ARG_ALIASES: dict[str, dict[str, str]] = {
         'input_path': 'source_path',
         'dir_path': 'source_path',
         'folder': 'source_path',
+        'out_dir': 'output_dir',
+    },
+    'preview_convert_format': {
+        'path': 'dataset_path',
+        'dataset': 'dataset_path',
+        'root': 'dataset_path',
+        'img_dir': 'dataset_path',
+        'out_dir': 'output_dir',
+        'format': 'target_format',
+    },
+    'convert_format': {
+        'path': 'dataset_path',
+        'dataset': 'dataset_path',
+        'root': 'dataset_path',
+        'img_dir': 'dataset_path',
+        'out_dir': 'output_dir',
+        'format': 'target_format',
+    },
+    'preview_modify_labels': {
+        'path': 'dataset_path',
+        'dataset': 'dataset_path',
+        'root': 'dataset_path',
+        'img_dir': 'dataset_path',
+        'out_dir': 'output_dir',
+        'from': 'old_value',
+        'to': 'new_value',
+        'operation': 'action',
+    },
+    'modify_labels': {
+        'path': 'dataset_path',
+        'dataset': 'dataset_path',
+        'root': 'dataset_path',
+        'img_dir': 'dataset_path',
+        'out_dir': 'output_dir',
+        'from': 'old_value',
+        'to': 'new_value',
+        'operation': 'action',
+    },
+    'clean_orphan_labels': {
+        'path': 'dataset_path',
+        'dataset': 'dataset_path',
+        'root': 'dataset_path',
+        'img_dir': 'dataset_path',
+    },
+    'preview_generate_empty_labels': {
+        'path': 'dataset_path',
+        'dataset': 'dataset_path',
+        'root': 'dataset_path',
+        'img_dir': 'dataset_path',
+        'out_dir': 'output_dir',
+        'format': 'label_format',
+    },
+    'generate_empty_labels': {
+        'path': 'dataset_path',
+        'dataset': 'dataset_path',
+        'root': 'dataset_path',
+        'img_dir': 'dataset_path',
+        'out_dir': 'output_dir',
+        'format': 'label_format',
+    },
+    'preview_generate_missing_labels': {
+        'path': 'dataset_path',
+        'dataset': 'dataset_path',
+        'root': 'dataset_path',
+        'img_dir': 'dataset_path',
+        'out_dir': 'output_dir',
+        'format': 'label_format',
+    },
+    'generate_missing_labels': {
+        'path': 'dataset_path',
+        'dataset': 'dataset_path',
+        'root': 'dataset_path',
+        'img_dir': 'dataset_path',
+        'out_dir': 'output_dir',
+        'format': 'label_format',
+    },
+    'preview_categorize_by_class': {
+        'path': 'dataset_path',
+        'dataset': 'dataset_path',
+        'root': 'dataset_path',
+        'img_dir': 'dataset_path',
+        'out_dir': 'output_dir',
+    },
+    'categorize_by_class': {
+        'path': 'dataset_path',
+        'dataset': 'dataset_path',
+        'root': 'dataset_path',
+        'img_dir': 'dataset_path',
         'out_dir': 'output_dir',
     },
 }
@@ -224,6 +320,32 @@ class _PredictSummaryAliasArgs(BaseModel):
     dir_path: str = Field(default='', description='旧参数兼容；等价于 output_dir')
     folder: str = Field(default='', description='旧参数兼容；等价于 output_dir')
 
+
+class _DataGovernanceAliasArgs(BaseModel):
+    dataset_path: str = Field(default='', description='数据集根目录或图片目录')
+    path: str = Field(default='', description='旧参数兼容；等价于 dataset_path')
+    dataset: str = Field(default='', description='旧参数兼容；等价于 dataset_path')
+    root: str = Field(default='', description='旧参数兼容；等价于 dataset_path')
+    img_dir: str = Field(default='', description='旧参数兼容；等价于 dataset_path')
+    label_dir: str = Field(default='', description='可选标签目录')
+    output_dir: str = Field(default='', description='可选输出目录')
+    out_dir: str = Field(default='', description='旧参数兼容；等价于 output_dir')
+    target_format: str = Field(default='', description='目标格式')
+    format: str = Field(default='', description='旧参数兼容；等价于 target_format 或 label_format')
+    action: str = Field(default='', description='modify 动作')
+    operation: str = Field(default='', description='旧参数兼容；等价于 action')
+    old_value: str = Field(default='', description='旧类别值')
+    new_value: str = Field(default='', description='新类别值')
+    from_: str = Field(default='', alias='from', description='旧参数兼容；等价于 old_value')
+    to: str = Field(default='', description='旧参数兼容；等价于 new_value')
+    label_format: str = Field(default='', description='生成标签格式')
+    classes_txt: str = Field(default='', description='classes.txt 路径')
+    data_yaml: str = Field(default='', description='data.yaml 路径')
+    backup: bool = Field(default=True, description='是否备份')
+    dry_run: bool = Field(default=True, description='是否仅预览')
+    only_missing: bool = Field(default=True, description='是否仅处理缺失标签')
+    include_no_label: bool = Field(default=True, description='分类时是否包含无标签图片')
+
 def _build_alias_tool(alias_name: str, target_tool: BaseTool, *, description: str, args_schema: type[BaseModel]) -> BaseTool:
     async def _arun(**kwargs: Any) -> str:
         result = await target_tool.ainvoke(normalize_tool_args(alias_name, kwargs))
@@ -323,6 +445,27 @@ def adapt_tools_for_chat_model(tools: list[BaseTool]) -> list[BaseTool]:
                     tool_map['summarize_prediction_results'],
                     description=description,
                     args_schema=_PredictSummaryAliasArgs,
+                )
+            )
+    for canonical_name, aliases in (
+        ('preview_convert_format', (('preview_convert_labels', '兼容旧工具名 preview_convert_labels。用于预览标签格式转换范围。'),)),
+        ('convert_format', (('convert_labels_format', '兼容旧工具名 convert_labels_format。用于执行标签格式转换。'),)),
+        ('preview_modify_labels', (('preview_replace_labels', '兼容旧工具名 preview_replace_labels。用于预览标签批量替换/删除范围。'),)),
+        ('modify_labels', (('replace_labels', '兼容旧工具名 replace_labels。用于执行标签批量替换/删除。'),)),
+        ('generate_missing_labels', (('fill_missing_labels', '兼容旧工具名 fill_missing_labels。用于补齐缺失标签。'),)),
+        ('generate_empty_labels', (('create_empty_labels', '兼容旧工具名 create_empty_labels。用于生成空标签。'),)),
+        ('preview_categorize_by_class', (('preview_group_by_class', '兼容旧工具名 preview_group_by_class。用于预览按类别整理结果。'),)),
+        ('categorize_by_class', (('group_by_class', '兼容旧工具名 group_by_class。用于按类别整理数据。'),)),
+    ):
+        if canonical_name not in tool_map:
+            continue
+        for alias_name, description in aliases:
+            alias_tools.append(
+                _build_alias_tool(
+                    alias_name,
+                    tool_map[canonical_name],
+                    description=description,
+                    args_schema=_DataGovernanceAliasArgs,
                 )
             )
 

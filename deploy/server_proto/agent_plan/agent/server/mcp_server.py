@@ -5,8 +5,19 @@ from mcp.server.fastmcp import FastMCP
 from yolostudio_agent.agent.server.tools.combo_tools import prepare_dataset_for_training
 from yolostudio_agent.agent.server.tools.data_tools import (
     augment_dataset,
+    categorize_by_class,
+    clean_orphan_labels,
+    convert_format,
     detect_duplicate_images,
+    generate_empty_labels,
     generate_yaml,
+    generate_missing_labels,
+    modify_labels,
+    preview_categorize_by_class,
+    preview_convert_format,
+    preview_generate_empty_labels,
+    preview_generate_missing_labels,
+    preview_modify_labels,
     run_dataset_health_check,
     scan_dataset,
     split_dataset,
@@ -45,6 +56,17 @@ mcp.tool()(validate_dataset)
 mcp.tool()(run_dataset_health_check)
 mcp.tool()(detect_duplicate_images)
 mcp.tool()(augment_dataset)
+mcp.tool()(preview_convert_format)
+mcp.tool()(convert_format)
+mcp.tool()(preview_modify_labels)
+mcp.tool()(modify_labels)
+mcp.tool()(clean_orphan_labels)
+mcp.tool()(preview_generate_empty_labels)
+mcp.tool()(generate_empty_labels)
+mcp.tool()(preview_generate_missing_labels)
+mcp.tool()(generate_missing_labels)
+mcp.tool()(preview_categorize_by_class)
+mcp.tool()(categorize_by_class)
 mcp.tool()(generate_yaml)
 mcp.tool()(training_readiness)
 mcp.tool()(prepare_dataset_for_training)
