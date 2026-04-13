@@ -25,20 +25,19 @@ class _DummyService:
     ):
         return {
             'ok': True,
-            'summary': '找到 2 条最近训练记录',
-            'count': 2,
+            'summary': '找到 1 条最近训练记录（筛选: 状态=failed）',
+            'count': 1,
             'limit': limit,
             'applied_filters': {
-                'run_state': run_state or None,
+                'run_state': run_state,
                 'analysis_ready': analysis_ready,
                 'model_keyword': model_keyword or None,
                 'data_keyword': data_keyword or None,
             },
             'runs': [
-                {'run_id': 'train_log_100', 'run_state': 'stopped', 'observation_stage': 'final'},
-                {'run_id': 'train_log_090', 'run_state': 'completed', 'observation_stage': 'final'},
+                {'run_id': 'train_log_200', 'run_state': 'failed', 'observation_stage': 'final'},
             ],
-            'next_actions': ['可继续调用 summarize_training_run'],
+            'next_actions': ['可继续调用 inspect_training_run'],
         }
 
 
@@ -46,13 +45,12 @@ def main() -> None:
     original_service = train_tools.service
     train_tools.service = _DummyService()
     try:
-        result = train_tools.list_training_runs(limit=2)
+        result = train_tools.list_training_runs(limit=3, run_state='failed', analysis_ready=False)
         assert result['ok'] is True
-        assert result['count'] == 2
-        assert result['applied_filters']['run_state'] is None
-        assert result['runs'][0]['run_id'] == 'train_log_100'
-        assert result['next_actions']
-        print('train run list tools ok')
+        assert result['count'] == 1
+        assert result['applied_filters']['run_state'] == 'failed'
+        assert result['applied_filters']['analysis_ready'] is False
+        print('train run list filters tools ok')
     finally:
         train_tools.service = original_service
 

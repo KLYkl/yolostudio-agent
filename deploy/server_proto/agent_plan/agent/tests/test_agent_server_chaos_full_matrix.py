@@ -32,6 +32,7 @@ def main() -> None:
     tests_dir = Path(__file__).resolve().parent
     tmp_root = tests_dir / '_tmp_agent_server_chaos_p0'
     shutil.rmtree(tmp_root, ignore_errors=True)
+    tmp_root.mkdir(parents=True, exist_ok=True)
     for suite in SUITES:
         runpy.run_path(str(tests_dir / suite), run_name='__main__')
     output = {
@@ -41,7 +42,7 @@ def main() -> None:
         'suites': SUITES,
         'generated_at_utc': datetime.now(UTC).isoformat(),
     }
-    (tests_dir / 'test_agent_server_chaos_full_matrix_output.json').write_text(
+    (tmp_root / 'test_agent_server_chaos_full_matrix_output.json').write_text(
         json.dumps(output, ensure_ascii=False, indent=2),
         encoding='utf-8',
     )
