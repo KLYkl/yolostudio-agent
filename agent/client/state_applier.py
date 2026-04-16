@@ -774,7 +774,7 @@ def apply_tool_result_to_state(
             result,
             overview_key='path_list_overview',
             fallback_overview_key='export_overview',
-            extra_keys=('export_dir', 'detected_items_path', 'empty_items_path', 'failed_items_path', 'detected_count', 'empty_count', 'failed_count'),
+            extra_keys=('export_dir', 'output_dir', 'report_path', 'detected_items_path', 'empty_items_path', 'failed_items_path', 'detected_count', 'empty_count', 'failed_count'),
         )
     elif tool_name == 'organize_prediction_results' and result.get('ok'):
         pred.output_dir = str(result.get('source_output_dir') or pred.output_dir)

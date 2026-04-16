@@ -40,3 +40,7 @@
 
 ## 进度补充（2026-04-16）
 - 已开始落实“推进 `grounded_reply_builder.py` 退出主链”的评估意见：tool-result fallback 在 planner 不可用时也优先消费 structured facts，再退回 grounded builder。
+- 已继续落实“压缩 `chat()` 前置 code 拦截层”的评估意见：guardrail 前置拦截已并入 mainline router，不再单独占据 `chat()` 顶层分支。
+- 已开始落实“真实减少 helper 中旧 direct-tool 分支”的评估意见：prediction summary 与 training compare 显式请求在目标未变化时优先复用 structured state，不再重复触发只读工具调用。
+- 同批次已继续扩大到 prediction inspect 的显式目标请求：当 report/output 目标与当前 structured state 一致时，也直接走 cached result。
+- 同批次已继续扩大到 prediction export / path-lists 的显式目标请求；同时 dataset duplicate 显式请求增加 target-aware cache gate，避免跨数据集误复用 structured state。

@@ -165,6 +165,7 @@ def main() -> None:
     )
     assert state.active_prediction.last_path_lists['path_list_overview']['empty_count'] == 1
     assert state.active_prediction.last_path_lists['action_candidates'][0]['tool'] == 'organize_prediction_results'
+    assert state.active_prediction.last_path_lists['report_path'] == '/tmp/predict-out/prediction_report.json'
 
     apply_tool_result_to_state(
         state,

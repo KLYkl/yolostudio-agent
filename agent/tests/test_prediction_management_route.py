@@ -209,7 +209,7 @@ async def _scenario_export_routes_to_prediction_report_export() -> None:
             'mode': 'images',
             'output_dir': '/tmp/predict-out',
             'report_path': '/tmp/predict-out/prediction_report.json',
-            'export_path': '/tmp/predict-out/prediction_summary.md',
+            'export_path': kwargs.get('export_path') or '/tmp/predict-out/prediction_summary.md',
             'export_format': 'markdown',
         }
         client._apply_to_state(tool_name, result, kwargs)
@@ -229,6 +229,19 @@ async def _scenario_export_routes_to_prediction_report_export() -> None:
     assert '预测报告导出完成' in cached_turn['message'], cached_turn
     assert len(calls) == before_cached, calls
 
+    explicit_same_target = await client.chat('把这次预测结果导成 /tmp/predict-out/prediction_summary.md 报告。')
+    assert explicit_same_target['status'] == 'completed', explicit_same_target
+    assert len(calls) == before_cached, calls
+
+    explicit_new_target = await client.chat('把这次预测结果导成 /tmp/predict-out/prediction_summary_v2.md 报告。')
+    assert explicit_new_target['status'] == 'completed', explicit_new_target
+    assert calls[-1] == (
+        'export_prediction_report',
+        {
+            'export_path': '/tmp/predict-out/prediction_summary_v2.md',
+        },
+    ), calls
+
 
 async def _scenario_path_lists_route_exports_lists() -> None:
     client = _make_client('lists')
@@ -242,7 +255,7 @@ async def _scenario_path_lists_route_exports_lists() -> None:
             'mode': 'images',
             'output_dir': '/tmp/predict-out',
             'report_path': '/tmp/predict-out/prediction_report.json',
-            'export_dir': '/tmp/predict-out/path_lists',
+            'export_dir': kwargs.get('export_dir') or '/tmp/predict-out/path_lists',
             'detected_items_path': '/tmp/predict-out/path_lists/detected_items.txt',
             'empty_items_path': '/tmp/predict-out/path_lists/empty_items.txt',
             'failed_items_path': '/tmp/predict-out/path_lists/failed_items.txt',
@@ -265,6 +278,19 @@ async def _scenario_path_lists_route_exports_lists() -> None:
     assert cached_turn['status'] == 'completed', cached_turn
     assert '路径清单导出完成' in cached_turn['message'], cached_turn
     assert len(calls) == before_cached, calls
+
+    explicit_same_dir = await client.chat('把这次预测的路径清单导出到 /tmp/predict-out/path_lists')
+    assert explicit_same_dir['status'] == 'completed', explicit_same_dir
+    assert len(calls) == before_cached, calls
+
+    explicit_new_dir = await client.chat('把这次预测的路径清单导出到 /tmp/predict-out/path_lists_v2')
+    assert explicit_new_dir['status'] == 'completed', explicit_new_dir
+    assert calls[-1] == (
+        'export_prediction_path_lists',
+        {
+            'export_dir': '/tmp/predict-out/path_lists_v2',
+        },
+    ), calls
 
 
 async def _scenario_organize_routes_to_prediction_result_organizer() -> None:

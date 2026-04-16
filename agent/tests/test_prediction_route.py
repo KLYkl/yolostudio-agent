@@ -273,7 +273,9 @@ async def _run() -> None:
 
         before = len(calls)
         routed3 = await client._try_handle_mainline_intent('总结预测结果', 'thread-3')
-        assert routed3 is None, routed3
+        assert routed3 is not None, routed3
+        assert routed3['status'] == 'completed', routed3
+        assert '总检测框 1' in routed3['message'], routed3
         assert len(calls) == before, calls
 
         def _planner_reply(messages):
@@ -294,6 +296,31 @@ async def _run() -> None:
         assert routed5 is not None, routed5
         assert routed5['status'] == 'completed', routed5
         assert '预测输出检查完成' in routed5['message'], routed5
+        assert len(calls) == before_cached_followup, calls
+
+        routed6 = await client._try_handle_prediction_requests(
+            user_text='看看 /tmp/predict/prediction_report.json 这个预测输出',
+            normalized_text='看看 /tmp/predict/prediction_report.json 这个预测输出',
+            prediction_path='/data/images',
+            wants_train=False,
+            training_command_like=False,
+            wants_scan_videos=False,
+            wants_extract_frames=False,
+            wants_extract_preview=False,
+            wants_extract_images=False,
+            wants_remote_upload=False,
+            wants_prediction_summary=False,
+            wants_prediction_output_inspection=True,
+            wants_prediction_report_export=False,
+            wants_prediction_path_lists=False,
+            wants_prediction_result_organize=False,
+            has_prediction_followup_context=True,
+            has_prediction_management_followup_context=True,
+            has_explicit_prediction_target=True,
+        )
+        assert routed6 is not None, routed6
+        assert routed6['status'] == 'completed', routed6
+        assert '预测输出检查完成' in routed6['message'], routed6
         assert len(calls) == before_cached_followup, calls
 
         print('prediction route smoke ok')

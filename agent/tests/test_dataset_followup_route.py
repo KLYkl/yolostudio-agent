@@ -234,7 +234,6 @@ async def _run() -> None:
                 client._apply_to_state('run_dataset_health_check', result, kwargs)
                 return result
             assert tool_name == 'detect_duplicate_images'
-            assert kwargs['dataset_path'] == '/data/dataset'
             result = {
                 'ok': True,
                 'summary': '重复图片检查完成: 发现 2 组',
@@ -278,6 +277,22 @@ async def _run() -> None:
         assert routed2['status'] == 'completed', routed2
         assert '健康检查完成' in routed2['message'], routed2
         assert len(calls) == before_cached_followup, calls
+
+        first_dataset_duplicates = await client._try_handle_mainline_intent('列出 /data/dataset 的重复图片', 'thread-3a')
+        assert first_dataset_duplicates is not None, first_dataset_duplicates
+        assert first_dataset_duplicates['status'] == 'completed', first_dataset_duplicates
+        assert calls[-1] == ('detect_duplicate_images', {'dataset_path': '/data/dataset'}), calls
+
+        before_duplicate_cached = len(calls)
+        same_dataset_duplicates = await client._try_handle_mainline_intent('列出 /data/dataset 的重复图片', 'thread-3b')
+        assert same_dataset_duplicates is not None, same_dataset_duplicates
+        assert same_dataset_duplicates['status'] == 'completed', same_dataset_duplicates
+        assert len(calls) == before_duplicate_cached, calls
+
+        other_dataset_duplicates = await client._try_handle_mainline_intent('列出 /data/other 的重复图片', 'thread-3c')
+        assert other_dataset_duplicates is not None, other_dataset_duplicates
+        assert other_dataset_duplicates['status'] == 'completed', other_dataset_duplicates
+        assert calls[-1] == ('detect_duplicate_images', {'dataset_path': '/data/other'}), calls
 
         print('dataset followup route ok')
     finally:

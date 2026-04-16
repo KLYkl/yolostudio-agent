@@ -615,12 +615,6 @@ class YoloStudioAgentClient:
             progressed = await self._maybe_auto_progress(pending_dialogue, stream_handler=stream_handler)
             return progressed or pending_dialogue
 
-        guardrail = self._try_handle_guardrail_intent(user_text)
-        if guardrail is not None:
-            self._trim_history()
-            self.memory.save_state(self.session_state)
-            return guardrail
-
         routed = await self._try_handle_mainline_intent(user_text, thread_id)
         if routed is not None:
             self._trim_history()
@@ -1490,16 +1484,15 @@ class YoloStudioAgentClient:
         has_explicit_prediction_target: bool,
     ) -> dict[str, Any] | None:
         if wants_prediction_output_inspection:
-            if not has_explicit_prediction_target:
-                cached_inspect = self._prediction_management_followup_result('inspect')
-                if cached_inspect:
-                    tool_name, payload = cached_inspect
-                    return await self._complete_cached_tool_result_reply(tool_name, payload)
             inspect_kwargs = self._prediction_followup_kwargs(
                 user_text,
                 fallback_path=prediction_path,
                 allow_context_fallback=True,
             )
+            cached_inspect = self._prediction_request_cached_result('inspect', inspect_kwargs)
+            if cached_inspect:
+                tool_name, payload = cached_inspect
+                return await self._complete_cached_tool_result_reply(tool_name, payload)
             if inspect_kwargs:
                 return await self._complete_direct_tool_reply('inspect_prediction_outputs', **inspect_kwargs)
 
@@ -1508,11 +1501,6 @@ class YoloStudioAgentClient:
                 user_text,
                 self.session_state.active_prediction.output_dir or prediction_path,
             )
-            if not has_explicit_prediction_target and not export_path:
-                cached_export = self._prediction_management_followup_result('export')
-                if cached_export:
-                    tool_name, payload = cached_export
-                    return await self._complete_cached_tool_result_reply(tool_name, payload)
             export_kwargs = self._prediction_followup_kwargs(
                 user_text,
                 fallback_path=prediction_path,
@@ -1520,6 +1508,12 @@ class YoloStudioAgentClient:
             )
             if export_path:
                 export_kwargs['export_path'] = export_path
+                if str(export_kwargs.get('output_dir') or '').strip() == export_path:
+                    export_kwargs.pop('output_dir', None)
+            cached_export = self._prediction_management_request_cached_result('export', export_kwargs)
+            if cached_export:
+                tool_name, payload = cached_export
+                return await self._complete_cached_tool_result_reply(tool_name, payload)
             if export_kwargs:
                 return await self._complete_direct_tool_reply('export_prediction_report', **export_kwargs)
 
@@ -1528,11 +1522,6 @@ class YoloStudioAgentClient:
                 user_text,
                 self.session_state.active_prediction.output_dir or prediction_path,
             )
-            if not has_explicit_prediction_target and not export_dir:
-                cached_path_lists = self._prediction_management_followup_result('path_lists')
-                if cached_path_lists:
-                    tool_name, payload = cached_path_lists
-                    return await self._complete_cached_tool_result_reply(tool_name, payload)
             path_list_kwargs = self._prediction_followup_kwargs(
                 user_text,
                 fallback_path=prediction_path,
@@ -1540,6 +1529,12 @@ class YoloStudioAgentClient:
             )
             if export_dir:
                 path_list_kwargs['export_dir'] = export_dir
+                if str(path_list_kwargs.get('output_dir') or '').strip() == export_dir:
+                    path_list_kwargs.pop('output_dir', None)
+            cached_path_lists = self._prediction_management_request_cached_result('path_lists', path_list_kwargs)
+            if cached_path_lists:
+                tool_name, payload = cached_path_lists
+                return await self._complete_cached_tool_result_reply(tool_name, payload)
             if path_list_kwargs:
                 return await self._complete_direct_tool_reply('export_prediction_path_lists', **path_list_kwargs)
 
@@ -1560,12 +1555,11 @@ class YoloStudioAgentClient:
                 return await self._complete_direct_tool_reply('organize_prediction_results', **organize_kwargs)
 
         if wants_prediction_summary:
-            if not has_explicit_prediction_target and self._explicitly_references_previous_context(user_text):
-                cached_summary = self._prediction_followup_result('summary')
-                if cached_summary:
-                    tool_name, payload = cached_summary
-                    return await self._complete_cached_tool_result_reply(tool_name, payload)
             summary_kwargs = self._prediction_followup_kwargs(user_text, fallback_path=prediction_path)
+            cached_summary = self._prediction_request_cached_result('summary', summary_kwargs)
+            if cached_summary:
+                tool_name, payload = cached_summary
+                return await self._complete_cached_tool_result_reply(tool_name, payload)
             if summary_kwargs:
                 return await self._complete_direct_tool_reply('summarize_prediction_results', **summary_kwargs)
 
@@ -1686,7 +1680,7 @@ class YoloStudioAgentClient:
             return await self._complete_dataset_quality_reply(dataset_path)
 
         if dataset_path and wants_duplicates and not wants_train and not wants_health:
-            if has_dataset_followup_context:
+            if has_dataset_followup_context and self._dataset_request_cache_allowed(dataset_path):
                 cached_duplicates = self._dataset_followup_result('duplicates')
                 if cached_duplicates:
                     tool_name, payload = cached_duplicates
@@ -1694,7 +1688,7 @@ class YoloStudioAgentClient:
             return await self._complete_direct_tool_reply('detect_duplicate_images', dataset_path=dataset_path)
 
         if dataset_path and wants_health and not wants_train:
-            if has_dataset_followup_context:
+            if has_dataset_followup_context and self._dataset_request_cache_allowed(dataset_path):
                 cached_health = self._dataset_followup_result('health')
                 if cached_health:
                     tool_name, payload = cached_health
@@ -2152,8 +2146,12 @@ class YoloStudioAgentClient:
             return await self._complete_specific_training_run_outcome_analysis_reply(explicit_run_ids[0])
 
         if wants_training_run_compare and not wants_predict and not training_command_like:
-            cached_compare = self._training_history_request_cached_result(request='compare')
-            if cached_compare and not comparison_run_ids:
+            cached_compare = self._training_history_request_cached_result(
+                request='compare',
+                left_run_id=comparison_run_ids[0] if comparison_run_ids else '',
+                right_run_id=comparison_run_ids[1] if len(comparison_run_ids) > 1 else '',
+            )
+            if cached_compare:
                 tool_name, payload = cached_compare
                 return await self._complete_cached_tool_result_reply(tool_name, payload)
             compare_kwargs: dict[str, Any] = {}
@@ -2655,9 +2653,15 @@ class YoloStudioAgentClient:
         return None
 
     async def _try_handle_mainline_intent(self, user_text: str, thread_id: str) -> dict[str, Any] | None:
-        training_pregraph = await self._try_handle_training_pregraph_intent(user_text, thread_id)
-        if training_pregraph is not None:
-            return training_pregraph
+        guardrail = self._try_handle_guardrail_intent(user_text)
+        if guardrail is not None:
+            return guardrail
+        prepare_only = await self._try_handle_prepare_only_intent(user_text, thread_id)
+        if prepare_only is not None:
+            return prepare_only
+        plan_dialogue = await self._try_handle_training_plan_dialogue(user_text, thread_id)
+        if plan_dialogue is not None:
+            return plan_dialogue
         extracted_dataset_path = self._extract_dataset_path_from_text(user_text)
         frame_followup_path = ''
         if any(token in user_text for token in ('这些帧', '刚才抽的帧', '刚才这些帧', '这些抽出来的帧', '这些图片', '刚才抽的图片')):
@@ -4330,12 +4334,6 @@ class YoloStudioAgentClient:
         draft['execution_mode'] = 'prepare_only'
         self._save_training_plan_draft(draft)
         return self._needs_confirmation_result(thread_id, pending, reply)
-
-    async def _try_handle_training_pregraph_intent(self, user_text: str, thread_id: str) -> dict[str, Any] | None:
-        prepare_only = await self._try_handle_prepare_only_intent(user_text, thread_id)
-        if prepare_only is not None:
-            return prepare_only
-        return await self._try_handle_training_plan_dialogue(user_text, thread_id)
 
     @staticmethod
     def _extract_training_run_ids_from_text(text: str) -> list[str]:
@@ -6858,6 +6856,60 @@ class YoloStudioAgentClient:
             return result
         return None
 
+    @staticmethod
+    def _cached_request_matches_targets(
+        payload: dict[str, Any],
+        request_kwargs: dict[str, Any],
+        *,
+        target_keys: tuple[str, ...],
+    ) -> bool:
+        for key in target_keys:
+            expected = str(request_kwargs.get(key) or '').strip()
+            if not expected:
+                continue
+            actual = str(payload.get(key) or '').strip()
+            if not actual or actual != expected:
+                return False
+        return True
+
+    def _prediction_request_cached_result(
+        self,
+        request: str,
+        request_kwargs: dict[str, Any],
+    ) -> tuple[str, dict[str, Any]] | None:
+        if request == 'inspect':
+            cached = self._prediction_management_followup_result('inspect')
+        elif request == 'summary':
+            cached = self._prediction_followup_result('summary')
+        else:
+            cached = None
+        if not cached:
+            return None
+        tool_name, payload = cached
+        if self._cached_request_matches_targets(payload, request_kwargs, target_keys=('report_path', 'output_dir')):
+            return tool_name, payload
+        return None
+
+    def _prediction_management_request_cached_result(
+        self,
+        request: str,
+        request_kwargs: dict[str, Any],
+    ) -> tuple[str, dict[str, Any]] | None:
+        if request == 'export':
+            cached = self._prediction_management_followup_result('export')
+            target_keys = ('report_path', 'output_dir', 'export_path')
+        elif request == 'path_lists':
+            cached = self._prediction_management_followup_result('path_lists')
+            target_keys = ('report_path', 'output_dir', 'export_dir')
+        else:
+            return None
+        if not cached:
+            return None
+        tool_name, payload = cached
+        if self._cached_request_matches_targets(payload, request_kwargs, target_keys=target_keys):
+            return tool_name, payload
+        return None
+
     def _knowledge_followup_result(self, action: str) -> tuple[str, dict[str, Any]] | None:
         knowledge = self.session_state.active_knowledge
         mapping: dict[str, tuple[str, dict[str, Any]]] = {
@@ -6892,6 +6944,19 @@ class YoloStudioAgentClient:
             return result
         return None
 
+    def _dataset_request_cache_allowed(self, dataset_path: str) -> bool:
+        target = str(dataset_path or '').strip()
+        if not target:
+            return True
+        ds = self.session_state.active_dataset
+        candidates = {
+            str(ds.dataset_root or '').strip(),
+            str(ds.img_dir or '').strip(),
+            str(ds.data_yaml or '').strip(),
+        }
+        candidates.discard('')
+        return target in candidates
+
     def _training_history_request_cached_result(
         self,
         *,
@@ -6899,6 +6964,8 @@ class YoloStudioAgentClient:
         run_state: str | None = None,
         analysis_ready: bool = False,
         run_id: str | None = None,
+        left_run_id: str | None = None,
+        right_run_id: str | None = None,
     ) -> tuple[str, dict[str, Any]] | None:
         training = self.session_state.active_training
         if request == 'runs':
@@ -6919,7 +6986,19 @@ class YoloStudioAgentClient:
             return None
         if request == 'compare':
             payload = dict(training.last_run_comparison or {})
-            return ('compare_training_runs', payload) if payload else None
+            cached_left = str(payload.get('left_run_id') or '').strip()
+            cached_right = str(payload.get('right_run_id') or '').strip()
+            expected_left = str(left_run_id or '').strip()
+            expected_right = str(right_run_id or '').strip()
+            if payload and (
+                (not expected_left and not expected_right)
+                or (
+                    (not expected_left or cached_left == expected_left)
+                    and (not expected_right or cached_right == expected_right)
+                )
+            ):
+                return ('compare_training_runs', payload)
+            return None
         if request == 'best':
             payload = dict(training.best_run_selection or {})
             return ('select_best_training_run', payload) if payload else None
