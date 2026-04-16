@@ -63,3 +63,79 @@
 
 - 最新批次：realtime 只读请求已开始走 structured-state 优先；`scan_cameras`、`scan_screens`、同目标 `test_rtsp_stream`，以及非 running 状态下的 `check_realtime_prediction_status` 均可直接复用 `last_realtime_status`。
 - 最新批次：补了 realtime 缓存命中回归，确保这批 helper 删减是 facts-first 而不是局部最优；running 实时会话仍保持直连工具查询，避免把动态状态错误缓存化。
+
+## 剩余 2 批的明确验收标准（2026-04-16）
+
+### Batch 1：`grounded_reply_builder` 主链退出收口批
+目标不是“继续压”，而是满足下面这些**可验收标准**：
+
+1. **主链优先级标准**
+   - 能由 renderer + structured facts 完成的主链回复，不再优先走 `grounded_reply_builder`。
+   - `grounded_reply_builder` 只保留给：
+     - planner / renderer 不可用
+     - payload 缺少结构化 overview / action_candidates
+     - 明确的兼容 fallback 路径
+
+2. **代码位置标准**
+   - 不新增新的主链业务逻辑到 `grounded_reply_builder.py`。
+   - 若本批需要改 `grounded_reply_builder.py`，只允许：
+     - 删除主链依赖
+     - 收窄 fallback 触发条件
+     - 修正 facts-first 显示
+
+3. **只读 helper 删减标准**
+   - 再删一批仍然安全的只读 helper direct-tool 路由。
+   - 这批完成后，`agent_client.py` 里 `_complete_direct_tool_reply(` 的**调用点**必须继续下降，而不是只做 ownership 下沉。
+
+4. **行为保护标准**
+   - training / realtime / remote / prediction-management 这几条高频路径，不能因为缓存或 fallback 调整而把动态状态读成旧结果。
+   - 对运行中状态（例如 running realtime / running training），仍以实时工具查询优先，不做错误缓存。
+
+5. **Batch 1 验收通过条件**
+   - 本批结束时：
+     - `grounded_reply_builder` 不新增主链职责
+     - `agent_client.py` 中 `_complete_direct_tool_reply(` 调用点较本批开始前继续下降
+     - `planner_llm.ainvoke(` 保持不回升
+   - 并通过一轮跨域回归：
+     - pending / dialogue / roundtrip
+     - training / training follow-up / loop
+     - realtime / remote
+     - prediction / prediction-management
+     - grounded reply / adapter / facts
+
+### Batch 2：最终验收批
+目标也不是“再看看”，而是满足下面这些**收口标准**：
+
+1. **测试基线一致性标准**
+   - 本地与远端的关键测试基线不再存在“本地有、远端缺”的关键用例差异。
+   - 测试路径不再写死到仓外绝对路径。
+
+2. **跨域回归标准**
+   - 跑完整跨域回归，至少覆盖：
+     - training plan / pending / dialogue
+     - training loop / roundtrip
+     - prediction / prediction-management
+     - dataset / extract
+     - realtime / remote
+     - grounded reply / tool adapter / tool result facts
+
+3. **结构收口标准**
+   - `agent_client.py` 不再出现新的前置 code-first 分支回流。
+   - `intent_parsing.py` 不再新增语义路由职责。
+   - `grounded_reply_builder.py` 保持 fallback 定位，不回流到主链职责。
+
+4. **卫生项标准**
+   - 文档留痕与测试基线同步完成。
+   - 工作区干净，形成新的可审提交。
+
+5. **Batch 2 验收通过条件**
+   - 本地整批回归通过
+   - 远端整批回归通过
+   - 工作区 clean
+   - 形成最终阶段性提交，供审查
+
+
+- Batch 1 最新批次：training/realtime/remote/history 这组高频只读查询已统一切到 `_complete_cached_or_direct_tool_reply`，不再在 helper 里散落“先 cached 再 direct_tool”的重复分支。
+- Batch 1 最新批次：新增非 running 状态下的训练状态缓存门与环训练状态缓存门；running 训练/实时仍保持实时工具查询，避免把动态状态误缓存成旧结果。
+- Batch 1 最新批次：`grounded_reply_builder` 的 fallback 触发面已进一步收窄——只有缺少 structured overview / action_candidates 的受控工具才优先 grounded，其余优先 structured facts。
+- Batch 1 最新批次：`agent_client.py` 中 `_complete_direct_tool_reply(` 的文本出现次数已由上一批结束时的 45 降到 27，`planner_llm.ainvoke(` 仍保持 2，不回升。

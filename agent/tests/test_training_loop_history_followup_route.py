@@ -307,6 +307,34 @@ async def _scenario_cached_loop_inspect_request_reuses_state() -> None:
     assert '误差分析' in turn['message'], turn
 
 
+async def _scenario_cached_loop_status_request_reuses_state() -> None:
+    client = _make_client('loop-status-request-cached')
+    client.session_state.active_training.last_loop_status = {
+        'ok': True,
+        'summary': '第 2 轮训练已完成，准备下一轮',
+        'loop_id': 'loop-b',
+        'loop_name': 'vest-loop',
+        'status': 'awaiting_review',
+        'current_round_index': 2,
+        'max_rounds': 5,
+        'knowledge_gate_status': {
+            'outcome': 'awaiting_review',
+            'action_label': '先做误差分析',
+            'summary': '本轮建议先做误差分析。',
+        },
+        'action_candidates': [{'tool': 'inspect_training_loop', 'description': '继续查看当前环训练详情'}],
+    }
+
+    async def _unexpected_direct_tool(*args, **kwargs):
+        raise AssertionError('cached loop status request should render from state, not call direct_tool')
+
+    client.direct_tool = _unexpected_direct_tool  # type: ignore[assignment]
+    turn = await client.chat('看下当前环训练状态')
+    assert turn['status'] == 'completed', turn
+    assert '第 2 轮训练已完成' in turn['message'], turn
+    assert '继续查看当前环训练详情' in turn['message'], turn
+
+
 async def _run() -> None:
     shutil.rmtree(WORK, ignore_errors=True)
     WORK.mkdir(parents=True, exist_ok=True)
@@ -315,6 +343,7 @@ async def _run() -> None:
         await _scenario_loop_inspect_followup_routes()
         await _scenario_cached_loop_list_request_reuses_state()
         await _scenario_cached_loop_inspect_request_reuses_state()
+        await _scenario_cached_loop_status_request_reuses_state()
         print('training loop history followup route ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)

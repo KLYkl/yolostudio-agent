@@ -330,6 +330,28 @@ async def _scenario_cached_explicit_next_step_request_reuses_state() -> None:
     assert '漏标样本' in turn['message'], turn
 
 
+async def _scenario_cached_explicit_status_request_reuses_state() -> None:
+    client = _make_client('status-request-cached')
+    client.session_state.active_training.running = False
+    client.session_state.active_training.last_status = {
+        'summary': '训练已完成: epoch 10/10, map50=0.61',
+        'run_state': 'completed',
+        'status_overview': {'run_state': 'completed', 'epoch': 10, 'total_epochs': 10, 'save_dir': '/tmp/demo'},
+        'latest_metrics': {'metrics': {'precision': 0.6, 'recall': 0.7, 'map50': 0.61, 'map': 0.5}},
+        'action_candidates': [{'tool': 'summarize_training_run', 'description': '继续查看训练总结'}],
+    }
+
+    async def _unexpected_direct_tool(*args, **kwargs):
+        raise AssertionError('cached explicit status request should render from state, not call direct_tool')
+
+    client.direct_tool = _unexpected_direct_tool  # type: ignore[assignment]
+    turn = await client.chat('看下训练状态')
+    assert turn['status'] == 'completed', turn
+    assert '训练已完成' in turn['message'], turn
+    assert 'run_state=completed' in turn['message'], turn
+    assert '继续查看训练总结' in turn['message'], turn
+
+
 async def _run() -> None:
     shutil.rmtree(WORK, ignore_errors=True)
     WORK.mkdir(parents=True, exist_ok=True)
@@ -338,6 +360,7 @@ async def _run() -> None:
         await _scenario_next_step_followup_routes()
         await _scenario_cached_next_step_followup_reuses_state()
         await _scenario_cached_explicit_next_step_request_reuses_state()
+        await _scenario_cached_explicit_status_request_reuses_state()
         print('training followup route ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)

@@ -1242,6 +1242,20 @@ class YoloStudioAgentClient:
         self._messages.append(AIMessage(content=reply))
         return {'status': 'completed', 'message': reply, 'tool_call': None}
 
+    async def _complete_cached_or_direct_tool_reply(
+        self,
+        tool_name: str,
+        *,
+        cached_result: tuple[str, dict[str, Any]] | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        if cached_result:
+            cached_tool_name, payload = cached_result
+            cached_reply = await self._complete_cached_tool_result_reply(cached_tool_name, payload)
+            if cached_reply is not None:
+                return cached_reply
+        return await self._complete_direct_tool_reply(tool_name, **kwargs)
+
     async def _try_handle_prediction_management_followup(
         self,
         *,
@@ -1814,7 +1828,10 @@ class YoloStudioAgentClient:
             tool_name, payload = cached_result
             return await self._complete_cached_tool_result_reply(tool_name, payload)
         if action == 'status':
-            return await self._complete_direct_tool_reply('check_training_status')
+            return await self._complete_cached_or_direct_tool_reply(
+                'check_training_status',
+                cached_result=self._training_status_request_cached_result(),
+            )
         if action == 'analysis':
             return await self._complete_training_outcome_analysis_reply()
         if action == 'next_step':
@@ -1846,37 +1863,35 @@ class YoloStudioAgentClient:
         rtsp_url: str,
     ) -> dict[str, Any] | None:
         if wants_camera_scan and not wants_train:
-            cached_cameras = self._realtime_request_cached_result('camera_scan')
-            if cached_cameras:
-                tool_name, payload = cached_cameras
-                return await self._complete_cached_tool_result_reply(tool_name, payload)
-            return await self._complete_direct_tool_reply('scan_cameras')
+            return await self._complete_cached_or_direct_tool_reply(
+                'scan_cameras',
+                cached_result=self._realtime_request_cached_result('camera_scan'),
+            )
 
         if wants_screen_scan and not wants_train:
-            cached_screens = self._realtime_request_cached_result('screen_scan')
-            if cached_screens:
-                tool_name, payload = cached_screens
-                return await self._complete_cached_tool_result_reply(tool_name, payload)
-            return await self._complete_direct_tool_reply('scan_screens')
+            return await self._complete_cached_or_direct_tool_reply(
+                'scan_screens',
+                cached_result=self._realtime_request_cached_result('screen_scan'),
+            )
 
         if wants_rtsp_test and rtsp_url and not wants_train:
             timeout_ms = intent_parsing.extract_timeout_ms_from_text(user_text)
             test_kwargs: dict[str, Any] = {'rtsp_url': rtsp_url}
             if timeout_ms is not None:
                 test_kwargs['timeout_ms'] = timeout_ms
-            cached_rtsp = self._realtime_request_cached_result('rtsp_test', test_kwargs)
-            if cached_rtsp:
-                tool_name, payload = cached_rtsp
-                return await self._complete_cached_tool_result_reply(tool_name, payload)
-            return await self._complete_direct_tool_reply('test_rtsp_stream', **test_kwargs)
+            return await self._complete_cached_or_direct_tool_reply(
+                'test_rtsp_stream',
+                cached_result=self._realtime_request_cached_result('rtsp_test', test_kwargs),
+                **test_kwargs,
+            )
 
         if wants_realtime_status and not wants_train:
             status_kwargs = self._build_realtime_session_kwargs(user_text)
-            cached_status = self._realtime_request_cached_result('status', status_kwargs)
-            if cached_status:
-                tool_name, payload = cached_status
-                return await self._complete_cached_tool_result_reply(tool_name, payload)
-            return await self._complete_direct_tool_reply('check_realtime_prediction_status', **status_kwargs)
+            return await self._complete_cached_or_direct_tool_reply(
+                'check_realtime_prediction_status',
+                cached_result=self._realtime_request_cached_result('status', status_kwargs),
+                **status_kwargs,
+            )
 
         if wants_realtime_stop and not wants_train:
             stop_kwargs = self._build_realtime_session_kwargs(user_text)
@@ -1940,13 +1955,13 @@ class YoloStudioAgentClient:
         has_explicit_transfer_paths: bool,
     ) -> dict[str, Any] | None:
         if wants_remote_profile_list:
-            cached_profiles = self.session_state.active_remote_transfer.last_profile_listing
-            if cached_profiles:
-                return await self._complete_cached_tool_result_reply(
-                    'list_remote_profiles',
-                    cached_profiles,
-                )
-            return await self._complete_direct_tool_reply('list_remote_profiles')
+            return await self._complete_cached_or_direct_tool_reply(
+                'list_remote_profiles',
+                cached_result=(
+                    ('list_remote_profiles', self.session_state.active_remote_transfer.last_profile_listing)
+                    if self.session_state.active_remote_transfer.last_profile_listing else None
+                ),
+            )
 
         if wants_remote_prediction_pipeline:
             pipeline_args = self._build_remote_prediction_pipeline_args(user_text)
@@ -2133,91 +2148,93 @@ class YoloStudioAgentClient:
             return await self._complete_specific_training_run_outcome_analysis_reply(explicit_run_ids[0])
 
         if wants_training_run_compare and not wants_predict and not training_command_like:
-            cached_compare = self._training_history_request_cached_result(
-                request='compare',
-                left_run_id=comparison_run_ids[0] if comparison_run_ids else '',
-                right_run_id=comparison_run_ids[1] if len(comparison_run_ids) > 1 else '',
-            )
-            if cached_compare:
-                tool_name, payload = cached_compare
-                return await self._complete_cached_tool_result_reply(tool_name, payload)
             compare_kwargs: dict[str, Any] = {}
             if comparison_run_ids:
                 compare_kwargs['left_run_id'] = comparison_run_ids[0]
                 if len(comparison_run_ids) > 1:
                     compare_kwargs['right_run_id'] = comparison_run_ids[1]
-            return await self._complete_direct_tool_reply('compare_training_runs', **compare_kwargs)
+            return await self._complete_cached_or_direct_tool_reply(
+                'compare_training_runs',
+                cached_result=self._training_history_request_cached_result(
+                    request='compare',
+                    left_run_id=comparison_run_ids[0] if comparison_run_ids else '',
+                    right_run_id=comparison_run_ids[1] if len(comparison_run_ids) > 1 else '',
+                ),
+                **compare_kwargs,
+            )
 
         if wants_best_training_run and not wants_predict and not training_command_like:
-            cached_best = self._training_history_request_cached_result(request='best')
-            if cached_best:
-                tool_name, payload = cached_best
-                return await self._complete_cached_tool_result_reply(tool_name, payload)
-            return await self._complete_direct_tool_reply('select_best_training_run')
+            return await self._complete_cached_or_direct_tool_reply(
+                'select_best_training_run',
+                cached_result=self._training_history_request_cached_result(request='best'),
+            )
 
         if wants_training_run_inspect and not wants_predict and not training_command_like:
-            cached_inspection = self._training_history_request_cached_result(
-                request='inspect',
+            return await self._complete_cached_or_direct_tool_reply(
+                'inspect_training_run',
+                cached_result=self._training_history_request_cached_result(
+                    request='inspect',
+                    run_id=explicit_run_ids[0],
+                ),
                 run_id=explicit_run_ids[0],
             )
-            if cached_inspection:
-                tool_name, payload = cached_inspection
-                return await self._complete_cached_tool_result_reply(tool_name, payload)
-            return await self._complete_direct_tool_reply('inspect_training_run', run_id=explicit_run_ids[0])
 
         if wants_failed_training_run_list and not wants_predict and not training_command_like:
-            cached_failed = self._training_history_request_cached_result(request='runs', run_state='failed')
-            if cached_failed:
-                tool_name, payload = cached_failed
-                return await self._complete_cached_tool_result_reply(tool_name, payload)
-            return await self._complete_direct_tool_reply('list_training_runs', run_state='failed')
+            return await self._complete_cached_or_direct_tool_reply(
+                'list_training_runs',
+                cached_result=self._training_history_request_cached_result(request='runs', run_state='failed'),
+                run_state='failed',
+            )
 
         if wants_completed_training_run_list and not wants_predict and not training_command_like:
-            cached_completed = self._training_history_request_cached_result(request='runs', run_state='completed')
-            if cached_completed:
-                tool_name, payload = cached_completed
-                return await self._complete_cached_tool_result_reply(tool_name, payload)
-            return await self._complete_direct_tool_reply('list_training_runs', run_state='completed')
+            return await self._complete_cached_or_direct_tool_reply(
+                'list_training_runs',
+                cached_result=self._training_history_request_cached_result(request='runs', run_state='completed'),
+                run_state='completed',
+            )
 
         if wants_stopped_training_run_list and not wants_predict and not training_command_like:
-            cached_stopped = self._training_history_request_cached_result(request='runs', run_state='stopped')
-            if cached_stopped:
-                tool_name, payload = cached_stopped
-                return await self._complete_cached_tool_result_reply(tool_name, payload)
-            return await self._complete_direct_tool_reply('list_training_runs', run_state='stopped')
+            return await self._complete_cached_or_direct_tool_reply(
+                'list_training_runs',
+                cached_result=self._training_history_request_cached_result(request='runs', run_state='stopped'),
+                run_state='stopped',
+            )
 
         if wants_running_training_run_list and not wants_predict and not training_command_like:
-            cached_running = self._training_history_request_cached_result(request='runs', run_state='running')
-            if cached_running:
-                tool_name, payload = cached_running
-                return await self._complete_cached_tool_result_reply(tool_name, payload)
-            return await self._complete_direct_tool_reply('list_training_runs', run_state='running')
+            return await self._complete_cached_or_direct_tool_reply(
+                'list_training_runs',
+                cached_result=self._training_history_request_cached_result(request='runs', run_state='running'),
+                run_state='running',
+            )
 
         if wants_analysis_ready_run_list and not wants_predict and not training_command_like:
-            cached_analysis_ready = self._training_history_request_cached_result(request='runs', analysis_ready=True)
-            if cached_analysis_ready:
-                tool_name, payload = cached_analysis_ready
-                return await self._complete_cached_tool_result_reply(tool_name, payload)
-            return await self._complete_direct_tool_reply('list_training_runs', analysis_ready=True)
+            return await self._complete_cached_or_direct_tool_reply(
+                'list_training_runs',
+                cached_result=self._training_history_request_cached_result(request='runs', analysis_ready=True),
+                analysis_ready=True,
+            )
 
         if wants_training_loop_list and not wants_predict and not training_command_like:
-            cached_loops = self._training_loop_request_cached_result('list')
-            if cached_loops:
-                tool_name, payload = cached_loops
-                return await self._complete_cached_tool_result_reply(tool_name, payload)
-            return await self._complete_direct_tool_reply('list_training_loops')
+            return await self._complete_cached_or_direct_tool_reply(
+                'list_training_loops',
+                cached_result=self._training_loop_request_cached_result('list'),
+            )
 
         active_loop_id = str(loop_route.get('loop_id') or '').strip() or self.session_state.active_training.active_loop_id
 
         if wants_training_loop_status and not wants_predict and not training_command_like:
-            return await self._complete_direct_tool_reply('check_training_loop_status', loop_id=active_loop_id)
+            return await self._complete_cached_or_direct_tool_reply(
+                'check_training_loop_status',
+                cached_result=self._training_loop_status_request_cached_result(loop_id=active_loop_id),
+                loop_id=active_loop_id,
+            )
 
         if wants_inspect_training_loop and not wants_predict and not training_command_like:
-            cached_loop_detail = self._training_loop_request_cached_result('inspect', loop_id=active_loop_id)
-            if cached_loop_detail:
-                tool_name, payload = cached_loop_detail
-                return await self._complete_cached_tool_result_reply(tool_name, payload)
-            return await self._complete_direct_tool_reply('inspect_training_loop', loop_id=active_loop_id)
+            return await self._complete_cached_or_direct_tool_reply(
+                'inspect_training_loop',
+                cached_result=self._training_loop_request_cached_result('inspect', loop_id=active_loop_id),
+                loop_id=active_loop_id,
+            )
 
         if wants_pause_training_loop and not wants_predict and not training_command_like:
             return await self._complete_direct_tool_reply('pause_training_loop', loop_id=active_loop_id)
@@ -2290,11 +2307,10 @@ class YoloStudioAgentClient:
         asks_metric_terms: bool,
     ) -> dict[str, Any] | None:
         if wants_training_run_list and not wants_predict and not training_command_like:
-            cached_runs = self._training_history_request_cached_result(request='runs')
-            if cached_runs:
-                tool_name, payload = cached_runs
-                return await self._complete_cached_tool_result_reply(tool_name, payload)
-            return await self._complete_direct_tool_reply('list_training_runs')
+            return await self._complete_cached_or_direct_tool_reply(
+                'list_training_runs',
+                cached_result=self._training_history_request_cached_result(request='runs'),
+            )
 
         knowledge_followup = await self._try_handle_knowledge_followup(
             enabled=(
@@ -2364,7 +2380,10 @@ class YoloStudioAgentClient:
             return training_followup
 
         if wants_training_status and not wants_predict and not training_command_like:
-            return await self._complete_direct_tool_reply('check_training_status')
+            return await self._complete_cached_or_direct_tool_reply(
+                'check_training_status',
+                cached_result=self._training_status_request_cached_result(),
+            )
 
         if wants_stop_training and not wants_predict and not training_command_like:
             return await self._complete_direct_tool_reply('stop_training')
@@ -6894,6 +6913,39 @@ class YoloStudioAgentClient:
                 return ('inspect_training_loop', payload)
         return None
 
+    def _training_status_request_cached_result(self) -> tuple[str, dict[str, Any]] | None:
+        training = self.session_state.active_training
+        payload = dict(training.last_status or {})
+        if not payload:
+            return None
+        run_state = str(
+            payload.get('run_state')
+            or (payload.get('status_overview') or {}).get('run_state')
+            or ''
+        ).strip().lower()
+        if training.running or run_state == 'running':
+            return None
+        return ('check_training_status', payload)
+
+    def _training_loop_status_request_cached_result(
+        self,
+        *,
+        loop_id: str | None = None,
+    ) -> tuple[str, dict[str, Any]] | None:
+        training = self.session_state.active_training
+        if str(training.active_loop_id or '').strip():
+            return None
+        payload = dict(training.last_loop_status or training.last_loop_detail or {})
+        if not payload:
+            return None
+        cached_loop_id = str(payload.get('loop_id') or '').strip()
+        if loop_id and cached_loop_id and cached_loop_id != str(loop_id).strip():
+            return None
+        status = str(payload.get('status') or '').strip().lower()
+        if status == 'running':
+            return None
+        return ('check_training_loop_status', payload)
+
     async def _classify_remote_transfer_followup_action(
         self,
         *,
@@ -7752,9 +7804,8 @@ class YoloStudioAgentClient:
             'stop_realtime_prediction',
             'list_remote_profiles',
         }
-        prefer_grounded = tool_name in grounded_preferred_tools and (
-            tool_name in {'scan_cameras', 'scan_screens', 'test_rtsp_stream', 'check_realtime_prediction_status', 'start_camera_prediction', 'start_rtsp_prediction', 'start_screen_prediction', 'stop_realtime_prediction', 'list_remote_profiles'}
-            or not (self._structured_overview_payloads(parsed) or parsed.get('action_candidates'))
+        prefer_grounded = tool_name in grounded_preferred_tools and not (
+            self._structured_overview_payloads(parsed) or parsed.get('action_candidates')
         )
         if prefer_grounded:
             grounded_text = self._build_grounded_tool_reply([(tool_name, parsed)])
