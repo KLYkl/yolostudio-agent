@@ -1,0 +1,42 @@
+# 2026-04-16 评估驱动的收口计划修正
+
+## 目的
+基于最新 commit_progress_evaluation 审查结论，修正后续收口优先级，避免继续停留在“下沉 ownership 但全仓 code-first 不真实下降”的局面。
+
+## 修正后的后续优先级
+1. **真实删除 helper 中已被 classifier + cached state 覆盖的旧 direct-tool 分支**
+   - 后续不再以“继续下沉”作为主要进度指标。
+   - 必须观察 helper 内 `_complete_direct_tool_reply` 是否真实减少。
+
+2. **缩减 `chat()` 前置 code 拦截层**
+   - 重点审视 `_try_handle_prepare_only_intent` 与 `_try_handle_training_plan_dialogue` 的职责边界。
+   - 方向是减少 pre-LLM code intercept 层数，而不是继续在外层包更多路由分支。
+
+3. **继续减少 `agent_client.py` 对 `intent_parsing.py` 的消费端依赖**
+   - parsing 层目标是纯参数提取，不再承载旧式语义判断。
+   - 后续不仅看 `intent_parsing.py` 文件变小，也看导入/调用是否真实减少。
+
+4. **推进 `grounded_reply_builder.py` 退出主链**
+   - 保持 facts-first fallback，不扩 narrative-heavy 逻辑。
+   - 后续应逐步缩小它在主链中的影响面。
+
+## 保持不变的边界
+- native structured output 仍只对已确认稳定的 `ollama` 开启；其他 provider 保持 fallback。
+- 不为追求“更纯”引入兼容性风险。
+- 继续遵守：model 负责 planning/orchestration，code 只负责 guardrail/state/execution。
+
+## 测试约束
+- 不以“主路由内部归零”替代“全仓真实删减”的结论。
+- 每次删减后继续做跨域回归：
+  - prediction / dataset / extract
+  - training / knowledge / history / loop-history
+  - realtime / remote
+  - pending / dialogue / roundtrip
+- 若缓存快捷路径导致跨域语义回归，必须当轮回退，不保留局部最优改动。
+
+## 当前执行口径
+后续进度汇报以“当前阶段进度”为主，详细实施细节继续写入仓内文档，不在对话里展开。
+
+
+## 进度补充（2026-04-16）
+- 已开始落实“推进 `grounded_reply_builder.py` 退出主链”的评估意见：tool-result fallback 在 planner 不可用时也优先消费 structured facts，再退回 grounded builder。

@@ -596,6 +596,10 @@ def _stringify_tool_result(value: Any) -> str:
     return str(value)
 
 
+def stringify_tool_result_facts(value: Any) -> str:
+    return _stringify_tool_result(value)
+
+
 def canonical_tool_name(name: str) -> str:
     key = (name or '').strip()
     return TOOL_NAME_ALIASES.get(key, key)

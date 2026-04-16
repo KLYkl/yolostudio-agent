@@ -72,7 +72,12 @@ from yolostudio_agent.agent.client.mcp_connection import build_mcp_connection_co
 from yolostudio_agent.agent.client.memory_store import MemoryStore
 from yolostudio_agent.agent.client.remote_transfer_tools import build_local_transfer_tools
 from yolostudio_agent.agent.client.session_state import SessionState, utc_now
-from yolostudio_agent.agent.client.tool_adapter import adapt_tools_for_chat_model, canonical_tool_name, normalize_tool_args
+from yolostudio_agent.agent.client.tool_adapter import (
+    adapt_tools_for_chat_model,
+    canonical_tool_name,
+    normalize_tool_args,
+    stringify_tool_result_facts,
+)
 from yolostudio_agent.agent.client.tool_result_parser import parse_tool_message
 
 SYSTEM_PROMPT = """你是 YoloStudio Agent，负责帮助用户解决数据准备、训练、预测和远端传输问题。
@@ -615,20 +620,6 @@ class YoloStudioAgentClient:
             self._trim_history()
             self.memory.save_state(self.session_state)
             return guardrail
-
-        prepare_only = await self._try_handle_prepare_only_intent(user_text, thread_id)
-        if prepare_only is not None:
-            self._trim_history()
-            self.memory.save_state(self.session_state)
-            progressed = await self._maybe_auto_progress(prepare_only, stream_handler=stream_handler)
-            return progressed or prepare_only
-
-        plan_dialogue = await self._try_handle_training_plan_dialogue(user_text, thread_id)
-        if plan_dialogue is not None:
-            self._trim_history()
-            self.memory.save_state(self.session_state)
-            progressed = await self._maybe_auto_progress(plan_dialogue, stream_handler=stream_handler)
-            return progressed or plan_dialogue
 
         routed = await self._try_handle_mainline_intent(user_text, thread_id)
         if routed is not None:
@@ -2664,6 +2655,9 @@ class YoloStudioAgentClient:
         return None
 
     async def _try_handle_mainline_intent(self, user_text: str, thread_id: str) -> dict[str, Any] | None:
+        training_pregraph = await self._try_handle_training_pregraph_intent(user_text, thread_id)
+        if training_pregraph is not None:
+            return training_pregraph
         extracted_dataset_path = self._extract_dataset_path_from_text(user_text)
         frame_followup_path = ''
         if any(token in user_text for token in ('这些帧', '刚才抽的帧', '刚才这些帧', '这些抽出来的帧', '这些图片', '刚才抽的图片')):
@@ -4336,6 +4330,12 @@ class YoloStudioAgentClient:
         draft['execution_mode'] = 'prepare_only'
         self._save_training_plan_draft(draft)
         return self._needs_confirmation_result(thread_id, pending, reply)
+
+    async def _try_handle_training_pregraph_intent(self, user_text: str, thread_id: str) -> dict[str, Any] | None:
+        prepare_only = await self._try_handle_prepare_only_intent(user_text, thread_id)
+        if prepare_only is not None:
+            return prepare_only
+        return await self._try_handle_training_plan_dialogue(user_text, thread_id)
 
     @staticmethod
     def _extract_training_run_ids_from_text(text: str) -> list[str]:
@@ -7786,6 +7786,10 @@ class YoloStudioAgentClient:
         return []
 
     def _fallback_tool_result_text(self, tool_name: str, parsed: dict[str, Any]) -> str:
+        if self._structured_overview_payloads(parsed) or parsed.get('action_candidates'):
+            structured_text = stringify_tool_result_facts(parsed).strip()
+            if structured_text:
+                return structured_text
         return (
             self._build_grounded_tool_reply([(tool_name, parsed)])
             or str(parsed.get('summary') or parsed.get('message') or parsed.get('error') or '').strip()
@@ -7949,12 +7953,7 @@ class YoloStudioAgentClient:
                 extra_notes=extra_notes or None,
             )
         if self.planner_llm is None:
-            return (
-                self._build_grounded_tool_reply([(tool_name, parsed)])
-                or parsed.get('summary')
-                or parsed.get('message')
-                or ('操作执行成功' if parsed.get('ok') else parsed.get('error', '操作执行失败'))
-            )
+            return self._fallback_tool_result_text(tool_name, parsed)
 
         facts = self._tool_result_user_facts(tool_name, parsed)
         messages = [
