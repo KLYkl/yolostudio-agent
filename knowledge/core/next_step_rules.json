@@ -124,6 +124,46 @@
     "evidence_level": "seed_rule"
   },
   {
+    "id": "generic_next_low_map_error_analysis",
+    "family": "generic",
+    "task_type": "detection",
+    "stage": "next_step",
+    "topic": "next_step",
+    "keywords": [
+      "整体指标低",
+      "low map next step"
+    ],
+    "signals": [
+      "low_map_overall"
+    ],
+    "conditions": [
+      "evaluation metrics are available but overall mAP is still low"
+    ],
+    "interpretation": "整体指标偏低时，下一步先做误差分析比直接盲调更可靠。",
+    "recommendation": "先看错检/漏检样本，再决定继续调参还是回到数据问题。",
+    "next_actions": [
+      "抽样检查错检和漏检样本",
+      "区分数据问题、类别边界问题和参数问题",
+      "确认后再决定是否继续自动下一轮"
+    ],
+    "priority": 7,
+    "source_type": "official",
+    "confidence": 0.9,
+    "action_type": "run_error_analysis",
+    "tags": [
+      "next-step",
+      "map"
+    ],
+    "sources": [
+      {
+        "title": "Performance Metrics Deep Dive",
+        "url": "https://docs.ultralytics.com/guides/yolo-performance-metrics/"
+      }
+    ],
+    "origin": "official_docs",
+    "evidence_level": "seed_rule"
+  },
+  {
     "id": "generic_next_inspect_missed_samples",
     "family": "generic",
     "task_type": "detection",

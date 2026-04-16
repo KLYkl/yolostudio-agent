@@ -1,0 +1,357 @@
+from __future__ import annotations
+
+import asyncio
+import shutil
+import sys
+import types
+from pathlib import Path
+from typing import Any
+
+if __package__ in {None, ''}:
+    repo_root = Path(__file__).resolve().parents[2]
+    parent_root = repo_root.parent
+    for candidate in (repo_root, parent_root):
+        path = str(candidate)
+        if path not in sys.path:
+            sys.path.insert(0, path)
+
+try:
+    import langchain_openai  # type: ignore  # noqa: F401
+except Exception:
+    fake_mod = types.ModuleType('langchain_openai')
+
+    class _FakeChatOpenAI:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+    fake_mod.ChatOpenAI = _FakeChatOpenAI
+    sys.modules['langchain_openai'] = fake_mod
+
+try:
+    import langchain_ollama  # type: ignore  # noqa: F401
+except Exception:
+    fake_mod = types.ModuleType('langchain_ollama')
+
+    class _FakeChatOllama:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+    fake_mod.ChatOllama = _FakeChatOllama
+    sys.modules['langchain_ollama'] = fake_mod
+
+try:
+    import langchain_core.messages  # type: ignore  # noqa: F401
+except Exception:
+    core_mod = types.ModuleType('langchain_core')
+    messages_mod = types.ModuleType('langchain_core.messages')
+    tools_mod = types.ModuleType('langchain_core.tools')
+
+    class _BaseMessage:
+        def __init__(self, content=''):
+            self.content = content
+
+    class _AIMessage(_BaseMessage):
+        def __init__(self, content='', tool_calls=None):
+            super().__init__(content)
+            self.tool_calls = tool_calls or []
+
+    class _HumanMessage(_BaseMessage):
+        pass
+
+    class _SystemMessage(_BaseMessage):
+        pass
+
+    class _ToolMessage(_BaseMessage):
+        def __init__(self, content='', name='', tool_call_id=''):
+            super().__init__(content)
+            self.name = name
+            self.tool_call_id = tool_call_id
+
+    class _BaseTool:
+        name = 'fake'
+        description = 'fake'
+        args_schema = None
+
+    class _StructuredTool(_BaseTool):
+        @classmethod
+        def from_function(cls, func=None, coroutine=None, name='', description='', args_schema=None, return_direct=False):
+            tool = cls()
+            tool.func = func
+            tool.coroutine = coroutine
+            tool.name = name
+            tool.description = description
+            tool.args_schema = args_schema
+            tool.return_direct = return_direct
+            return tool
+
+    messages_mod.AIMessage = _AIMessage
+    messages_mod.BaseMessage = _BaseMessage
+    messages_mod.HumanMessage = _HumanMessage
+    messages_mod.SystemMessage = _SystemMessage
+    messages_mod.ToolMessage = _ToolMessage
+    tools_mod.BaseTool = _BaseTool
+    tools_mod.StructuredTool = _StructuredTool
+    core_mod.messages = messages_mod
+    core_mod.tools = tools_mod
+    sys.modules['langchain_core'] = core_mod
+    sys.modules['langchain_core.messages'] = messages_mod
+    sys.modules['langchain_core.tools'] = tools_mod
+
+try:
+    import langchain_mcp_adapters.client  # type: ignore  # noqa: F401
+except Exception:
+    client_mod = types.ModuleType('langchain_mcp_adapters.client')
+
+    class _FakeMCPClient:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+        async def get_tools(self):
+            return []
+
+    client_mod.MultiServerMCPClient = _FakeMCPClient
+    sys.modules['langchain_mcp_adapters.client'] = client_mod
+
+try:
+    import pydantic  # type: ignore  # noqa: F401
+except Exception:
+    pyd_mod = types.ModuleType('pydantic')
+
+    class _BaseModel:
+        def __init__(self, **kwargs):
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+
+    def _Field(default=None, description=''):
+        del description
+        return default
+
+    pyd_mod.BaseModel = _BaseModel
+    pyd_mod.Field = _Field
+    sys.modules['pydantic'] = pyd_mod
+
+try:
+    import langgraph.prebuilt  # type: ignore  # noqa: F401
+    import langgraph.types  # type: ignore  # noqa: F401
+    import langgraph.checkpoint.memory  # type: ignore  # noqa: F401
+except Exception:
+    prebuilt_mod = types.ModuleType('langgraph.prebuilt')
+    types_mod = types.ModuleType('langgraph.types')
+    checkpoint_mod = types.ModuleType('langgraph.checkpoint.memory')
+
+    def _fake_create_react_agent(*args, **kwargs):
+        raise AssertionError('create_react_agent should not be called in runtime interrupt tests')
+
+    class _Command:
+        def __init__(self, resume=None):
+            self.resume = resume
+
+    class _InMemorySaver:
+        def __init__(self, *args, **kwargs):
+            self.storage = {}
+            self.writes = {}
+            self.blobs = {}
+
+    prebuilt_mod.create_react_agent = _fake_create_react_agent
+    types_mod.Command = _Command
+    checkpoint_mod.InMemorySaver = _InMemorySaver
+    sys.modules['langgraph.prebuilt'] = prebuilt_mod
+    sys.modules['langgraph.types'] = types_mod
+    sys.modules['langgraph.checkpoint.memory'] = checkpoint_mod
+
+from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+
+
+class _DummyGraph:
+    def get_state(self, config):
+        return None
+
+
+WORK = Path(__file__).resolve().parent / '_tmp_runtime_interrupts'
+
+
+async def _scenario_pending_payload_contract() -> None:
+    scenario_root = WORK / 'payload_contract'
+    settings = AgentSettings(session_id='runtime-interrupt-payload', memory_root=str(scenario_root))
+    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+    client.session_state.active_training.data_yaml = '/data/demo/data.yaml'
+    client._set_pending_confirmation(
+        'runtime-interrupt-payload-turn-1',
+        {
+            'name': 'start_training',
+            'args': {'model': 'yolov8n.pt', 'data_yaml': '/data/demo/data.yaml', 'epochs': 12},
+            'id': None,
+            'synthetic': True,
+        },
+    )
+    payload = client.get_pending_action()
+    assert payload is not None
+    assert payload['interrupt_kind'] == 'tool_approval'
+    assert payload['decision_state'] == 'pending'
+    assert payload['tool_name'] == 'start_training'
+    assert payload['tool_args']['epochs'] == 12
+    assert payload['summary'].startswith('启动训练')
+    assert payload['objective'].startswith('启动训练')
+    assert payload['allowed_decisions'] == ['approve', 'reject', 'edit', 'clarify']
+    assert payload['review_config']['risk_level'] == 'high'
+    assert payload['decision_context'] == {}
+    state_payload = client._pending_from_state()
+    assert state_payload is not None
+    assert state_payload['summary'] == payload['summary']
+    assert state_payload['objective'] == payload['objective']
+
+
+async def _scenario_review_reject() -> None:
+    scenario_root = WORK / 'review_reject'
+    settings = AgentSettings(session_id='runtime-interrupt-reject', memory_root=str(scenario_root))
+    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+    client._set_pending_confirmation(
+        'runtime-interrupt-reject-turn-1',
+        {
+            'name': 'prepare_dataset_for_training',
+            'args': {'dataset_path': '/data/raw', 'force_split': True},
+            'id': None,
+            'synthetic': True,
+        },
+    )
+
+    result = await client.review_pending_action(
+        {
+            'decision': 'reject',
+            'reason': '先不要动数据集',
+            'raw_user_text': '不继续',
+            'source': 'natural_language_chat',
+        }
+    )
+    assert result['status'] == 'cancelled', result
+    assert result['pending_action']['decision_state'] == 'rejected', result
+    assert result['pending_action']['decision_context']['decision'] == 'reject', result
+    assert result['pending_action']['decision_context']['raw_user_text'] == '不继续', result
+    assert client.get_pending_action() is None
+    assert client.session_state.pending_confirmation.tool_name == ''
+
+
+async def _scenario_review_clarify_keeps_pending() -> None:
+    scenario_root = WORK / 'review_clarify'
+    settings = AgentSettings(session_id='runtime-interrupt-clarify', memory_root=str(scenario_root))
+    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+    client._set_pending_confirmation(
+        'runtime-interrupt-clarify-turn-1',
+        {
+            'name': 'start_training_loop',
+            'args': {'model': 'yolov8n.pt', 'data_yaml': '/data/loop/data.yaml', 'max_rounds': 2},
+            'id': None,
+            'synthetic': True,
+        },
+    )
+
+    result = await client.review_pending_action(
+        {
+            'decision': 'clarify',
+            'reason': '先解释下为什么要开循环训练',
+            'raw_user_text': '为什么要做这一步？',
+            'source': 'natural_language_chat',
+        }
+    )
+    assert result['status'] == 'needs_confirmation', result
+    assert result['pending_action']['decision_state'] == 'pending', result
+    assert result['pending_action']['decision_context']['decision'] == 'clarify', result
+    assert result['tool_call']['name'] == 'start_training_loop', result
+    assert client.get_pending_action() is not None
+
+
+async def _scenario_review_edit_keeps_pending() -> None:
+    scenario_root = WORK / 'review_edit'
+    settings = AgentSettings(session_id='runtime-interrupt-edit', memory_root=str(scenario_root))
+    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+    client._set_pending_confirmation(
+        'runtime-interrupt-edit-turn-1',
+        {
+            'name': 'start_training',
+            'args': {'model': 'yolov8n.pt', 'data_yaml': '/data/demo/data.yaml', 'epochs': 20},
+            'id': None,
+            'synthetic': True,
+        },
+    )
+
+    result = await client.review_pending_action(
+        {
+            'decision': 'edit',
+            'reason': '先改 batch 再继续',
+            'raw_user_text': '把 batch 改成 12 再继续',
+            'source': 'natural_language_chat',
+        }
+    )
+    assert result['status'] == 'needs_confirmation', result
+    assert result['pending_action']['decision_state'] == 'pending', result
+    assert result['pending_action']['decision_context']['decision'] == 'edit', result
+    assert result['pending_action']['decision_context']['raw_user_text'] == '把 batch 改成 12 再继续', result
+    assert result['tool_call']['name'] == 'start_training', result
+    assert client.get_pending_action() is not None
+
+
+async def _scenario_review_approve() -> None:
+    scenario_root = WORK / 'review_approve'
+    settings = AgentSettings(session_id='runtime-interrupt-approve', memory_root=str(scenario_root))
+    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((tool_name, dict(kwargs)))
+        result = {
+            'ok': True,
+            'summary': '训练已启动: model=yolov8n.pt, data=/data/demo/data.yaml',
+            'device': kwargs.get('device', 'auto') or 'auto',
+            'pid': 1234,
+            'log_file': '/runs/runtime_interrupt.txt',
+            'started_at': 12.34,
+            'resolved_args': dict(kwargs),
+        }
+        client._apply_to_state(tool_name, result, kwargs)
+        return result
+
+    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+    client._set_pending_confirmation(
+        'runtime-interrupt-approve-turn-1',
+        {
+            'name': 'start_training',
+            'args': {'model': 'yolov8n.pt', 'data_yaml': '/data/demo/data.yaml', 'epochs': 20},
+            'id': None,
+            'synthetic': True,
+        },
+    )
+
+    result = await client.review_pending_action(
+        {
+            'decision': 'approve',
+            'reason': '按这个执行',
+            'raw_user_text': '继续',
+            'source': 'natural_language_chat',
+        }
+    )
+    assert result['status'] == 'completed', result
+    assert '训练已启动' in result['message'], result
+    assert calls == [('start_training', {'model': 'yolov8n.pt', 'data_yaml': '/data/demo/data.yaml', 'epochs': 20})], calls
+    assert client.get_pending_action() is None
+    assert client.session_state.active_training.model == 'yolov8n.pt'
+
+
+async def _run() -> None:
+    shutil.rmtree(WORK, ignore_errors=True)
+    WORK.mkdir(parents=True, exist_ok=True)
+    try:
+        await _scenario_pending_payload_contract()
+        await _scenario_review_reject()
+        await _scenario_review_clarify_keeps_pending()
+        await _scenario_review_edit_keeps_pending()
+        await _scenario_review_approve()
+        print('agent runtime interrupts ok')
+    finally:
+        shutil.rmtree(WORK, ignore_errors=True)
+
+
+if __name__ == '__main__':
+    asyncio.run(_run())

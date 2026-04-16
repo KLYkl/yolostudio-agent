@@ -152,6 +152,8 @@ def main() -> None:
         assert len(envs['environments']) == 2
         assert envs['default_environment']['name'] == 'yolodo'
         assert envs['next_actions']
+        assert envs['environment_overview']['environment_count'] == 2
+        assert envs['action_candidates'][0]['tool'] == 'training_preflight'
 
         preflight = train_tools.training_preflight(
             model='yolov8n.pt',
@@ -194,6 +196,8 @@ def main() -> None:
         assert 'workers=2' in preflight['command_preview']
         assert 'amp=False' in preflight['command_preview']
         assert preflight['next_actions'][0].startswith('当前参数和训练环境已可启动')
+        assert preflight['preflight_overview']['ready_to_start'] is True
+        assert preflight['action_candidates'][0]['tool'] == 'start_training'
         print('train environment tools ok')
     finally:
         train_tools.service = original_service

@@ -4,8 +4,50 @@ import re
 from typing import Any
 
 
-MODEL_SUFFIXES = ('.pt', '.onnx', '.yaml', '.yml')
+MODEL_SUFFIXES = ('.pt', '.onnx')
+MODEL_CONFIG_SUFFIXES = ('.yaml', '.yml')
 VIDEO_SUFFIXES = ('.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm')
+PATH_ACTION_SUFFIX_MARKERS = (
+    '按默认比例',
+    '先不要开始训练',
+    '不要开始训练',
+    '先不要训练',
+    '不要训练',
+    '准备训练数据',
+    '准备数据集',
+    '准备数据',
+    '划分训练集',
+    '划分数据集',
+    '生成data.yaml',
+    '生成 data.yaml',
+    '生成yaml',
+    '生成 yaml',
+    '开始训练',
+    '启动训练',
+    '开始预测',
+    '启动预测',
+    '导出报告',
+    '总结结果',
+    '分析结果',
+    '然后',
+    '并且',
+    '并',
+)
+
+
+def _trim_trailing_path_noise(value: str) -> str:
+    text = str(value or '').strip().rstrip('。，“”,,;；')
+    if not text:
+        return ''
+    for marker in PATH_ACTION_SUFFIX_MARKERS:
+        index = text.find(marker)
+        if index <= 0:
+            continue
+        prefix = text[:index].rstrip('/\\ ')
+        if prefix.startswith('/') or re.match(r'^[A-Za-z]:[\\/]', prefix) or prefix.startswith('~'):
+            text = prefix
+            break
+    return text.rstrip('。，“”,,;；')
 
 
 def extract_all_paths_from_text(text: str) -> list[str]:
@@ -17,7 +59,7 @@ def extract_all_paths_from_text(text: str) -> list[str]:
     seen: set[str] = set()
     for pattern in patterns:
         for match in re.finditer(pattern, text):
-            value = match.group(1).rstrip('。，“”,,;；')
+            value = _trim_trailing_path_noise(match.group(1))
             if value and value not in seen:
                 seen.add(value)
                 items.append(value)
@@ -34,7 +76,7 @@ def extract_remote_root_from_text(text: str) -> str:
     for pattern in patterns:
         match = re.search(pattern, text, flags=re.I)
         if match:
-            return match.group(1).rstrip('。，“”,,;；')
+            return _trim_trailing_path_noise(match.group(1))
     paths = extract_all_paths_from_text(text)
     for item in reversed(paths):
         if item.startswith('/'):
@@ -59,7 +101,15 @@ def extract_remote_server_from_text(text: str) -> str:
 
 
 def looks_like_model_path(path: str) -> bool:
-    return str(path).lower().endswith(MODEL_SUFFIXES)
+    text = str(path or '').strip().lower()
+    if not text:
+        return False
+    if text.endswith(MODEL_SUFFIXES):
+        return True
+    if text.endswith(MODEL_CONFIG_SUFFIXES):
+        basename = text.replace('\\', '/').rsplit('/', 1)[-1]
+        return basename.startswith('yolo') or 'model' in basename or 'cfg' in basename
+    return False
 
 
 def extract_dataset_path_from_text(text: str) -> str:
@@ -70,10 +120,31 @@ def extract_dataset_path_from_text(text: str) -> str:
     return ''
 
 
+def extract_classes_txt_from_text(text: str) -> str:
+    patterns = (
+        r'(?:classes(?:_txt)?|类名(?:文件|列表|来源)?)\s*(?:使用|用|来自|是|为|路径是|路径为|[:=：])?\s*([A-Za-z]:\\[^\s，,。；;\"\'<>]+\.txt)',
+        r'(?:classes(?:_txt)?|类名(?:文件|列表|来源)?)\s*(?:使用|用|来自|是|为|路径是|路径为|[:=：])?\s*(/[^\s，,。；;\"\'<>]+\.txt)',
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.I)
+        if match:
+            return _trim_trailing_path_noise(match.group(1))
+    for item in extract_all_paths_from_text(text):
+        lowered = item.replace('\\', '/').rsplit('/', 1)[-1].lower()
+        if lowered.endswith('.txt') and 'classes' in lowered:
+            return item
+    return ''
+
+
 def extract_model_from_text(text: str) -> str:
-    match = re.search(r'([A-Za-z0-9_./\-]+\.(?:pt|onnx|yaml))', text)
+    match = re.search(r'([A-Za-z0-9_./\-]+\.(?:pt|onnx))', text)
     if match:
         return match.group(1)
+    yaml_match = re.search(r'([A-Za-z0-9_./\-]+\.(?:yaml|yml))', text, flags=re.I)
+    if yaml_match:
+        candidate = yaml_match.group(1)
+        if looks_like_model_path(candidate):
+            return candidate
     match = re.search(r'\b(yolo[a-zA-Z0-9._-]+)\b', text, flags=re.I)
     if match:
         token = match.group(1)

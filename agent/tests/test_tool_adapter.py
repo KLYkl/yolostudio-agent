@@ -22,6 +22,28 @@ def main() -> None:
     text = _stringify_tool_result(value)
     assert 'hello' in text
     assert 'meta' in text
+
+    structured = _stringify_tool_result(
+        {
+            'ok': True,
+            'summary': '训练前检查完成',
+            'readiness_overview': {
+                'ready': False,
+                'preparable': True,
+                'primary_blocker_type': 'missing_yaml',
+            },
+            'action_candidates': [
+                {
+                    'action': 'prepare_dataset',
+                    'tool': 'prepare_dataset_for_training',
+                    'description': '先准备数据集并生成 data.yaml',
+                }
+            ],
+        }
+    )
+    assert '训练前检查完成' in structured
+    assert '概览:' in structured
+    assert '建议动作: 先准备数据集并生成 data.yaml' in structured
     print('tool adapter smoke ok')
 
 

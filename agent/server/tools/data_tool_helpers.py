@@ -33,6 +33,26 @@ def _resolve_dataset_inputs(img_dir: str, label_dir: str = '') -> tuple[Path, Pa
     return resolved_img, resolved_label, resolution
 
 
+def _resolve_path_from_base(path_value: str, *, base_dir: Path) -> Path:
+    candidate = Path(str(path_value or '').strip())
+    if not candidate:
+        return candidate
+    if candidate.is_absolute():
+        return candidate.resolve()
+    return (base_dir / candidate).resolve()
+
+
+def _path_has_files(path: Path) -> bool:
+    if not path.exists():
+        return False
+    if path.is_file():
+        return True
+    try:
+        return any(child.is_file() for child in path.rglob('*'))
+    except OSError:
+        return False
+
+
 def _discover_data_yaml(img_dir: Path, label_dir: Path | None = None) -> tuple[str, list[str]]:
     dataset_root = _infer_dataset_root(img_dir, label_dir)
     search_dirs = [dataset_root, dataset_root.parent, img_dir.parent, img_dir.parent.parent]
@@ -239,6 +259,44 @@ def _read_classes_txt_lines(classes_txt_path: Path) -> list[str]:
         return []
 
 
+def _parse_class_names_text(classes_text: str) -> list[str]:
+    text = str(classes_text or '').strip()
+    if not text:
+        return []
+
+    normalized = text.replace('\r\n', '\n').replace('\r', '\n')
+    normalized = normalized.replace('，', ',').replace('、', ',').replace('；', ';')
+    lines = [line.strip() for line in normalized.split('\n') if line.strip()]
+
+    def _clean_item(value: str) -> str:
+        item = str(value or '').strip()
+        item = re.sub(r'^\d+\s*[\.\)\-]\s*', '', item)
+        item = re.sub(r'^(?:class|类别)\s*[:：-]?\s*', '', item, flags=re.I)
+        return item.strip()
+
+    candidates: list[str] = []
+    if len(lines) > 1:
+        for line in lines:
+            cleaned = _clean_item(line)
+            if cleaned:
+                candidates.append(cleaned)
+    else:
+        for chunk in re.split(r'[\n,;]+', normalized):
+            cleaned = _clean_item(chunk)
+            if cleaned:
+                candidates.append(cleaned)
+
+    seen: set[str] = set()
+    parsed: list[str] = []
+    for item in candidates:
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        parsed.append(item)
+    return parsed
+
+
 def _build_missing_label_risk(scan_result) -> dict[str, Any]:
     total_images = getattr(scan_result, 'total_images', 0) or 0
     missing_count = len(getattr(scan_result, 'missing_labels', []) or [])
@@ -300,7 +358,11 @@ def _sample_path_strings(paths: list[Path], limit: int = MAX_ISSUE_EXAMPLES) -> 
 def _sample_integrity_entries(entries: list[tuple[Any, ...]], limit: int = MAX_ISSUE_EXAMPLES) -> list[str]:
     samples: list[str] = []
     for item in entries[:limit]:
-        if len(item) == 2:
+        if isinstance(item, (str, Path)):
+            samples.append(str(item))
+        elif not isinstance(item, tuple):
+            samples.append(str(item))
+        elif len(item) == 2:
             path, reason = item
             samples.append(f'{path} - {reason}')
         elif len(item) == 3:

@@ -7,6 +7,102 @@ from yolostudio_agent.agent.server.services.predict_service import PredictServic
 service = PredictService()
 
 
+def _action_candidates_from_next_actions(next_actions: Any) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    if not isinstance(next_actions, list):
+        return candidates
+    for item in next_actions:
+        if isinstance(item, dict):
+            compact = {
+                'action': item.get('action'),
+                'tool': item.get('tool'),
+                'description': item.get('description') or item.get('reason') or item.get('summary'),
+            }
+            compact = {key: value for key, value in compact.items() if value not in (None, '', [], {})}
+            if compact:
+                candidates.append(compact)
+        else:
+            text = str(item or '').strip()
+            if text:
+                candidates.append({'description': text})
+    return candidates
+
+
+def _prediction_overview(result: dict[str, Any], *, mode: str) -> dict[str, Any]:
+    overview = {
+        'mode': mode,
+        'processed_images': result.get('processed_images'),
+        'processed_videos': result.get('processed_videos'),
+        'detected_images': result.get('detected_images'),
+        'empty_images': result.get('empty_images'),
+        'total_frames': result.get('total_frames'),
+        'detected_frames': result.get('detected_frames'),
+        'total_detections': result.get('total_detections'),
+        'annotated_dir': result.get('annotated_dir'),
+        'output_dir': result.get('output_dir'),
+        'report_path': result.get('report_path'),
+        'warning_count': len(result.get('warnings') or []),
+    }
+    return {key: value for key, value in overview.items() if value not in (None, '', [], {})}
+
+
+def _prediction_output_overview(result: dict[str, Any]) -> dict[str, Any]:
+    overview = {
+        'output_dir': result.get('output_dir'),
+        'report_path': result.get('report_path'),
+        'artifact_root_count': result.get('artifact_root_count'),
+        'path_list_count': result.get('path_list_count'),
+    }
+    return {key: value for key, value in overview.items() if value not in (None, '', [], {})}
+
+
+def _export_overview(result: dict[str, Any]) -> dict[str, Any]:
+    overview = {
+        'export_format': result.get('export_format'),
+        'export_path': result.get('export_path'),
+        'export_dir': result.get('export_dir'),
+        'detected_count': result.get('detected_count'),
+        'empty_count': result.get('empty_count'),
+        'failed_count': result.get('failed_count'),
+        'detected_items_path': result.get('detected_items_path'),
+        'empty_items_path': result.get('empty_items_path'),
+        'failed_items_path': result.get('failed_items_path'),
+    }
+    return {key: value for key, value in overview.items() if value not in (None, '', [], {})}
+
+
+def _organization_overview(result: dict[str, Any]) -> dict[str, Any]:
+    overview = {
+        'destination_dir': result.get('destination_dir'),
+        'organize_by': result.get('organize_by'),
+        'copied_items': result.get('copied_items'),
+        'bucket_count': len(result.get('bucket_stats') or {}),
+    }
+    return {key: value for key, value in overview.items() if value not in (None, '', [], {})}
+
+
+def _source_overview(result: dict[str, Any], *, source_type: str) -> dict[str, Any]:
+    overview = {
+        'source_type': source_type,
+        'camera_count': result.get('camera_count'),
+        'screen_count': result.get('screen_count'),
+        'camera_id': result.get('camera_id'),
+        'screen_id': result.get('screen_id'),
+        'rtsp_url': result.get('rtsp_url'),
+        'source_label': result.get('source_label'),
+        'session_id': result.get('session_id'),
+        'status': result.get('status'),
+        'output_dir': result.get('output_dir'),
+        'report_path': result.get('report_path'),
+    }
+    return {key: value for key, value in overview.items() if value not in (None, '', [], {})}
+
+
+def _apply_structured_defaults(result: dict[str, Any], *, overview_key: str, overview_value: dict[str, Any]) -> None:
+    result.setdefault(overview_key, overview_value)
+    result.setdefault('action_candidates', _action_candidates_from_next_actions(result.get('next_actions')))
+
+
 def _wrap(action: str, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> dict[str, Any]:
     try:
         result = fn(*args, **kwargs)
@@ -56,9 +152,11 @@ def predict_images(
             suggestion = f"可查看标注结果目录: {result.get('annotated_dir')}"
             if suggestion not in result['next_actions']:
                 result['next_actions'].insert(0, suggestion)
+        _apply_structured_defaults(result, overview_key='prediction_overview', overview_value=_prediction_overview(result, mode='images'))
     else:
         result.setdefault('summary', '预测未完成')
         result.setdefault('next_actions', ['请确认 source_path 是否包含可读取图片，并检查模型路径'])
+        _apply_structured_defaults(result, overview_key='prediction_overview', overview_value=_prediction_overview(result, mode='images'))
     return result
 
 
@@ -76,9 +174,12 @@ def summarize_prediction_results(report_path: str = '', output_dir: str = '') ->
             suggestion = f"可查看标注结果目录: {result.get('annotated_dir')}"
             if suggestion not in result['next_actions']:
                 result['next_actions'].insert(0, suggestion)
+        overview_mode = 'videos' if str(result.get('mode') or '').strip() == 'videos' else 'images'
+        _apply_structured_defaults(result, overview_key='prediction_summary_overview', overview_value=_prediction_overview(result, mode=overview_mode))
     else:
         result.setdefault('summary', '预测结果汇总未完成')
         result.setdefault('next_actions', ['请提供 report_path，或传入包含 prediction_report.json 的 output_dir'])
+        _apply_structured_defaults(result, overview_key='prediction_summary_overview', overview_value=_prediction_overview(result, mode='summary'))
     return result
 
 
@@ -95,9 +196,11 @@ def inspect_prediction_outputs(report_path: str = '', output_dir: str = '') -> d
         suggestion = f"可继续复用的输出目录: {result.get('output_dir')}"
         if result.get('output_dir') and suggestion not in result['next_actions']:
             result['next_actions'].insert(0, suggestion)
+        _apply_structured_defaults(result, overview_key='prediction_output_overview', overview_value=_prediction_output_overview(result))
     else:
         result.setdefault('summary', '预测输出检查未完成')
         result.setdefault('next_actions', ['请提供 report_path，或传入包含 prediction_report.json / video_prediction_report.json 的 output_dir'])
+        _apply_structured_defaults(result, overview_key='prediction_output_overview', overview_value=_prediction_output_overview(result))
     return result
 
 
@@ -121,9 +224,11 @@ def export_prediction_report(
         suggestion = f"可查看导出报告: {result.get('export_path')}"
         if result.get('export_path') and suggestion not in result['next_actions']:
             result['next_actions'].insert(0, suggestion)
+        _apply_structured_defaults(result, overview_key='export_overview', overview_value=_export_overview(result))
     else:
         result.setdefault('summary', '预测报告导出未完成')
         result.setdefault('next_actions', ['请提供 report_path，或先对 prediction 输出目录执行 inspect / summarize'])
+        _apply_structured_defaults(result, overview_key='export_overview', overview_value=_export_overview(result))
     return result
 
 
@@ -141,9 +246,11 @@ def export_prediction_path_lists(report_path: str = '', output_dir: str = '', ex
         suggestion = f"可查看路径清单目录: {result.get('export_dir')}"
         if result.get('export_dir') and suggestion not in result['next_actions']:
             result['next_actions'].insert(0, suggestion)
+        _apply_structured_defaults(result, overview_key='path_list_overview', overview_value=_export_overview(result))
     else:
         result.setdefault('summary', '预测路径清单导出未完成')
         result.setdefault('next_actions', ['请提供 report_path，或先对 prediction 输出目录执行 inspect / summarize'])
+        _apply_structured_defaults(result, overview_key='path_list_overview', overview_value=_export_overview(result))
     return result
 
 
@@ -171,9 +278,11 @@ def organize_prediction_results(
         suggestion = f"可查看整理结果目录: {result.get('destination_dir')}"
         if result.get('destination_dir') and suggestion not in result['next_actions']:
             result['next_actions'].insert(0, suggestion)
+        _apply_structured_defaults(result, overview_key='organization_overview', overview_value=_organization_overview(result))
     else:
         result.setdefault('summary', '预测结果整理未完成')
         result.setdefault('next_actions', ['请提供 report_path，或先对 prediction 输出目录执行 inspect / summarize'])
+        _apply_structured_defaults(result, overview_key='organization_overview', overview_value=_organization_overview(result))
     return result
 
 
@@ -190,9 +299,11 @@ def scan_cameras(max_devices: int = 5) -> dict[str, Any]:
             suggestion = '如需开始实时预测，可继续调用 start_camera_prediction'
             if suggestion not in result['next_actions']:
                 result['next_actions'].insert(0, suggestion)
+        _apply_structured_defaults(result, overview_key='camera_overview', overview_value=_source_overview(result, source_type='camera'))
     else:
         result.setdefault('summary', '摄像头扫描未完成')
         result.setdefault('next_actions', ['请确认当前环境已安装 opencv-python，且允许访问摄像头'])
+        _apply_structured_defaults(result, overview_key='camera_overview', overview_value=_source_overview(result, source_type='camera'))
     return result
 
 
@@ -208,9 +319,11 @@ def scan_screens() -> dict[str, Any]:
             suggestion = '如需开始屏幕预测，可继续调用 start_screen_prediction'
             if suggestion not in result['next_actions']:
                 result['next_actions'].insert(0, suggestion)
+        _apply_structured_defaults(result, overview_key='screen_overview', overview_value=_source_overview(result, source_type='screen'))
     else:
         result.setdefault('summary', '屏幕扫描未完成')
         result.setdefault('next_actions', ['请确认当前环境已安装 mss，且允许运行屏幕采集'])
+        _apply_structured_defaults(result, overview_key='screen_overview', overview_value=_source_overview(result, source_type='screen'))
     return result
 
 
@@ -227,9 +340,11 @@ def test_rtsp_stream(rtsp_url: str, timeout_ms: int = 5000) -> dict[str, Any]:
         suggestion = '如需开始实时预测，可继续调用 start_rtsp_prediction'
         if suggestion not in result['next_actions']:
             result['next_actions'].insert(0, suggestion)
+        _apply_structured_defaults(result, overview_key='stream_test_overview', overview_value=_source_overview(result, source_type='rtsp'))
     else:
         result.setdefault('summary', 'RTSP 流测试未完成')
         result.setdefault('next_actions', ['请确认 rtsp_url 是否可用，或先在当前环境做网络连通性检查'])
+        _apply_structured_defaults(result, overview_key='stream_test_overview', overview_value=_source_overview(result, source_type='rtsp'))
     return result
 
 
@@ -259,9 +374,11 @@ def start_camera_prediction(
         suggestion = '可继续调用 check_realtime_prediction_status 查看实时进度'
         if suggestion not in result['next_actions']:
             result['next_actions'].insert(0, suggestion)
+        _apply_structured_defaults(result, overview_key='realtime_session_overview', overview_value=_source_overview(result, source_type='camera'))
     else:
         result.setdefault('summary', '摄像头实时预测未启动')
         result.setdefault('next_actions', ['请先 scan_cameras 确认可用 camera_id，并检查模型路径'])
+        _apply_structured_defaults(result, overview_key='realtime_session_overview', overview_value=_source_overview(result, source_type='camera'))
     return result
 
 
@@ -291,9 +408,11 @@ def start_rtsp_prediction(
         suggestion = '可继续调用 check_realtime_prediction_status 查看实时进度'
         if suggestion not in result['next_actions']:
             result['next_actions'].insert(0, suggestion)
+        _apply_structured_defaults(result, overview_key='realtime_session_overview', overview_value=_source_overview(result, source_type='rtsp'))
     else:
         result.setdefault('summary', 'RTSP 实时预测未启动')
         result.setdefault('next_actions', ['建议先调用 test_rtsp_stream 验证地址可用，再启动 RTSP 预测'])
+        _apply_structured_defaults(result, overview_key='realtime_session_overview', overview_value=_source_overview(result, source_type='rtsp'))
     return result
 
 
@@ -323,9 +442,11 @@ def start_screen_prediction(
         suggestion = '可继续调用 check_realtime_prediction_status 查看实时进度'
         if suggestion not in result['next_actions']:
             result['next_actions'].insert(0, suggestion)
+        _apply_structured_defaults(result, overview_key='realtime_session_overview', overview_value=_source_overview(result, source_type='screen'))
     else:
         result.setdefault('summary', '屏幕实时预测未启动')
         result.setdefault('next_actions', ['建议先调用 scan_screens 确认可用 screen_id，再启动屏幕预测'])
+        _apply_structured_defaults(result, overview_key='realtime_session_overview', overview_value=_source_overview(result, source_type='screen'))
     return result
 
 
@@ -342,9 +463,11 @@ def check_realtime_prediction_status(session_id: str = '') -> dict[str, Any]:
             suggestion = '如需结束，可继续调用 stop_realtime_prediction'
             if suggestion not in result['next_actions']:
                 result['next_actions'].insert(0, suggestion)
+        _apply_structured_defaults(result, overview_key='realtime_status_overview', overview_value=_source_overview(result, source_type=str(result.get('source_type') or 'realtime')))
     else:
         result.setdefault('summary', '实时预测状态查询未完成')
         result.setdefault('next_actions', ['请先启动摄像头 / RTSP / 屏幕实时预测'])
+        _apply_structured_defaults(result, overview_key='realtime_status_overview', overview_value=_source_overview(result, source_type=str(result.get('source_type') or 'realtime')))
     return result
 
 
@@ -361,9 +484,11 @@ def stop_realtime_prediction(session_id: str = '') -> dict[str, Any]:
             suggestion = f"可查看实时预测报告: {result.get('report_path')}"
             if suggestion not in result['next_actions']:
                 result['next_actions'].insert(0, suggestion)
+        _apply_structured_defaults(result, overview_key='realtime_status_overview', overview_value=_source_overview(result, source_type=str(result.get('source_type') or 'realtime')))
     else:
         result.setdefault('summary', '停止实时预测未完成')
         result.setdefault('next_actions', ['当前没有运行中的实时预测会话'])
+        _apply_structured_defaults(result, overview_key='realtime_status_overview', overview_value=_source_overview(result, source_type=str(result.get('source_type') or 'realtime')))
     return result
 
 
@@ -401,7 +526,9 @@ def predict_videos(
         suggestion = f"可查看视频预测输出目录: {result.get('output_dir')}"
         if result.get('output_dir') and suggestion not in result['next_actions']:
             result['next_actions'].insert(0, suggestion)
+        _apply_structured_defaults(result, overview_key='prediction_overview', overview_value=_prediction_overview(result, mode='videos'))
     else:
         result.setdefault('summary', '视频预测未完成')
         result.setdefault('next_actions', ['请确认 source_path 是否包含可读取视频，并检查模型路径'])
+        _apply_structured_defaults(result, overview_key='prediction_overview', overview_value=_prediction_overview(result, mode='videos'))
     return result

@@ -296,6 +296,39 @@ async def _scenario_discussion_then_execute() -> None:
     assert client.session_state.active_training.optimizer == 'AdamW'
 
 
+async def _scenario_status_query_without_session_context() -> None:
+    scenario_root = WORK / 'status_query_without_session_context'
+    settings = AgentSettings(session_id='training-plan-dialogue-status-query', memory_root=str(scenario_root))
+    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((tool_name, dict(kwargs)))
+        if tool_name == 'check_training_status':
+            result = {
+                'ok': True,
+                'running': True,
+                'run_state': 'running',
+                'summary': '当前训练仍在运行：第 3 轮，device=0',
+                'pid': 24680,
+                'log_file': '/runs/train_log_live.txt',
+                'latest_metrics': {'epoch': 3, 'map50': 0.41},
+                'minimum_facts_ready': True,
+            }
+        else:
+            raise AssertionError(f'unexpected tool call: {tool_name}')
+
+        client._apply_to_state(tool_name, result, kwargs)
+        return result
+
+    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+
+    turn = await client.chat('查看训练情况')
+    assert turn['status'] == 'completed', turn
+    assert calls == [('check_training_status', {})], calls
+    assert '第 3 轮' in turn['message'], turn
+
+
 async def _scenario_prepare_only_revision() -> None:
     scenario_root = WORK / 'prepare_only'
     settings = AgentSettings(session_id='training-plan-dialogue-2', memory_root=str(scenario_root))
@@ -364,12 +397,63 @@ async def _scenario_prepare_only_revision() -> None:
     assert '当前阻塞:' in turn2['message']
     assert turn2['tool_call']['name'] == 'prepare_dataset_for_training'
     assert 'force_split' not in turn2['tool_call']['args']
+    assert turn2['pending_action']['decision_context']['decision'] == 'edit'
+    assert turn2['pending_action']['decision_context']['raw_user_text'] == '先只做准备，不要自动划分，为什么必须先 prepare？'
 
     turn3 = await client.confirm(turn2['thread_id'], approved=True)
     assert turn3['status'] == 'completed', turn3
     assert '数据准备完成' in turn3['message']
     assert all(name != 'start_training' for name, _ in calls)
     assert client.session_state.active_training.training_plan_draft == {}
+
+
+async def _scenario_prepare_only_short_revision_without_dataset_path() -> None:
+    scenario_root = WORK / 'prepare_only_short_revision_without_dataset_path'
+    settings = AgentSettings(session_id='training-plan-dialogue-prepare-short-revision', memory_root=str(scenario_root))
+    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((tool_name, dict(kwargs)))
+        if tool_name == 'dataset_training_readiness':
+            result = {
+                'ok': True,
+                'summary': '从数据集角度看，这份数据还不能直接训练: 缺少可用的 data.yaml, 训练/验证集还没准备好；但可以先准备数据',
+                'dataset_root': '/home/kly/ct_loop/data_ct',
+                'dataset_structure': 'yolo_standard',
+                'is_split': False,
+                'needs_split': True,
+                'needs_data_yaml': True,
+                'resolved_img_dir': '/home/kly/ct_loop/data_ct/images',
+                'resolved_label_dir': '/home/kly/ct_loop/data_ct/labels',
+                'resolved_data_yaml': '',
+                'ready': False,
+                'preparable': True,
+                'primary_blocker_type': 'missing_yaml',
+                'warnings': [],
+                'blockers': ['缺少可用的 data.yaml', '训练/验证集还没准备好'],
+                'next_step_summary': '可以先准备数据，补齐 data.yaml 和划分产物。',
+            }
+        else:
+            raise AssertionError(f'unexpected tool call: {tool_name}')
+
+        client._apply_to_state(tool_name, result, kwargs)
+        return result
+
+    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+
+    turn1 = await client.chat('用 /home/kly/ct_loop/data_ct 按默认比例准备训练数据，先不要开始训练。')
+    assert turn1['status'] == 'needs_confirmation', turn1
+    assert turn1['tool_call']['name'] == 'prepare_dataset_for_training', turn1
+    assert turn1['tool_call']['args']['force_split'] is True, turn1
+
+    turn2 = await client.chat('先不要自动划分，给我计划。')
+    assert turn2['status'] == 'needs_confirmation', turn2
+    assert turn2['tool_call']['name'] == 'prepare_dataset_for_training', turn2
+    assert 'force_split' not in turn2['tool_call']['args'], turn2
+    assert turn2['pending_action']['decision_context']['decision'] == 'edit', turn2
+    assert turn2['pending_action']['decision_context']['raw_user_text'] == '先不要自动划分，给我计划。', turn2
+    assert all(name == 'dataset_training_readiness' for name, _ in calls), calls
 
 
 async def _scenario_prepare_then_replan_and_execute() -> None:
@@ -657,9 +741,9 @@ async def _scenario_cancel_then_replan() -> None:
     assert turn2['tool_call']['name'] == 'start_training'
     assert turn2['tool_call']['args']['batch'] == 8
 
-    turn3 = await client.confirm(turn2['thread_id'], approved=False)
+    turn3 = await client.chat('不继续。')
     assert turn3['status'] == 'cancelled', turn3
-    assert '已取消操作：start_training' in turn3['message']
+    assert '先不执行这一步' in turn3['message']
     assert '当前计划已保留' in turn3['message']
     assert client.session_state.pending_confirmation.tool_name == ''
     assert client.session_state.active_training.training_plan_draft != {}
@@ -694,7 +778,7 @@ async def _scenario_cancel_then_replan() -> None:
     assert turn6['tool_call']['args']['imgsz'] == 1280
     assert turn6['tool_call']['args']['fraction'] == 0.6
 
-    turn7 = await client.confirm(turn6['thread_id'], approved=True)
+    turn7 = await client.chat('好，就按这个来。')
     assert turn7['status'] == 'completed', turn7
     assert '训练已启动' in turn7['message']
     assert client.session_state.active_training.training_environment == 'base'
@@ -777,7 +861,7 @@ async def _scenario_cancel_prepare_then_rebuild() -> None:
 
     turn3 = await client.confirm(turn2['thread_id'], approved=False)
     assert turn3['status'] == 'cancelled', turn3
-    assert '已取消操作：prepare_dataset_for_training' in turn3['message']
+    assert '先不执行这一步' in turn3['message']
     assert '当前计划已保留' in turn3['message']
     assert client.session_state.pending_confirmation.tool_name == ''
     assert client.session_state.active_training.training_plan_draft != {}
@@ -1024,6 +1108,8 @@ async def _scenario_prepare_approval_then_revise_start() -> None:
     assert turn4['tool_call']['args']['imgsz'] == 960
     assert turn4['tool_call']['args']['fraction'] is None
     assert turn4['tool_call']['args']['classes'] is None
+    assert turn4['pending_action']['decision_context']['decision'] == 'edit'
+    assert turn4['pending_action']['decision_context']['raw_user_text'] == '为什么现在可以直接训练了？环境改成 base，batch 12，imgsz 960，fraction 不要了，类别限制取消，先给我计划。'
     assert '已从默认环境 yolodo 切换到 base' in turn4['message']
     assert '只训练指定类别' not in turn4['message']
 
@@ -1043,13 +1129,286 @@ async def _scenario_prepare_approval_then_revise_start() -> None:
     assert [name for name, _ in calls].count('start_training') == 1
 
 
+async def _scenario_prepare_only_natural_language_short_circuit() -> None:
+    scenario_root = WORK / 'prepare_only_short_circuit'
+    settings = AgentSettings(session_id='training-plan-dialogue-prepare-only-short', memory_root=str(scenario_root))
+    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((tool_name, dict(kwargs)))
+        if tool_name == 'dataset_training_readiness':
+            result = {
+                'ok': True,
+                'summary': '从数据集角度看，这份数据还不能直接训练: 缺少可用的 data.yaml, 训练/验证集还没准备好；但可以先准备数据',
+                'dataset_root': '/home/kly/ct_loop/data_ct',
+                'dataset_structure': 'yolo_standard',
+                'is_split': False,
+                'needs_split': True,
+                'needs_data_yaml': True,
+                'resolved_img_dir': '/home/kly/ct_loop/data_ct/images',
+                'resolved_label_dir': '/home/kly/ct_loop/data_ct/labels',
+                'resolved_data_yaml': '',
+                'ready': False,
+                'preparable': True,
+                'primary_blocker_type': 'missing_yaml',
+                'warnings': [],
+                'blockers': ['缺少可用的 data.yaml', '训练/验证集还没准备好'],
+                'next_step_summary': '可以先准备数据，补齐 data.yaml 和划分产物。',
+            }
+        elif tool_name == 'prepare_dataset_for_training':
+            result = {
+                'ok': True,
+                'ready': True,
+                'summary': '数据准备完成: 已生成 data_yaml',
+                'dataset_root': '/home/kly/ct_loop/data_ct',
+                'data_yaml': '/home/kly/ct_loop/data_ct/data.yaml',
+            }
+        else:
+            raise AssertionError(f'unexpected tool call: {tool_name}')
+
+        client._apply_to_state(tool_name, result, kwargs)
+        if tool_name == 'prepare_dataset_for_training':
+            client._clear_training_plan_draft()
+        return result
+
+    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+
+    turn1 = await client.chat('用 /home/kly/ct_loop/data_ct 按默认比例准备训练数据，先不要开始训练。')
+    assert turn1['status'] == 'needs_confirmation', turn1
+    assert turn1['tool_call']['name'] == 'prepare_dataset_for_training', turn1
+    assert turn1['tool_call']['args']['dataset_path'] == '/home/kly/ct_loop/data_ct'
+    assert turn1['tool_call']['args']['force_split'] is True
+    assert '训练计划草案' not in turn1['message'], turn1
+    assert '当前还不能直接训练' not in turn1['message'], turn1
+    assert '当前没有空闲 GPU' not in turn1['message'], turn1
+    assert '缺少预训练权重/模型' not in turn1['message'], turn1
+    assert '主要阻塞:' not in turn1['message'], turn1
+    assert '预期产物: data.yaml -> /home/kly/ct_loop/data_ct/data.yaml' in turn1['message'], turn1
+
+    turn2 = await client.confirm(turn1['thread_id'], approved=True)
+    assert turn2['status'] == 'completed', turn2
+    assert '数据准备完成' in turn2['message'], turn2
+    assert [name for name, _ in calls] == ['dataset_training_readiness', 'prepare_dataset_for_training'], calls
+
+
+async def _scenario_empty_input_is_ignored() -> None:
+    scenario_root = WORK / 'empty_input'
+    settings = AgentSettings(session_id='training-plan-dialogue-empty-input', memory_root=str(scenario_root))
+    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+    turn = await client.chat('')
+    assert turn['status'] == 'completed', turn
+    assert turn['message'] == '请输入内容。', turn
+
+
+async def _scenario_prepare_only_invalid_path_is_not_confirmed() -> None:
+    scenario_root = WORK / 'prepare_only_invalid_path'
+    settings = AgentSettings(session_id='training-plan-dialogue-invalid-path', memory_root=str(scenario_root))
+    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((tool_name, dict(kwargs)))
+        if tool_name != 'dataset_training_readiness':
+            raise AssertionError(f'unexpected tool call: {tool_name}')
+        result = {
+            'ok': True,
+            'readiness_scope': 'dataset',
+            'summary': '从数据集角度看，这份数据还不能直接训练: 缺少可用的 data.yaml, 训练/验证集还没准备好；但可以先准备数据',
+            'dataset_root': '/home/kly/ct_loop/data按默认比例准备训练数据',
+            'dataset_structure': 'unknown',
+            'is_split': False,
+            'needs_split': True,
+            'needs_data_yaml': True,
+            'resolved_img_dir': '',
+            'resolved_label_dir': '',
+            'resolved_data_yaml': '',
+            'ready': False,
+            'preparable': False,
+            'warnings': [],
+            'blockers': ['缺少可用的 data.yaml', '训练/验证集还没准备好'],
+            'next_step_summary': '可以先准备数据，补齐 data.yaml 和划分产物。',
+        }
+        client._apply_to_state(tool_name, result, kwargs)
+        return result
+
+    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+    turn = await client.chat('用 /home/kly/ct_loop/data按默认比例准备训练数据')
+    assert turn['status'] == 'completed', turn
+    assert (
+        '我还没核实到可用的数据集结构' in turn['message']
+        or '我还没核实到这个路径存在' in turn['message']
+    ), turn
+    assert all(name != 'prepare_dataset_for_training' for name, _ in calls), calls
+
+
+async def _scenario_prepare_then_train_prompt_is_not_short_circuited() -> None:
+    scenario_root = WORK / 'prepare_then_train_not_short_circuit'
+    settings = AgentSettings(session_id='training-plan-dialogue-prepare-then-train', memory_root=str(scenario_root))
+    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((tool_name, dict(kwargs)))
+        if tool_name == 'training_readiness':
+            result = {
+                'ok': True,
+                'summary': '当前还不能直接训练：缺少可用的 data_yaml；但当前数据集可以先进入 prepare_dataset_for_training',
+                'dataset_root': '/data/raw',
+                'resolved_img_dir': '/data/raw/images',
+                'resolved_label_dir': '/data/raw/labels',
+                'resolved_data_yaml': '',
+                'ready': False,
+                'preparable': True,
+                'primary_blocker_type': 'missing_yaml',
+                'warnings': [],
+                'blockers': ['缺少可用的 data_yaml'],
+            }
+        elif tool_name == 'list_training_environments':
+            result = {
+                'ok': True,
+                'summary': '发现 1 个可用训练环境，默认将使用 yolodo',
+                'environments': [{'name': 'yolodo', 'display_name': 'yolodo', 'selected_by_default': True}],
+                'default_environment': {'name': 'yolodo', 'display_name': 'yolodo'},
+            }
+        else:
+            raise AssertionError(f'unexpected tool call: {tool_name}')
+
+        client._apply_to_state(tool_name, result, kwargs)
+        return result
+
+    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+
+    turn = await client.chat('请把 /data/raw 按默认比例划分成训练集和验证集，然后用 yolov8n.pt 模型来训练。')
+    assert turn['status'] == 'needs_confirmation', turn
+    assert turn['tool_call']['name'] == 'prepare_dataset_for_training', turn
+    assert '训练计划草案：' in turn['message'], turn
+    assert '执行方式: 先准备再训练' in turn['message'], turn
+    assert '准备执行：数据准备' not in turn['message'], turn
+    assert client.session_state.active_training.training_plan_draft.get('execution_mode') == 'prepare_then_train'
+    assert [name for name, _ in calls[:2]] == ['training_readiness', 'list_training_environments'], calls
+
+
+async def _scenario_prepare_then_train_preserves_explicit_classes_txt() -> None:
+    scenario_root = WORK / 'prepare_then_train_with_classes_txt'
+    settings = AgentSettings(session_id='training-plan-dialogue-prepare-classes-txt', memory_root=str(scenario_root))
+    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((tool_name, dict(kwargs)))
+        if tool_name == 'training_readiness':
+            result = {
+                'ok': True,
+                'summary': '当前还不能直接训练：缺少可用的 data_yaml；但当前数据集可以先进入 prepare_dataset_for_training',
+                'dataset_root': '/home/kly/ct_loop/data_ct',
+                'resolved_img_dir': '/home/kly/ct_loop/data_ct/images',
+                'resolved_label_dir': '/home/kly/ct_loop/data_ct/labels',
+                'resolved_data_yaml': '',
+                'ready': False,
+                'preparable': True,
+                'primary_blocker_type': 'missing_yaml',
+                'warnings': [],
+                'blockers': ['缺少可用的 data_yaml'],
+            }
+        elif tool_name == 'list_training_environments':
+            result = {
+                'ok': True,
+                'summary': '发现 1 个可用训练环境，默认将使用 yolodo',
+                'environments': [{'name': 'yolodo', 'display_name': 'yolodo', 'selected_by_default': True}],
+                'default_environment': {'name': 'yolodo', 'display_name': 'yolodo'},
+            }
+        elif tool_name == 'prepare_dataset_for_training':
+            assert kwargs['dataset_path'] == '/home/kly/ct_loop/data_ct'
+            assert kwargs['classes_txt'] == '/home/kly/ct_loop/data_ct/classes.txt'
+            result = {
+                'ok': True,
+                'ready': True,
+                'summary': '数据准备完成: 当前数据集可直接训练，data_yaml 已就绪',
+                'dataset_root': '/home/kly/ct_loop/data_ct',
+                'img_dir': '/home/kly/ct_loop/data_ct/images',
+                'label_dir': '/home/kly/ct_loop/data_ct/labels',
+                'data_yaml': '/home/kly/ct_loop/data_ct/data.yaml',
+                'steps_completed': [{'step': 'generate_yaml', 'status': 'completed'}],
+                'next_actions': ['如需训练，可继续 start_training'],
+            }
+        elif tool_name == 'training_preflight':
+            result = {
+                'ok': True,
+                'ready_to_start': True,
+                'summary': '训练预检通过：将使用 yolodo，device=auto',
+                'training_environment': {'name': 'yolodo', 'display_name': 'yolodo'},
+                'resolved_args': {
+                    'model': kwargs['model'],
+                    'data_yaml': kwargs['data_yaml'],
+                    'epochs': kwargs['epochs'],
+                    'device': kwargs.get('device', 'auto') or 'auto',
+                    'training_environment': 'yolodo',
+                    'batch': kwargs.get('batch'),
+                    'imgsz': kwargs.get('imgsz'),
+                },
+                'command_preview': ['yolo', 'train'],
+                'blockers': [],
+                'warnings': [],
+            }
+        elif tool_name == 'start_training':
+            result = {
+                'ok': True,
+                'summary': '训练已启动: model=/home/kly/yolov8n.pt, data=/home/kly/ct_loop/data_ct/data.yaml',
+                'device': kwargs.get('device', 'auto') or 'auto',
+                'pid': 9876,
+                'log_file': '/runs/train_log_prepare_classes_txt.txt',
+                'started_at': 987.6,
+                'resolved_args': dict(kwargs),
+            }
+        else:
+            raise AssertionError(f'unexpected tool call: {tool_name}')
+
+        client._apply_to_state(tool_name, result, kwargs)
+        if tool_name == 'start_training' and result.get('ok'):
+            client._clear_training_plan_draft()
+        return result
+
+    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+
+    prompt = (
+        '请把 /home/kly/ct_loop/data_ct 按默认比例划分成训练集和验证集，'
+        '类名使用 /home/kly/ct_loop/data_ct/classes.txt，'
+        '自动生成可训练的 data.yaml，然后用 /home/kly/yolov8n.pt 模型来训练。'
+    )
+    turn1 = await client.chat(prompt)
+    assert turn1['status'] == 'needs_confirmation', turn1
+    assert turn1['tool_call']['name'] == 'prepare_dataset_for_training', turn1
+    assert turn1['tool_call']['args']['dataset_path'] == '/home/kly/ct_loop/data_ct', turn1
+    assert turn1['tool_call']['args']['classes_txt'] == '/home/kly/ct_loop/data_ct/classes.txt', turn1
+    assert '训练计划草案：' in turn1['message'], turn1
+    assert '执行方式: 先准备再训练' in turn1['message'], turn1
+    assert '类名来源文件: /home/kly/ct_loop/data_ct/classes.txt' in turn1['message'], turn1
+
+    turn2 = await client.confirm(turn1['thread_id'], approved=True)
+    assert turn2['status'] == 'needs_confirmation', turn2
+    assert turn2['tool_call']['name'] == 'start_training', turn2
+    assert turn2['tool_call']['args']['model'] == '/home/kly/yolov8n.pt', turn2
+    assert turn2['tool_call']['args']['data_yaml'] == '/home/kly/ct_loop/data_ct/data.yaml', turn2
+    assert '当前数据已具备训练条件' in turn2['message'], turn2
+    assert [name for name, _ in calls].count('prepare_dataset_for_training') == 1
+    assert [name for name, _ in calls].count('training_preflight') == 1
+
+
 async def _run() -> None:
     shutil.rmtree(WORK, ignore_errors=True)
     WORK.mkdir(parents=True, exist_ok=True)
     try:
         await _scenario_discussion_then_execute()
+        await _scenario_status_query_without_session_context()
         await _scenario_prepare_only_revision()
+        await _scenario_prepare_only_short_revision_without_dataset_path()
         await _scenario_prepare_then_replan_and_execute()
+        await _scenario_prepare_only_natural_language_short_circuit()
+        await _scenario_empty_input_is_ignored()
+        await _scenario_prepare_only_invalid_path_is_not_confirmed()
+        await _scenario_prepare_then_train_prompt_is_not_short_circuited()
+        await _scenario_prepare_then_train_preserves_explicit_classes_txt()
         await _scenario_cancel_then_replan()
         await _scenario_cancel_prepare_then_rebuild()
         await _scenario_preparable_backend_switch()

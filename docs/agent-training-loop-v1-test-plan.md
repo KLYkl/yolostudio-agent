@@ -1,0 +1,26 @@
+# 已归档：Agent 环训练 V1 测试计划
+
+> **状态：过期 / 仅供历史追溯，不再作为当前验收基线。**
+>
+> 这份测试计划基于旧的 **pre-LLM / client 强路由** 方案编写，其中大量用例默认：
+>
+> - client 会预判意图并直接控制工具链
+> - grounded / 固定化回复仍是主路径
+> - 没有把“模型真实选工具 + 模型真实组织语言”作为主验收标准
+>
+> 这与当前重构目标不一致，因此不能继续当作“当前通过标准”。
+>
+> 当前如果要定义测试，应围绕：
+>
+> - LLM 是否真的接管自然语言主路径
+> - 工具是否返回真实成功 / 失败
+> - 模型是否基于真实 tool result 组织回答
+> - 是否避免硬编码对话分流和假成功
+>
+> 当前重构基线文档：
+>
+> - `/absolute/path/D:/yolodo2.0/agent_plan/docs/agent-client-refactor-report.md`
+>
+> 历史原文已移到：
+>
+> - `/absolute/path/D:/yolodo2.0/agent_plan/docs/archive/pre-llm-agent/agent-training-loop-v1-test-plan.md`

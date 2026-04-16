@@ -68,6 +68,22 @@ def main() -> None:
         assert yaml_data['names'][0] == 'cat'
         assert yaml_data['names'][1] == 'dog'
 
+        output_yaml_from_text = root / 'generated_from_text.yaml'
+        generated_from_text = generate_yaml(
+            train_path=str((root / 'dataset_1ch' / 'images' / 'train').resolve()),
+            val_path=str((root / 'dataset_1ch' / 'images' / 'val').resolve()),
+            img_dir=str(img_dir),
+            label_dir=str(label_dir),
+            output_path=str(output_yaml_from_text),
+            classes_text='1. cat\n2. dog\n',
+        )
+        assert generated_from_text['ok'] is True
+        assert output_yaml_from_text.exists()
+        assert generated_from_text['class_name_source'] == 'explicit_classes_text'
+        yaml_text_data = yaml.safe_load(output_yaml_from_text.read_text(encoding='utf-8'))
+        assert yaml_text_data['names'][0] == 'cat'
+        assert yaml_text_data['names'][1] == 'dog'
+
         invalid_yaml = root / 'invalid_remote.yaml'
         invalid_yaml.write_text(
             "path: Z:/definitely-missing/remote_training_smoke_dataset\n"

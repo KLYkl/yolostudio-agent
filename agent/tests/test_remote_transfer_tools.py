@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import sys
 import types
@@ -199,7 +200,9 @@ def main() -> None:
     remote_fs = _FakeRemoteFs()
 
     original_discover = remote_transfer_tools._discover_executable
+    original_windows_candidates = remote_transfer_tools._default_windows_executable_candidates
     original_parse_ssh = remote_transfer_tools._parse_ssh_config
+    original_shutil_which = remote_transfer_tools.shutil.which
     original_upload_file_via_scp = remote_transfer_tools._upload_file_via_scp
     original_remote_mkdir = remote_transfer_tools._remote_mkdir
     original_remote_remove = remote_transfer_tools._remote_remove
@@ -230,6 +233,8 @@ def main() -> None:
         assert listing['default_profile'] == 'lab', listing
         assert len(listing['profiles']) == 1, listing
         assert len(listing['ssh_aliases']) == 1, listing
+        assert listing['profile_overview']['profile_count'] == 1, listing
+        assert listing['action_candidates'], listing
 
         uploaded = remote_transfer_tools.upload_assets_to_remote(
             local_paths=[str(weight_path), str(dataset_dir)],
@@ -244,6 +249,8 @@ def main() -> None:
         assert uploaded['chunked_file_count'] == 0, uploaded
         assert uploaded['verified_file_count'] == 2, uploaded
         assert uploaded['target_label'] == 'lab', uploaded
+        assert uploaded['transfer_overview']['file_count'] == 2, uploaded
+        assert uploaded['action_candidates'], uploaded
         assert remote_fs.read_text('/srv/agent_stage/best.pt') == 'fake-weight'
         assert remote_fs.read_text('/srv/agent_stage/dataset/a.txt') == 'demo'
 
@@ -285,6 +292,7 @@ def main() -> None:
         assert repeated['skipped_bytes'] == 3 * MB, repeated
         assert '断点续传' in repeated['transfer_strategy_summary'], repeated
         assert repeated['verify_hash'] is True, repeated
+        assert repeated['transfer_overview']['skipped_file_count'] == 1, repeated
 
         download_root = TMP_ROOT / 'downloaded'
         downloaded = remote_transfer_tools.download_assets_from_remote(
@@ -296,15 +304,40 @@ def main() -> None:
         assert downloaded['ok'] is True, downloaded
         assert downloaded['downloaded_count'] == 2, downloaded
         assert downloaded['target_label'] == 'lab', downloaded
+        assert downloaded['download_overview']['downloaded_count'] == 2, downloaded
+        assert downloaded['action_candidates'], downloaded
         assert (download_root / 'best.pt').read_text(encoding='utf-8') == 'fake-weight'
         assert (download_root / 'dataset' / 'a.txt').read_text(encoding='utf-8') == 'demo'
 
         tools = remote_transfer_tools.build_local_transfer_tools()
         assert [tool.name for tool in tools] == ['list_remote_profiles', 'upload_assets_to_remote', 'download_assets_from_remote'], tools
 
+        remote_transfer_tools._discover_executable = original_discover  # type: ignore[assignment]
+        original_system_root = os.environ.get('SystemRoot')
+        original_windir = os.environ.get('WINDIR')
+        try:
+            os.environ['SystemRoot'] = 'X:/Windows'
+            os.environ.pop('WINDIR', None)
+            windows_candidates = [item.replace('\\', '/') for item in remote_transfer_tools._default_windows_executable_candidates('ssh')]
+            assert windows_candidates == ['X:/Windows/System32/OpenSSH/ssh.exe']
+        finally:
+            if original_system_root is None:
+                os.environ.pop('SystemRoot', None)
+            else:
+                os.environ['SystemRoot'] = original_system_root
+            if original_windir is None:
+                os.environ.pop('WINDIR', None)
+            else:
+                os.environ['WINDIR'] = original_windir
+
+        remote_transfer_tools.shutil.which = lambda name: f'/mock/bin/{name}'  # type: ignore[assignment]
+        assert remote_transfer_tools._discover_executable('ssh') == '/mock/bin/ssh'
+
         print('remote transfer tools ok')
     finally:
         remote_transfer_tools._discover_executable = original_discover  # type: ignore[assignment]
+        remote_transfer_tools._default_windows_executable_candidates = original_windows_candidates  # type: ignore[assignment]
+        remote_transfer_tools.shutil.which = original_shutil_which  # type: ignore[assignment]
         remote_transfer_tools._parse_ssh_config = original_parse_ssh  # type: ignore[assignment]
         remote_transfer_tools._upload_file_via_scp = original_upload_file_via_scp  # type: ignore[assignment]
         remote_transfer_tools._remote_mkdir = original_remote_mkdir  # type: ignore[assignment]

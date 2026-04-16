@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Sequence
+from typing import Any, Sequence, get_args, get_origin
 
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
@@ -12,6 +12,8 @@ TOOL_NAME_ALIASES: dict[str, str] = {
     'detect_corrupted_images': 'run_dataset_health_check',
     'prepare_dataset': 'prepare_dataset_for_training',
     'dataset_manager.prepare_dataset': 'prepare_dataset_for_training',
+    'dataset_readiness': 'dataset_training_readiness',
+    'check_dataset_training_readiness': 'dataset_training_readiness',
     'predict_directory': 'predict_images',
     'batch_predict_images': 'predict_images',
     'predict_images_in_dir': 'predict_images',
@@ -72,6 +74,51 @@ TOOL_NAME_ALIASES: dict[str, str] = {
     'scp_from_server': 'download_assets_from_remote',
 }
 
+_MODEL_VISIBLE_DESCRIPTION_OVERRIDES: dict[str, str] = {
+    'dataset_training_readiness': (
+        '只检查数据集本身是否已经具备直接训练的结构条件。'
+        ' 适用于“这份数据能不能直接训练”“是否还缺 data.yaml”“是否还需要划分 train/val”这类问题。'
+        ' 不要检查 GPU、device 或训练环境。'
+    ),
+    'training_readiness': (
+        '只在用户准备现在启动训练，或明确询问训练执行条件时使用。'
+        ' 适用于“现在能不能开训”“GPU / device / 训练环境是否就绪”这类问题。'
+        ' 不要用于纯数据集可训练性问题。'
+    ),
+    'prepare_dataset_for_training': (
+        '把数据集整理成可训练状态：补齐 data.yaml，并在需要时划分 train/val。'
+        ' 如果用户已经明确给出 classes.txt 或直接贴了类别名，请显式传 classes_txt 或 classes_text，避免猜测类名来源。'
+        ' 适用于“先准备数据”“先整理数据”“先划分再训练”这类请求。'
+    ),
+    'split_dataset': (
+        '划分数据集为 train/val。'
+        ' img_dir 可以直接传数据集根目录，工具会自动解析 images/labels。'
+        ' 只有在用户明确要划分数据集时使用。'
+        ' 如果路径不存在，或划分后没有得到非空 train/val，本工具会明确失败。'
+    ),
+    'augment_dataset': (
+        '对数据集做离线增强并写到新目录。'
+        ' img_dir 可以直接传数据集根目录，工具会自动解析 images/labels。'
+        ' 如果没有可处理图片或没有产出文件，本工具会明确失败。'
+    ),
+    'convert_format': (
+        '执行标签格式转换并写到新目录。'
+        ' dataset_path 传数据集根目录即可。'
+        ' 如果没有可转换标签文件，或没有真正产出目标格式文件，本工具会明确失败。'
+    ),
+    'categorize_by_class': (
+        '按类别把图片和标签复制整理到新目录。'
+        ' dataset_path 传数据集根目录即可。'
+        ' 如果没有真正产出分类目录和文件，本工具会明确失败。'
+    ),
+    'generate_yaml': (
+        '为已经确定的 train/val 目录生成训练 YAML。'
+        ' 如果用户直接在对话里贴了类别名，请优先把原文放进 classes_text；'
+        ' 如果用户已经明确给出了类别列表，也可以直接传 classes。'
+        ' 只有在没有显式类别信息时，才考虑使用 classes_txt 或现有 data.yaml。'
+    ),
+}
+
 _ARG_ALIASES: dict[str, dict[str, str]] = {
     'run_dataset_health_check': {
         'path': 'dataset_path',
@@ -91,6 +138,12 @@ _ARG_ALIASES: dict[str, dict[str, str]] = {
         'root': 'dataset_path',
         'img_dir': 'dataset_path',
     },
+    'dataset_training_readiness': {
+        'path': 'img_dir',
+        'dataset_path': 'img_dir',
+        'dataset': 'img_dir',
+        'root': 'img_dir',
+    },
     'training_readiness': {
         'path': 'img_dir',
         'dataset_path': 'img_dir',
@@ -108,6 +161,28 @@ _ARG_ALIASES: dict[str, dict[str, str]] = {
         'dataset_path': 'img_dir',
         'dataset': 'img_dir',
         'root': 'img_dir',
+    },
+    'split_dataset': {
+        'path': 'img_dir',
+        'dataset_path': 'img_dir',
+        'dataset': 'img_dir',
+        'root': 'img_dir',
+        'dir_path': 'img_dir',
+        'folder': 'img_dir',
+        'out_dir': 'output_dir',
+        'output': 'output_dir',
+        'split_ratio': 'ratio',
+    },
+    'augment_dataset': {
+        'path': 'img_dir',
+        'dataset_path': 'img_dir',
+        'dataset': 'img_dir',
+        'root': 'img_dir',
+        'dir_path': 'img_dir',
+        'folder': 'img_dir',
+        'out_dir': 'output_dir',
+        'output': 'output_dir',
+        'format': 'label_format',
     },
     'predict_images': {
         'path': 'source_path',
@@ -350,6 +425,156 @@ _ARG_ALIASES: dict[str, dict[str, str]] = {
 }
 
 
+def _summarize_tool_result_mapping(value: dict[str, Any]) -> str:
+    lines: list[str] = []
+    summary = str(value.get('summary') or value.get('message') or '').strip()
+    if summary:
+        lines.append(summary)
+
+    if value.get('ok') is False:
+        error = str(value.get('error') or '').strip()
+        if error:
+            lines.append(f'错误: {error}')
+
+    blockers = [str(item).strip() for item in (value.get('blockers') or []) if str(item).strip()]
+    if blockers:
+        lines.append('阻塞项: ' + '；'.join(blockers[:3]))
+
+    warnings = [str(item).strip() for item in (value.get('warnings') or []) if str(item).strip()]
+    if warnings:
+        lines.append('注意: ' + '；'.join(warnings[:3]))
+
+    next_step_summary = str(value.get('next_step_summary') or '').strip()
+    if next_step_summary and next_step_summary not in lines:
+        lines.append(f'下一步: {next_step_summary}')
+
+    overview_labels = {
+        'readiness_overview': '概览',
+        'prepare_overview': '准备概览',
+        'environment_overview': '环境概览',
+        'preflight_overview': '预检概览',
+        'status_overview': '状态概览',
+        'summary_overview': '摘要概览',
+        'gpu_overview': 'GPU 概览',
+        'matched_rule_overview': '命中规则',
+        'playbook_overview': '命中方案',
+        'retrieval_overview': '检索概览',
+        'analysis_overview': '分析概览',
+        'recommendation_overview': '建议概览',
+        'prediction_overview': '预测概览',
+        'prediction_summary_overview': '预测摘要概览',
+        'prediction_output_overview': '预测输出概览',
+        'organization_overview': '整理概览',
+        'export_overview': '导出概览',
+        'path_list_overview': '路径清单概览',
+        'camera_overview': '摄像头概览',
+        'screen_overview': '屏幕概览',
+        'stream_test_overview': '流测试概览',
+        'realtime_session_overview': '实时会话概览',
+        'realtime_status_overview': '实时状态概览',
+        'extract_preview_overview': '抽取预览概览',
+        'extract_overview': '抽取概览',
+        'video_scan_overview': '视频扫描概览',
+        'frame_extract_overview': '抽帧概览',
+        'profile_overview': '远端配置概览',
+        'transfer_overview': '上传概览',
+        'download_overview': '下载概览',
+    }
+    for key, label in overview_labels.items():
+        overview = value.get(key)
+        if isinstance(overview, dict) and overview:
+            compact_bits = [
+                f'{sub_key}={sub_value}'
+                for sub_key, sub_value in overview.items()
+                if sub_value not in (None, '', [], {})
+            ]
+            if compact_bits:
+                lines.append(f'{label}: ' + ', '.join(compact_bits[:6]))
+        elif isinstance(overview, Sequence) and not isinstance(overview, (str, bytes, bytearray)):
+            compact_items: list[str] = []
+            for item in list(overview)[:3]:
+                if isinstance(item, dict):
+                    bits = [
+                        f'{sub_key}={sub_value}'
+                        for sub_key, sub_value in item.items()
+                        if sub_value not in (None, '', [], {})
+                    ]
+                    if bits:
+                        compact_items.append('{' + ', '.join(bits[:4]) + '}')
+                else:
+                    text = str(item).strip()
+                    if text:
+                        compact_items.append(text)
+            if compact_items:
+                lines.append(f'{label}: ' + '；'.join(compact_items))
+
+    action_candidates = value.get('action_candidates') or []
+    has_structured_actions = False
+    if isinstance(action_candidates, Sequence) and not isinstance(action_candidates, (str, bytes, bytearray)):
+        descriptions: list[str] = []
+        for item in action_candidates[:3]:
+            if not isinstance(item, dict):
+                continue
+            tool = str(item.get('tool') or '').strip()
+            action = str(item.get('action') or '').strip()
+            description = str(item.get('description') or '').strip()
+            fragment = description or ' / '.join(part for part in (action, tool) if part)
+            if fragment:
+                descriptions.append(fragment)
+        if descriptions:
+            has_structured_actions = True
+            lines.append('建议动作: ' + '；'.join(descriptions))
+
+    next_actions = value.get('next_actions') or []
+    if (not has_structured_actions) and isinstance(next_actions, Sequence) and not isinstance(next_actions, (str, bytes, bytearray)):
+        descriptions: list[str] = []
+        for item in next_actions[:3]:
+            if isinstance(item, dict):
+                description = str(item.get('description') or '').strip()
+                if description:
+                    descriptions.append(description)
+            else:
+                description = str(item).strip()
+                if description:
+                    descriptions.append(description)
+        if descriptions:
+            lines.append('建议动作: ' + '；'.join(descriptions))
+
+    path_fields = (
+        ('dataset_root', '数据集'),
+        ('resolved_data_yaml', 'data.yaml'),
+        ('output_dir', '输出目录'),
+        ('report_path', '报告路径'),
+        ('save_dir', '结果目录'),
+    )
+    for field, label in path_fields:
+        path_value = str(value.get(field) or '').strip()
+        if path_value:
+            lines.append(f'{label}: {path_value}')
+
+    metric_bits: list[str] = []
+    for field in ('processed_images', 'detected_images', 'empty_images', 'missing_label_images', 'issue_count', 'epoch', 'total_epochs'):
+        metric_value = value.get(field)
+        if metric_value in (None, '', [], {}):
+            continue
+        metric_bits.append(f'{field}={metric_value}')
+    if metric_bits:
+        lines.append('关键计数: ' + ', '.join(metric_bits))
+
+    compact = '\n'.join(line for line in lines if line).strip()
+    if compact:
+        return compact
+
+    scalar_snapshot = {
+        key: current
+        for key, current in value.items()
+        if isinstance(current, (str, int, float, bool)) and key not in {'tool', 'tool_name'}
+    }
+    if scalar_snapshot:
+        return json.dumps(scalar_snapshot, ensure_ascii=False)
+    return json.dumps(value, ensure_ascii=False)
+
+
 def _stringify_tool_result(value: Any) -> str:
     if isinstance(value, str):
         return value
@@ -360,11 +585,13 @@ def _stringify_tool_result(value: Any) -> str:
                 if item.get('type') == 'text' and item.get('text'):
                     parts.append(str(item['text']))
                 else:
-                    parts.append(json.dumps(item, ensure_ascii=False))
+                    parts.append(_summarize_tool_result_mapping(item))
             else:
                 parts.append(str(item))
         return '\n'.join(part for part in parts if part)
-    if isinstance(value, (dict, list, tuple)):
+    if isinstance(value, dict):
+        return _summarize_tool_result_mapping(value)
+    if isinstance(value, (list, tuple)):
         return json.dumps(value, ensure_ascii=False)
     return str(value)
 
@@ -393,23 +620,101 @@ def normalize_tool_args(tool_name: str, args: dict[str, Any] | None) -> dict[str
     return payload
 
 
+def _annotation_contains(annotation: Any, target_type: type[Any]) -> bool:
+    if annotation is target_type:
+        return True
+    origin = get_origin(annotation)
+    if origin is None:
+        return False
+    if origin is target_type:
+        return True
+    return any(_annotation_contains(arg, target_type) for arg in get_args(annotation))
+
+
+def _sanitize_tool_args_for_schema(tool: BaseTool, args: dict[str, Any]) -> dict[str, Any]:
+    schema = getattr(tool, 'args_schema', None)
+    fields = getattr(schema, 'model_fields', None)
+    if not fields:
+        return args
+    sanitized = dict(args)
+    for field_name, field_info in fields.items():
+        if sanitized.get(field_name, object()) is not None:
+            continue
+        annotation = getattr(field_info, 'annotation', None)
+        if _annotation_contains(annotation, str):
+            sanitized[field_name] = ''
+        elif _annotation_contains(annotation, list):
+            sanitized[field_name] = []
+        elif _annotation_contains(annotation, dict):
+            sanitized[field_name] = {}
+    return sanitized
+
+
+def _prepare_tool_args(tool: BaseTool, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
+    normalized = normalize_tool_args(tool_name, args)
+    return _sanitize_tool_args_for_schema(tool, normalized)
+
+
+def _set_tool_surface_attr(target: BaseTool, name: str, value: Any) -> None:
+    try:
+        setattr(target, name, value)
+    except Exception:
+        try:
+            object.__setattr__(target, name, value)
+        except Exception:
+            try:
+                target.__dict__[name] = value
+            except Exception:
+                pass
+
+
+def _get_tool_surface_attr(source: BaseTool, primary: str, fallback: str) -> Any:
+    value = getattr(source, primary, None)
+    if value not in (None, '', [], {}):
+        return value
+    return getattr(source, fallback, None)
+
+
+def _copy_tool_surface_attrs(target: BaseTool, source: BaseTool, *, metadata_patch: dict[str, Any] | None = None) -> BaseTool:
+    metadata = dict(_get_tool_surface_attr(source, 'metadata', 'tool_metadata') or {})
+    if metadata_patch:
+        metadata.update(metadata_patch)
+    if metadata:
+        _set_tool_surface_attr(target, 'metadata', metadata)
+        _set_tool_surface_attr(target, 'tool_metadata', metadata)
+
+    tags = list(_get_tool_surface_attr(source, 'tags', 'tool_tags') or [])
+    if tags:
+        _set_tool_surface_attr(target, 'tags', tags)
+        _set_tool_surface_attr(target, 'tool_tags', tags)
+
+    annotations = _get_tool_surface_attr(source, 'annotations', 'tool_annotations')
+    if annotations is not None:
+        _set_tool_surface_attr(target, 'annotations', annotations)
+        _set_tool_surface_attr(target, 'tool_annotations', annotations)
+    return target
+
+
 def adapt_tool_for_chat_model(tool: BaseTool) -> BaseTool:
+    description = _MODEL_VISIBLE_DESCRIPTION_OVERRIDES.get(tool.name, tool.description)
+
     async def _arun(**kwargs: Any) -> str:
-        result = await tool.ainvoke(normalize_tool_args(tool.name, kwargs))
+        result = await tool.ainvoke(_prepare_tool_args(tool, tool.name, kwargs))
         return _stringify_tool_result(result)
 
     def _run(**kwargs: Any) -> str:
-        result = tool.invoke(normalize_tool_args(tool.name, kwargs))
+        result = tool.invoke(_prepare_tool_args(tool, tool.name, kwargs))
         return _stringify_tool_result(result)
 
-    return StructuredTool.from_function(
+    adapted = StructuredTool.from_function(
         func=_run,
         coroutine=_arun,
         name=tool.name,
-        description=tool.description,
+        description=description,
         args_schema=tool.args_schema,
         return_direct=False,
     )
+    return _copy_tool_surface_attrs(adapted, tool)
 
 
 class _DatasetPathAliasArgs(BaseModel):
@@ -558,14 +863,14 @@ class _RemoteTransferAliasArgs(BaseModel):
 
 def _build_alias_tool(alias_name: str, target_tool: BaseTool, *, description: str, args_schema: type[BaseModel]) -> BaseTool:
     async def _arun(**kwargs: Any) -> str:
-        result = await target_tool.ainvoke(normalize_tool_args(alias_name, kwargs))
+        result = await target_tool.ainvoke(_prepare_tool_args(target_tool, alias_name, kwargs))
         return _stringify_tool_result(result)
 
     def _run(**kwargs: Any) -> str:
-        result = target_tool.invoke(normalize_tool_args(alias_name, kwargs))
+        result = target_tool.invoke(_prepare_tool_args(target_tool, alias_name, kwargs))
         return _stringify_tool_result(result)
 
-    return StructuredTool.from_function(
+    alias_tool = StructuredTool.from_function(
         func=_run,
         coroutine=_arun,
         name=alias_name,
@@ -573,10 +878,17 @@ def _build_alias_tool(alias_name: str, target_tool: BaseTool, *, description: st
         args_schema=args_schema,
         return_direct=False,
     )
+    return _copy_tool_surface_attrs(
+        alias_tool,
+        target_tool,
+        metadata_patch={'canonical_tool_name': target_tool.name},
+    )
 
 
-def adapt_tools_for_chat_model(tools: list[BaseTool]) -> list[BaseTool]:
+def adapt_tools_for_chat_model(tools: list[BaseTool], *, include_aliases: bool = True) -> list[BaseTool]:
     adapted = [adapt_tool_for_chat_model(tool) for tool in tools]
+    if not include_aliases:
+        return adapted
     tool_map = {tool.name: tool for tool in tools}
     alias_tools: list[BaseTool] = []
 

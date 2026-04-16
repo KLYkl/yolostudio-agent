@@ -89,6 +89,9 @@ def main() -> None:
         assert readiness['data_yaml_usable'] is True
         assert readiness['recommended_start_training_args']['data_yaml'] == str(tmp_yaml)
         assert readiness['next_actions']
+        assert readiness['readiness_overview']['scope'] == 'execution'
+        assert readiness['device_overview']['auto_device'] == '1'
+        assert readiness['action_candidates'][0]['tool'] == 'start_training'
 
         data_tools.scan_dataset = lambda img_dir, label_dir='': {
             'ok': True,
@@ -112,6 +115,7 @@ def main() -> None:
         assert missing_yaml['primary_blocker_type'] == 'missing_yaml'
         assert 'prepare_dataset_for_training' in missing_yaml['summary']
         assert missing_yaml['next_actions'][0]['tool'] == 'prepare_dataset_for_training'
+        assert missing_yaml['action_candidates'][0]['tool'] == 'prepare_dataset_for_training'
 
         failed = start_training(model='yolov8n.pt', data_yaml='Z:/definitely-missing.yaml', epochs=1)
         assert failed['ok'] is False

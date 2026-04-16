@@ -69,12 +69,16 @@ def main() -> None:
         digest = retriever.build_digest(state.session_id, state)
         text = digest.to_text()
 
-        assert '最近扫描' in text
-        assert '最近校验' in text
+        assert '最近调用过的工具' in text
         assert '人工确认记录' in text
         assert 'scan_dataset' in text
         assert 'validate_dataset' in text
         assert len(digest.recent_events) == 4
+
+        minimal_digest = retriever.build_digest(state.session_id, state, include_history_context=False)
+        minimal_text = minimal_digest.to_text()
+        assert '最近调用过的工具' not in minimal_text
+        assert '人工确认记录' not in minimal_text
 
         recent = store.read_events(state.session_id, limit=2)
         assert len(recent) == 2

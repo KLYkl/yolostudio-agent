@@ -7,6 +7,79 @@ from yolostudio_agent.agent.server.services.extract_service import ExtractServic
 service = ExtractService()
 
 
+def _action_candidates_from_next_actions(next_actions: Any) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    if not isinstance(next_actions, list):
+        return candidates
+    for item in next_actions:
+        if isinstance(item, dict):
+            compact = {
+                'action': item.get('action'),
+                'tool': item.get('tool'),
+                'description': item.get('description') or item.get('reason') or item.get('summary'),
+            }
+            compact = {key: value for key, value in compact.items() if value not in (None, '', [], {})}
+            if compact:
+                candidates.append(compact)
+        else:
+            text = str(item or '').strip()
+            if text:
+                candidates.append({'description': text})
+    return candidates
+
+
+def _extract_preview_overview(result: dict[str, Any]) -> dict[str, Any]:
+    overview = {
+        'available_images': result.get('available_images'),
+        'planned_extract_count': result.get('planned_extract_count'),
+        'selection_mode': result.get('selection_mode'),
+        'grouping_mode': result.get('grouping_mode'),
+        'output_layout': result.get('output_layout'),
+        'workflow_ready': result.get('workflow_ready'),
+        'workflow_ready_path': result.get('workflow_ready_path'),
+        'conflict_count': result.get('conflict_count'),
+    }
+    return {key: value for key, value in overview.items() if value not in (None, '', [], {})}
+
+
+def _extract_overview(result: dict[str, Any]) -> dict[str, Any]:
+    overview = {
+        'extracted': result.get('extracted'),
+        'labels_copied': result.get('labels_copied'),
+        'conflict_count': result.get('conflict_count'),
+        'output_dir': result.get('output_dir'),
+        'workflow_ready': result.get('workflow_ready'),
+        'workflow_ready_path': result.get('workflow_ready_path'),
+    }
+    return {key: value for key, value in overview.items() if value not in (None, '', [], {})}
+
+
+def _video_scan_overview(result: dict[str, Any]) -> dict[str, Any]:
+    overview = {
+        'total_videos': result.get('total_videos'),
+        'source_path': result.get('source_path'),
+        'sample_count': len(result.get('sample_videos') or []),
+    }
+    return {key: value for key, value in overview.items() if value not in (None, '', [], {})}
+
+
+def _frame_extract_overview(result: dict[str, Any]) -> dict[str, Any]:
+    overview = {
+        'total_frames': result.get('total_frames'),
+        'extracted': result.get('extracted'),
+        'final_count': result.get('final_count'),
+        'output_dir': result.get('output_dir'),
+        'mode': result.get('mode'),
+    }
+    return {key: value for key, value in overview.items() if value not in (None, '', [], {})}
+
+
+def _apply_structured_defaults(result: dict[str, Any], *, overview_key: str, overview_value: dict[str, Any]) -> dict[str, Any]:
+    result.setdefault(overview_key, overview_value)
+    result.setdefault('action_candidates', _action_candidates_from_next_actions(result.get('next_actions')))
+    return result
+
+
 def _wrap(action: str, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> dict[str, Any]:
     try:
         result = fn(*args, **kwargs)
@@ -38,7 +111,7 @@ def preview_extract_images(
     max_examples: int = 3,
 ) -> dict[str, Any]:
     """预览图片抽取计划。默认以 flat 布局输出，方便后续直接接 scan/validate/训练链；不会修改原始数据。"""
-    return _wrap(
+    result = _wrap(
         '预览图片抽取',
         service.preview_extract_images,
         source_path=source_path,
@@ -54,6 +127,7 @@ def preview_extract_images(
         seed=seed,
         max_examples=max_examples,
     )
+    return _apply_structured_defaults(result, overview_key='extract_preview_overview', overview_value=_extract_preview_overview(result))
 
 
 def extract_images(
@@ -71,7 +145,7 @@ def extract_images(
     max_examples: int = 3,
 ) -> dict[str, Any]:
     """执行图片抽取。默认输出为 flat 数据集结构，便于后续直接继续 scan_dataset / validate_dataset / prepare_dataset_for_training。"""
-    return _wrap(
+    result = _wrap(
         '执行图片抽取',
         service.extract_images,
         source_path=source_path,
@@ -87,11 +161,13 @@ def extract_images(
         seed=seed,
         max_examples=max_examples,
     )
+    return _apply_structured_defaults(result, overview_key='extract_overview', overview_value=_extract_overview(result))
 
 
 def scan_videos(source_path: str, max_examples: int = 3) -> dict[str, Any]:
     """扫描视频目录或单个视频，返回可处理视频数量与目录分布。"""
-    return _wrap('扫描视频目录', service.scan_videos, source_path=source_path, max_examples=max_examples)
+    result = _wrap('扫描视频目录', service.scan_videos, source_path=source_path, max_examples=max_examples)
+    return _apply_structured_defaults(result, overview_key='video_scan_overview', overview_value=_video_scan_overview(result))
 
 
 def extract_video_frames(
@@ -112,7 +188,7 @@ def extract_video_frames(
     name_prefix: str = '',
 ) -> dict[str, Any]:
     """执行视频抽帧。支持 interval/time/scene 三种最常见模式，输出目录可继续作为图片输入使用。"""
-    return _wrap(
+    result = _wrap(
         '执行视频抽帧',
         service.extract_video_frames,
         source_path=source_path,
@@ -131,3 +207,4 @@ def extract_video_frames(
         jpg_quality=jpg_quality,
         name_prefix=name_prefix,
     )
+    return _apply_structured_defaults(result, overview_key='frame_extract_overview', overview_value=_frame_extract_overview(result))

@@ -65,6 +65,87 @@ def main() -> None:
 
     apply_tool_result_to_state(
         state,
+        'inspect_prediction_outputs',
+        {
+            'ok': True,
+            'summary': '预测输出检查完成',
+            'mode': 'images',
+            'prediction_output_overview': {'artifact_root_count': 3},
+            'action_candidates': [{'tool': 'export_prediction_report', 'description': '导出报告'}],
+            'output_dir': '/tmp/predict-out',
+            'report_path': '/tmp/predict-out/prediction_report.json',
+            'artifact_roots': ['/tmp/predict-out', '/tmp/predict-out/annotated', '/tmp/predict-out/labels_yolo'],
+            'path_list_files': {},
+        },
+    )
+    assert state.active_prediction.last_inspection['prediction_output_overview']['artifact_root_count'] == 3
+    assert state.active_prediction.last_inspection['action_candidates'][0]['tool'] == 'export_prediction_report'
+
+    apply_tool_result_to_state(
+        state,
+        'export_prediction_report',
+        {
+            'ok': True,
+            'summary': '预测报告导出完成',
+            'mode': 'images',
+            'export_overview': {'export_format': 'markdown'},
+            'action_candidates': [{'tool': 'inspect_prediction_outputs', 'description': '继续查看输出'}],
+            'output_dir': '/tmp/predict-out',
+            'report_path': '/tmp/predict-out/prediction_report.json',
+            'export_path': '/tmp/predict-out/prediction_summary.md',
+            'export_format': 'markdown',
+        },
+    )
+    assert state.active_prediction.last_export['export_overview']['export_format'] == 'markdown'
+    assert state.active_prediction.last_export['action_candidates'][0]['tool'] == 'inspect_prediction_outputs'
+
+    apply_tool_result_to_state(
+        state,
+        'export_prediction_path_lists',
+        {
+            'ok': True,
+            'summary': '预测路径清单导出完成',
+            'mode': 'images',
+            'path_list_overview': {'detected_count': 2, 'empty_count': 1, 'failed_count': 0},
+            'action_candidates': [{'tool': 'organize_prediction_results', 'description': '继续整理结果'}],
+            'output_dir': '/tmp/predict-out',
+            'report_path': '/tmp/predict-out/prediction_report.json',
+            'export_dir': '/tmp/predict-out/path_lists',
+            'detected_items_path': '/tmp/predict-out/path_lists/detected_items.txt',
+            'empty_items_path': '/tmp/predict-out/path_lists/empty_items.txt',
+            'failed_items_path': '/tmp/predict-out/path_lists/failed_items.txt',
+            'detected_count': 2,
+            'empty_count': 1,
+            'failed_count': 0,
+        },
+    )
+    assert state.active_prediction.last_path_lists['path_list_overview']['empty_count'] == 1
+    assert state.active_prediction.last_path_lists['action_candidates'][0]['tool'] == 'organize_prediction_results'
+
+    apply_tool_result_to_state(
+        state,
+        'organize_prediction_results',
+        {
+            'ok': True,
+            'summary': '预测结果整理完成',
+            'mode': 'images',
+            'organization_overview': {'bucket_count': 2},
+            'action_candidates': [{'tool': 'export_prediction_path_lists', 'description': '导出路径清单'}],
+            'source_output_dir': '/tmp/predict-out',
+            'source_report_path': '/tmp/predict-out/prediction_report.json',
+            'destination_dir': '/tmp/predict-out/organized_by_class',
+            'organize_by': 'by_class',
+            'artifact_preference': 'auto',
+            'copied_items': 2,
+            'bucket_stats': {'Excavator': 1, 'bulldozer': 1},
+            'sample_outputs': ['/tmp/predict-out/organized_by_class/Excavator/a.jpg'],
+        },
+    )
+    assert state.active_prediction.last_organized_result['organization_overview']['bucket_count'] == 2
+    assert state.active_prediction.last_organized_result['action_candidates'][0]['tool'] == 'export_prediction_path_lists'
+
+    apply_tool_result_to_state(
+        state,
         'check_training_status',
         {
             'ok': True,
@@ -102,6 +183,7 @@ def main() -> None:
     assert tr.pid is None
     assert tr.log_file == '/tmp/train.log'
     assert tr.started_at == 123.4
+    assert 'command' not in tr.last_status
 
     apply_tool_result_to_state(
         state,
@@ -121,6 +203,7 @@ def main() -> None:
     )
     assert state.active_training.last_summary['run_state'] == 'completed'
     assert state.active_training.training_run_summary['run_state'] == 'completed'
+    assert 'selected_run_id' not in state.active_training.last_summary
 
     apply_tool_result_to_state(
         state,
@@ -152,6 +235,9 @@ def main() -> None:
     )
     assert state.active_training.last_environment_probe['default_environment']['name'] == 'yolodo'
     assert state.active_training.training_environment == 'yolodo'
+    assert state.active_training.last_environment_probe['environments'][0]['name'] == 'yolodo'
+    assert 'summary' in state.active_training.last_environment_probe
+    assert 'profiles' not in state.active_training.last_environment_probe
 
     apply_tool_result_to_state(
         state,
@@ -181,6 +267,72 @@ def main() -> None:
     assert state.active_training.patience == 8
     assert state.active_training.workers == 2
     assert state.active_training.amp is True
+    assert state.active_training.last_preflight['training_environment']['name'] == 'yolodo'
+    assert 'resolved_args' in state.active_training.last_preflight
+    assert 'training_environment' in state.active_training.last_preflight
+    assert 'command' not in state.active_training.last_preflight
+
+    apply_tool_result_to_state(
+        state,
+        'start_training',
+        {
+            'ok': True,
+            'summary': '训练启动成功',
+            'pid': 9999,
+            'device': '0',
+            'log_file': '/tmp/train-start.log',
+            'started_at': 456.7,
+            'resolved_args': {'model': '/tmp/yolov8m.pt', 'data_yaml': '/tmp/data2.yaml', 'epochs': 10, 'training_environment': 'yolodo'},
+            'training_environment': {'name': 'yolodo', 'display_name': 'YOLODO', 'gpu_available': True},
+            'command': ['yolo', 'train', 'model=/tmp/yolov8m.pt'],
+        },
+    )
+    assert state.active_training.last_start_result['resolved_args']['epochs'] == 10
+    assert state.active_training.last_start_result['training_environment']['name'] == 'yolodo'
+    assert 'command' not in state.active_training.last_start_result
+
+    apply_tool_result_to_state(
+        state,
+        'check_training_loop_status',
+        {
+            'ok': True,
+            'summary': '环训练进行中',
+            'loop_id': 'loop-123',
+            'loop_name': 'data-yolov8n',
+            'status': 'running_round',
+            'managed_level': 'conservative_auto',
+            'max_rounds': 3,
+            'current_round_index': 1,
+            'completed_rounds': 0,
+            'recorded_rounds': 1,
+            'latest_round_card': {'round_index': 1, 'status': 'running'},
+            'rounds': [{'round_index': 1}],
+        },
+    )
+    assert state.active_training.active_loop_id == 'loop-123'
+    assert state.active_training.last_loop_status['max_rounds'] == 3
+    assert 'rounds' not in state.active_training.last_loop_status
+
+    apply_tool_result_to_state(
+        state,
+        'inspect_training_loop',
+        {
+            'ok': True,
+            'summary': '环训练详情',
+            'loop_id': 'loop-123',
+            'loop_name': 'data-yolov8n',
+            'status': 'running_round',
+            'managed_level': 'conservative_auto',
+            'max_rounds': 3,
+            'current_round_index': 1,
+            'completed_rounds': 0,
+            'recorded_rounds': 1,
+            'rounds': [{'round_index': 1}],
+            'experience_timeline': [{'round_index': 1, 'decision': 'continue'}],
+        },
+    )
+    assert state.active_training.last_loop_detail['rounds'][0]['round_index'] == 1
+    assert state.active_training.last_loop_detail['experience_timeline'][0]['decision'] == 'continue'
 
     apply_tool_result_to_state(
         state,

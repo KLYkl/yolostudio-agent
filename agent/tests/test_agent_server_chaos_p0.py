@@ -1443,7 +1443,7 @@ async def _scenario_c32_prepare_bridge_can_be_cancelled() -> None:
 
     turn3 = await client.chat('先别开始训练。')
     assert turn3['status'] == 'cancelled', turn3
-    assert '已取消操作：start_training' in turn3['message']
+    assert '先不执行这一步' in turn3['message']
     assert client.session_state.pending_confirmation.tool_name == ''
     assert client.session_state.active_training.training_plan_draft != {}
 

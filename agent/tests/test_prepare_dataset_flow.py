@@ -70,19 +70,25 @@ def _run_success_path() -> None:
         return {
             'ok': True,
             'summary': 'split ok',
-            'train_path': '/tmp/images/train',
-            'val_path': '/tmp/images/val',
+            'train_path': 'images/train',
+            'val_path': 'images/val',
+            'resolved_train_path': '/tmp/images/train',
+            'resolved_val_path': '/tmp/images/val',
             'train_count': 8,
             'val_count': 2,
             'output_dir': '/tmp',
             'suggested_yaml_path': '/tmp/data.yaml',
         }
 
-    def fake_generate_yaml(train_path: str, val_path: str, classes: list[str] | None = None, output_path: str = '', classes_txt: str = '', img_dir: str = '', label_dir: str = ''):
+    def fake_generate_yaml(train_path: str, val_path: str, classes: list[str] | None = None, output_path: str = '', classes_txt: str = '', img_dir: str = '', label_dir: str = '', classes_text: str = ''):
         steps.append('generate_yaml')
         assert classes == ['cat', 'dog']
         assert classes_txt.endswith('classes.txt')
+        assert classes_text == ''
         assert output_path == '/tmp/data.yaml'
+        assert train_path == '/tmp/images/train'
+        assert val_path == '/tmp/images/val'
+        assert img_dir == '/tmp'
         return {
             'ok': True,
             'summary': 'yaml ok',
@@ -125,6 +131,9 @@ def _run_success_path() -> None:
     assert result['missing_label_images'] == 2
     assert result['recommended_start_training_args'] == {'data_yaml': '/tmp/data.yaml'}
     assert '数据质量风险' in result['summary']
+    assert result['prepare_overview']['ready'] is True
+    assert result['prepare_overview']['force_split_applied'] is True
+    assert result['action_candidates'][0]['tool'] == 'start_training'
     assert steps == ['resolve_root', 'scan', 'validate', 'split', 'generate_yaml', 'readiness']
 
 
@@ -219,11 +228,12 @@ def _run_split_dataset_regenerates_invalid_yaml() -> None:
             'issue_count': 0,
         }
 
-    def fake_generate_yaml(train_path: str, val_path: str, classes: list[str] | None = None, output_path: str = '', classes_txt: str = '', img_dir: str = '', label_dir: str = ''):
+    def fake_generate_yaml(train_path: str, val_path: str, classes: list[str] | None = None, output_path: str = '', classes_txt: str = '', img_dir: str = '', label_dir: str = '', classes_text: str = ''):
         steps.append('generate_yaml')
         assert train_path.endswith('/images/train')
         assert val_path.endswith('/images/val')
         assert classes == ['car']
+        assert classes_text == ''
         assert output_path.replace('\\', '/').endswith('/data.yaml')
         return {
             'ok': True,
@@ -269,14 +279,133 @@ def _run_split_dataset_regenerates_invalid_yaml() -> None:
     assert result['data_yaml_source'] == 'regenerated_from_split'
     assert result['force_split_applied'] is False
     assert result['split_reason'] == 'already_split'
+    assert result['prepare_overview']['split_reason'] == 'already_split'
+    assert result['action_candidates'][0]['tool'] == 'start_training'
     assert steps == ['resolve_root', 'scan', 'validate', 'generate_yaml', 'readiness']
 
+
+def _run_explicit_classes_txt_overrides_detected_classes_txt() -> None:
+    steps: list[str] = []
+
+    def fake_resolve_dataset_root(dataset_path: str):
+        steps.append('resolve_root')
+        return {
+            'ok': True,
+            'dataset_root': dataset_path,
+            'img_dir': f'{dataset_path}/images',
+            'label_dir': f'{dataset_path}/labels',
+            'summary': 'ok',
+            'is_split': False,
+            'structure_type': 'yolo_standard',
+            'resolution_method': 'name',
+        }
+
+    def fake_scan_dataset(img_dir: str, label_dir: str = ''):
+        steps.append('scan')
+        return {
+            'ok': True,
+            'summary': 'scan ok',
+            'classes': ['scan_a', 'scan_b'],
+            'detected_classes_txt': f'{img_dir}/../labels/classes.txt',
+            'class_name_source': 'classes_txt',
+            'detected_data_yaml': '',
+            'total_images': 12,
+            'labeled_images': 12,
+            'missing_labels': [],
+            'missing_label_images': 0,
+            'missing_label_ratio': 0.0,
+            'risk_level': 'none',
+            'warnings': [],
+            'empty_labels': 0,
+        }
+
+    def fake_validate_dataset(img_dir: str, label_dir: str = '', classes_txt: str = ''):
+        steps.append('validate')
+        assert classes_txt == '/meta/custom-classes.txt'
+        return {
+            'ok': True,
+            'summary': 'validate ok',
+            'has_issues': False,
+            'has_risks': False,
+            'risk_level': 'none',
+            'warnings': [],
+            'missing_label_images': 0,
+            'missing_label_ratio': 0.0,
+            'issue_count': 0,
+        }
+
+    def fake_split_dataset(img_dir: str, label_dir: str = '', ratio: float = 0.8):
+        steps.append('split')
+        return {
+            'ok': True,
+            'summary': 'split ok',
+            'train_path': 'images/train',
+            'val_path': 'images/val',
+            'resolved_train_path': '/tmp/custom/images/train',
+            'resolved_val_path': '/tmp/custom/images/val',
+            'train_count': 9,
+            'val_count': 3,
+            'output_dir': '/tmp/custom',
+            'suggested_yaml_path': '/tmp/custom/data.yaml',
+        }
+
+    def fake_generate_yaml(
+        train_path: str,
+        val_path: str,
+        classes: list[str] | None = None,
+        output_path: str = '',
+        classes_txt: str = '',
+        img_dir: str = '',
+        label_dir: str = '',
+        classes_text: str = '',
+    ):
+        steps.append('generate_yaml')
+        assert train_path == '/tmp/custom/images/train'
+        assert val_path == '/tmp/custom/images/val'
+        assert classes_txt == '/meta/custom-classes.txt'
+        assert classes_text == ''
+        return {
+            'ok': True,
+            'summary': 'yaml ok',
+            'output_path': '/tmp/custom/data.yaml',
+            'class_name_source': 'explicit_classes_txt',
+        }
+
+    def fake_training_readiness(img_dir: str, label_dir: str = '', data_yaml: str = ''):
+        steps.append('readiness')
+        assert data_yaml == '/tmp/custom/data.yaml'
+        return {
+            'ok': True,
+            'ready': True,
+            'summary': '可以训练',
+            'risk_level': 'none',
+            'warnings': [],
+            'missing_label_images': 0,
+            'missing_label_ratio': 0.0,
+            'recommended_start_training_args': {'data_yaml': data_yaml},
+            'next_actions': [{'tool': 'start_training'}],
+        }
+
+    combo_tools.resolve_dataset_root = fake_resolve_dataset_root
+    combo_tools.scan_dataset = fake_scan_dataset
+    combo_tools.validate_dataset = fake_validate_dataset
+    combo_tools.split_dataset = fake_split_dataset
+    combo_tools.generate_yaml = fake_generate_yaml
+    combo_tools.training_readiness = fake_training_readiness
+
+    result = combo_tools.prepare_dataset_for_training('/dataset', classes_txt='/meta/custom-classes.txt')
+    assert result['ok'] is True
+    assert result['ready'] is True
+    assert result['data_yaml'] == '/tmp/custom/data.yaml'
+    assert result['effective_classes_txt'] == '/meta/custom-classes.txt'
+    assert steps == ['resolve_root', 'scan', 'validate', 'split', 'generate_yaml', 'readiness']
 
 
 def main() -> None:
     _run_success_path()
     _run_early_block_path()
     _run_split_dataset_regenerates_invalid_yaml()
+    _run_explicit_classes_txt_overrides_detected_classes_txt()
     print('prepare dataset flow smoke ok')
 
 

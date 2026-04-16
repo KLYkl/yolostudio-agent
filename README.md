@@ -1,30 +1,65 @@
-# YoloStudio Agent Plan
+# YoloStudio Agent
 
-YoloStudio Agent Plan is the agent/MCP workspace for turning the desktop YoloStudio workflow into a conversational, remotely executable training and prediction system.
+[简体中文](./README.zh-CN.md)
 
-## What is included
+YoloStudio Agent is the agent / MCP workspace behind YoloStudio's conversational training and prediction workflows.
+It packages the MCP server, the dialogue client, rule-based knowledge, and the remote validation harnesses used to turn desktop-style YOLO operations into reproducible agent flows.
 
-- **MCP tool layer** for dataset inspection, data preparation, training, prediction, extraction, and training knowledge explanations
-- **Agent client** for intent parsing, tool routing, confirmation handling, grounded replies, and session state
-- **Remote validation scripts** for training and prediction roundtrips
-- **Regression tests** covering training planning, training mainline roundtrips, prediction flows, and selected remote harnesses
+## Why this repo exists
+
+This repository focuses on the **agent side** of YoloStudio:
+
+- expose MCP tools for dataset, training, prediction, extraction, and knowledge lookup
+- route natural-language requests into executable tool plans
+- keep grounded state for follow-up questions, confirmations, summaries, and recommendations
+- validate the same flows locally and through remote roundtrips
+
+It is intentionally separate from the desktop product code so the agent / MCP layer can evolve, test, and publish independently.
+
+## Capability snapshot
+
+### Training workflows
+
+- dataset readiness and training preflight
+- dataset preparation / YAML regeneration
+- training start / stop / status / summarize / inspect
+- training outcome analysis and next-step recommendations
+- training artifact return and remote follow-up validation
+
+### Prediction workflows
+
+- image and video prediction
+- prediction summary and grounded follow-up replies
+- prediction result management and export helpers
+- realtime / RTSP prediction workflows
+
+### Agent workflows
+
+- intent parsing and tool routing
+- confirmation / guardrail handling
+- session state and grounded replies
+- rule-based knowledge explanations for training decisions
 
 ## Repository layout
 
 ```text
-agent/                  Agent client, server, tools, and tests
-knowledge/              Phase 1 rule-based knowledge base
-deploy/                 Remote validation scripts and server prototype
-doc/                    Engineering notes, playbooks, and release context
+agent/                      Source-of-truth agent client, server, tools, and tests
+knowledge/                  Rule-based knowledge base used by the agent
+deploy/scripts/             Remote validation, roundtrip, and bridge helpers
+deploy/server_proto/        Mirrored prototype package used for remote deployment flows
+docs/                       Selected workflow notes and test plans
 ```
 
-## Current scope
+## What is in scope today
 
-This repository focuses on:
+The current public mainline centers on three paths:
 
-1. **Training mainline**: readiness -> prepare/preflight -> start -> status -> summarize -> analyze -> recommend
-2. **Prediction mainline**: image/video prediction -> summary -> grounded replies
-3. **Remote roundtrips**: validating the same workflows through a remote MCP server
+1. **Training mainline**  
+   readiness -> prepare/preflight -> start -> status -> summarize -> analyze -> recommend
+2. **Prediction mainline**  
+   image/video prediction -> summary -> result follow-up -> grounded replies
+3. **Remote and realtime validation**  
+   remote roundtrips, training artifact return, and RTSP / realtime prediction checks
 
 ## Quick start
 
@@ -48,21 +83,22 @@ pip install -r agent/server/requirements_server.txt
 python -m yolostudio_agent.agent.server.mcp_server
 ```
 
-Or use the helper script on a remote Linux host:
+On a remote Linux host, you can also use the helper script:
 
 ```bash
 APP_ROOT=/opt/yolostudio-agent CONDA_BIN=/opt/conda/bin/conda ENV_NAME=agent-server bash deploy/scripts/manage_mcp_server.sh restart
 ```
 
-### 3. Run a representative test slice
+### 3. Run a representative validation slice
 
 ```bash
 python agent/tests/test_training_mainline_roundtrip.py
-python agent/tests/test_training_mainline_final_state_roundtrip.py
-python agent/tests/test_training_status_route_phrases.py
+python agent/tests/test_prediction_route.py
+python agent/tests/test_realtime_prediction_route.py
+python agent/tests/test_remote_transfer_route.py
 ```
 
-On the Windows client environment, an additional long-dialogue regression is typically run with the client virtual environment:
+On a Windows client environment, a longer dialogue regression is commonly run with the local virtual environment:
 
 ```powershell
 .\agent\.venv\Scripts\python.exe .\agent\tests\test_extreme_chat_regression.py
@@ -70,17 +106,24 @@ On the Windows client environment, an additional long-dialogue regression is typ
 
 ## Remote validation helpers
 
-The scripts under `deploy/scripts/` are GitHub-safe examples. Their defaults are generic and should be overridden for your environment.
+The scripts under `deploy/scripts/` are publication-safe examples. Their defaults are intentionally generic and should be overridden for your own environment.
 
 Typical overrides include:
 
-- remote SSH target or host alias
+- SSH host alias or remote target
 - remote app root
-- remote dataset/model locations
-- local stage/output directories
+- remote dataset / model paths
+- local staging / output paths
 - conda environment name
 
-## Path conventions in docs and scripts
+Representative helpers:
+
+- `deploy/scripts/run_training_remote_roundtrip.ps1`
+- `deploy/scripts/run_realtime_rtsp_remote_roundtrip.ps1`
+- `deploy/scripts/run_prediction_remote_roundtrip.ps1`
+- `deploy/scripts/run_training_agent_remote_followup_matrix.sh`
+
+## Path conventions
 
 Public docs and scripts use generic example values such as:
 
@@ -92,9 +135,10 @@ Public docs and scripts use generic example values such as:
 - `remote-agent`
 - `203.0.113.10`
 
-Replace them with paths and hosts that match your own environment.
+Replace them with values that match your own environment.
 
 ## Notes
 
-- This repo intentionally separates the **agent/MCP workspace** from the main desktop product code.
-- Internal engineering notes remain under `doc/`, but sensitive local paths and host details have been sanitized for publication.
+- `agent/` is the source-of-truth implementation; `deploy/server_proto/` mirrors the runtime package used in remote deployment paths.
+- `docs/` only contains selected public notes / plans suitable for the repository.
+- Local machine-specific paths, hosts, and secrets are intentionally sanitized before publication.

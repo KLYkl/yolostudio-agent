@@ -15,9 +15,12 @@ from yolostudio_agent.agent.server.tools.data_tool_helpers import (
     _infer_dataset_root,
     _inspect_training_yaml,
     _merge_risk_levels,
+    _parse_class_names_text,
+    _path_has_files,
     _read_classes_txt_lines,
     _read_yaml_names,
     _resolve_dataset_inputs,
+    _resolve_path_from_base,
     _sample_integrity_entries,
     _sample_path_strings,
     _serialize_duplicate_groups,
@@ -95,6 +98,35 @@ def summarize_scan_result(result) -> str:
         f"缺失标签: {len(result.missing_labels)}, 空标签: {result.empty_labels}, "
         f"类别数: {len(result.classes)}"
     )
+
+
+def _tool_candidate(
+    *,
+    tool: str,
+    reason: str,
+    args: dict[str, Any] | None = None,
+    kind: str = 'tool_call',
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {'kind': kind, 'tool': tool, 'reason': reason}
+    if args:
+        payload['args'] = args
+    return payload
+
+
+def _action_candidates_from_next_actions(next_actions: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for item in next_actions or []:
+        if not isinstance(item, dict):
+            continue
+        tool = str(item.get('tool') or '').strip()
+        if not tool:
+            continue
+        candidates.append(_tool_candidate(
+            tool=tool,
+            reason=str(item.get('description') or '').strip() or tool,
+            args=dict(item.get('args_hint') or {}),
+        ))
+    return candidates
 
 
 def _normalize_conversion_target_format(target_format: str) -> tuple[str, bool]:
@@ -457,7 +489,7 @@ def convert_format(
             source_type = str(preview.get('source_type') or ('TXT' if to_xml else 'XML'))
             target_type = str(preview.get('target_type') or ('XML' if to_xml else 'TXT'))
             return {
-                'ok': True,
+                'ok': False,
                 'summary': f'未找到可从 {source_type} 转为 {target_type} 的标签文件',
                 'dataset_root': str(dataset_root.resolve()),
                 'resolved_img_dir': str(img_path.resolve()),
@@ -467,6 +499,7 @@ def convert_format(
                 'target_format': normalized_target_format,
                 'converted_count': 0,
                 'output_dir': '',
+                'error_type': 'NoConvertibleLabels',
                 'warnings': list(class_resolution['warnings']),
                 'next_actions': ['请先确认 label_dir 或数据集中的标签格式是否正确'],
             }
@@ -481,6 +514,10 @@ def convert_format(
         )
         output_files = sorted(str(path.resolve()) for path in output_dir.rglob('*') if path.is_file())
         output_label_count = sum(1 for path in output_files if Path(path).suffix.lower() == ('.xml' if to_xml else '.txt'))
+        if converted_count <= 0 or output_label_count <= 0 or not output_dir.exists():
+            raise ValueError(
+                f'格式转换未产出有效文件: converted_count={converted_count}, output_label_count={output_label_count}, output_dir={output_dir}'
+            )
         summary = (
             f'标签格式转换完成: 成功写出 {converted_count}/{total_labels} 个 {preview.get("target_type", "").upper()} 标签'
         )
@@ -1179,10 +1216,13 @@ def categorize_by_class(
             classes_txt=Path(effective_classes_txt) if effective_classes_txt else None,
             include_no_label=include_no_label,
         )
+        total_categorized = sum(category_stats.values())
+        if total_categorized <= 0 or not resolved_output_dir.exists() or not _path_has_files(resolved_output_dir):
+            raise ValueError(f'按类别整理未产出有效结果: total={total_categorized}, output_dir={resolved_output_dir}')
         mixed_report = resolved_output_dir / '_mixed_report.txt'
         return {
             'ok': True,
-            'summary': f'按类别整理完成: 共整理 {sum(category_stats.values())} 张图片到 {len(category_stats)} 个类别桶',
+            'summary': f'按类别整理完成: 共整理 {total_categorized} 张图片到 {len(category_stats)} 个类别桶',
             'dataset_root': str(dataset_root.resolve()),
             'structure_type': resolution.get('structure_type'),
             'resolved_from_root': resolution.get('resolved_from_root', False),
@@ -1236,9 +1276,54 @@ def scan_dataset(img_dir: str, label_dir: str = "") -> dict[str, Any]:
         if missing_label_risk['warnings']:
             next_actions.append("建议先处理缺失标签图片，或在 readiness 阶段确认是否接受当前风险")
         class_name_source = 'classes_txt' if detected_classes_txt else ('parsed_labels' if result.classes else '')
+        action_candidates = [
+            _tool_candidate(
+                tool='validate_dataset',
+                reason='继续做标签合法性校验',
+                args={'img_dir': str(dataset_root)},
+            )
+        ]
+        if detected_data_yaml:
+            action_candidates.append(
+                _tool_candidate(
+                    tool='training_readiness',
+                    reason='使用当前发现的 data.yaml 做训练执行检查',
+                    args={'img_dir': str(dataset_root), 'data_yaml': detected_data_yaml},
+                )
+            )
+        else:
+            action_candidates.append(
+                _tool_candidate(
+                    tool='prepare_dataset_for_training',
+                    reason='先准备数据并补齐 data.yaml',
+                    args={'dataset_path': str(dataset_root)},
+                )
+            )
+        if missing_label_risk['warnings']:
+            action_candidates.append(
+                _tool_candidate(
+                    tool='run_dataset_health_check',
+                    reason='结合图像健康检查确认当前数据质量风险',
+                    args={'dataset_path': str(dataset_root), 'include_duplicates': True},
+                )
+            )
         return {
             "ok": True,
             "summary": summarize_scan_result(result),
+            "scan_overview": {
+                "dataset_root": str(dataset_root),
+                "structure_type": resolution.get('structure_type'),
+                "total_images": result.total_images,
+                "labeled_images": result.labeled_images,
+                "missing_label_images": missing_label_risk['missing_label_images'],
+                "missing_label_ratio": missing_label_risk['missing_label_ratio'],
+                "empty_labels": result.empty_labels,
+                "class_count": len(result.classes),
+                "class_name_source": class_name_source,
+                "has_detected_yaml": bool(detected_data_yaml),
+                "has_detected_classes_txt": bool(detected_classes_txt),
+                "risk_level": missing_label_risk['risk_level'],
+            },
             "dataset_root": str(dataset_root),
             "structure_type": resolution.get('structure_type'),
             "resolved_from_root": resolution.get('resolved_from_root', False),
@@ -1263,6 +1348,7 @@ def scan_dataset(img_dir: str, label_dir: str = "") -> dict[str, Any]:
             "classes_txt_candidates": classes_txt_candidates,
             "class_name_source": class_name_source,
             "next_actions": next_actions,
+            "action_candidates": action_candidates,
         }
     except Exception as exc:
         return _error_payload(exc, "扫描数据集")
@@ -1281,7 +1367,8 @@ def split_dataset(
     """按现有 DataHandler 能力将数据集切分为 train/val。"""
     try:
         DataHandler = _get_data_handler_cls()
-        SplitMode = _get_data_models_module().SplitMode
+        data_models = _get_data_models_module()
+        SplitMode = data_models.SplitMode
 
         handler = DataHandler()
         mode_map = {
@@ -1292,11 +1379,17 @@ def split_dataset(
         selected_mode = mode_map.get(mode.lower())
         if selected_mode is None:
             raise ValueError(f"不支持的 split mode: {mode}")
+        if not 0.0 < float(ratio) < 1.0:
+            raise ValueError(f"ratio 必须在 0 和 1 之间且不能取边界值，当前为: {ratio}")
 
-        resolved_output = Path(output_dir) if output_dir else None
+        img_path, resolved_label, resolution = _resolve_dataset_inputs(img_dir, label_dir)
+        if not resolution.get('ok'):
+            return resolution
+
+        resolved_output = Path(output_dir).resolve() if output_dir else data_models._get_unique_dir(img_path.parent / f"{img_path.name}_split")
         result = handler.split_dataset(
-            img_dir=Path(img_dir),
-            label_dir=Path(label_dir) if label_dir else None,
+            img_dir=img_path,
+            label_dir=resolved_label,
             output_dir=resolved_output,
             ratio=ratio,
             seed=seed,
@@ -1304,19 +1397,36 @@ def split_dataset(
             ignore_orphans=ignore_orphans,
             clear_output=clear_output,
         )
-        if resolved_output:
-            abs_output = str(resolved_output.resolve())
-        else:
-            abs_output = str((Path(img_dir).parent / f"{Path(img_dir).name}_split").resolve())
+        train_value = str(result.train_path or '').strip()
+        val_value = str(result.val_path or '').strip()
+        if result.train_count <= 0 or result.val_count <= 0 or not train_value or not val_value:
+            raise ValueError(
+                f"split_dataset 未产出有效 train/val 结果: train={result.train_count}, val={result.val_count}, "
+                f"train_path={train_value or '<empty>'}, val_path={val_value or '<empty>'}"
+            )
+
+        train_fs_path = _resolve_path_from_base(train_value, base_dir=resolved_output)
+        val_fs_path = _resolve_path_from_base(val_value, base_dir=resolved_output)
+        if not train_fs_path.exists() or not val_fs_path.exists():
+            raise ValueError(f"split_dataset 结果路径不存在: train={train_fs_path}, val={val_fs_path}")
+        if not _path_has_files(train_fs_path) or not _path_has_files(val_fs_path):
+            raise ValueError(f"split_dataset 结果为空目录或无有效文件: train={train_fs_path}, val={val_fs_path}")
+
+        abs_output = str(resolved_output.resolve())
         train_ratio = round(result.train_count / max(result.train_count + result.val_count, 1), 4)
         val_ratio = round(result.val_count / max(result.train_count + result.val_count, 1), 4)
         suggested_yaml = str((Path(abs_output) / 'data.yaml').resolve())
         return {
             "ok": True,
             "summary": f"数据集已划分: train={result.train_count}, val={result.val_count}, mode={mode.lower()}",
+            "dataset_root": resolution.get('dataset_root', ''),
+            "resolved_img_dir": str(img_path),
+            "resolved_label_dir": str(resolved_label) if resolved_label else '',
             "output_dir": abs_output,
-            "train_path": result.train_path,
-            "val_path": result.val_path,
+            "train_path": train_value,
+            "val_path": val_value,
+            "resolved_train_path": str(train_fs_path),
+            "resolved_val_path": str(val_fs_path),
             "train_count": result.train_count,
             "val_count": result.val_count,
             "train_ratio": train_ratio,
@@ -1336,6 +1446,7 @@ def generate_yaml(
     train_path: str,
     val_path: str,
     classes: list[str] | None = None,
+    classes_text: str = "",
     output_path: str = "",
     classes_txt: str = "",
     img_dir: str = "",
@@ -1353,7 +1464,10 @@ def generate_yaml(
 
         class_names = [str(c) for c in (classes or []) if str(c).strip()]
         class_name_source = 'explicit_classes' if class_names else ''
-        classes_txt_path = Path(classes_txt) if classes_txt else None
+        if not class_names and classes_text:
+            class_names = _parse_class_names_text(classes_text)
+            class_name_source = 'explicit_classes_text' if class_names else class_name_source
+        classes_txt_path = Path(classes_txt).resolve() if classes_txt else None
         if not class_names and not classes_txt_path and img_dir:
             detected_classes_txt, _ = _discover_classes_txt(Path(img_dir), Path(label_dir) if label_dir else None)
             classes_txt_path = Path(detected_classes_txt) if detected_classes_txt else None
@@ -1372,15 +1486,33 @@ def generate_yaml(
         if not class_names:
             raise ValueError('无法确定 classes；请显式传入 classes，或提供 classes_txt / 可解析的 data.yaml')
 
-        output = Path(output_path).resolve() if output_path else (Path(train_value).resolve().parent.parent / 'data.yaml')
+        if output_path:
+            output = Path(output_path).resolve()
+        else:
+            train_candidate = Path(train_value)
+            if not train_candidate.is_absolute():
+                raise ValueError('相对 train_path/val_path 必须显式提供 output_path 或 img_dir 来确定 dataset_root')
+            output = train_candidate.resolve().parent.parent / 'data.yaml'
         train_p = Path(train_value)
         val_p = Path(val_value)
+        dataset_root_hint: Path | None = None
+        if img_dir:
+            dataset_root_hint = _infer_dataset_root(Path(img_dir), Path(label_dir) if label_dir else None).resolve()
+        elif output_path:
+            dataset_root_hint = output.parent
+        resolved_train = train_p.resolve() if train_p.is_absolute() else (_resolve_path_from_base(train_value, base_dir=dataset_root_hint) if dataset_root_hint else None)
+        resolved_val = val_p.resolve() if val_p.is_absolute() else (_resolve_path_from_base(val_value, base_dir=dataset_root_hint) if dataset_root_hint else None)
+        if resolved_train is None or resolved_val is None:
+            raise ValueError('无法解析 train/val 的真实路径，请提供绝对路径，或同时提供 img_dir/output_path')
+        if not resolved_train.exists() or not resolved_val.exists():
+            raise ValueError(f'train/val 路径不存在: train={resolved_train}, val={resolved_val}')
+
         if train_p.is_absolute() and val_p.is_absolute():
-            dataset_root = Path(os.path.commonpath([train_p, val_p]))
-            train_yaml_value = str(train_p.relative_to(dataset_root))
-            val_yaml_value = str(val_p.relative_to(dataset_root))
+            dataset_root = Path(os.path.commonpath([resolved_train, resolved_val]))
+            train_yaml_value = str(resolved_train.relative_to(dataset_root))
+            val_yaml_value = str(resolved_val.relative_to(dataset_root))
         else:
-            dataset_root = output.parent
+            dataset_root = dataset_root_hint or output.parent
             train_yaml_value = train_value
             val_yaml_value = val_value
 
@@ -1392,6 +1524,9 @@ def generate_yaml(
         }
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(yaml.safe_dump(yaml_content, allow_unicode=True, sort_keys=False), encoding='utf-8')
+        yaml_check = _inspect_training_yaml(output)
+        if not yaml_check.get('usable'):
+            raise ValueError(f"生成后的 YAML 不可用: {yaml_check.get('issues') or []}")
 
         return {
             'ok': True,
@@ -1400,6 +1535,8 @@ def generate_yaml(
             'dataset_root': str(dataset_root),
             'train_path': train_yaml_value,
             'val_path': val_yaml_value,
+            'resolved_train_path': str(resolved_train),
+            'resolved_val_path': str(resolved_val),
             'class_count': len(class_names),
             'classes': class_names,
             'class_name_source': class_name_source,
@@ -1468,9 +1605,47 @@ def validate_dataset(
             next_actions.append('标签格式层面可继续训练或做数据划分')
         if warnings:
             next_actions.append('建议确认缺失标签图片是否属于背景图；如不是，先补齐标签再训练')
+        action_candidates = []
+        if result.has_issues:
+            action_candidates.append(
+                _tool_candidate(
+                    tool='validate_dataset',
+                    reason='先修复标签问题后再重新校验',
+                    args={'img_dir': str(resolution.get('dataset_root') or img_path)},
+                )
+            )
+        else:
+            action_candidates.append(
+                _tool_candidate(
+                    tool='dataset_training_readiness',
+                    reason='继续确认这份数据是否已具备直接训练条件',
+                    args={'img_dir': str(resolution.get('dataset_root') or img_path)},
+                )
+            )
+        if warnings:
+            action_candidates.append(
+                _tool_candidate(
+                    tool='scan_dataset',
+                    reason='重新确认缺失标签图片与类别来源',
+                    args={'img_dir': str(resolution.get('dataset_root') or img_path)},
+                )
+            )
         return {
             "ok": True,
             "summary": summary,
+            "validation_overview": {
+                "dataset_root": resolution.get('dataset_root', ''),
+                "has_issues": result.has_issues,
+                "has_risks": has_risks,
+                "risk_level": missing_label_risk['risk_level'],
+                "issue_count": result.issue_count,
+                "coord_errors": breakdown['coord_errors'],
+                "class_errors": breakdown['class_errors'],
+                "format_errors": breakdown['format_errors'],
+                "orphan_labels": breakdown['orphan_labels'],
+                "missing_label_images": missing_label_risk['missing_label_images'],
+                "missing_label_ratio": missing_label_risk['missing_label_ratio'],
+            },
             "dataset_root": resolution.get('dataset_root', ''),
             "resolved_img_dir": str(img_path),
             "resolved_label_dir": str(label_path) if label_path else '',
@@ -1487,9 +1662,208 @@ def validate_dataset(
             "issue_breakdown": breakdown,
             "issue_examples": _format_issue_examples(result),
             "next_actions": next_actions,
+            "action_candidates": action_candidates,
         }
     except Exception as exc:
         return _error_payload(exc, "校验数据集")
+
+
+def dataset_training_readiness(
+    img_dir: str,
+    label_dir: str = "",
+    data_yaml: str = "",
+    require_clean_labels: bool = True,
+) -> dict[str, Any]:
+    """只从数据集事实出发，判断这份数据是否已经具备直接训练的结构条件。
+
+    本工具不会检查 GPU、device 或训练环境，只回答数据本身是否已经具备：
+    - 可用的 images / labels 结构
+    - 可用的 data.yaml
+    - train / val 是否已经准备好
+    - 标签是否存在硬性阻塞
+    """
+    try:
+        resolution = resolve_dataset_root(img_dir, label_dir)
+        if not resolution.get('ok'):
+            return resolution
+
+        scan = scan_dataset(img_dir=img_dir, label_dir=label_dir)
+        if not scan.get('ok'):
+            return scan
+
+        validate = validate_dataset(
+            img_dir=img_dir,
+            label_dir=label_dir,
+            classes_txt=scan.get('detected_classes_txt', ''),
+        )
+        if not validate.get('ok'):
+            return validate
+
+        resolved_yaml = str(data_yaml or scan.get('detected_data_yaml') or '').strip()
+        yaml_exists = bool(resolved_yaml and Path(resolved_yaml).exists())
+        yaml_check = _inspect_training_yaml(resolved_yaml) if yaml_exists else {
+            'exists': False,
+            'usable': False,
+            'yaml_path': '',
+            'issues': [],
+            'resolved_targets': {},
+            'warnings': [],
+        }
+        yaml_usable = bool(yaml_check.get('usable'))
+        labels_clean = not validate.get('has_issues', False)
+        labeled_images = int(scan.get('labeled_images', 0) or 0)
+        total_images = int(scan.get('total_images', 0) or 0)
+        hard_label_block = total_images > 0 and labeled_images <= 0
+        is_split = bool(resolution.get('is_split'))
+        needs_yaml = not yaml_exists
+        needs_split = bool(not is_split and not yaml_usable)
+
+        warnings = list(validate.get('warnings', []))
+        warnings.extend(str(item) for item in (yaml_check.get('warnings') or []) if str(item))
+        risk_level = validate.get('risk_level', scan.get('risk_level', 'none'))
+        ready = yaml_usable and (labels_clean or not require_clean_labels) and not hard_label_block
+        preparable = bool(scan.get('resolved_img_dir')) and not hard_label_block
+
+        blocker_codes: list[str] = []
+        blockers: list[str] = []
+
+        if hard_label_block:
+            blocker_codes.append('no_valid_labels')
+            blockers.append('当前没有任何有效标注图片，无法直接训练')
+        if require_clean_labels and not labels_clean:
+            blocker_codes.append('label_issues')
+            blockers.append('标签校验未通过')
+        if yaml_exists and not yaml_usable:
+            blocker_codes.append('invalid_yaml')
+            blockers.append('当前 data.yaml 内的 train/val 路径不可用')
+        if not yaml_exists:
+            blocker_codes.append('missing_yaml')
+            blockers.append('缺少可用的 data.yaml')
+        if needs_split:
+            blocker_codes.append('split_required')
+            blockers.append('训练/验证集还没准备好')
+
+        primary_blocker_type = blocker_codes[0] if blocker_codes else ''
+        data_yaml_source = 'explicit_input' if data_yaml else ('detected_existing_yaml' if resolved_yaml else '')
+
+        next_actions: list[dict[str, Any]] = []
+        next_step_summary = ''
+        dataset_path_hint = scan.get('dataset_root') or scan.get('resolved_img_dir', img_dir)
+
+        if ready:
+            next_step_summary = '从数据集角度看已经可以训练；如果你现在就要开训，再做一次训练执行检查。'
+            next_actions.append({
+                'description': '如需现在启动训练，可继续做训练执行检查',
+                'tool': 'training_readiness',
+                'args_hint': {
+                    'img_dir': scan.get('resolved_img_dir', img_dir),
+                    'label_dir': scan.get('resolved_label_dir', label_dir),
+                    'data_yaml': resolved_yaml,
+                },
+            })
+        elif preparable and any(code in blocker_codes for code in ('missing_yaml', 'invalid_yaml', 'split_required')):
+            next_step_summary = '可以先准备数据，补齐 data.yaml 和划分产物。'
+            prepare_hint: dict[str, Any] = {'dataset_path': dataset_path_hint}
+            if needs_split:
+                prepare_hint['force_split'] = True
+            next_actions.append({
+                'description': '先准备数据，补齐 data.yaml 和划分产物',
+                'tool': 'prepare_dataset_for_training',
+                'args_hint': prepare_hint,
+            })
+        elif require_clean_labels and not labels_clean:
+            next_step_summary = '先修复标签问题，再重新检查数据是否具备直接训练条件。'
+            next_actions.append({
+                'description': '先修复标签问题，再重新检查',
+                'tool': 'validate_dataset',
+                'args_hint': {
+                    'img_dir': scan.get('resolved_img_dir', img_dir),
+                    'label_dir': scan.get('resolved_label_dir', label_dir),
+                },
+            })
+        elif hard_label_block:
+            next_step_summary = '先补齐有效标注，再重新检查。'
+            next_actions.append({
+                'description': '先确认标注目录和标签文件，再重新检查',
+                'tool': 'scan_dataset',
+                'args_hint': {
+                    'img_dir': scan.get('resolved_img_dir', img_dir),
+                    'label_dir': scan.get('resolved_label_dir', label_dir),
+                },
+            })
+
+        if warnings:
+            next_actions.append({
+                'description': '确认缺失标签图片是否属于背景图；如不是，建议先补齐标签',
+                'tool': 'scan_dataset',
+                'args_hint': {
+                    'img_dir': scan.get('resolved_img_dir', img_dir),
+                    'label_dir': scan.get('resolved_label_dir', label_dir),
+                },
+            })
+
+        if ready:
+            summary = '从数据集角度看，这份数据可以直接训练'
+            if warnings:
+                summary = f"从数据集角度看，这份数据可以直接训练，但存在数据质量风险：{'；'.join(warnings)}"
+        else:
+            summary = f"从数据集角度看，这份数据还不能直接训练: {', '.join(blockers)}"
+            if preparable and any(code in blocker_codes for code in ('missing_yaml', 'invalid_yaml', 'split_required')):
+                summary += '；但可以先准备数据'
+
+        return {
+            'ok': True,
+            'readiness_scope': 'dataset',
+            'ready': ready,
+            'preparable': preparable,
+            'primary_blocker_type': primary_blocker_type,
+            'blocker_codes': blocker_codes,
+            'summary': summary,
+            'readiness_overview': {
+                'scope': 'dataset',
+                'ready': ready,
+                'preparable': preparable,
+                'primary_blocker_type': primary_blocker_type,
+                'blocker_codes': blocker_codes,
+                'dataset_structure': resolution.get('structure_type', scan.get('structure_type', '')),
+                'is_split': is_split,
+                'needs_split': needs_split,
+                'needs_data_yaml': needs_yaml,
+                'labels_clean': labels_clean,
+                'data_yaml_source': data_yaml_source,
+                'data_yaml_usable': yaml_usable,
+                'risk_level': risk_level,
+                'warning_count': len(warnings),
+                'blocker_count': len(blockers),
+            },
+            'dataset_root': scan.get('dataset_root', ''),
+            'dataset_structure': resolution.get('structure_type', scan.get('structure_type', '')),
+            'is_split': is_split,
+            'needs_split': needs_split,
+            'needs_data_yaml': needs_yaml,
+            'resolved_img_dir': scan.get('resolved_img_dir', img_dir),
+            'resolved_label_dir': scan.get('resolved_label_dir', label_dir),
+            'resolved_data_yaml': resolved_yaml,
+            'data_yaml_source': data_yaml_source,
+            'data_yaml_usable': yaml_usable,
+            'data_yaml_issues': yaml_check.get('issues', []),
+            'data_yaml_targets': yaml_check.get('resolved_targets', {}),
+            'detected_classes_txt': scan.get('detected_classes_txt', ''),
+            'class_name_source': scan.get('class_name_source', ''),
+            'labels_clean': labels_clean,
+            'risk_level': risk_level,
+            'warnings': warnings,
+            'missing_label_images': validate.get('missing_label_images', scan.get('missing_label_images', 0)),
+            'missing_label_ratio': validate.get('missing_label_ratio', scan.get('missing_label_ratio', 0.0)),
+            'scan_summary': scan.get('summary'),
+            'validation_summary': validate.get('summary'),
+            'blockers': blockers,
+            'next_step_summary': next_step_summary,
+            'action_candidates': _action_candidates_from_next_actions(next_actions),
+            'next_actions': next_actions,
+        }
+    except Exception as exc:
+        return _error_payload(exc, '检查数据集是否具备直接训练条件')
 
 
 def training_readiness(
@@ -1646,6 +2020,19 @@ def training_readiness(
             'preparable': preparable,
             'primary_blocker_type': primary_blocker_type,
             'summary': summary,
+            'readiness_overview': {
+                'scope': 'execution',
+                'ready': ready,
+                'preparable': preparable,
+                'primary_blocker_type': primary_blocker_type,
+                'dataset_structure': scan.get('structure_type', ''),
+                'data_yaml_source': data_yaml_source,
+                'data_yaml_usable': yaml_usable,
+                'labels_clean': labels_clean,
+                'risk_level': risk_level,
+                'warning_count': len(warnings),
+                'blocker_count': len(blockers),
+            },
             'dataset_root': scan.get('dataset_root', ''),
             'resolved_img_dir': scan.get('resolved_img_dir', img_dir),
             'resolved_label_dir': scan.get('resolved_label_dir', label_dir),
@@ -1667,9 +2054,17 @@ def training_readiness(
             'auto_device': auto_device,
             'auto_error': auto_error,
             'available_gpu_indexes': available_gpus,
+            'device_overview': {
+                'device_policy': device_policy,
+                'auto_device': auto_device,
+                'auto_error': auto_error,
+                'available_gpu_indexes': available_gpus,
+                'available_gpu_count': len(available_gpus),
+            },
             'scan_summary': scan.get('summary'),
             'validation_summary': validate.get('summary'),
             'blockers': blockers,
+            'action_candidates': _action_candidates_from_next_actions(next_actions),
             'next_actions': next_actions,
         }
     except Exception as exc:
@@ -1722,6 +2117,14 @@ def run_dataset_health_check(
         ) if include_duplicates else []
 
         health_summary = _summarize_health_outputs(integrity, sizes, duplicates, include_duplicates=include_duplicates)
+        duplicate_summary = dict(health_summary.get('duplicates') or {})
+        integrity_summary = dict(health_summary.get('integrity') or {})
+        size_summary = dict(health_summary.get('sizes') or {})
+        health_summary_text = (
+            '图像健康检查完成，已发现需要优先处理的图像质量风险'
+            if health_summary['issue_count']
+            else '图像健康检查完成，当前未发现明显图像层风险'
+        )
         exported_report = ''
         if export_report:
             resolved_report = Path(report_path).resolve() if report_path else (dataset_root / '_health_check_report.txt').resolve()
@@ -1735,7 +2138,7 @@ def run_dataset_health_check(
         next_actions: list[str] = []
         if health_summary['warnings']:
             next_actions.append('建议先处理损坏/异常图片，再继续数据准备或训练')
-        if health_summary['duplicate_group_count']:
+        if duplicate_summary.get('group_count'):
             next_actions.append('可先人工确认重复图片是否需要清理；如需进一步查看，可单独调用 detect_duplicate_images')
         if exported_report:
             next_actions.append(f'可离线查看健康检查报告: {exported_report}')
@@ -1743,10 +2146,48 @@ def run_dataset_health_check(
             next_actions.append('如需归档检查结果，可设置 export_report=true 导出文本报告')
         if not next_actions:
             next_actions.append('图像层面未见明显阻塞，可继续做 validate_dataset 或 training_readiness')
+        action_candidates = []
+        if health_summary['warnings']:
+            action_candidates.append(
+                _tool_candidate(
+                    tool='scan_dataset',
+                    reason='重新确认图像层风险对应的数据集内容',
+                    args={'img_dir': str(dataset_root)},
+                )
+            )
+        else:
+            action_candidates.append(
+                _tool_candidate(
+                    tool='validate_dataset',
+                    reason='继续做标签合法性校验',
+                    args={'img_dir': str(dataset_root)},
+                )
+            )
+        if duplicate_summary.get('group_count'):
+            action_candidates.append(
+                _tool_candidate(
+                    tool='detect_duplicate_images',
+                    reason='进一步查看重复图片组样本',
+                    args={'dataset_path': str(dataset_root), 'method': duplicate_method},
+                )
+            )
 
         return {
             'ok': True,
-            'summary': health_summary['summary'],
+            'summary': health_summary_text,
+            'health_overview': {
+                'dataset_root': str(dataset_root),
+                'risk_level': health_summary['risk_level'],
+                'issue_count': health_summary['issue_count'],
+                'corrupted_count': integrity_summary.get('corrupted_count'),
+                'zero_bytes_count': integrity_summary.get('zero_bytes_count'),
+                'format_mismatch_count': integrity_summary.get('format_mismatch_count'),
+                'abnormal_small_count': size_summary.get('abnormal_small_count'),
+                'abnormal_large_count': size_summary.get('abnormal_large_count'),
+                'duplicate_group_count': duplicate_summary.get('group_count'),
+                'duplicate_extra_files': duplicate_summary.get('extra_files'),
+                'exported_report': bool(exported_report),
+            },
             'dataset_root': str(dataset_root),
             'structure_type': resolution.get('structure_type'),
             'resolved_from_root': resolution.get('resolved_from_root', False),
@@ -1758,10 +2199,10 @@ def run_dataset_health_check(
             'integrity': {
                 'total_images': integrity.total_images,
                 'issue_count': integrity.issue_count,
-                'corrupted_count': health_summary['corrupted_count'],
-                'zero_bytes_count': health_summary['zero_bytes_count'],
-                'format_mismatch_count': health_summary['format_mismatch_count'],
-                'exif_rotation_count': health_summary['exif_rotation_count'],
+                'corrupted_count': integrity_summary.get('corrupted_count', 0),
+                'zero_bytes_count': integrity_summary.get('zero_bytes_count', 0),
+                'format_mismatch_count': integrity_summary.get('format_mismatch_count', 0),
+                'exif_rotation_count': integrity_summary.get('exif_rotation_count', 0),
                 'corrupted_examples': _sample_integrity_entries(integrity.corrupted, max_examples),
                 'zero_bytes_examples': _sample_path_strings(integrity.zero_bytes, max_examples),
                 'format_mismatch_examples': _sample_integrity_entries(integrity.format_mismatch, max_examples),
@@ -1772,18 +2213,19 @@ def run_dataset_health_check(
                 'min_size': list(sizes.min_size),
                 'max_size': list(sizes.max_size),
                 'avg_size': list(sizes.avg_size),
-                'abnormal_small_count': health_summary['abnormal_small_count'],
-                'abnormal_large_count': health_summary['abnormal_large_count'],
+                'abnormal_small_count': size_summary.get('abnormal_small_count', 0),
+                'abnormal_large_count': size_summary.get('abnormal_large_count', 0),
                 'abnormal_small_examples': _sample_path_strings(sizes.abnormal_small, max_examples),
                 'abnormal_large_examples': _sample_path_strings(sizes.abnormal_large, max_examples),
             },
             'duplicate_method': duplicate_method if include_duplicates else '',
             'hash_threshold': hash_threshold if include_duplicates else None,
-            'duplicate_groups': health_summary['duplicate_group_count'],
-            'duplicate_files_total': health_summary['duplicate_files_total'],
-            'duplicate_extra_files': health_summary['duplicate_extra_files'],
+            'duplicate_groups': duplicate_summary.get('group_count', 0),
+            'duplicate_files_total': duplicate_summary.get('files_total', 0),
+            'duplicate_extra_files': duplicate_summary.get('extra_files', 0),
             'duplicate_group_samples': _serialize_duplicate_groups(duplicates, max_groups=max_duplicate_groups, max_paths_per_group=max_examples),
             'next_actions': next_actions,
+            'action_candidates': action_candidates,
         }
     except Exception as exc:
         return _error_payload(exc, '执行数据集健康检查')
@@ -1834,9 +2276,30 @@ def detect_duplicate_images(
         next_actions = [
             '建议人工确认 sample groups 中的文件是否应合并或清理'
         ] if duplicate_groups else ['当前未发现重复图片，可继续做健康检查或训练准备']
+        action_candidates = [
+            _tool_candidate(
+                tool='run_dataset_health_check',
+                reason='继续做图像健康检查，确认是否还有其它风险',
+                args={'dataset_path': str(dataset_root), 'include_duplicates': True},
+            )
+        ] if duplicate_groups else [
+            _tool_candidate(
+                tool='training_readiness',
+                reason='当前未发现重复图片，可继续做训练执行检查',
+                args={'img_dir': str(dataset_root)},
+            )
+        ]
         return {
             'ok': True,
             'summary': summary,
+            'duplicate_overview': {
+                'dataset_root': str(dataset_root),
+                'method': method,
+                'risk_level': risk_level,
+                'duplicate_groups': duplicate_groups,
+                'duplicate_files_total': duplicate_files_total,
+                'duplicate_extra_files': duplicate_extra_files,
+            },
             'dataset_root': str(dataset_root),
             'structure_type': resolution.get('structure_type'),
             'resolved_from_root': resolution.get('resolved_from_root', False),
@@ -1849,6 +2312,7 @@ def detect_duplicate_images(
             'duplicate_extra_files': duplicate_extra_files,
             'groups': _serialize_duplicate_groups(duplicates, max_groups=max_groups, max_paths_per_group=max_paths_per_group),
             'next_actions': next_actions,
+            'action_candidates': action_candidates,
         }
     except Exception as exc:
         return _error_payload(exc, '检测重复图片')
@@ -1878,6 +2342,9 @@ def augment_dataset(
         DataHandler = _get_data_handler_cls()
         AugmentConfig = _get_data_models_module().AugmentConfig
 
+        img_path, resolved_label, resolution = _resolve_dataset_inputs(img_dir, label_dir)
+        if not resolution.get('ok'):
+            return resolution
         handler = DataHandler()
         config = AugmentConfig(
             copies_per_image=copies_per_image,
@@ -1894,18 +2361,28 @@ def augment_dataset(
             enable_noise=enable_noise,
             noise_strength=noise_strength,
         )
+        resolved_output = Path(output_dir).resolve() if output_dir else None
         result = handler.augment_dataset(
-            img_dir=Path(img_dir),
+            img_dir=img_path,
             config=config,
-            label_dir=Path(label_dir) if label_dir else None,
-            output_dir=Path(output_dir) if output_dir else None,
+            label_dir=resolved_label,
+            output_dir=resolved_output,
             classes_txt=Path(classes_txt) if classes_txt else None,
         )
         enabled_operations = config.enabled_operations()
         total_output = result.copied_originals + result.augmented_images
+        if result.source_images <= 0:
+            raise ValueError(f'增强未找到可处理的图片: {img_path}')
+        if total_output <= 0:
+            raise ValueError('增强未产出任何图片')
+        if not result.output_dir or not Path(result.output_dir).exists() or not _path_has_files(Path(result.output_dir)):
+            raise ValueError(f'增强输出目录不存在或为空: {result.output_dir}')
         return {
             "ok": True,
             "summary": f"增强完成: 输出 {total_output} 张（原图 {result.copied_originals} / 增强 {result.augmented_images}）",
+            "dataset_root": resolution.get('dataset_root', ''),
+            "resolved_img_dir": str(img_path),
+            "resolved_label_dir": str(resolved_label) if resolved_label else '',
             "output_dir": result.output_dir,
             "source_images": result.source_images,
             "copied_originals": result.copied_originals,

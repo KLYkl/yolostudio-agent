@@ -101,6 +101,12 @@ class TrainingContext:
     best_run_selection: dict[str, Any] = field(default_factory=dict)
     training_plan_draft: dict[str, Any] = field(default_factory=dict)
     last_remote_roundtrip: dict[str, Any] = field(default_factory=dict)
+    active_loop_id: str = ""
+    active_loop_name: str = ""
+    active_loop_status: str = ""
+    last_loop_status: dict[str, Any] = field(default_factory=dict)
+    last_loop_detail: dict[str, Any] = field(default_factory=dict)
+    recent_loops: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -108,6 +114,12 @@ class PendingConfirmation:
     thread_id: str = ""
     tool_name: str = ""
     tool_args: dict[str, Any] = field(default_factory=dict)
+    interrupt_kind: str = "tool_approval"
+    objective: str = ""
+    summary: str = ""
+    allowed_decisions: list[str] = field(default_factory=lambda: ["approve", "reject", "edit", "clarify"])
+    review_config: dict[str, Any] = field(default_factory=dict)
+    decision_context: dict[str, Any] = field(default_factory=dict)
     created_at: str = ""
 
 
