@@ -289,6 +289,13 @@ async def _run() -> None:
         assert '预测输出检查完成' in routed4['message'], routed4
         assert calls[-1][0] == 'inspect_prediction_outputs', calls
 
+        before_cached_followup = len(calls)
+        routed5 = await client._try_handle_mainline_intent('那个预测输出再详细一点', 'thread-5')
+        assert routed5 is not None, routed5
+        assert routed5['status'] == 'completed', routed5
+        assert '预测输出检查完成' in routed5['message'], routed5
+        assert len(calls) == before_cached_followup, calls
+
         print('prediction route smoke ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)

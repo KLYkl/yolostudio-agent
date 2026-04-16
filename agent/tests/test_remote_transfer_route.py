@@ -210,6 +210,12 @@ async def _scenario_list_remote_profiles_route() -> None:
     assert client.session_state.active_remote_transfer.profile_name == 'lab'
     assert client.session_state.active_remote_transfer.remote_root == '/srv/agent_stage'
 
+    before_cached = len(calls)
+    turn2 = await client.chat('再列一下可用服务器配置')
+    assert turn2['status'] == 'completed', turn2
+    assert 'lab' in turn2['message'], turn2
+    assert len(calls) == before_cached, calls
+
 
 async def _scenario_upload_route_requires_confirmation_and_then_executes() -> None:
     client = _make_client('upload')

@@ -223,6 +223,12 @@ async def _scenario_export_routes_to_prediction_report_export() -> None:
     assert 'prediction_summary.md' in turn['message'], turn
     assert client.session_state.active_prediction.last_export['export_path'].endswith('prediction_summary.md')
 
+    before_cached = len(calls)
+    cached_turn = await client.chat('再把这次预测结果导成报告。')
+    assert cached_turn['status'] == 'completed', cached_turn
+    assert '预测报告导出完成' in cached_turn['message'], cached_turn
+    assert len(calls) == before_cached, calls
+
 
 async def _scenario_path_lists_route_exports_lists() -> None:
     client = _make_client('lists')
@@ -253,6 +259,12 @@ async def _scenario_path_lists_route_exports_lists() -> None:
     assert calls == [('export_prediction_path_lists', {'report_path': '/tmp/predict-out/prediction_report.json'})], calls
     assert 'path_lists' in turn['message'], turn
     assert client.session_state.active_prediction.last_path_lists['detected_count'] == 2
+
+    before_cached = len(calls)
+    cached_turn = await client.chat('再给我这次预测的路径清单。')
+    assert cached_turn['status'] == 'completed', cached_turn
+    assert '路径清单导出完成' in cached_turn['message'], cached_turn
+    assert len(calls) == before_cached, calls
 
 
 async def _scenario_organize_routes_to_prediction_result_organizer() -> None:

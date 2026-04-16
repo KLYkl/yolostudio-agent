@@ -274,12 +274,70 @@ async def _scenario_next_step_followup_routes() -> None:
     assert '漏标样本' in turn['message'], turn
 
 
+async def _scenario_cached_next_step_followup_reuses_state() -> None:
+    client = _make_client('next-step-followup-cached')
+    client.session_state.active_training.running = False
+    client.session_state.active_training.last_status = {
+        'summary': '训练已完成: map50=0.61',
+        'run_state': 'completed',
+    }
+    client.session_state.active_knowledge.last_recommendation = {
+        'summary': '建议下一步先修漏标样本，再小幅调整训练参数。',
+        'recommendation_overview': {'recommended_action': 'fix_labels_then_tune'},
+        'action_candidates': [{'tool': 'prepare_dataset_for_training', 'description': '先补齐标注后再继续训练'}],
+        'recommended_action': 'fix_labels_then_tune',
+    }
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    def _planner_reply(messages) -> str:
+        text = '\n'.join(str(getattr(message, 'content', message)) for message in messages)
+        if '训练跟进路由器' in text:
+            return '{"action":"next_step","reason":"用户在追问已缓存的下一步建议"}'
+        return '建议下一步先修漏标样本，再小幅调整训练参数。'
+
+    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((tool_name, dict(kwargs)))
+        raise AssertionError(f'cached training followup should not call direct tool: {tool_name}')
+
+    client.planner_llm = _FakePlannerLlm(_planner_reply)  # type: ignore[assignment]
+    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+    turn = await client.chat('那下一步怎么优化得更具体一点？')
+    assert turn['status'] == 'completed', turn
+    assert '漏标样本' in turn['message'], turn
+    assert not calls, calls
+
+
+async def _scenario_cached_explicit_next_step_request_reuses_state() -> None:
+    client = _make_client('next-step-request-cached')
+    client.session_state.active_training.running = False
+    client.session_state.active_training.last_status = {
+        'summary': '训练已完成: map50=0.61',
+        'run_state': 'completed',
+    }
+    client.session_state.active_knowledge.last_recommendation = {
+        'summary': '建议下一步先修漏标样本，再小幅调整训练参数。',
+        'recommendation_overview': {'recommended_action': 'fix_labels_then_tune'},
+        'action_candidates': [{'tool': 'prepare_dataset_for_training', 'description': '先补齐标注后再继续训练'}],
+        'recommended_action': 'fix_labels_then_tune',
+    }
+
+    async def _unexpected_direct_tool(*args, **kwargs):
+        raise AssertionError('cached explicit next-step request should render from state, not call direct_tool')
+
+    client.direct_tool = _unexpected_direct_tool  # type: ignore[assignment]
+    turn = await client.chat('给我训练下一步建议')
+    assert turn['status'] == 'completed', turn
+    assert '漏标样本' in turn['message'], turn
+
+
 async def _run() -> None:
     shutil.rmtree(WORK, ignore_errors=True)
     WORK.mkdir(parents=True, exist_ok=True)
     try:
         await _scenario_status_followup_routes()
         await _scenario_next_step_followup_routes()
+        await _scenario_cached_next_step_followup_reuses_state()
+        await _scenario_cached_explicit_next_step_request_reuses_state()
         print('training followup route ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)

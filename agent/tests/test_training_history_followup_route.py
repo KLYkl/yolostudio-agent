@@ -276,6 +276,93 @@ async def _scenario_runs_followup_routes() -> None:
     assert 'run-a' in turn['message'] and 'run-b' in turn['message'], turn
 
 
+async def _scenario_cached_best_request_reuses_state() -> None:
+    client = _make_client('best-request-cached')
+    client.session_state.active_training.best_run_selection = {
+        'ok': True,
+        'summary': '最佳训练记录已选出',
+        'best_run_id': 'run-best',
+        'ranking_basis': 'mAP50',
+        'best_run': {'run_id': 'run-best', 'run_state': 'completed'},
+        'action_candidates': [{'description': '继续查看最佳训练记录详情', 'tool': 'inspect_training_run'}],
+    }
+
+    def _planner_reply(messages) -> str:
+        text = '\n'.join(str(getattr(message, 'content', message)) for message in messages)
+        if '结果说明器' in text:
+            return '当前最佳训练是 run-best，建议继续查看这条训练记录的详细指标。'
+        return '当前最佳训练是 run-best。'
+
+    async def _unexpected_direct_tool(*args, **kwargs):
+        raise AssertionError('cached best request should render from state, not call direct_tool')
+
+    client.planner_llm = _FakePlannerLlm(_planner_reply)  # type: ignore[assignment]
+    client.direct_tool = _unexpected_direct_tool  # type: ignore[assignment]
+    turn = await client.chat('哪次训练最好？')
+    assert turn['status'] == 'completed', turn
+    assert 'run-best' in turn['message'], turn
+
+
+async def _scenario_cached_run_list_request_reuses_state() -> None:
+    client = _make_client('run-list-request-cached')
+    client.session_state.active_training.recent_runs = [
+        {
+            'run_id': 'run-a',
+            'run_state': 'completed',
+            'observation_stage': 'final',
+            'progress': {'epoch': 10, 'total_epochs': 10},
+        },
+        {
+            'run_id': 'run-b',
+            'run_state': 'failed',
+            'observation_stage': 'mid',
+            'progress': {'epoch': 4, 'total_epochs': 10},
+        },
+    ]
+
+    def _planner_reply(messages) -> str:
+        text = '\n'.join(str(getattr(message, 'content', message)) for message in messages)
+        if '结果说明器' in text:
+            return '最近训练里有 run-a 和 run-b，其中 run-a 已完成，run-b 失败。'
+        return '训练历史查询完成。'
+
+    async def _unexpected_direct_tool(*args, **kwargs):
+        raise AssertionError('cached run list request should render from state, not call direct_tool')
+
+    client.planner_llm = _FakePlannerLlm(_planner_reply)  # type: ignore[assignment]
+    client.direct_tool = _unexpected_direct_tool  # type: ignore[assignment]
+    turn = await client.chat('列出训练记录')
+    assert turn['status'] == 'completed', turn
+    assert 'run-a' in turn['message'] and 'run-b' in turn['message'], turn
+
+
+async def _scenario_cached_run_inspection_request_reuses_state() -> None:
+    client = _make_client('run-inspection-request-cached')
+    client.session_state.active_training.last_run_inspection = {
+        'ok': True,
+        'summary': '训练记录详情已就绪',
+        'selected_run_id': 'train_log_run_a',
+        'run_state': 'completed',
+        'summary_overview': {'run_id': 'train_log_run_a', 'run_state': 'completed'},
+        'action_candidates': [{'tool': 'compare_training_runs', 'description': '可继续与其他训练对比'}],
+    }
+
+    def _planner_reply(messages) -> str:
+        text = '\n'.join(str(getattr(message, 'content', message)) for message in messages)
+        if '结果说明器' in text:
+            return '训练 train_log_run_a 已完成，可以继续和其他训练记录对比。'
+        return '训练记录详情已就绪。'
+
+    async def _unexpected_direct_tool(*args, **kwargs):
+        raise AssertionError('cached run inspection should render from state, not call direct_tool')
+
+    client.planner_llm = _FakePlannerLlm(_planner_reply)  # type: ignore[assignment]
+    client.direct_tool = _unexpected_direct_tool  # type: ignore[assignment]
+    turn = await client.chat('查看 train_log_run_a 训练详情')
+    assert turn['status'] == 'completed', turn
+    assert 'train_log_run_a' in turn['message'], turn
+
+
 async def _run() -> None:
     shutil.rmtree(WORK, ignore_errors=True)
     WORK.mkdir(parents=True, exist_ok=True)
@@ -283,6 +370,9 @@ async def _run() -> None:
         await _scenario_best_followup_routes()
         await _scenario_compare_followup_routes()
         await _scenario_runs_followup_routes()
+        await _scenario_cached_best_request_reuses_state()
+        await _scenario_cached_run_list_request_reuses_state()
+        await _scenario_cached_run_inspection_request_reuses_state()
         print('training history followup route ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)

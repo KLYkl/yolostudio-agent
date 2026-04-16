@@ -265,6 +265,20 @@ async def _run() -> None:
         assert '重复图片' in routed['message'] or '缺失标签' in routed['message'] or '数据集质量分析' in routed['message'], routed
         assert [name for name, _ in calls[-3:]] == ['scan_dataset', 'validate_dataset', 'run_dataset_health_check'], calls
 
+        def _planner_health_reply(messages):
+            text = '\n'.join(str(getattr(message, 'content', message)) for message in messages)
+            if '数据集跟进路由器' in text:
+                return '{"action":"health","reason":"用户明确在追问健康检查"}'
+            return '健康检查完成，可继续查看重复图片详情。'
+
+        client.planner_llm = _FakePlannerLlm(_planner_health_reply)  # type: ignore[assignment]
+        before_cached_followup = len(calls)
+        routed2 = await client._try_handle_mainline_intent('健康检查结果再详细一点', 'thread-3')
+        assert routed2 is not None, routed2
+        assert routed2['status'] == 'completed', routed2
+        assert '健康检查完成' in routed2['message'], routed2
+        assert len(calls) == before_cached_followup, calls
+
         print('dataset followup route ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)

@@ -222,6 +222,36 @@ async def _scenario_knowledge_followup_routes() -> None:
     assert '漏检样本' in turn['message'], turn
 
 
+async def _scenario_cached_knowledge_followup_reuses_state() -> None:
+    client = _make_client('knowledge-followup-cached')
+    client.session_state.active_knowledge.last_retrieval = {
+        'summary': '知识检索完成: 当前更像高精度低召回，需要先排查漏检样本。',
+        'retrieval_overview': {'topic': 'training_metrics', 'matched_rule_count': 1},
+        'action_candidates': [{'tool': 'recommend_next_training_step', 'description': '继续生成下一步建议'}],
+        'topic': 'training_metrics',
+        'stage': 'post_training',
+        'signals': ['high_precision_low_recall'],
+    }
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    def _planner_reply(messages) -> str:
+        text = '\n'.join(str(getattr(message, 'content', message)) for message in messages)
+        if '知识跟进路由器' in text:
+            return '{"action":"knowledge","reason":"用户在追问已缓存的知识解释"}'
+        return '知识检索完成: 当前更像高精度低召回，需要先排查漏检样本。'
+
+    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((tool_name, dict(kwargs)))
+        raise AssertionError(f'cached knowledge followup should not call direct tool: {tool_name}')
+
+    client.planner_llm = _FakePlannerLlm(_planner_reply)  # type: ignore[assignment]
+    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+    turn = await client.chat('刚才那条规则再详细一点')
+    assert turn['status'] == 'completed', turn
+    assert '高精度低召回' in turn['message'], turn
+    assert not calls, calls
+
+
 async def _scenario_next_step_followup_routes() -> None:
     client = _make_client('knowledge-next-step-followup')
     client.session_state.active_knowledge.last_recommendation = {
@@ -273,6 +303,7 @@ async def _run() -> None:
     WORK.mkdir(parents=True, exist_ok=True)
     try:
         await _scenario_knowledge_followup_routes()
+        await _scenario_cached_knowledge_followup_reuses_state()
         await _scenario_next_step_followup_routes()
         print('knowledge followup route ok')
     finally:

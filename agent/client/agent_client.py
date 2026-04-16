@@ -1330,6 +1330,10 @@ class YoloStudioAgentClient:
             normalized_text=normalized_text,
             fallback_path=fallback_path,
         )
+        cached_result = self._prediction_followup_result(action)
+        if cached_result:
+            tool_name, payload = cached_result
+            return await self._complete_cached_tool_result_reply(tool_name, payload)
         if action == 'inspect':
             inspect_kwargs = self._prediction_followup_kwargs(
                 user_text,
@@ -1384,6 +1388,10 @@ class YoloStudioAgentClient:
         )
         if action == 'quality':
             return await self._complete_dataset_quality_reply(dataset_path)
+        cached_result = self._dataset_followup_result(action)
+        if cached_result:
+            tool_name, payload = cached_result
+            return await self._complete_cached_tool_result_reply(tool_name, payload)
         if action == 'health':
             return await self._complete_direct_tool_reply(
                 'run_dataset_health_check',
@@ -1491,6 +1499,11 @@ class YoloStudioAgentClient:
         has_explicit_prediction_target: bool,
     ) -> dict[str, Any] | None:
         if wants_prediction_output_inspection:
+            if not has_explicit_prediction_target:
+                cached_inspect = self._prediction_management_followup_result('inspect')
+                if cached_inspect:
+                    tool_name, payload = cached_inspect
+                    return await self._complete_cached_tool_result_reply(tool_name, payload)
             inspect_kwargs = self._prediction_followup_kwargs(
                 user_text,
                 fallback_path=prediction_path,
@@ -1500,24 +1513,40 @@ class YoloStudioAgentClient:
                 return await self._complete_direct_tool_reply('inspect_prediction_outputs', **inspect_kwargs)
 
         if wants_prediction_report_export:
+            export_path = self._extract_output_path_from_text(
+                user_text,
+                self.session_state.active_prediction.output_dir or prediction_path,
+            )
+            if not has_explicit_prediction_target and not export_path:
+                cached_export = self._prediction_management_followup_result('export')
+                if cached_export:
+                    tool_name, payload = cached_export
+                    return await self._complete_cached_tool_result_reply(tool_name, payload)
             export_kwargs = self._prediction_followup_kwargs(
                 user_text,
                 fallback_path=prediction_path,
                 allow_context_fallback=True,
             )
-            export_path = self._extract_output_path_from_text(user_text, self.session_state.active_prediction.output_dir or prediction_path)
             if export_path:
                 export_kwargs['export_path'] = export_path
             if export_kwargs:
                 return await self._complete_direct_tool_reply('export_prediction_report', **export_kwargs)
 
         if wants_prediction_path_lists:
+            export_dir = self._extract_output_path_from_text(
+                user_text,
+                self.session_state.active_prediction.output_dir or prediction_path,
+            )
+            if not has_explicit_prediction_target and not export_dir:
+                cached_path_lists = self._prediction_management_followup_result('path_lists')
+                if cached_path_lists:
+                    tool_name, payload = cached_path_lists
+                    return await self._complete_cached_tool_result_reply(tool_name, payload)
             path_list_kwargs = self._prediction_followup_kwargs(
                 user_text,
                 fallback_path=prediction_path,
                 allow_context_fallback=True,
             )
-            export_dir = self._extract_output_path_from_text(user_text, self.session_state.active_prediction.output_dir or prediction_path)
             if export_dir:
                 path_list_kwargs['export_dir'] = export_dir
             if path_list_kwargs:
@@ -1530,14 +1559,21 @@ class YoloStudioAgentClient:
                 allow_context_fallback=True,
             )
             destination_dir = self._extract_output_path_from_text(user_text, self.session_state.active_prediction.output_dir or prediction_path)
+            organize_by = 'by_class' if '类别' in user_text else 'detected_only'
+            include_empty = '无命中' in user_text or '空结果' in user_text
             if destination_dir:
                 organize_kwargs['destination_dir'] = destination_dir
-            organize_kwargs['organize_by'] = 'by_class' if '类别' in user_text else 'detected_only'
-            organize_kwargs['include_empty'] = '无命中' in user_text or '空结果' in user_text
+            organize_kwargs['organize_by'] = organize_by
+            organize_kwargs['include_empty'] = include_empty
             if organize_kwargs:
                 return await self._complete_direct_tool_reply('organize_prediction_results', **organize_kwargs)
 
         if wants_prediction_summary:
+            if not has_explicit_prediction_target and self._explicitly_references_previous_context(user_text):
+                cached_summary = self._prediction_followup_result('summary')
+                if cached_summary:
+                    tool_name, payload = cached_summary
+                    return await self._complete_cached_tool_result_reply(tool_name, payload)
             summary_kwargs = self._prediction_followup_kwargs(user_text, fallback_path=prediction_path)
             if summary_kwargs:
                 return await self._complete_direct_tool_reply('summarize_prediction_results', **summary_kwargs)
@@ -1659,9 +1695,19 @@ class YoloStudioAgentClient:
             return await self._complete_dataset_quality_reply(dataset_path)
 
         if dataset_path and wants_duplicates and not wants_train and not wants_health:
+            if has_dataset_followup_context:
+                cached_duplicates = self._dataset_followup_result('duplicates')
+                if cached_duplicates:
+                    tool_name, payload = cached_duplicates
+                    return await self._complete_cached_tool_result_reply(tool_name, payload)
             return await self._complete_direct_tool_reply('detect_duplicate_images', dataset_path=dataset_path)
 
         if dataset_path and wants_health and not wants_train:
+            if has_dataset_followup_context:
+                cached_health = self._dataset_followup_result('health')
+                if cached_health:
+                    tool_name, payload = cached_health
+                    return await self._complete_cached_tool_result_reply(tool_name, payload)
             return await self._complete_direct_tool_reply(
                 'run_dataset_health_check',
                 dataset_path=dataset_path,
@@ -1771,6 +1817,10 @@ class YoloStudioAgentClient:
             normalized_text=normalized_text,
             metric_signals=metric_signals,
         )
+        cached_result = self._knowledge_followup_result(action)
+        if cached_result:
+            tool_name, payload = cached_result
+            return await self._complete_cached_tool_result_reply(tool_name, payload)
         if action == 'knowledge':
             retrieval = self.session_state.active_knowledge.last_retrieval
             retrieval_topic = str(retrieval.get('topic') or '').strip() or ('training_metrics' if asks_metric_terms else 'workflow')
@@ -1803,6 +1853,10 @@ class YoloStudioAgentClient:
             normalized_text=normalized_text,
             metric_signals=metric_signals,
         )
+        cached_result = self._training_followup_cached_result(action)
+        if cached_result:
+            tool_name, payload = cached_result
+            return await self._complete_cached_tool_result_reply(tool_name, payload)
         if action == 'status':
             return await self._complete_direct_tool_reply('check_training_status')
         if action == 'analysis':
@@ -1914,6 +1968,12 @@ class YoloStudioAgentClient:
         has_explicit_transfer_paths: bool,
     ) -> dict[str, Any] | None:
         if wants_remote_profile_list:
+            cached_profiles = self.session_state.active_remote_transfer.last_profile_listing
+            if cached_profiles:
+                return await self._complete_cached_tool_result_reply(
+                    'list_remote_profiles',
+                    cached_profiles,
+                )
             return await self._complete_direct_tool_reply('list_remote_profiles')
 
         if wants_remote_prediction_pipeline:
@@ -2101,6 +2161,10 @@ class YoloStudioAgentClient:
             return await self._complete_specific_training_run_outcome_analysis_reply(explicit_run_ids[0])
 
         if wants_training_run_compare and not wants_predict and not training_command_like:
+            cached_compare = self._training_history_request_cached_result(request='compare')
+            if cached_compare and not comparison_run_ids:
+                tool_name, payload = cached_compare
+                return await self._complete_cached_tool_result_reply(tool_name, payload)
             compare_kwargs: dict[str, Any] = {}
             if comparison_run_ids:
                 compare_kwargs['left_run_id'] = comparison_run_ids[0]
@@ -2109,27 +2173,62 @@ class YoloStudioAgentClient:
             return await self._complete_direct_tool_reply('compare_training_runs', **compare_kwargs)
 
         if wants_best_training_run and not wants_predict and not training_command_like:
+            cached_best = self._training_history_request_cached_result(request='best')
+            if cached_best:
+                tool_name, payload = cached_best
+                return await self._complete_cached_tool_result_reply(tool_name, payload)
             return await self._complete_direct_tool_reply('select_best_training_run')
 
         if wants_training_run_inspect and not wants_predict and not training_command_like:
+            cached_inspection = self._training_history_request_cached_result(
+                request='inspect',
+                run_id=explicit_run_ids[0],
+            )
+            if cached_inspection:
+                tool_name, payload = cached_inspection
+                return await self._complete_cached_tool_result_reply(tool_name, payload)
             return await self._complete_direct_tool_reply('inspect_training_run', run_id=explicit_run_ids[0])
 
         if wants_failed_training_run_list and not wants_predict and not training_command_like:
+            cached_failed = self._training_history_request_cached_result(request='runs', run_state='failed')
+            if cached_failed:
+                tool_name, payload = cached_failed
+                return await self._complete_cached_tool_result_reply(tool_name, payload)
             return await self._complete_direct_tool_reply('list_training_runs', run_state='failed')
 
         if wants_completed_training_run_list and not wants_predict and not training_command_like:
+            cached_completed = self._training_history_request_cached_result(request='runs', run_state='completed')
+            if cached_completed:
+                tool_name, payload = cached_completed
+                return await self._complete_cached_tool_result_reply(tool_name, payload)
             return await self._complete_direct_tool_reply('list_training_runs', run_state='completed')
 
         if wants_stopped_training_run_list and not wants_predict and not training_command_like:
+            cached_stopped = self._training_history_request_cached_result(request='runs', run_state='stopped')
+            if cached_stopped:
+                tool_name, payload = cached_stopped
+                return await self._complete_cached_tool_result_reply(tool_name, payload)
             return await self._complete_direct_tool_reply('list_training_runs', run_state='stopped')
 
         if wants_running_training_run_list and not wants_predict and not training_command_like:
+            cached_running = self._training_history_request_cached_result(request='runs', run_state='running')
+            if cached_running:
+                tool_name, payload = cached_running
+                return await self._complete_cached_tool_result_reply(tool_name, payload)
             return await self._complete_direct_tool_reply('list_training_runs', run_state='running')
 
         if wants_analysis_ready_run_list and not wants_predict and not training_command_like:
+            cached_analysis_ready = self._training_history_request_cached_result(request='runs', analysis_ready=True)
+            if cached_analysis_ready:
+                tool_name, payload = cached_analysis_ready
+                return await self._complete_cached_tool_result_reply(tool_name, payload)
             return await self._complete_direct_tool_reply('list_training_runs', analysis_ready=True)
 
         if wants_training_loop_list and not wants_predict and not training_command_like:
+            cached_loops = self._training_loop_request_cached_result('list')
+            if cached_loops:
+                tool_name, payload = cached_loops
+                return await self._complete_cached_tool_result_reply(tool_name, payload)
             return await self._complete_direct_tool_reply('list_training_loops')
 
         active_loop_id = str(loop_route.get('loop_id') or '').strip() or self.session_state.active_training.active_loop_id
@@ -2211,6 +2310,10 @@ class YoloStudioAgentClient:
         asks_metric_terms: bool,
     ) -> dict[str, Any] | None:
         if wants_training_run_list and not wants_predict and not training_command_like:
+            cached_runs = self._training_history_request_cached_result(request='runs')
+            if cached_runs:
+                tool_name, payload = cached_runs
+                return await self._complete_cached_tool_result_reply(tool_name, payload)
             return await self._complete_direct_tool_reply('list_training_runs')
 
         knowledge_followup = await self._try_handle_knowledge_followup(
@@ -2293,9 +2396,17 @@ class YoloStudioAgentClient:
             return self._complete_training_evidence_reply()
 
         if not wants_predict and not training_command_like and wants_next_step_guidance:
+            cached_next_step = self._knowledge_followup_result('next_step')
+            if cached_next_step and not dataset_path:
+                tool_name, payload = cached_next_step
+                return await self._complete_cached_tool_result_reply(tool_name, payload)
             return await self._complete_next_training_step_reply(dataset_path if dataset_path else '')
 
         if not wants_predict and not training_command_like and wants_training_knowledge:
+            cached_knowledge = self._knowledge_followup_result('knowledge')
+            if cached_knowledge and not metric_signals and not asks_metric_terms:
+                tool_name, payload = cached_knowledge
+                return await self._complete_cached_tool_result_reply(tool_name, payload)
             return await self._complete_knowledge_retrieval_reply(
                 topic='training_metrics' if asks_metric_terms else 'workflow',
                 stage='post_training',
@@ -2303,6 +2414,10 @@ class YoloStudioAgentClient:
             )
 
         if not wants_predict and not training_command_like and wants_training_outcome_analysis:
+            cached_analysis = self._knowledge_followup_result('analysis')
+            if cached_analysis and not metric_signals and not asks_metric_terms:
+                tool_name, payload = cached_analysis
+                return await self._complete_cached_tool_result_reply(tool_name, payload)
             return await self._complete_training_outcome_analysis_reply()
         return None
 
@@ -6711,6 +6826,25 @@ class YoloStudioAgentClient:
             return result
         return None
 
+    def _prediction_followup_result(self, action: str) -> tuple[str, dict[str, Any]] | None:
+        pred = self.session_state.active_prediction
+        summary_payload = dict(pred.last_summary or {})
+        if not summary_payload:
+            last_result = dict(pred.last_result or {})
+            if any(
+                key in last_result
+                for key in ('summary_overview', 'action_candidates', 'total_detections')
+            ):
+                summary_payload = last_result
+        mapping: dict[str, tuple[str, dict[str, Any]]] = {
+            'inspect': ('inspect_prediction_outputs', dict(pred.last_inspection or {})),
+            'summary': ('summarize_prediction_results', summary_payload),
+        }
+        result = mapping.get(action)
+        if result and result[1]:
+            return result
+        return None
+
     def _prediction_management_followup_result(self, action: str) -> tuple[str, dict[str, Any]] | None:
         pred = self.session_state.active_prediction
         mapping: dict[str, tuple[str, dict[str, Any]]] = {
@@ -6722,6 +6856,94 @@ class YoloStudioAgentClient:
         result = mapping.get(action)
         if result and result[1]:
             return result
+        return None
+
+    def _knowledge_followup_result(self, action: str) -> tuple[str, dict[str, Any]] | None:
+        knowledge = self.session_state.active_knowledge
+        mapping: dict[str, tuple[str, dict[str, Any]]] = {
+            'knowledge': ('retrieve_training_knowledge', dict(knowledge.last_retrieval or {})),
+            'analysis': ('analyze_training_outcome', dict(knowledge.last_analysis or {})),
+            'next_step': ('recommend_next_training_step', dict(knowledge.last_recommendation or {})),
+        }
+        result = mapping.get(action)
+        if result and result[1]:
+            payload = result[1]
+            if any(
+                key in payload
+                for key in ('retrieval_overview', 'analysis_overview', 'recommendation_overview', 'action_candidates')
+            ):
+                return result
+            return None
+        return None
+
+    def _training_followup_cached_result(self, action: str) -> tuple[str, dict[str, Any]] | None:
+        if action == 'status':
+            return None
+        return self._knowledge_followup_result(action)
+
+    def _dataset_followup_result(self, action: str) -> tuple[str, dict[str, Any]] | None:
+        ds = self.session_state.active_dataset
+        mapping: dict[str, tuple[str, dict[str, Any]]] = {
+            'health': ('run_dataset_health_check', dict(ds.last_health_check or {})),
+            'duplicates': ('detect_duplicate_images', dict(ds.last_duplicate_check or {})),
+        }
+        result = mapping.get(action)
+        if result and result[1]:
+            return result
+        return None
+
+    def _training_history_request_cached_result(
+        self,
+        *,
+        request: str,
+        run_state: str | None = None,
+        analysis_ready: bool = False,
+        run_id: str | None = None,
+    ) -> tuple[str, dict[str, Any]] | None:
+        training = self.session_state.active_training
+        if request == 'runs':
+            runs = list(training.recent_runs or [])
+            if analysis_ready:
+                runs = [item for item in runs if bool(item.get('analysis_ready'))]
+            elif run_state:
+                runs = [item for item in runs if str(item.get('run_state') or '').strip().lower() == run_state]
+            if runs:
+                return (
+                    'list_training_runs',
+                    {
+                        'ok': True,
+                        'summary': '训练历史查询完成',
+                        'runs': runs,
+                    },
+                )
+            return None
+        if request == 'compare':
+            payload = dict(training.last_run_comparison or {})
+            return ('compare_training_runs', payload) if payload else None
+        if request == 'best':
+            payload = dict(training.best_run_selection or {})
+            return ('select_best_training_run', payload) if payload else None
+        if request == 'inspect':
+            payload = dict(training.last_run_inspection or {})
+            cached_run_id = str(payload.get('selected_run_id') or payload.get('run_id') or '').strip()
+            if payload and (not run_id or not cached_run_id or cached_run_id == str(run_id).strip()):
+                return ('inspect_training_run', payload)
+        return None
+
+    def _training_loop_request_cached_result(self, request: str) -> tuple[str, dict[str, Any]] | None:
+        training = self.session_state.active_training
+        if request == 'list':
+            loops = list(training.recent_loops or [])
+            if loops:
+                return (
+                    'list_training_loops',
+                    {
+                        'ok': True,
+                        'summary': '环训练列表已就绪',
+                        'loops': loops,
+                    },
+                )
+            return None
         return None
 
     async def _classify_remote_transfer_followup_action(

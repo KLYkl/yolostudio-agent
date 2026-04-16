@@ -249,12 +249,36 @@ async def _scenario_loop_inspect_followup_routes() -> None:
     assert '误差分析' in turn['message'], turn
 
 
+async def _scenario_cached_loop_list_request_reuses_state() -> None:
+    client = _make_client('loop-list-request-cached')
+    client.session_state.active_training.recent_loops = [
+        {'loop_id': 'loop-a', 'loop_name': 'helmet-loop', 'status': 'completed', 'active': False},
+        {'loop_id': 'loop-b', 'loop_name': 'vest-loop', 'status': 'awaiting_review', 'active': False},
+    ]
+
+    def _planner_reply(messages) -> str:
+        text = '\n'.join(str(getattr(message, 'content', message)) for message in messages)
+        if '结果说明器' in text:
+            return '最近环训练包括 helmet-loop 和 vest-loop，其中 vest-loop 还在等待审阅。'
+        return '环训练列表已就绪。'
+
+    async def _unexpected_direct_tool(*args, **kwargs):
+        raise AssertionError('cached loop list request should render from state, not call direct_tool')
+
+    client.planner_llm = _FakePlannerLlm(_planner_reply)  # type: ignore[assignment]
+    client.direct_tool = _unexpected_direct_tool  # type: ignore[assignment]
+    turn = await client.chat('列一下环训练列表')
+    assert turn['status'] == 'completed', turn
+    assert 'helmet-loop' in turn['message'] and 'vest-loop' in turn['message'], turn
+
+
 async def _run() -> None:
     shutil.rmtree(WORK, ignore_errors=True)
     WORK.mkdir(parents=True, exist_ok=True)
     try:
         await _scenario_loop_list_followup_routes()
         await _scenario_loop_inspect_followup_routes()
+        await _scenario_cached_loop_list_request_reuses_state()
         print('training loop history followup route ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)
