@@ -50,3 +50,5 @@
 
 - 最新批次：extract / training-loop 这组只读 helper 路由已继续真实删减；`preview_extract_images`、`scan_videos`、`inspect_training_loop` 在目标未变化时优先复用 structured state。
 - 最新批次：`agent_client.py` 已继续减少 `intent_parsing` 的消费端 wrapper，extract/realtime 这组 wrapper 已删除，消费面继续收窄。
+- 最新批次：training-plan 对话前置层里的“无草案/无 pending 启动链”已抽成独立 bootstrap helper，`_try_handle_training_plan_dialogue` 顶层 pre-LLM 分支继续收薄。
+- 最新批次：training 参数提取已统一收进 `_collect_requested_training_args` + `_apply_training_text_overrides`；训练/训练计划这组 `intent_parsing` wrapper 已批量删除，`agent_client.py` 中 `return intent_parsing.*` wrapper 现已降到个位数。
