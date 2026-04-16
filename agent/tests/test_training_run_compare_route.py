@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import sys
 import types
@@ -166,11 +167,73 @@ except Exception:
     sys.modules['langgraph.checkpoint.memory'] = checkpoint_mod
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from langchain_core.messages import AIMessage, ToolMessage
 
 
-class _DummyGraph:
+class _FakeGraph:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
     def get_state(self, config):
         return None
+
+    async def ainvoke(self, payload, config=None):
+        del config
+        messages = list(payload['messages'])
+        user_text = ''
+        for message in reversed(messages):
+            content = getattr(message, 'content', '')
+            if isinstance(content, str) and content:
+                user_text = content
+                break
+        if '对比最近两次训练' in user_text or '对比两次训练：train_log_200 和 train_log_100' in user_text:
+            tool_name = 'compare_training_runs'
+            args: dict[str, Any] = {}
+            result = {
+                'ok': True,
+                'summary': '训练对比完成: train_log_200 相比 train_log_100，precision提升 +0.1000',
+                'left_run_id': 'train_log_200',
+                'right_run_id': 'train_log_100',
+                'highlights': ['precision提升 +0.1000'],
+                'metric_deltas': {'precision': {'left': 0.52, 'right': 0.42, 'delta': 0.1}},
+                'next_actions': ['可继续调用 inspect_training_run'],
+            }
+            final_text = '训练对比完成\n对比对象: train_log_200 vs train_log_100'
+        elif '最近训练记录有哪些' in user_text:
+            tool_name = 'list_training_runs'
+            args = {}
+            result = {
+                'ok': True,
+                'summary': '找到 2 条最近训练记录',
+                'runs': [
+                    {'run_id': 'train_log_200', 'run_state': 'completed', 'observation_stage': 'final', 'progress': {'epoch': 5, 'total_epochs': 5}},
+                    {'run_id': 'train_log_100', 'run_state': 'stopped', 'observation_stage': 'final', 'progress': {'epoch': 4, 'total_epochs': 5}},
+                ],
+                'next_actions': ['可继续调用 compare_training_runs'],
+            }
+            final_text = '最近训练:\n- train_log_200\n- train_log_100'
+        else:
+            tool_name = 'inspect_training_run'
+            args = {'run_id': 'train_log_200'}
+            result = {
+                'ok': True,
+                'summary': '训练记录详情已就绪',
+                'selected_run_id': 'train_log_200',
+                'run_state': 'completed',
+                'observation_stage': 'final',
+                'facts': ['precision=0.520'],
+                'next_actions': ['可继续调用 analyze_training_outcome'],
+            }
+            final_text = '训练记录: train_log_200'
+        self.calls.append((tool_name, dict(args)))
+        tool_call_id = f'call-{len(self.calls)}'
+        return {
+            'messages': messages + [
+                AIMessage(content='', tool_calls=[{'id': tool_call_id, 'name': tool_name, 'args': args}]),
+                ToolMessage(content=json.dumps(result, ensure_ascii=False), name=tool_name, tool_call_id=tool_call_id),
+                AIMessage(content=final_text),
+            ]
+        }
 
 
 WORK = Path(__file__).resolve().parent / '_tmp_training_run_compare_route'
@@ -181,74 +244,35 @@ async def _run() -> None:
     WORK.mkdir(parents=True, exist_ok=True)
     try:
         settings = AgentSettings(session_id='training-run-compare-route', memory_root=str(WORK))
-        client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
-        calls: list[tuple[str, dict[str, Any]]] = []
+        graph = _FakeGraph()
+        client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
 
-        async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
-            calls.append((tool_name, dict(kwargs)))
-            if tool_name == 'compare_training_runs':
-                result = {
-                    'ok': True,
-                    'summary': '训练对比完成: train_log_200 相比 train_log_100，precision提升 +0.1000',
-                    'left_run_id': kwargs.get('left_run_id') or 'train_log_200',
-                    'right_run_id': kwargs.get('right_run_id') or 'train_log_100',
-                    'highlights': ['precision提升 +0.1000'],
-                    'metric_deltas': {'precision': {'left': 0.52, 'right': 0.42, 'delta': 0.1}},
-                    'next_actions': ['可继续调用 inspect_training_run'],
-                }
-            elif tool_name == 'inspect_training_run':
-                result = {
-                    'ok': True,
-                    'summary': '训练记录详情已就绪',
-                    'selected_run_id': kwargs.get('run_id') or 'train_log_200',
-                    'run_state': 'completed',
-                    'observation_stage': 'final',
-                    'facts': ['precision=0.520'],
-                    'next_actions': ['可继续调用 analyze_training_outcome'],
-                }
-            elif tool_name == 'list_training_runs':
-                result = {
-                    'ok': True,
-                    'summary': '找到 2 条最近训练记录',
-                    'runs': [
-                        {'run_id': 'train_log_200', 'run_state': 'completed', 'observation_stage': 'final', 'progress': {'epoch': 5, 'total_epochs': 5}},
-                        {'run_id': 'train_log_100', 'run_state': 'stopped', 'observation_stage': 'final', 'progress': {'epoch': 4, 'total_epochs': 5}},
-                    ],
-                    'next_actions': ['可继续调用 compare_training_runs'],
-                }
-            else:
-                raise AssertionError(f'unexpected tool call: {tool_name}')
-            client._apply_to_state(tool_name, result, kwargs)
-            return result
-
-        client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
-
-        compare_latest = await client._try_handle_mainline_intent('帮我对比最近两次训练', 'thread-compare-latest')
-        assert compare_latest is not None
+        latest_prompt = '帮我对比最近两次训练'
+        assert await client._try_handle_mainline_intent(latest_prompt, 'thread-compare-latest') is None
+        compare_latest = await client.chat(latest_prompt)
         assert compare_latest['status'] == 'completed', compare_latest
-        assert calls[-1] == ('compare_training_runs', {})
+        assert graph.calls[-1] == ('compare_training_runs', {})
         assert '对比对象: train_log_200 vs train_log_100' in compare_latest['message']
 
-        compare_explicit = await client._try_handle_mainline_intent(
-            '对比两次训练：train_log_200 和 train_log_100',
-            'thread-compare-explicit',
-        )
-        assert compare_explicit is not None
+        explicit_prompt = '对比两次训练：train_log_200 和 train_log_100'
+        assert await client._try_handle_mainline_intent(explicit_prompt, 'thread-compare-explicit') is None
+        compare_explicit = await client.chat(explicit_prompt)
         assert compare_explicit['status'] == 'completed', compare_explicit
-        assert calls[-1] == ('compare_training_runs', {})
+        assert graph.calls[-1] == ('compare_training_runs', {})
         assert '对比对象: train_log_200 vs train_log_100' in compare_explicit['message']
 
-        inspect_run = await client._try_handle_mainline_intent('看看 train_log_200 的详情', 'thread-inspect')
-        assert inspect_run is not None
+        inspect_prompt = '看看 train_log_200 的详情'
+        assert await client._try_handle_mainline_intent(inspect_prompt, 'thread-inspect') is None
+        inspect_run = await client.chat(inspect_prompt)
         assert inspect_run['status'] == 'completed', inspect_run
-        assert calls[-1] == ('inspect_training_run', {'run_id': 'train_log_200'})
+        assert graph.calls[-1] == ('inspect_training_run', {'run_id': 'train_log_200'})
         assert '训练记录: train_log_200' in inspect_run['message']
 
-        before_list = len(calls)
-        list_runs = await client._try_handle_mainline_intent('最近训练记录有哪些', 'thread-list')
-        assert list_runs is not None
+        list_prompt = '最近训练记录有哪些'
+        assert await client._try_handle_mainline_intent(list_prompt, 'thread-list') is None
+        list_runs = await client.chat(list_prompt)
         assert list_runs['status'] == 'completed', list_runs
-        assert len(calls) == before_list, calls
+        assert graph.calls[-1] == ('list_training_runs', {}), graph.calls
         assert '最近训练:' in list_runs['message']
 
         assert client.session_state.active_training.last_run_comparison.get('left_run_id') == 'train_log_200'

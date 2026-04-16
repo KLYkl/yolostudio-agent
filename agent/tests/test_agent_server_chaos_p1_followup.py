@@ -12,7 +12,7 @@ if __package__ in {None, ''}:
         if path not in sys.path:
             sys.path.insert(0, path)
 
-from yolostudio_agent.agent.tests.test_agent_server_chaos_p0 import _make_client
+from yolostudio_agent.agent.tests._chaos_test_support import _ScriptedGraph, _make_client
 from yolostudio_agent.agent.tests._coroutine_runner import run
 
 
@@ -23,83 +23,87 @@ async def _scenario_c44_completed_next_step_guidance_routes_cleanly() -> None:
         'summary': '数据已具备训练条件。',
         'resolved_data_yaml': '/data/c44/data.yaml',
     }
-    calls: list[tuple[str, dict[str, Any]]] = []
-
-    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
-        calls.append((tool_name, dict(kwargs)))
-        if tool_name == 'summarize_training_run':
-            result = {
-                'ok': True,
-                'summary': '训练已完成：precision=0.82 recall=0.58 mAP50=0.61',
-                'run_state': 'completed',
-                'analysis_ready': True,
-                'minimum_facts_ready': True,
-                'signals': ['completed_run', 'low_recall'],
-                'facts': ['训练已完成'],
-                'next_actions': ['优先补召回相关数据'],
-                'metrics': {'precision': 0.82, 'recall': 0.58, 'mAP50': 0.61},
-            }
-        elif tool_name == 'recommend_next_training_step':
-            result = {
-                'ok': True,
-                'summary': '当前更适合先补召回相关数据，再考虑参数微调。',
-                'recommended_action': 'fix_data_quality',
-                'signals': ['low_recall', 'data_quality_risk'],
-                'matched_rule_ids': ['workflow_low_recall'],
-            }
-        else:
-            raise AssertionError(tool_name)
-        client._apply_to_state(tool_name, result, kwargs)
-        return result
-
-    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
-
+    client.graph = _ScriptedGraph(
+        {
+            '下一步先补数据还是调参数': (
+                [
+                    (
+                        'summarize_training_run',
+                        {
+                            'ok': True,
+                            'summary': '训练已完成：precision=0.82 recall=0.58 mAP50=0.61',
+                            'run_state': 'completed',
+                            'analysis_ready': True,
+                            'minimum_facts_ready': True,
+                            'signals': ['completed_run', 'low_recall'],
+                            'facts': ['训练已完成'],
+                            'next_actions': ['优先补召回相关数据'],
+                            'metrics': {'precision': 0.82, 'recall': 0.58, 'mAP50': 0.61},
+                        },
+                    ),
+                    (
+                        'recommend_next_training_step',
+                        {
+                            'ok': True,
+                            'summary': '当前更适合先补召回相关数据，再考虑参数微调。',
+                            'recommended_action': 'fix_data_quality',
+                            'signals': ['low_recall', 'data_quality_risk'],
+                            'matched_rule_ids': ['workflow_low_recall'],
+                        },
+                    ),
+                ],
+                '当前更适合先补召回相关数据，再考虑参数微调。',
+            )
+        }
+    )  # type: ignore[assignment]
+    assert await client._try_handle_mainline_intent('下一步先补数据还是调参数？', 'thread-chaos-p1-c44') is None
     turn = await client.chat('下一步先补数据还是调参数？')
     assert turn['status'] == 'completed', turn
-    assert '优先补召回相关数据' in turn['message'] or '先补召回相关数据' in turn['message']
-    assert calls[0][0] == 'summarize_training_run'
-    assert calls[1][0] == 'recommend_next_training_step'
+    assert any(token in turn['message'] for token in ('优先补召回相关数据', '先补召回相关数据', '更适合先补召回相关数据')), turn
+    assert client.graph.calls == [('summarize_training_run', {}), ('recommend_next_training_step', {})]
 
 
 async def _scenario_c45_stopped_convergence_question_stays_conservative() -> None:
     client = _make_client('chaos-p1-c45')
-    calls: list[tuple[str, dict[str, Any]]] = []
-
-    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
-        calls.append((tool_name, dict(kwargs)))
-        if tool_name == 'summarize_training_run':
-            result = {
-                'ok': True,
-                'summary': '训练已停止：epoch=9/30，当前只有阶段性结果。',
-                'run_state': 'stopped',
-                'analysis_ready': True,
-                'minimum_facts_ready': True,
-                'signals': ['stopped_run', 'early_stop'],
-                'facts': ['训练已停止'],
-                'next_actions': ['谨慎解释当前结果'],
-                'metrics': {'precision': 0.71, 'recall': 0.41},
-            }
-        elif tool_name == 'analyze_training_outcome':
-            result = {
-                'ok': True,
-                'summary': '这次训练已停止，目前只能做阶段性判断，不能当成最终收敛结论。',
-                'assessment': 'incomplete_observation',
-                'signals': ['stopped_run', 'not_final'],
-                'matched_rule_ids': ['workflow_stopped_not_final'],
-                'next_actions': ['如果要下最终结论，先补完整训练或重新验证。'],
-            }
-        else:
-            raise AssertionError(tool_name)
-        client._apply_to_state(tool_name, result, kwargs)
-        return result
-
-    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
-
+    client.graph = _ScriptedGraph(
+        {
+            '是不是已经收敛了': (
+                [
+                    (
+                        'summarize_training_run',
+                        {
+                            'ok': True,
+                            'summary': '训练已停止：epoch=9/30，当前只有阶段性结果。',
+                            'run_state': 'stopped',
+                            'analysis_ready': True,
+                            'minimum_facts_ready': True,
+                            'signals': ['stopped_run', 'early_stop'],
+                            'facts': ['训练已停止'],
+                            'next_actions': ['谨慎解释当前结果'],
+                            'metrics': {'precision': 0.71, 'recall': 0.41},
+                        },
+                    ),
+                    (
+                        'analyze_training_outcome',
+                        {
+                            'ok': True,
+                            'summary': '这次训练已停止，目前只能做阶段性判断，不能当成最终收敛结论。',
+                            'assessment': 'incomplete_observation',
+                            'signals': ['stopped_run', 'not_final'],
+                            'matched_rule_ids': ['workflow_stopped_not_final'],
+                            'next_actions': ['如果要下最终结论，先补完整训练或重新验证。'],
+                        },
+                    ),
+                ],
+                '这次训练已停止，目前只能做阶段性判断，不能当成最终收敛结论。',
+            )
+        }
+    )  # type: ignore[assignment]
+    assert await client._try_handle_mainline_intent('是不是已经收敛了？', 'thread-chaos-p1-c45') is None
     turn = await client.chat('是不是已经收敛了？')
     assert turn['status'] == 'completed', turn
     assert '不能当成最终收敛结论' in turn['message']
-    assert calls[0][0] == 'summarize_training_run'
-    assert calls[1][0] == 'analyze_training_outcome'
+    assert client.graph.calls == [('summarize_training_run', {}), ('analyze_training_outcome', {})]
 
 
 async def _scenario_c46_status_phrase_now_routes_status() -> None:
@@ -149,69 +153,71 @@ async def _scenario_c47_provenance_question_uses_last_comparison() -> None:
 
 async def _scenario_c48_compare_followup_routes_compare_analysis() -> None:
     client = _make_client('chaos-p1-c48')
-    calls: list[tuple[str, dict[str, Any]]] = []
-
-    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
-        calls.append((tool_name, dict(kwargs)))
-        if tool_name == 'compare_training_runs':
-            result = {
-                'ok': True,
-                'summary': '最近一次训练相对上一次 precision 更高，但 recall 更低。',
-                'left_run': {'run_id': 'train_log_new', 'summary': 'new'},
-                'right_run': {'run_id': 'train_log_old', 'summary': 'old'},
-                'signals': ['latest_run_more_conservative'],
-                'highlights': ['precision 上升', 'recall 下降'],
-                'next_actions': ['结合任务目标决定是否继续补召回'],
-            }
-        else:
-            raise AssertionError(tool_name)
-        client._apply_to_state(tool_name, result, kwargs)
-        return result
-
-    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
-
+    client.graph = _ScriptedGraph(
+        {
+            '刚刚那次和上次比哪个好': (
+                [
+                    (
+                        'compare_training_runs',
+                        {
+                            'ok': True,
+                            'summary': '最近一次训练相对上一次 precision 更高，但 recall 更低。',
+                            'left_run': {'run_id': 'train_log_new', 'summary': 'new'},
+                            'right_run': {'run_id': 'train_log_old', 'summary': 'old'},
+                            'signals': ['latest_run_more_conservative'],
+                            'highlights': ['precision 上升', 'recall 下降'],
+                            'next_actions': ['结合任务目标决定是否继续补召回'],
+                        },
+                    ),
+                ],
+                '最近一次训练相对上一次 precision 更高，但 recall 更低。',
+            )
+        }
+    )  # type: ignore[assignment]
+    assert await client._try_handle_mainline_intent('刚刚那次和上次比哪个好？', 'thread-chaos-p1-c48') is None
     turn = await client.chat('刚刚那次和上次比哪个好？')
     assert turn['status'] == 'completed', turn
     assert 'precision 更高' in turn['message'] or 'recall 更低' in turn['message']
-    assert calls[0][0] == 'compare_training_runs'
-    assert len(calls) == 1
+    assert client.graph.calls == [('compare_training_runs', {})]
 
 
 async def _scenario_c49_best_run_followup_routes_selection() -> None:
     client = _make_client('chaos-p1-c49')
-    calls: list[tuple[str, dict[str, Any]]] = []
-
-    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
-        calls.append((tool_name, dict(kwargs)))
-        if tool_name == 'select_best_training_run':
-            result = {
-                'ok': True,
-                'summary': '最近最值得参考的训练是 train_log_best。',
-                'best_run': {'run_id': 'train_log_best', 'summary': 'best run'},
-                'candidates': [{'run_id': 'train_log_best'}, {'run_id': 'train_log_prev'}],
-                'signals': ['analysis_ready_run'],
-                'next_actions': ['基于最佳训练继续分析或做后续决策'],
-            }
-        elif tool_name == 'analyze_training_outcome':
-            result = {
-                'ok': True,
-                'summary': 'train_log_best 当前是最值得参考的一次训练。',
-                'assessment': 'best_recent_run',
-                'signals': ['best_recent_run'],
-                'matched_rule_ids': ['workflow_best_run'],
-            }
-        else:
-            raise AssertionError(tool_name)
-        client._apply_to_state(tool_name, result, kwargs)
-        return result
-
-    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
-
+    client.graph = _ScriptedGraph(
+        {
+            '最近哪次最值得参考，怎么看': (
+                [
+                    (
+                        'select_best_training_run',
+                        {
+                            'ok': True,
+                            'summary': '最近最值得参考的训练是 train_log_best。',
+                            'best_run': {'run_id': 'train_log_best', 'summary': 'best run'},
+                            'candidates': [{'run_id': 'train_log_best'}, {'run_id': 'train_log_prev'}],
+                            'signals': ['analysis_ready_run'],
+                            'next_actions': ['基于最佳训练继续分析或做后续决策'],
+                        },
+                    ),
+                    (
+                        'analyze_training_outcome',
+                        {
+                            'ok': True,
+                            'summary': 'train_log_best 当前是最值得参考的一次训练。',
+                            'assessment': 'best_recent_run',
+                            'signals': ['best_recent_run'],
+                            'matched_rule_ids': ['workflow_best_run'],
+                        },
+                    ),
+                ],
+                'train_log_best 当前是最值得参考的一次训练。',
+            )
+        }
+    )  # type: ignore[assignment]
+    assert await client._try_handle_mainline_intent('最近哪次最值得参考，怎么看？', 'thread-chaos-p1-c49') is None
     turn = await client.chat('最近哪次最值得参考，怎么看？')
     assert turn['status'] == 'completed', turn
     assert 'train_log_best' in turn['message']
-    assert calls[0][0] == 'select_best_training_run'
-    assert calls[1][0] == 'analyze_training_outcome'
+    assert client.graph.calls == [('select_best_training_run', {}), ('analyze_training_outcome', {})]
 
 
 async def _scenario_c50_evidence_question_uses_state_facts() -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import sys
 import types
@@ -169,11 +170,128 @@ except Exception:
     sys.modules['langgraph.checkpoint.memory'] = checkpoint_mod
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from langchain_core.messages import AIMessage, ToolMessage
 
 
-class _DummyGraph:
+class _FakeGraph:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
     def get_state(self, config):
         return None
+
+    async def ainvoke(self, payload, config=None):
+        del config
+        messages = list(payload['messages'])
+        user_text = ''
+        for message in reversed(messages):
+            content = getattr(message, 'content', '')
+            if isinstance(content, str) and content:
+                user_text = content
+                break
+
+        summary_result = {
+            'ok': True,
+            'summary': '训练结果汇总: 最近一次训练已完成，并且已有可分析指标。',
+            'run_state': 'completed',
+            'analysis_ready': True,
+            'metrics': {'precision': 0.82, 'recall': 0.36, 'map50': 0.33, 'map': 0.18},
+            'signals': ['training_completed', 'high_precision_low_recall'],
+            'facts': ['precision=0.820', 'recall=0.360'],
+            'next_actions': ['可继续调用 analyze_training_outcome 解释训练效果'],
+        }
+        compare_result = {
+            'ok': True,
+            'summary': '训练对比完成: train_log_200 相比 train_log_100，precision提升 +0.1000',
+            'left_run_id': 'train_log_200',
+            'right_run_id': 'train_log_100',
+            'left_run': {
+                'run_id': 'train_log_200',
+                'run_state': 'completed',
+                'observation_stage': 'final',
+                'metrics': {'precision': 0.82, 'recall': 0.36, 'map50': 0.33, 'map': 0.18},
+                'signals': ['training_completed', 'high_precision_low_recall'],
+            },
+            'right_run': {
+                'run_id': 'train_log_100',
+                'run_state': 'completed',
+                'observation_stage': 'final',
+                'metrics': {'precision': 0.72, 'recall': 0.35, 'map50': 0.27, 'map': 0.14},
+            },
+            'metric_deltas': {'precision': {'left': 0.82, 'right': 0.72, 'delta': 0.1}},
+            'highlights': ['precision提升 +0.1000'],
+            'next_actions': ['可继续调用 recommend_next_training_step'],
+        }
+        analysis_result = {
+            'ok': True,
+            'summary': '训练结果分析: 当前更像漏检问题。',
+            'assessment': 'inspect_missed_samples',
+            'interpretation': '当前 precision 高、recall 低，更像漏检偏多。',
+            'recommendation': '先检查漏检样本。',
+            'matched_rule_ids': ['generic_post_high_precision_low_recall'],
+            'signals': ['high_precision_low_recall'],
+            'facts': ['precision=0.820', 'recall=0.360'],
+            'next_actions': ['检查漏检样本', '确认是否存在漏标'],
+        }
+        next_step_result = {
+            'ok': True,
+            'summary': '下一步建议: 优先保持小步迭代。',
+            'recommended_action': 'quick_iteration',
+            'basis': ['样本量=120'],
+            'why': '当前数据量偏小，更适合先做短周期验证。',
+            'matched_rule_ids': ['generic_next_small_dataset_fast_iteration'],
+            'signals': ['small_dataset'],
+            'next_actions': ['先做一次短周期训练', '记录失败样本后再补数据'],
+        }
+        retrieval_result = {
+            'ok': True,
+            'summary': '知识检索完成: 命中 1 条规则',
+            'topic': 'training_metrics',
+            'stage': 'post_training',
+            'model_family': 'yolo',
+            'matched_rule_ids': ['generic_post_high_precision_low_recall'],
+            'matched_rules': [
+                {
+                    'id': 'generic_post_high_precision_low_recall',
+                    'interpretation': '模型偏保守，漏检偏多。',
+                    'next_actions': ['先检查漏检样本'],
+                }
+            ],
+            'playbooks': [],
+            'next_actions': ['先检查漏检样本'],
+        }
+
+        tool_plan: list[tuple[str, dict[str, Any]]] = []
+        final_text = ''
+        if 'precision 高 recall 低说明什么' in user_text:
+            tool_plan = [('retrieve_training_knowledge', retrieval_result)]
+            final_text = '知识检索完成: 命中 1 条规则'
+        elif '这次训练效果怎么样' in user_text:
+            tool_plan = [('summarize_training_run', summary_result), ('analyze_training_outcome', analysis_result)]
+            final_text = '训练结果汇总: 最近一次训练已完成，并且已有可分析指标。\n\n训练结果分析: 当前更像漏检问题。'
+        elif '下一步先补数据还是先调参数' in user_text:
+            tool_plan = [('summarize_training_run', summary_result), ('recommend_next_training_step', next_step_result)]
+            final_text = '训练结果汇总: 最近一次训练已完成，并且已有可分析指标。\n\n下一步建议: 优先保持小步迭代。\n建议动作: quick_iteration'
+        elif '对比最近两次训练后下一步怎么做' in user_text:
+            tool_plan = [('compare_training_runs', compare_result), ('recommend_next_training_step', next_step_result)]
+            final_text = '训练对比完成: train_log_200 相比 train_log_100，precision提升 +0.1000\n\n下一步建议: 优先保持小步迭代。\n建议动作: quick_iteration'
+        elif '对比最近两次训练效果怎么看' in user_text:
+            tool_plan = [('compare_training_runs', compare_result), ('analyze_training_outcome', analysis_result)]
+            final_text = '训练对比完成: train_log_200 相比 train_log_100，precision提升 +0.1000\n\n训练结果分析: 当前更像漏检问题。'
+        else:
+            raise AssertionError(f'unexpected graph prompt: {user_text}')
+
+        tool_messages: list[Any] = []
+        for tool_name, result in tool_plan:
+            self.calls.append((tool_name, {}))
+            tool_call_id = f'call-{len(self.calls)}'
+            tool_messages.extend(
+                [
+                    AIMessage(content='', tool_calls=[{'id': tool_call_id, 'name': tool_name, 'args': {}}]),
+                    ToolMessage(content=json.dumps(result, ensure_ascii=False), name=tool_name, tool_call_id=tool_call_id),
+                ]
+            )
+        return {'messages': messages + tool_messages + [AIMessage(content=final_text)]}
 
 
 WORK = Path(__file__).resolve().parent / '_tmp_knowledge_route'
@@ -184,7 +302,8 @@ async def _run() -> None:
     WORK.mkdir(parents=True, exist_ok=True)
     try:
         settings = AgentSettings(session_id='knowledge-route-smoke', memory_root=str(WORK))
-        client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+        graph = _FakeGraph()
+        client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
         calls: list[tuple[str, dict[str, Any]]] = []
 
         async def _fake_direct_tool(tool_name: str, **kwargs: Any):
@@ -331,44 +450,44 @@ async def _run() -> None:
         assert calls[0][0] == 'dataset_training_readiness'
         assert calls[1][0] == 'recommend_next_training_step'
 
-        routed2 = await client._try_handle_mainline_intent('precision 高 recall 低说明什么？', 'thread-2')
-        assert routed2 is not None
+        knowledge_prompt = 'precision 高 recall 低说明什么？'
+        assert await client._try_handle_mainline_intent(knowledge_prompt, 'thread-2') is None
+        routed2 = await client.chat(knowledge_prompt)
         assert routed2['status'] == 'completed'
         assert '知识检索完成' in routed2['message']
-        assert calls[-1][0] == 'retrieve_training_knowledge'
+        assert graph.calls[-1] == ('retrieve_training_knowledge', {})
 
-        routed3 = await client._try_handle_mainline_intent('这次训练效果怎么样？', 'thread-3')
-        assert routed3 is not None
+        analysis_prompt = '这次训练效果怎么样？'
+        assert await client._try_handle_mainline_intent(analysis_prompt, 'thread-3') is None
+        routed3 = await client.chat(analysis_prompt)
         assert routed3['status'] == 'completed'
         assert '训练结果汇总' in routed3['message']
         assert '训练结果分析' in routed3['message']
-        assert calls[-2][0] == 'summarize_training_run'
-        assert calls[-1][0] == 'analyze_training_outcome'
+        assert graph.calls[-2:] == [('summarize_training_run', {}), ('analyze_training_outcome', {})]
 
-        routed4 = await client._try_handle_mainline_intent('下一步先补数据还是先调参数？', 'thread-4')
-        assert routed4 is not None
+        next_step_prompt = '下一步先补数据还是先调参数？'
+        assert await client._try_handle_mainline_intent(next_step_prompt, 'thread-4') is None
+        routed4 = await client.chat(next_step_prompt)
         assert routed4['status'] == 'completed'
         assert '训练结果汇总' in routed4['message']
         assert '建议动作' in routed4['message']
-        assert calls[-3][0] == 'training_readiness'
-        assert calls[-2][0] == 'summarize_training_run'
-        assert calls[-1][0] == 'recommend_next_training_step'
+        assert graph.calls[-2:] == [('summarize_training_run', {}), ('recommend_next_training_step', {})]
 
-        routed5 = await client._try_handle_mainline_intent('对比最近两次训练后下一步怎么做？', 'thread-5')
-        assert routed5 is not None
+        compare_next_prompt = '对比最近两次训练后下一步怎么做？'
+        assert await client._try_handle_mainline_intent(compare_next_prompt, 'thread-5') is None
+        routed5 = await client.chat(compare_next_prompt)
         assert routed5['status'] == 'completed'
         assert '训练对比完成' in routed5['message']
         assert '建议动作' in routed5['message']
-        assert calls[-2][0] == 'compare_training_runs'
-        assert calls[-1][0] == 'recommend_next_training_step'
+        assert graph.calls[-2:] == [('compare_training_runs', {}), ('recommend_next_training_step', {})]
 
-        routed6 = await client._try_handle_mainline_intent('对比最近两次训练效果怎么看？', 'thread-6')
-        assert routed6 is not None
+        compare_analysis_prompt = '对比最近两次训练效果怎么看？'
+        assert await client._try_handle_mainline_intent(compare_analysis_prompt, 'thread-6') is None
+        routed6 = await client.chat(compare_analysis_prompt)
         assert routed6['status'] == 'completed'
         assert '训练对比完成' in routed6['message']
         assert '训练结果分析' in routed6['message']
-        assert calls[-2][0] == 'compare_training_runs'
-        assert calls[-1][0] == 'analyze_training_outcome'
+        assert graph.calls[-2:] == [('compare_training_runs', {}), ('analyze_training_outcome', {})]
         print('knowledge route smoke ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)

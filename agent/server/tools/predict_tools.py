@@ -472,7 +472,11 @@ def check_realtime_prediction_status(session_id: str = '') -> dict[str, Any]:
 
 
 def stop_realtime_prediction(session_id: str = '') -> dict[str, Any]:
-    """停止当前或指定实时预测会话，并返回最终统计。"""
+    """停止当前或指定实时预测会话，并返回最终统计。
+
+    适用: “停止实时预测”“停掉摄像头预测”“终止 RTSP 实时检测”。
+    不适用: 查询进度请用 check_realtime_prediction_status；停止普通训练请用 stop_training。
+    """
     result = _wrap(
         '实时预测停止',
         service.stop_realtime_prediction,

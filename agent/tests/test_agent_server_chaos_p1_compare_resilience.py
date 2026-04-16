@@ -13,8 +13,7 @@ if __package__ in {None, ''}:
         if path not in sys.path:
             sys.path.insert(0, path)
 
-from yolostudio_agent.agent.tests.test_agent_server_chaos_p0 import WORK as P0_WORK
-from yolostudio_agent.agent.tests.test_agent_server_chaos_p0 import _make_client
+from yolostudio_agent.agent.tests._chaos_test_support import WORK as P0_WORK, _ScriptedGraph, _make_client
 from yolostudio_agent.agent.tests._coroutine_runner import run
 
 
@@ -47,6 +46,24 @@ def _install_compare_tools(client):
 async def _scenario_c96_rerun_last_comparison_surfaces_missing_run() -> None:
     client = _fresh_client('chaos-p1-c96')
     calls = _install_compare_tools(client)
+    client.graph = _ScriptedGraph(
+        {
+            '刚才那个对比再比较一次': (
+                [
+                    (
+                        'compare_training_runs',
+                        {
+                            'ok': False,
+                            'summary': '训练对比失败：缺少训练记录 train_log_100。',
+                            'error': '缺少训练记录 train_log_100。',
+                            'missing_run_id': 'train_log_100',
+                        },
+                    )
+                ],
+                '训练对比失败：缺少训练记录 train_log_100。',
+            )
+        }
+    )  # type: ignore[assignment]
     client.session_state.active_training.last_run_comparison = {
         'left_run': {'run_id': 'train_log_200'},
         'right_run': {'run_id': 'train_log_100'},
@@ -54,9 +71,11 @@ async def _scenario_c96_rerun_last_comparison_surfaces_missing_run() -> None:
     }
     client.memory.save_state(client.session_state)
 
+    assert await client._try_handle_mainline_intent('刚才那个对比再比较一次。', 'thread-chaos-p1-c96') is None
     turn = await client.chat('刚才那个对比再比较一次。')
-    assert turn['status'] == 'error', turn
-    assert calls == [('compare_training_runs', {'left_run_id': 'train_log_200', 'right_run_id': 'train_log_100'})]
+    assert turn['status'] == 'completed', turn
+    assert client.graph.calls == [('compare_training_runs', {})], client.graph.calls
+    assert calls == []
     assert '缺少训练记录 train_log_100' in turn['message']
 
 

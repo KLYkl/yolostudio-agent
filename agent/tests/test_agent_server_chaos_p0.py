@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import shutil
 import sys
-import types
 from pathlib import Path
 from typing import Any
 
@@ -14,156 +13,8 @@ if __package__ in {None, ''}:
         if path not in sys.path:
             sys.path.insert(0, path)
 
-def _install_fake_test_dependencies() -> None:
-    fake_openai = types.ModuleType('langchain_openai')
-
-    class _FakeChatOpenAI:
-        def __init__(self, *args, **kwargs):
-            self.args = args
-            self.kwargs = kwargs
-
-    fake_openai.ChatOpenAI = _FakeChatOpenAI
-    sys.modules['langchain_openai'] = fake_openai
-
-    fake_ollama = types.ModuleType('langchain_ollama')
-
-    class _FakeChatOllama:
-        def __init__(self, *args, **kwargs):
-            self.args = args
-            self.kwargs = kwargs
-
-    fake_ollama.ChatOllama = _FakeChatOllama
-    sys.modules['langchain_ollama'] = fake_ollama
-
-    core_mod = types.ModuleType('langchain_core')
-    messages_mod = types.ModuleType('langchain_core.messages')
-    tools_mod = types.ModuleType('langchain_core.tools')
-
-    class _BaseMessage:
-        def __init__(self, content=''):
-            self.content = content
-
-    class _AIMessage(_BaseMessage):
-        def __init__(self, content='', tool_calls=None):
-            super().__init__(content)
-            self.tool_calls = tool_calls or []
-
-    class _HumanMessage(_BaseMessage):
-        pass
-
-    class _SystemMessage(_BaseMessage):
-        pass
-
-    class _ToolMessage(_BaseMessage):
-        def __init__(self, content='', name='', tool_call_id=''):
-            super().__init__(content)
-            self.name = name
-            self.tool_call_id = tool_call_id
-
-    class _BaseTool:
-        name = 'fake'
-        description = 'fake'
-        args_schema = None
-
-    class _StructuredTool(_BaseTool):
-        @classmethod
-        def from_function(cls, func=None, coroutine=None, name='', description='', args_schema=None, return_direct=False):
-            tool = cls()
-            tool.func = func
-            tool.coroutine = coroutine
-            tool.name = name
-            tool.description = description
-            tool.args_schema = args_schema
-            tool.return_direct = return_direct
-            return tool
-
-    messages_mod.AIMessage = _AIMessage
-    messages_mod.BaseMessage = _BaseMessage
-    messages_mod.HumanMessage = _HumanMessage
-    messages_mod.SystemMessage = _SystemMessage
-    messages_mod.ToolMessage = _ToolMessage
-    tools_mod.BaseTool = _BaseTool
-    tools_mod.StructuredTool = _StructuredTool
-    core_mod.messages = messages_mod
-    core_mod.tools = tools_mod
-    sys.modules['langchain_core'] = core_mod
-    sys.modules['langchain_core.messages'] = messages_mod
-    sys.modules['langchain_core.tools'] = tools_mod
-
-    client_mod = types.ModuleType('langchain_mcp_adapters.client')
-
-    class _FakeMCPClient:
-        def __init__(self, *args, **kwargs):
-            self.args = args
-            self.kwargs = kwargs
-
-        async def get_tools(self):
-            return []
-
-    client_mod.MultiServerMCPClient = _FakeMCPClient
-    sys.modules['langchain_mcp_adapters.client'] = client_mod
-
-    pyd_mod = types.ModuleType('pydantic')
-
-    class _BaseModel:
-        def __init__(self, **kwargs):
-            for key, value in kwargs.items():
-                setattr(self, key, value)
-
-    def _Field(default=None, description='', **kwargs):
-        del description, kwargs
-        return default
-
-    pyd_mod.BaseModel = _BaseModel
-    pyd_mod.Field = _Field
-    sys.modules['pydantic'] = pyd_mod
-
-    prebuilt_mod = types.ModuleType('langgraph.prebuilt')
-    types_mod = types.ModuleType('langgraph.types')
-    checkpoint_mod = types.ModuleType('langgraph.checkpoint.memory')
-
-    def _fake_create_react_agent(*args, **kwargs):
-        raise AssertionError('create_react_agent should not be called in chaos tests')
-
-    class _Command:
-        def __init__(self, resume=None):
-            self.resume = resume
-
-    class _InMemorySaver:
-        def __init__(self, *args, **kwargs):
-            self.storage = {}
-            self.writes = {}
-            self.blobs = {}
-
-    prebuilt_mod.create_react_agent = _fake_create_react_agent
-    types_mod.Command = _Command
-    checkpoint_mod.InMemorySaver = _InMemorySaver
-    sys.modules['langgraph.prebuilt'] = prebuilt_mod
-    sys.modules['langgraph.types'] = types_mod
-    sys.modules['langgraph.checkpoint.memory'] = checkpoint_mod
-
-
-_install_fake_test_dependencies()
-
-from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from yolostudio_agent.agent.tests._chaos_test_support import WORK, _ScriptedGraph, _make_client
 from yolostudio_agent.agent.tests._coroutine_runner import run
-
-
-class _NoLLMGraph:
-    def get_state(self, config):
-        return None
-
-    async def ainvoke(self, *args, **kwargs):
-        raise AssertionError('chaos P0 cases should stay on routed flows, not fallback to graph')
-
-
-WORK = Path(__file__).resolve().parent / '_tmp_agent_server_chaos_p0'
-
-
-def _make_client(session_id: str) -> YoloStudioAgentClient:
-    root = WORK / session_id
-    settings = AgentSettings(session_id=session_id, memory_root=str(root))
-    return YoloStudioAgentClient(graph=_NoLLMGraph(), settings=settings, tool_registry={})
 
 
 async def _scenario_c01_missing_everything_blocks_without_graph() -> None:
@@ -503,6 +354,32 @@ async def _scenario_c51_missing_environment_blocks_start() -> None:
 
 async def _scenario_c61_prediction_interrupt_preserves_training_plan() -> None:
     client = _make_client('chaos-p0-c61')
+    client.graph = _ScriptedGraph(
+        {
+            '先帮我预测这两个视频 /data/videos，用 /models/qcar.pt。': (
+                [
+                    (
+                        'predict_videos',
+                        {
+                            'ok': True,
+                            'summary': '视频预测完成: 已处理 2 个视频, 有检测帧 13, 总检测框 15，主要类别 two_wheeler=15',
+                            'model': '/models/qcar.pt',
+                            'source_path': '/data/videos',
+                            'processed_videos': 2,
+                            'total_frames': 24,
+                            'detected_frames': 13,
+                            'total_detections': 15,
+                            'class_counts': {'two_wheeler': 15},
+                            'output_dir': '/tmp/predict-chaos',
+                            'report_path': '/tmp/predict-chaos/report.json',
+                            'warnings': [],
+                        },
+                    )
+                ],
+                '视频预测完成: 已处理 2 个视频, 有检测帧 13, 总检测框 15，主要类别 two_wheeler=15',
+            )
+        }
+    )
     calls: list[tuple[str, dict[str, Any]]] = []
 
     async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
@@ -568,6 +445,7 @@ async def _scenario_c61_prediction_interrupt_preserves_training_plan() -> None:
     turn1 = await client.chat('数据在 /data/train-plan，用 yolov8n.pt 训练 20轮，先给我计划，不要执行。')
     assert turn1['status'] == 'completed', turn1
     draft_before = dict(client.session_state.active_training.training_plan_draft)
+    assert await client._try_handle_mainline_intent('先帮我预测这两个视频 /data/videos，用 /models/qcar.pt。', 'thread-chaos-p0-c61-predict') is None
     turn2 = await client.chat('先帮我预测这两个视频 /data/videos，用 /models/qcar.pt。')
     assert turn2['status'] == 'completed', turn2
     assert '视频预测完成' in turn2['message']
@@ -741,6 +619,15 @@ async def _scenario_c91_reloaded_session_keeps_status_context() -> None:
 
 async def _scenario_c22_stop_then_replan_restart() -> None:
     client = _make_client('chaos-p0-c22')
+    stop_graph = _ScriptedGraph(
+        {
+            '先停训练': (
+                [('stop_training', {'ok': True, 'summary': '训练已停止。', 'run_state': 'stopped'})],
+                '训练已停止。',
+            )
+        }
+    )
+    client.graph = stop_graph
     client.session_state.active_training.running = True
     client.session_state.active_training.pid = 7777
     client.session_state.active_training.model = 'yolov8n.pt'
@@ -798,6 +685,7 @@ async def _scenario_c22_stop_then_replan_restart() -> None:
     turn1 = await client.chat('先停训练。')
     assert turn1['status'] == 'completed', turn1
     assert '训练已停止' in turn1['message']
+    assert stop_graph.calls == [('stop_training', {})]
     assert client.session_state.active_training.running is False
 
     turn2 = await client.chat('现在重新开始训练。数据在 /data/restart，用 yolov8n.pt 训练 18轮，先给我计划。')
@@ -839,42 +727,45 @@ async def _scenario_c42_stopped_status_is_not_completed() -> None:
 
 async def _scenario_c43_failed_outcome_analysis_stays_grounded() -> None:
     client = _make_client('chaos-p0-c43')
-    calls: list[tuple[str, dict[str, Any]]] = []
-
-    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
-        calls.append((tool_name, dict(kwargs)))
-        if tool_name == 'summarize_training_run':
-            result = {
-                'ok': True,
-                'summary': '训练已失败：当前只有部分日志事实。',
-                'run_state': 'failed',
-                'analysis_ready': False,
-                'minimum_facts_ready': False,
-                'metrics': {},
-                'signals': ['failed_run', 'metrics_missing'],
-                'facts': ['训练进程失败退出'],
-                'next_actions': ['先检查日志和环境错误'],
-            }
-        elif tool_name == 'analyze_training_outcome':
-            result = {
-                'ok': True,
-                'summary': '当前无法判断训练效果优劣；先处理失败原因再谈效果。',
-                'signals': ['failed_run', 'insufficient_facts'],
-                'next_actions': ['先检查失败原因'],
-            }
-        else:
-            raise AssertionError(tool_name)
-        client._apply_to_state(tool_name, result, kwargs)
-        return result
-
-    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+    graph = _ScriptedGraph(
+        {
+            '这次训练效果怎么样': (
+                [
+                    (
+                        'summarize_training_run',
+                        {
+                            'ok': True,
+                            'summary': '训练已失败：当前只有部分日志事实。',
+                            'run_state': 'failed',
+                            'analysis_ready': False,
+                            'minimum_facts_ready': False,
+                            'metrics': {},
+                            'signals': ['failed_run', 'metrics_missing'],
+                            'facts': ['训练进程失败退出'],
+                            'next_actions': ['先检查日志和环境错误'],
+                        },
+                    ),
+                    (
+                        'analyze_training_outcome',
+                        {
+                            'ok': True,
+                            'summary': '当前无法判断训练效果优劣；先处理失败原因再谈效果。',
+                            'signals': ['failed_run', 'insufficient_facts'],
+                            'next_actions': ['先检查失败原因'],
+                        },
+                    ),
+                ],
+                '训练已失败：当前只有部分日志事实。\n\n当前无法判断训练效果优劣；先处理失败原因再谈效果。',
+            )
+        }
+    )
+    client.graph = graph
 
     turn = await client.chat('这次训练效果怎么样？')
     assert turn['status'] == 'completed', turn
     assert '训练已失败' in turn['message']
     assert '无法判断训练效果优劣' in turn['message']
-    assert calls[0][0] == 'summarize_training_run'
-    assert calls[1][0] == 'analyze_training_outcome'
+    assert graph.calls == [('summarize_training_run', {}), ('analyze_training_outcome', {})]
 
 
 async def _scenario_c52_missing_weight_path_blocks_preflight() -> None:
@@ -1075,42 +966,45 @@ async def _scenario_c92_reloaded_session_can_continue_outcome_analysis() -> None
     client1.memory.save_state(client1.session_state)
 
     client2 = _make_client(session_id)
-    calls: list[tuple[str, dict[str, Any]]] = []
-
-    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
-        calls.append((tool_name, dict(kwargs)))
-        if tool_name == 'summarize_training_run':
-            result = {
-                'ok': True,
-                'summary': '训练已完成：precision=0.8 recall=0.6',
-                'run_state': 'completed',
-                'analysis_ready': True,
-                'minimum_facts_ready': True,
-                'metrics': {'precision': 0.8, 'recall': 0.6},
-                'signals': ['completed_run'],
-                'facts': ['训练已完成'],
-                'next_actions': ['继续分析结果'],
-            }
-        elif tool_name == 'analyze_training_outcome':
-            result = {
-                'ok': True,
-                'summary': '这次训练已经可分析，当前更像召回偏低。',
-                'signals': ['low_recall'],
-                'next_actions': ['优先补召回相关数据'],
-            }
-        else:
-            raise AssertionError(tool_name)
-        client2._apply_to_state(tool_name, result, kwargs)
-        return result
-
-    client2.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+    graph = _ScriptedGraph(
+        {
+            '那现在效果怎么样': (
+                [
+                    (
+                        'summarize_training_run',
+                        {
+                            'ok': True,
+                            'summary': '训练已完成：precision=0.8 recall=0.6',
+                            'run_state': 'completed',
+                            'analysis_ready': True,
+                            'minimum_facts_ready': True,
+                            'metrics': {'precision': 0.8, 'recall': 0.6},
+                            'signals': ['completed_run'],
+                            'facts': ['训练已完成'],
+                            'next_actions': ['继续分析结果'],
+                        },
+                    ),
+                    (
+                        'analyze_training_outcome',
+                        {
+                            'ok': True,
+                            'summary': '这次训练已经可分析，当前更像召回偏低。',
+                            'signals': ['low_recall'],
+                            'next_actions': ['优先补召回相关数据'],
+                        },
+                    ),
+                ],
+                '训练已完成：precision=0.8 recall=0.6\n\n这次训练已经可分析，当前更像召回偏低。',
+            )
+        }
+    )
+    client2.graph = graph
 
     turn = await client2.chat('那现在效果怎么样？')
     assert turn['status'] == 'completed', turn
     assert '训练已完成' in turn['message']
     assert '召回偏低' in turn['message']
-    assert calls[0][0] == 'summarize_training_run'
-    assert calls[1][0] == 'analyze_training_outcome'
+    assert graph.calls == [('summarize_training_run', {}), ('analyze_training_outcome', {})]
 
 
 async def _scenario_c04_vague_train_request_stays_blocked() -> None:

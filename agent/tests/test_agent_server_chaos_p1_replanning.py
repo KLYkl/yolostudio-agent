@@ -13,8 +13,7 @@ if __package__ in {None, ''}:
         if path not in sys.path:
             sys.path.insert(0, path)
 
-from yolostudio_agent.agent.tests.test_agent_server_chaos_p0 import WORK as P0_WORK
-from yolostudio_agent.agent.tests.test_agent_server_chaos_p0 import _make_client
+from yolostudio_agent.agent.tests._chaos_test_support import WORK as P0_WORK, _ScriptedGraph, _make_client
 from yolostudio_agent.agent.tests._coroutine_runner import run
 
 
@@ -61,15 +60,6 @@ def _install_training_plan_tools(client):
             }
         elif tool_name == 'start_training':
             raise AssertionError('P1 replanning suite must stop at confirmation, not auto-run start_training')
-        elif tool_name == 'extract_video_frames':
-            result = {
-                'ok': True,
-                'summary': '抽帧完成：已输出 20 帧。',
-                'output_dir': '/tmp/p1-frames',
-                'saved_frames': 20,
-                'source_path': kwargs.get('source_path'),
-                'warnings': [],
-            }
         else:
             raise AssertionError(tool_name)
         client._apply_to_state(tool_name, result, kwargs)
@@ -125,18 +115,39 @@ async def _scenario_c35_revise_before_execute() -> None:
 async def _scenario_c64_training_interrupt_extract_preserves_run() -> None:
     client = _fresh_client('chaos-p1-c64')
     calls = _install_training_plan_tools(client)
+    client.graph = _ScriptedGraph(
+        {
+            '再抽一版': (
+                [
+                    (
+                        'extract_video_frames',
+                        {
+                            'ok': True,
+                            'summary': '抽帧完成：已输出 20 帧。',
+                            'output_dir': '/tmp/p1-frames',
+                            'saved_frames': 20,
+                            'warnings': [],
+                        },
+                    )
+                ],
+                '抽帧完成：已输出 20 帧。',
+            )
+        }
+    )  # type: ignore[assignment]
     client.session_state.active_training.running = True
     client.session_state.active_training.pid = 9640
     client.session_state.active_training.model = 'yolov8n.pt'
     client.session_state.active_training.data_yaml = '/data/p1/data.yaml'
     client.memory.save_state(client.session_state)
 
+    assert await client._try_handle_mainline_intent('训练中，先把原视频 /data/raw.mp4 再抽一版。', 'thread-chaos-p1-c64') is None
     turn = await client.chat('训练中，先把原视频 /data/raw.mp4 再抽一版。')
     assert turn['status'] == 'completed', turn
     assert '抽帧完成' in turn['message']
     assert client.session_state.active_training.running is True
     assert client.session_state.active_training.pid == 9640
-    assert calls[-1][0] == 'extract_video_frames'
+    assert client.graph.calls == [('extract_video_frames', {})], client.graph.calls
+    assert all(name != 'training_readiness' for name, _ in calls), calls
 
 
 async def _scenario_c73_cannot_rewrite_failed_as_success() -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import sys
 import types
@@ -163,11 +164,36 @@ except Exception:
     sys.modules['langgraph.checkpoint.memory'] = checkpoint_mod
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from langchain_core.messages import AIMessage, ToolMessage
 
 
 class _DummyGraph:
     def get_state(self, config):
         return None
+
+
+class _ScriptedGraph:
+    def __init__(self, script) -> None:
+        self.script = script
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def get_state(self, config):
+        return None
+
+    async def ainvoke(self, payload, config=None):
+        del config
+        messages = list(payload['messages'])
+        tool_name, args, result, final_text = self.script(messages)
+        self.calls.append((tool_name, dict(args)))
+        tool_call_id = f'call-{len(self.calls)}'
+        messages.extend(
+            [
+                AIMessage(content='', tool_calls=[{'id': tool_call_id, 'name': tool_name, 'args': args}]),
+                ToolMessage(content=json.dumps(result, ensure_ascii=False), name=tool_name, tool_call_id=tool_call_id),
+                AIMessage(content=final_text),
+            ]
+        )
+        return {'messages': messages}
 
 
 WORK = Path(__file__).resolve().parent / '_tmp_training_loop_client_roundtrip'
@@ -178,7 +204,50 @@ async def _run() -> None:
     WORK.mkdir(parents=True, exist_ok=True)
     try:
         settings = AgentSettings(session_id='training-loop-client-roundtrip', memory_root=str(WORK))
-        client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+        def _graph_script(messages):
+            user_text = ''
+            for message in reversed(messages):
+                content = getattr(message, 'content', '')
+                if isinstance(content, str) and content:
+                    user_text = content
+                    break
+            if '环训练状态怎么样' in user_text:
+                return (
+                    'check_training_loop_status',
+                    {'loop_id': 'loop-123'},
+                    {
+                        'ok': True,
+                        'summary': '第 2 轮训练已完成，准备下一轮',
+                        'loop_id': 'loop-123',
+                        'loop_name': 'helmet-loop',
+                        'status': 'awaiting_review',
+                        'current_round_index': 2,
+                        'max_rounds': 3,
+                        'best_round_index': 2,
+                        'best_target_metric': 0.68,
+                        'latest_round_card': {
+                            'round_index': 2,
+                            'status': 'completed',
+                            'vs_previous': {'highlights': ['mAP50提升 +0.0300']},
+                            'next_plan': {'change_set': [{'field': 'epochs', 'old': 30, 'new': 40}]},
+                        },
+                    },
+                    '第 2 轮训练已完成，准备下一轮\n当前最佳轮: 第 2 轮',
+                )
+            return (
+                'pause_training_loop',
+                {'loop_id': 'loop-123'},
+                {
+                    'ok': True,
+                    'summary': '已记录暂停请求：当前第 2 轮结束后将停住',
+                    'loop_id': 'loop-123',
+                    'status': 'awaiting_review',
+                },
+                '已记录暂停请求：当前第 2 轮结束后将停住',
+            )
+
+        graph = _ScriptedGraph(_graph_script)
+        client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
         calls: list[tuple[str, dict[str, Any]]] = []
 
         async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
@@ -218,31 +287,6 @@ async def _run() -> None:
                     },
                     'next_round_plan': {'round_index': 1, 'change_set': []},
                 }
-            elif tool_name == 'check_training_loop_status':
-                result = {
-                    'ok': True,
-                    'summary': '第 2 轮训练已完成，准备下一轮',
-                    'loop_id': 'loop-123',
-                    'loop_name': 'helmet-loop',
-                    'status': 'awaiting_review',
-                    'current_round_index': 2,
-                    'max_rounds': 3,
-                    'best_round_index': 2,
-                    'best_target_metric': 0.68,
-                    'latest_round_card': {
-                        'round_index': 2,
-                        'status': 'completed',
-                        'vs_previous': {'highlights': ['mAP50提升 +0.0300']},
-                        'next_plan': {'change_set': [{'field': 'epochs', 'old': 30, 'new': 40}]},
-                    },
-                }
-            elif tool_name == 'pause_training_loop':
-                result = {
-                    'ok': True,
-                    'summary': '已记录暂停请求：当前第 2 轮结束后将停住',
-                    'loop_id': 'loop-123',
-                    'status': 'awaiting_review',
-                }
             else:
                 raise AssertionError(f'unexpected tool call: {tool_name}')
 
@@ -268,15 +312,17 @@ async def _run() -> None:
         assert client.session_state.active_training.active_loop_id == 'loop-123'
         assert client.session_state.active_training.active_loop_status == 'queued'
 
+        assert await client._try_handle_mainline_intent('环训练状态怎么样？', 'thread-loop-status') is None
         turn3 = await client.chat('环训练状态怎么样？')
         assert turn3['status'] == 'completed', turn3
-        assert calls[-1][0] == 'check_training_loop_status'
+        assert graph.calls[-1][0] == 'check_training_loop_status'
         assert '当前最佳轮: 第 2 轮' in turn3['message']
         assert client.session_state.active_training.active_loop_status == 'awaiting_review'
 
+        assert await client._try_handle_mainline_intent('这一轮结束后停住', 'thread-loop-pause') is None
         turn4 = await client.chat('这一轮结束后停住')
         assert turn4['status'] == 'completed', turn4
-        assert calls[-1][0] == 'pause_training_loop'
+        assert graph.calls[-1] == ('pause_training_loop', {'loop_id': 'loop-123'}), graph.calls
         assert '暂停请求' in turn4['message']
 
         print('training loop client roundtrip ok')

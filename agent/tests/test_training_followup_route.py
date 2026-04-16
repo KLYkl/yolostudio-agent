@@ -145,6 +145,7 @@ def _install_fake_test_dependencies() -> None:
 
 _install_fake_test_dependencies()
 
+from langchain_core.messages import AIMessage
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
 
 
@@ -154,6 +155,19 @@ class _NoLLMGraph:
 
     async def ainvoke(self, *args, **kwargs):
         raise AssertionError('training followup route should stay on routed flows, not fallback to graph')
+
+
+class _StaticReplyGraph:
+    def __init__(self, reply: str) -> None:
+        self.reply = reply
+
+    def get_state(self, config):
+        return None
+
+    async def ainvoke(self, payload, config=None):
+        del config
+        messages = list(payload['messages'])
+        return {'messages': messages + [AIMessage(content=self.reply)]}
 
 
 class _FakePlannerResponse:
@@ -357,6 +371,7 @@ async def _scenario_cached_next_step_followup_reuses_state() -> None:
 
 async def _scenario_cached_explicit_next_step_request_reuses_state() -> None:
     client = _make_client('next-step-request-cached')
+    client.graph = _StaticReplyGraph('建议下一步先修漏标样本，再小幅调整训练参数。')
     client.session_state.active_training.running = False
     client.session_state.active_training.last_status = {
         'summary': '训练已完成: map50=0.61',

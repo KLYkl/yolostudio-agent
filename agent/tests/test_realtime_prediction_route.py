@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 import types
@@ -146,6 +147,7 @@ _install_fake_test_dependencies()
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
 from yolostudio_agent.agent.tests._coroutine_runner import run
+from langchain_core.messages import AIMessage, ToolMessage
 
 
 class _NoLLMGraph:
@@ -154,6 +156,31 @@ class _NoLLMGraph:
 
     async def ainvoke(self, *args, **kwargs):
         raise AssertionError('realtime route should stay on routed flows, not fallback to graph')
+
+
+class _ScriptedGraph:
+    def __init__(self, script) -> None:
+        self.script = script
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def get_state(self, config):
+        return None
+
+    async def ainvoke(self, payload, config=None):
+        del config
+        messages = list(payload['messages'])
+        tool_name, args, result, final_text = self.script(messages)
+        if tool_name:
+            self.calls.append((tool_name, dict(args)))
+            tool_call_id = f'call-{len(self.calls)}'
+            messages.extend(
+                [
+                    AIMessage(content='', tool_calls=[{'id': tool_call_id, 'name': tool_name, 'args': args}]),
+                    ToolMessage(content=json.dumps(result, ensure_ascii=False), name=tool_name, tool_call_id=tool_call_id),
+                ]
+            )
+        messages.append(AIMessage(content=final_text))
+        return {'messages': messages}
 
 
 WORK = Path(__file__).resolve().parent / '_tmp_realtime_prediction_route'
@@ -174,150 +201,177 @@ class _FakePlannerLlm:
         return _FakePlannerResponse(self.reply)
 
 
-def _make_client(session_id: str) -> YoloStudioAgentClient:
+def _make_client(session_id: str, graph=None) -> YoloStudioAgentClient:
     root = WORK / session_id
     settings = AgentSettings(session_id=session_id, memory_root=str(root))
-    client = YoloStudioAgentClient(graph=_NoLLMGraph(), settings=settings, tool_registry={})
+    client = YoloStudioAgentClient(graph=graph or _NoLLMGraph(), settings=settings, tool_registry={})
     client.session_state.active_prediction.model = 'demo.pt'
     return client
 
 
 async def _scenario_scan_cameras_routes() -> None:
-    client = _make_client('scan-cameras')
-    calls: list[tuple[str, dict[str, Any]]] = []
+    def _scan_camera_script(messages):
+        return (
+            'scan_cameras',
+            {},
+            {
+                'ok': True,
+                'summary': '摄像头扫描完成: 发现 1 个可用摄像头',
+                'camera_count': 1,
+                'cameras': [{'id': 0, 'name': '摄像头 0'}],
+                'next_actions': ['如需开始实时预测，可继续调用 start_camera_prediction'],
+            },
+            '摄像头扫描完成: 发现 1 个可用摄像头\n摄像头 0',
+        )
 
-    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
-        calls.append((tool_name, dict(kwargs)))
-        result = {
-            'ok': True,
-            'summary': '摄像头扫描完成: 发现 1 个可用摄像头',
-            'camera_count': 1,
-            'cameras': [{'id': 0, 'name': '摄像头 0'}],
-            'next_actions': ['如需开始实时预测，可继续调用 start_camera_prediction'],
-        }
-        client._apply_to_state(tool_name, result, kwargs)
-        return result
-
-    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+    graph = _ScriptedGraph(_scan_camera_script)
+    client = _make_client('scan-cameras', graph=graph)
+    assert await client._try_handle_mainline_intent('先扫描可用摄像头。', 'thread-scan-cameras') is None
     turn = await client.chat('先扫描可用摄像头。')
     assert turn['status'] == 'completed', turn
-    assert calls == [('scan_cameras', {})], calls
+    assert graph.calls == [('scan_cameras', {})], graph.calls
     assert '摄像头 0' in turn['message'], turn
 
 
 async def _scenario_rtsp_probe_routes() -> None:
-    client = _make_client('rtsp-probe')
-    calls: list[tuple[str, dict[str, Any]]] = []
+    def _rtsp_probe_script(messages):
+        return (
+            'test_rtsp_stream',
+            {'rtsp_url': 'rtsp://demo/live', 'timeout_ms': 2000},
+            {
+                'ok': True,
+                'summary': 'RTSP 流测试通过：当前地址可连接并能读取视频帧',
+                'rtsp_url': 'rtsp://demo/live',
+                'next_actions': ['如需开始实时预测，可继续调用 start_rtsp_prediction'],
+            },
+            'RTSP 流测试通过：当前地址可连接并能读取视频帧\nrtsp://demo/live',
+        )
 
-    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
-        calls.append((tool_name, dict(kwargs)))
-        result = {
-            'ok': True,
-            'summary': 'RTSP 流测试通过：当前地址可连接并能读取视频帧',
-            'rtsp_url': kwargs['rtsp_url'],
-            'next_actions': ['如需开始实时预测，可继续调用 start_rtsp_prediction'],
-        }
-        client._apply_to_state(tool_name, result, kwargs)
-        return result
-
-    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+    graph = _ScriptedGraph(_rtsp_probe_script)
+    client = _make_client('rtsp-probe', graph=graph)
+    assert await client._try_handle_mainline_intent('测一下这个 RTSP 地址能不能用 rtsp://demo/live 超时 2 秒', 'thread-rtsp-probe') is None
     turn = await client.chat('测一下这个 RTSP 地址能不能用 rtsp://demo/live 超时 2 秒')
     assert turn['status'] == 'completed', turn
-    assert calls == [('test_rtsp_stream', {'rtsp_url': 'rtsp://demo/live', 'timeout_ms': 2000})], calls
+    assert graph.calls == [('test_rtsp_stream', {'rtsp_url': 'rtsp://demo/live', 'timeout_ms': 2000})], graph.calls
     assert 'rtsp://demo/live' in turn['message'], turn
 
 
 async def _scenario_start_camera_routes() -> None:
-    client = _make_client('start-camera')
-    calls: list[tuple[str, dict[str, Any]]] = []
+    def _start_camera_script(messages):
+        return (
+            'start_camera_prediction',
+            {'model': 'demo.pt', 'camera_id': 0, 'max_frames': 10},
+            {
+                'ok': True,
+                'summary': '实时预测已启动: camera 源 camera:0',
+                'session_id': 'realtime-camera-12345678',
+                'source_type': 'camera',
+                'source_label': 'camera:0',
+                'output_dir': '/tmp/realtime-camera',
+                'next_actions': ['可继续调用 check_realtime_prediction_status 查看实时进度'],
+            },
+            '实时预测已启动: camera 源 camera:0',
+        )
 
-    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
-        calls.append((tool_name, dict(kwargs)))
-        result = {
-            'ok': True,
-            'summary': '实时预测已启动: camera 源 camera:0',
-            'session_id': 'realtime-camera-12345678',
-            'source_type': 'camera',
-            'source_label': 'camera:0',
-            'output_dir': '/tmp/realtime-camera',
-            'next_actions': ['可继续调用 check_realtime_prediction_status 查看实时进度'],
-        }
-        client._apply_to_state(tool_name, result, kwargs)
-        return result
-
-    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+    graph = _ScriptedGraph(_start_camera_script)
+    client = _make_client('start-camera', graph=graph)
+    assert await client._try_handle_mainline_intent('用 0 号摄像头开始预测，最多 10 帧', 'thread-start-camera') is None
     turn = await client.chat('用 0 号摄像头开始预测，最多 10 帧')
     assert turn['status'] == 'completed', turn
-    assert calls == [('start_camera_prediction', {'model': 'demo.pt', 'camera_id': 0, 'max_frames': 10})], calls
-    assert 'realtime-camera-12345678' in turn['message'], turn
+    assert graph.calls == [('start_camera_prediction', {'model': 'demo.pt', 'camera_id': 0, 'max_frames': 10})], graph.calls
+    assert 'camera:0' in turn['message'], turn
     assert client.session_state.active_prediction.realtime_session_id == 'realtime-camera-12345678'
 
 
 async def _scenario_start_rtsp_routes() -> None:
-    client = _make_client('start-rtsp')
-    calls: list[tuple[str, dict[str, Any]]] = []
+    def _start_rtsp_script(messages):
+        return (
+            'start_rtsp_prediction',
+            {'model': 'demo.pt', 'rtsp_url': 'rtsp://demo/live', 'max_frames': 5},
+            {
+                'ok': True,
+                'summary': '实时预测已启动: rtsp 源 rtsp://demo/live',
+                'session_id': 'realtime-rtsp-12345678',
+                'source_type': 'rtsp',
+                'source_label': 'rtsp://demo/live',
+                'output_dir': '/tmp/realtime-rtsp',
+                'next_actions': ['可继续调用 check_realtime_prediction_status 查看实时进度'],
+            },
+            '实时预测已启动: rtsp 源 rtsp://demo/live',
+        )
 
-    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
-        calls.append((tool_name, dict(kwargs)))
-        result = {
-            'ok': True,
-            'summary': '实时预测已启动: rtsp 源 rtsp://demo/live',
-            'session_id': 'realtime-rtsp-12345678',
-            'source_type': 'rtsp',
-            'source_label': kwargs['rtsp_url'],
-            'output_dir': '/tmp/realtime-rtsp',
-            'next_actions': ['可继续调用 check_realtime_prediction_status 查看实时进度'],
-        }
-        client._apply_to_state(tool_name, result, kwargs)
-        return result
-
-    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+    graph = _ScriptedGraph(_start_rtsp_script)
+    client = _make_client('start-rtsp', graph=graph)
+    assert await client._try_handle_mainline_intent('用 rtsp://demo/live 开始预测，最多 5 帧', 'thread-start-rtsp') is None
     turn = await client.chat('用 rtsp://demo/live 开始预测，最多 5 帧')
     assert turn['status'] == 'completed', turn
-    assert calls == [('start_rtsp_prediction', {'model': 'demo.pt', 'rtsp_url': 'rtsp://demo/live', 'max_frames': 5})], calls
-    assert 'realtime-rtsp-12345678' in turn['message'], turn
+    assert graph.calls == [('start_rtsp_prediction', {'model': 'demo.pt', 'rtsp_url': 'rtsp://demo/live', 'max_frames': 5})], graph.calls
+    assert 'rtsp://demo/live' in turn['message'], turn
 
 
 async def _scenario_start_screen_routes() -> None:
-    client = _make_client('start-screen')
-    calls: list[tuple[str, dict[str, Any]]] = []
+    def _start_screen_script(messages):
+        return (
+            'start_screen_prediction',
+            {'model': 'demo.pt', 'screen_id': 2, 'max_frames': 20},
+            {
+                'ok': True,
+                'summary': '实时预测已启动: screen 源 screen:2',
+                'session_id': 'realtime-screen-12345678',
+                'source_type': 'screen',
+                'source_label': 'screen:2',
+                'output_dir': '/tmp/realtime-screen',
+                'next_actions': ['可继续调用 check_realtime_prediction_status 查看实时进度'],
+            },
+            '实时预测已启动: screen 源 screen:2',
+        )
 
-    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
-        calls.append((tool_name, dict(kwargs)))
-        result = {
-            'ok': True,
-            'summary': '实时预测已启动: screen 源 screen:2',
-            'session_id': 'realtime-screen-12345678',
-            'source_type': 'screen',
-            'source_label': 'screen:2',
-            'output_dir': '/tmp/realtime-screen',
-            'next_actions': ['可继续调用 check_realtime_prediction_status 查看实时进度'],
-        }
-        client._apply_to_state(tool_name, result, kwargs)
-        return result
-
-    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+    graph = _ScriptedGraph(_start_screen_script)
+    client = _make_client('start-screen', graph=graph)
+    assert await client._try_handle_mainline_intent('对 2 号屏幕开始预测，最多 20 帧', 'thread-start-screen') is None
     turn = await client.chat('对 2 号屏幕开始预测，最多 20 帧')
     assert turn['status'] == 'completed', turn
-    assert calls == [('start_screen_prediction', {'model': 'demo.pt', 'screen_id': 2, 'max_frames': 20})], calls
-    assert 'realtime-screen-12345678' in turn['message'], turn
+    assert graph.calls == [('start_screen_prediction', {'model': 'demo.pt', 'screen_id': 2, 'max_frames': 20})], graph.calls
+    assert 'screen:2' in turn['message'], turn
 
 
 async def _scenario_status_and_stop_routes() -> None:
-    client = _make_client('status-stop')
-    client.session_state.active_prediction.realtime_session_id = 'realtime-camera-12345678'
-    client.session_state.active_prediction.realtime_source_type = 'camera'
-    client.session_state.active_prediction.realtime_source_label = 'camera:0'
-    client.session_state.active_prediction.realtime_status = 'running'
-    calls: list[tuple[str, dict[str, Any]]] = []
-
-    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
-        calls.append((tool_name, dict(kwargs)))
-        if tool_name == 'check_realtime_prediction_status':
-            result = {
+    def _status_script(messages):
+        user_text = ''
+        for message in reversed(messages):
+            content = getattr(message, 'content', '')
+            if isinstance(content, str) and content:
+                user_text = content
+                break
+        if '停止实时预测' in user_text:
+            return (
+                'stop_realtime_prediction',
+                {'session_id': 'realtime-camera-12345678'},
+                {
+                    'ok': True,
+                    'summary': '实时预测已停止: 已处理 12 帧，检测到 6 个目标',
+                    'session_id': 'realtime-camera-12345678',
+                    'source_type': 'camera',
+                    'source_label': 'camera:0',
+                    'status': 'stopped',
+                    'processed_frames': 12,
+                    'detected_frames': 4,
+                    'total_detections': 6,
+                    'class_counts': {'excavator': 6},
+                    'output_dir': '/tmp/realtime-camera',
+                    'report_path': '/tmp/realtime-camera/realtime_prediction_report.json',
+                    'next_actions': ['可查看实时预测报告: /tmp/realtime-camera/realtime_prediction_report.json'],
+                    'running': False,
+                },
+                '实时预测已停止: 已处理 12 帧，检测到 6 个目标。报告已写入 /tmp/realtime-camera/realtime_prediction_report.json',
+            )
+        return (
+            'check_realtime_prediction_status',
+            {'session_id': 'realtime-camera-12345678'},
+            {
                 'ok': True,
                 'summary': '实时预测运行中: 已处理 12 帧, 有检测 4 帧, 总检测 6',
-                'session_id': kwargs['session_id'],
+                'session_id': 'realtime-camera-12345678',
                 'source_type': 'camera',
                 'source_label': 'camera:0',
                 'status': 'running',
@@ -329,41 +383,56 @@ async def _scenario_status_and_stop_routes() -> None:
                 'report_path': '',
                 'next_actions': ['如需结束，可调用 stop_realtime_prediction'],
                 'running': True,
-            }
-        else:
-            result = {
-                'ok': True,
-                'summary': '实时预测已停止: 已处理 12 帧，检测到 6 个目标',
-                'session_id': kwargs['session_id'],
-                'source_type': 'camera',
-                'source_label': 'camera:0',
-                'status': 'stopped',
-                'processed_frames': 12,
-                'detected_frames': 4,
-                'total_detections': 6,
-                'class_counts': {'excavator': 6},
-                'output_dir': '/tmp/realtime-camera',
-                'report_path': '/tmp/realtime-camera/realtime_prediction_report.json',
-                'next_actions': ['可查看实时预测报告: /tmp/realtime-camera/realtime_prediction_report.json'],
-                'running': False,
-            }
-        client._apply_to_state(tool_name, result, kwargs)
-        return result
+            },
+            '实时预测运行中: 已处理 12 帧, 有检测 4 帧, 总检测 6',
+        )
 
-    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+    graph = _ScriptedGraph(_status_script)
+    client = _make_client('status-stop', graph=graph)
+    client.session_state.active_prediction.realtime_session_id = 'realtime-camera-12345678'
+    client.session_state.active_prediction.realtime_source_type = 'camera'
+    client.session_state.active_prediction.realtime_source_label = 'camera:0'
+    client.session_state.active_prediction.realtime_status = 'running'
+    assert await client._try_handle_mainline_intent('看下实时预测状态', 'thread-status') is None
     status_turn = await client.chat('看下实时预测状态')
     assert status_turn['status'] == 'completed', status_turn
-    assert calls[0] == ('check_realtime_prediction_status', {'session_id': 'realtime-camera-12345678'}), calls
+    assert graph.calls == [('check_realtime_prediction_status', {'session_id': 'realtime-camera-12345678'})], graph.calls
     assert '已处理 12 帧' in status_turn['message'], status_turn
 
+    assert await client._try_handle_mainline_intent('停止实时预测', 'thread-stop') is None
     stop_turn = await client.chat('停止实时预测')
     assert stop_turn['status'] == 'completed', stop_turn
-    assert calls[1] == ('stop_realtime_prediction', {'session_id': 'realtime-camera-12345678'}), calls
+    assert graph.calls[-1] == ('stop_realtime_prediction', {'session_id': 'realtime-camera-12345678'}), graph.calls
     assert 'realtime_prediction_report.json' in stop_turn['message'], stop_turn
 
 
 async def _scenario_followup_routes() -> None:
-    client = _make_client('followup')
+    def _followup_script(messages):
+        del messages
+        return (
+            'check_realtime_prediction_status',
+            {'session_id': 'realtime-camera-12345678'},
+            {
+                'ok': True,
+                'summary': '实时预测运行中: 已处理 24 帧, 有检测 8 帧, 总检测 11',
+                'session_id': 'realtime-camera-12345678',
+                'source_type': 'camera',
+                'source_label': 'camera:0',
+                'status': 'running',
+                'processed_frames': 24,
+                'detected_frames': 8,
+                'total_detections': 11,
+                'class_counts': {'excavator': 11},
+                'output_dir': '/tmp/realtime-camera',
+                'report_path': '',
+                'action_candidates': [{'tool': 'stop_realtime_prediction', 'description': '如需结束，可停止实时预测'}],
+                'running': True,
+            },
+            '实时预测运行中，当前已经处理 24 帧。',
+        )
+
+    graph = _ScriptedGraph(_followup_script)
+    client = _make_client('followup', graph=graph)
     client.session_state.active_prediction.realtime_session_id = 'realtime-camera-12345678'
     client.session_state.active_prediction.realtime_source_type = 'camera'
     client.session_state.active_prediction.realtime_source_label = 'camera:0'
@@ -380,46 +449,26 @@ async def _scenario_followup_routes() -> None:
         'total_detections': 6,
         'output_dir': '/tmp/realtime-camera',
     }
-    calls: list[tuple[str, dict[str, Any]]] = []
-
-    def _planner_reply(messages) -> str:
-        text = '\n'.join(str(getattr(message, 'content', message)) for message in messages)
-        if '实时预测跟进路由器' in text:
-            return '{"action":"status","reason":"用户在追问当前实时预测的详细状态"}'
-        return '实时预测运行中，当前已经处理 24 帧。'
-
-    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
-        calls.append((tool_name, dict(kwargs)))
-        assert tool_name == 'check_realtime_prediction_status'
-        result = {
-            'ok': True,
-            'summary': '实时预测运行中: 已处理 24 帧, 有检测 8 帧, 总检测 11',
-            'session_id': kwargs['session_id'],
-            'source_type': 'camera',
-            'source_label': 'camera:0',
-            'status': 'running',
-            'processed_frames': 24,
-            'detected_frames': 8,
-            'total_detections': 11,
-            'class_counts': {'excavator': 11},
-            'output_dir': '/tmp/realtime-camera',
-            'report_path': '',
-            'action_candidates': [{'tool': 'stop_realtime_prediction', 'description': '如需结束，可停止实时预测'}],
-            'running': True,
-        }
-        client._apply_to_state(tool_name, result, kwargs)
-        return result
-
-    client.planner_llm = _FakePlannerLlm(_planner_reply)  # type: ignore[assignment]
-    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
-    followup_turn = await client.chat('现在是什么情况了？我需要详细一点的实时预测信息')
+    followup_prompt = '现在是什么情况了？我需要详细一点的实时预测信息'
+    assert await client._try_handle_mainline_intent(followup_prompt, 'thread-followup') is None
+    followup_turn = await client.chat(followup_prompt)
     assert followup_turn['status'] == 'completed', followup_turn
-    assert calls == [('check_realtime_prediction_status', {'session_id': 'realtime-camera-12345678'})], calls
+    assert graph.calls == [('check_realtime_prediction_status', {'session_id': 'realtime-camera-12345678'})], graph.calls
     assert '24 帧' in followup_turn['message'], followup_turn
 
 
 async def _scenario_cached_camera_scan_routes() -> None:
-    client = _make_client('cached-scan-cameras')
+    def _cached_camera_scan_script(messages):
+        del messages
+        return (
+            None,
+            {},
+            None,
+            '摄像头扫描完成: 发现 2 个可用摄像头\ncamera_count=2',
+        )
+
+    graph = _ScriptedGraph(_cached_camera_scan_script)
+    client = _make_client('cached-scan-cameras', graph=graph)
     client.session_state.active_prediction.last_realtime_status = {
         'summary': '摄像头扫描完成: 发现 2 个可用摄像头',
         'camera_overview': {'camera_count': 2},
@@ -432,14 +481,26 @@ async def _scenario_cached_camera_scan_routes() -> None:
         raise AssertionError(f'cached camera scan should not call direct tool: {tool_name} {kwargs}')
 
     client.direct_tool = _unexpected_direct_tool  # type: ignore[assignment]
+    assert await client._try_handle_mainline_intent('先扫描可用摄像头。', 'thread-cached-scan-cameras') is None
     turn = await client.chat('先扫描可用摄像头。')
     assert turn['status'] == 'completed', turn
     assert '发现 2 个可用摄像头' in turn['message'], turn
     assert 'camera_count=2' in turn['message'], turn
+    assert graph.calls == [], graph.calls
 
 
 async def _scenario_cached_realtime_status_routes() -> None:
-    client = _make_client('cached-realtime-status')
+    def _cached_status_script(messages):
+        del messages
+        return (
+            None,
+            {},
+            None,
+            '实时预测已停止: 已处理 12 帧，检测到 6 个目标。报告路径 /tmp/realtime-camera/realtime_prediction_report.json',
+        )
+
+    graph = _ScriptedGraph(_cached_status_script)
+    client = _make_client('cached-realtime-status', graph=graph)
     client.session_state.active_prediction.realtime_session_id = 'realtime-camera-12345678'
     client.session_state.active_prediction.realtime_source_type = 'camera'
     client.session_state.active_prediction.realtime_source_label = 'camera:0'
@@ -462,10 +523,12 @@ async def _scenario_cached_realtime_status_routes() -> None:
         raise AssertionError(f'cached realtime status should not call direct tool: {tool_name} {kwargs}')
 
     client.direct_tool = _unexpected_direct_tool  # type: ignore[assignment]
+    assert await client._try_handle_mainline_intent('看下实时预测状态', 'thread-cached-status') is None
     turn = await client.chat('看下实时预测状态')
     assert turn['status'] == 'completed', turn
     assert '已处理 12 帧' in turn['message'], turn
     assert 'realtime_prediction_report.json' in turn['message'], turn
+    assert graph.calls == [], graph.calls
 
 
 def main() -> None:
