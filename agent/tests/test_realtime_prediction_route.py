@@ -418,6 +418,56 @@ async def _scenario_followup_routes() -> None:
     assert '24 帧' in followup_turn['message'], followup_turn
 
 
+async def _scenario_cached_camera_scan_routes() -> None:
+    client = _make_client('cached-scan-cameras')
+    client.session_state.active_prediction.last_realtime_status = {
+        'summary': '摄像头扫描完成: 发现 2 个可用摄像头',
+        'camera_overview': {'camera_count': 2},
+        'camera_count': 2,
+        'cameras': [{'id': 0, 'name': '摄像头 0'}, {'id': 1, 'name': '摄像头 1'}],
+        'action_candidates': [{'tool': 'start_camera_prediction', 'description': '选择一个摄像头开始实时预测'}],
+    }
+
+    async def _unexpected_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        raise AssertionError(f'cached camera scan should not call direct tool: {tool_name} {kwargs}')
+
+    client.direct_tool = _unexpected_direct_tool  # type: ignore[assignment]
+    turn = await client.chat('先扫描可用摄像头。')
+    assert turn['status'] == 'completed', turn
+    assert '发现 2 个可用摄像头' in turn['message'], turn
+    assert 'camera_count=2' in turn['message'], turn
+
+
+async def _scenario_cached_realtime_status_routes() -> None:
+    client = _make_client('cached-realtime-status')
+    client.session_state.active_prediction.realtime_session_id = 'realtime-camera-12345678'
+    client.session_state.active_prediction.realtime_source_type = 'camera'
+    client.session_state.active_prediction.realtime_source_label = 'camera:0'
+    client.session_state.active_prediction.realtime_status = 'stopped'
+    client.session_state.active_prediction.last_realtime_status = {
+        'summary': '实时预测已停止: 已处理 12 帧，检测到 6 个目标',
+        'session_id': 'realtime-camera-12345678',
+        'source_type': 'camera',
+        'source_label': 'camera:0',
+        'status': 'stopped',
+        'processed_frames': 12,
+        'detected_frames': 4,
+        'total_detections': 6,
+        'realtime_status_overview': {'processed_frames': 12},
+        'report_path': '/tmp/realtime-camera/realtime_prediction_report.json',
+        'action_candidates': [{'tool': 'inspect_prediction_outputs', 'description': '查看导出的实时预测报告'}],
+    }
+
+    async def _unexpected_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        raise AssertionError(f'cached realtime status should not call direct tool: {tool_name} {kwargs}')
+
+    client.direct_tool = _unexpected_direct_tool  # type: ignore[assignment]
+    turn = await client.chat('看下实时预测状态')
+    assert turn['status'] == 'completed', turn
+    assert '已处理 12 帧' in turn['message'], turn
+    assert 'realtime_prediction_report.json' in turn['message'], turn
+
+
 def main() -> None:
     shutil.rmtree(WORK, ignore_errors=True)
     try:
@@ -428,6 +478,8 @@ def main() -> None:
         run(_scenario_start_screen_routes())
         run(_scenario_status_and_stop_routes())
         run(_scenario_followup_routes())
+        run(_scenario_cached_camera_scan_routes())
+        run(_scenario_cached_realtime_status_routes())
         print('realtime prediction route ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)

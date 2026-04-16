@@ -1846,9 +1846,17 @@ class YoloStudioAgentClient:
         rtsp_url: str,
     ) -> dict[str, Any] | None:
         if wants_camera_scan and not wants_train:
+            cached_cameras = self._realtime_request_cached_result('camera_scan')
+            if cached_cameras:
+                tool_name, payload = cached_cameras
+                return await self._complete_cached_tool_result_reply(tool_name, payload)
             return await self._complete_direct_tool_reply('scan_cameras')
 
         if wants_screen_scan and not wants_train:
+            cached_screens = self._realtime_request_cached_result('screen_scan')
+            if cached_screens:
+                tool_name, payload = cached_screens
+                return await self._complete_cached_tool_result_reply(tool_name, payload)
             return await self._complete_direct_tool_reply('scan_screens')
 
         if wants_rtsp_test and rtsp_url and not wants_train:
@@ -1856,10 +1864,18 @@ class YoloStudioAgentClient:
             test_kwargs: dict[str, Any] = {'rtsp_url': rtsp_url}
             if timeout_ms is not None:
                 test_kwargs['timeout_ms'] = timeout_ms
+            cached_rtsp = self._realtime_request_cached_result('rtsp_test', test_kwargs)
+            if cached_rtsp:
+                tool_name, payload = cached_rtsp
+                return await self._complete_cached_tool_result_reply(tool_name, payload)
             return await self._complete_direct_tool_reply('test_rtsp_stream', **test_kwargs)
 
         if wants_realtime_status and not wants_train:
             status_kwargs = self._build_realtime_session_kwargs(user_text)
+            cached_status = self._realtime_request_cached_result('status', status_kwargs)
+            if cached_status:
+                tool_name, payload = cached_status
+                return await self._complete_cached_tool_result_reply(tool_name, payload)
             return await self._complete_direct_tool_reply('check_realtime_prediction_status', **status_kwargs)
 
         if wants_realtime_stop and not wants_train:
@@ -6766,6 +6782,39 @@ class YoloStudioAgentClient:
         }
         candidates.discard('')
         return target in candidates
+
+    def _realtime_request_cached_result(
+        self,
+        request: str,
+        request_kwargs: dict[str, Any] | None = None,
+    ) -> tuple[str, dict[str, Any]] | None:
+        pred = self.session_state.active_prediction
+        payload = dict(pred.last_realtime_status or {})
+        if not payload:
+            return None
+        request_kwargs = dict(request_kwargs or {})
+        if request == 'camera_scan':
+            if payload.get('camera_overview') or payload.get('camera_count') or payload.get('cameras'):
+                return ('scan_cameras', payload)
+            return None
+        if request == 'screen_scan':
+            if payload.get('screen_overview') or payload.get('screen_count') or payload.get('screens'):
+                return ('scan_screens', payload)
+            return None
+        if request == 'rtsp_test':
+            if not (payload.get('stream_test_overview') or str(payload.get('rtsp_url') or '').strip()):
+                return None
+            if self._cached_request_matches_targets(payload, request_kwargs, target_keys=('rtsp_url',)):
+                return ('test_rtsp_stream', payload)
+            return None
+        if request == 'status':
+            if str(pred.realtime_status or '').strip().lower() == 'running':
+                return None
+            if not (payload.get('realtime_status_overview') or str(payload.get('session_id') or '').strip()):
+                return None
+            if self._cached_request_matches_targets(payload, request_kwargs, target_keys=('session_id',)):
+                return ('check_realtime_prediction_status', payload)
+        return None
 
     def _training_history_request_cached_result(
         self,

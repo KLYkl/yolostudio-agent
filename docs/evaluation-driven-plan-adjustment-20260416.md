@@ -59,3 +59,7 @@
 - 最新批次：`agent_client.py` 中剩余的 `intent_parsing` wrapper 已继续成组删除，`return intent_parsing.*` wrapper 已清零。
 - 最新批次：tool-result fallback 已改为“仅对受控的一组 training/realtime/remote 状态工具优先 grounded，其余优先 structured facts”，继续压缩 `grounded_reply_builder` 的主链影响面。
 - 最新批次：测试基线已从硬编码 `C:\workspace\...` 路径收为仓内相对路径；`test_dataset_root_resolver.py` 也已改成跨平台断言，避免再向 C 盘写测试临时数据。
+
+
+- 最新批次：realtime 只读请求已开始走 structured-state 优先；`scan_cameras`、`scan_screens`、同目标 `test_rtsp_stream`，以及非 running 状态下的 `check_realtime_prediction_status` 均可直接复用 `last_realtime_status`。
+- 最新批次：补了 realtime 缓存命中回归，确保这批 helper 删减是 facts-first 而不是局部最优；running 实时会话仍保持直连工具查询，避免把动态状态错误缓存化。
