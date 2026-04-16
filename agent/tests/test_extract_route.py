@@ -254,6 +254,13 @@ async def _run() -> None:
         assert routed['status'] == 'completed', routed
         assert '计划抽取 20 张' in routed['message'], routed
         assert calls[-1][0] == 'preview_extract_images', calls
+        preview_call_count = len(calls)
+
+        routed_cached = await client._try_handle_mainline_intent('再预览一下从 /data/raw/images 抽 20 张图片到 /tmp/extract_preview，不要真的执行', 'thread-1b')
+        assert routed_cached is not None, routed_cached
+        assert routed_cached['status'] == 'completed', routed_cached
+        assert '计划抽取 20 张' in routed_cached['message'], routed_cached
+        assert len(calls) == preview_call_count, calls
 
         routed2 = await client._try_handle_mainline_intent('从 /data/raw/images 抽 10% 的图片到 /tmp/extract_run', 'thread-2')
         assert routed2 is not None, routed2
@@ -265,6 +272,12 @@ async def _run() -> None:
         assert routed3 is not None, routed3
         assert '发现 3 个视频' in routed3['message'], routed3
         assert calls[-1][0] == 'scan_videos', calls
+        video_scan_call_count = len(calls)
+
+        routed3_cached = await client._try_handle_mainline_intent('再扫描一下 /data/videos 目录里有多少视频', 'thread-3b')
+        assert routed3_cached is not None, routed3_cached
+        assert '发现 3 个视频' in routed3_cached['message'], routed3_cached
+        assert len(calls) == video_scan_call_count, calls
 
         routed4 = await client._try_handle_mainline_intent('从 /data/videos 抽帧，每 10 帧抽 1 帧，输出到 /tmp/frames_out', 'thread-4')
         assert routed4 is not None, routed4

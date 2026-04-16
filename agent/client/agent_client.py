@@ -1664,16 +1664,26 @@ class YoloStudioAgentClient:
             return await self._complete_readiness_knowledge_reply(dataset_path)
 
         if dataset_path and wants_extract_preview and not wants_train:
-            return await self._complete_direct_tool_reply('preview_extract_images', **self._build_image_extract_args_from_text(user_text, dataset_path))
+            preview_kwargs = intent_parsing.build_image_extract_args_from_text(user_text, dataset_path)
+            if has_dataset_followup_context and self._dataset_request_cache_allowed(dataset_path):
+                cached_preview = self._dataset_extract_request_cached_result('preview', preview_kwargs, dataset_path=dataset_path)
+                if cached_preview:
+                    tool_name, payload = cached_preview
+                    return await self._complete_cached_tool_result_reply(tool_name, payload)
+            return await self._complete_direct_tool_reply('preview_extract_images', **preview_kwargs)
 
         if dataset_path and wants_extract_images and not wants_train and not wants_extract_preview:
-            return await self._complete_direct_tool_reply('extract_images', **self._build_image_extract_args_from_text(user_text, dataset_path))
+            return await self._complete_direct_tool_reply('extract_images', **intent_parsing.build_image_extract_args_from_text(user_text, dataset_path))
 
         if prediction_path and wants_scan_videos and not wants_predict and not training_command_like:
+            cached_video_scan = self._dataset_extract_request_cached_result('video_scan', {'source_path': prediction_path})
+            if cached_video_scan:
+                tool_name, payload = cached_video_scan
+                return await self._complete_cached_tool_result_reply(tool_name, payload)
             return await self._complete_direct_tool_reply('scan_videos', source_path=prediction_path)
 
         if prediction_path and wants_extract_frames and not wants_predict and not training_command_like:
-            return await self._complete_direct_tool_reply('extract_video_frames', **self._build_video_extract_args_from_text(user_text, prediction_path))
+            return await self._complete_direct_tool_reply('extract_video_frames', **intent_parsing.build_video_extract_args_from_text(user_text, prediction_path))
         return None
 
     async def _try_handle_training_history_followup(
@@ -1842,7 +1852,7 @@ class YoloStudioAgentClient:
             return await self._complete_direct_tool_reply('scan_screens')
 
         if wants_rtsp_test and rtsp_url and not wants_train:
-            timeout_ms = self._extract_timeout_ms_from_text(user_text)
+            timeout_ms = intent_parsing.extract_timeout_ms_from_text(user_text)
             test_kwargs: dict[str, Any] = {'rtsp_url': rtsp_url}
             if timeout_ms is not None:
                 test_kwargs['timeout_ms'] = timeout_ms
@@ -2187,6 +2197,10 @@ class YoloStudioAgentClient:
             return await self._complete_direct_tool_reply('check_training_loop_status', loop_id=active_loop_id)
 
         if wants_inspect_training_loop and not wants_predict and not training_command_like:
+            cached_loop_detail = self._training_loop_request_cached_result('inspect', loop_id=active_loop_id)
+            if cached_loop_detail:
+                tool_name, payload = cached_loop_detail
+                return await self._complete_cached_tool_result_reply(tool_name, payload)
             return await self._complete_direct_tool_reply('inspect_training_loop', loop_id=active_loop_id)
 
         if wants_pause_training_loop and not wants_predict and not training_command_like:
@@ -2788,7 +2802,7 @@ class YoloStudioAgentClient:
         wants_prediction_result_organize = any(
             token in user_text for token in ('只看有命中的结果', '只保留有命中', '整理预测结果', '整理预测产物', '按类别整理预测', '按类别整理结果', '把命中的结果单独列出来', '把有目标的结果单独列出来')
         ) and (wants_predict or has_prediction_followup_context)
-        rtsp_url = self._extract_rtsp_url_from_text(user_text)
+        rtsp_url = intent_parsing.extract_rtsp_url_from_text(user_text)
         has_realtime_context = bool(
             self.session_state.active_prediction.realtime_session_id
             or self.session_state.active_prediction.realtime_status
@@ -2822,9 +2836,9 @@ class YoloStudioAgentClient:
             token in user_text for token in ('停止实时预测', '停掉实时预测', '停止摄像头预测', '停止 RTSP 预测', '停止rtsp预测', '停止屏幕预测', '停掉摄像头', '停掉rtsp', '停掉屏幕')
         ) or any(token in normalized_text for token in ('stop realtime prediction', 'stop camera prediction', 'stop rtsp prediction', 'stop screen prediction'))
         has_explicit_realtime_target = bool(
-            self._extract_realtime_session_id_from_text(user_text)
-            or self._extract_camera_id_from_text(user_text)
-            or self._extract_screen_id_from_text(user_text)
+            intent_parsing.extract_realtime_session_id_from_text(user_text)
+            or intent_parsing.extract_camera_id_from_text(user_text)
+            or intent_parsing.extract_screen_id_from_text(user_text)
             or rtsp_url
         )
         asks_metric_terms = any(token in normalized_text for token in ('precision', 'recall', 'map', 'loss', 'epoch', 'epochs', 'batch', 'imgsz', 'patience', 'lr')) or any(token in user_text for token in ('精确率', '召回', '损失', '学习率', '轮数', '批大小'))
@@ -5202,36 +5216,8 @@ class YoloStudioAgentClient:
     def _extract_output_path_from_text(self, text: str, source_path: str = '') -> str:
         return intent_parsing.extract_output_path_from_text(text, source_path)
 
-    @staticmethod
-    def _extract_rtsp_url_from_text(text: str) -> str:
-        return intent_parsing.extract_rtsp_url_from_text(text)
-
-    @staticmethod
-    def _extract_realtime_session_id_from_text(text: str) -> str:
-        return intent_parsing.extract_realtime_session_id_from_text(text)
-
-    @staticmethod
-    def _extract_camera_id_from_text(text: str) -> int | None:
-        return intent_parsing.extract_camera_id_from_text(text)
-
-    @staticmethod
-    def _extract_screen_id_from_text(text: str) -> int | None:
-        return intent_parsing.extract_screen_id_from_text(text)
-
-    @staticmethod
-    def _extract_frame_interval_ms_from_text(text: str) -> int | None:
-        return intent_parsing.extract_frame_interval_ms_from_text(text)
-
-    @staticmethod
-    def _extract_max_frames_from_text(text: str) -> int | None:
-        return intent_parsing.extract_max_frames_from_text(text)
-
-    @staticmethod
-    def _extract_timeout_ms_from_text(text: str) -> int | None:
-        return intent_parsing.extract_timeout_ms_from_text(text)
-
     def _build_realtime_session_kwargs(self, user_text: str) -> dict[str, Any]:
-        session_id = self._extract_realtime_session_id_from_text(user_text) or self.session_state.active_prediction.realtime_session_id
+        session_id = intent_parsing.extract_realtime_session_id_from_text(user_text) or self.session_state.active_prediction.realtime_session_id
         return {'session_id': session_id} if session_id else {}
 
     def _build_realtime_prediction_args(self, user_text: str, *, source_type: str) -> dict[str, Any]:
@@ -5239,22 +5225,22 @@ class YoloStudioAgentClient:
         model = self._extract_model_from_text(user_text) or self.session_state.active_prediction.model or self.session_state.active_training.model
         if model:
             args['model'] = model
-        frame_interval_ms = self._extract_frame_interval_ms_from_text(user_text)
+        frame_interval_ms = intent_parsing.extract_frame_interval_ms_from_text(user_text)
         if frame_interval_ms is not None:
             args['frame_interval_ms'] = frame_interval_ms
-        max_frames = self._extract_max_frames_from_text(user_text)
+        max_frames = intent_parsing.extract_max_frames_from_text(user_text)
         if max_frames is not None:
             args['max_frames'] = max_frames
         if source_type == 'camera':
-            camera_id = self._extract_camera_id_from_text(user_text)
+            camera_id = intent_parsing.extract_camera_id_from_text(user_text)
             if camera_id is not None:
                 args['camera_id'] = camera_id
         elif source_type == 'rtsp':
-            rtsp_url = self._extract_rtsp_url_from_text(user_text)
+            rtsp_url = intent_parsing.extract_rtsp_url_from_text(user_text)
             if rtsp_url:
                 args['rtsp_url'] = rtsp_url
         elif source_type == 'screen':
-            screen_id = self._extract_screen_id_from_text(user_text)
+            screen_id = intent_parsing.extract_screen_id_from_text(user_text)
             if screen_id is not None:
                 args['screen_id'] = screen_id
         source_hint = str(args.get('rtsp_url') or '')
@@ -5286,20 +5272,6 @@ class YoloStudioAgentClient:
         elif should_reuse_context and fallback_path:
             kwargs['output_dir'] = fallback_path
         return kwargs
-
-    @staticmethod
-    def _extract_count_from_text(text: str) -> int | None:
-        return intent_parsing.extract_count_from_text(text)
-
-    @staticmethod
-    def _extract_ratio_from_text(text: str) -> float | None:
-        return intent_parsing.extract_ratio_from_text(text)
-
-    def _build_image_extract_args_from_text(self, user_text: str, source_path: str) -> dict[str, Any]:
-        return intent_parsing.build_image_extract_args_from_text(user_text, source_path)
-
-    def _build_video_extract_args_from_text(self, user_text: str, source_path: str) -> dict[str, Any]:
-        return intent_parsing.build_video_extract_args_from_text(user_text, source_path)
 
     @staticmethod
     def _extract_epochs_from_text(text: str) -> int | None:
@@ -6902,6 +6874,31 @@ class YoloStudioAgentClient:
             return result
         return None
 
+    def _dataset_extract_request_cached_result(
+        self,
+        request: str,
+        request_kwargs: dict[str, Any],
+        *,
+        dataset_path: str = '',
+    ) -> tuple[str, dict[str, Any]] | None:
+        ds = self.session_state.active_dataset
+        if request == 'preview':
+            if dataset_path and not self._dataset_request_cache_allowed(dataset_path):
+                return None
+            cached = ('preview_extract_images', dict(ds.last_extract_preview or {}))
+            target_keys = ('source_path', 'output_dir', 'workflow_ready_path')
+        elif request == 'video_scan':
+            cached = ('scan_videos', dict(ds.last_video_scan or {}))
+            target_keys = ('source_path',)
+        else:
+            return None
+        tool_name, payload = cached
+        if not payload:
+            return None
+        if self._cached_request_matches_targets(payload, request_kwargs, target_keys=target_keys):
+            return tool_name, payload
+        return None
+
     def _dataset_request_cache_allowed(self, dataset_path: str) -> bool:
         target = str(dataset_path or '').strip()
         if not target:
@@ -6967,7 +6964,12 @@ class YoloStudioAgentClient:
                 return ('inspect_training_run', payload)
         return None
 
-    def _training_loop_request_cached_result(self, request: str) -> tuple[str, dict[str, Any]] | None:
+    def _training_loop_request_cached_result(
+        self,
+        request: str,
+        *,
+        loop_id: str | None = None,
+    ) -> tuple[str, dict[str, Any]] | None:
         training = self.session_state.active_training
         if request == 'list':
             loops = list(training.recent_loops or [])
@@ -6981,6 +6983,11 @@ class YoloStudioAgentClient:
                     },
                 )
             return None
+        if request == 'inspect':
+            payload = dict(training.last_loop_detail or {})
+            cached_loop_id = str(payload.get('loop_id') or '').strip()
+            if payload and (not loop_id or not cached_loop_id or cached_loop_id == str(loop_id).strip()):
+                return ('inspect_training_loop', payload)
         return None
 
     async def _classify_remote_transfer_followup_action(

@@ -396,9 +396,10 @@ def _dataset_duplicate_snapshot(result: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def _dataset_extract_preview_snapshot(result: dict[str, Any]) -> dict[str, Any]:
-    return _pick_mapping(
+def _dataset_extract_preview_snapshot(result: dict[str, Any], *, source_path: str = '') -> dict[str, Any]:
+    snapshot = _pick_mapping(
         result,
+        'source_path',
         'available_images',
         'planned_extract_count',
         'output_dir',
@@ -407,6 +408,9 @@ def _dataset_extract_preview_snapshot(result: dict[str, Any]) -> dict[str, Any]:
         'extract_preview_overview',
         'action_candidates',
     )
+    if source_path and not str(snapshot.get('source_path') or '').strip():
+        snapshot['source_path'] = source_path
+    return snapshot
 
 
 def _dataset_extract_result_snapshot(result: dict[str, Any]) -> dict[str, Any]:
@@ -422,8 +426,8 @@ def _dataset_extract_result_snapshot(result: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def _dataset_video_scan_snapshot(result: dict[str, Any]) -> dict[str, Any]:
-    return _pick_mapping(
+def _dataset_video_scan_snapshot(result: dict[str, Any], *, source_path: str = '') -> dict[str, Any]:
+    snapshot = _pick_mapping(
         result,
         'total_videos',
         'source_path',
@@ -431,6 +435,9 @@ def _dataset_video_scan_snapshot(result: dict[str, Any]) -> dict[str, Any]:
         'video_scan_overview',
         'action_candidates',
     )
+    if source_path and not str(snapshot.get('source_path') or '').strip():
+        snapshot['source_path'] = source_path
+    return snapshot
 
 
 def _dataset_frame_extract_snapshot(result: dict[str, Any]) -> dict[str, Any]:
@@ -522,7 +529,7 @@ def apply_tool_result_to_state(
         ds.dataset_root = str(result.get('dataset_root') or ds.dataset_root)
         ds.img_dir = str(result.get('resolved_img_dir') or tool_args.get('source_path', ds.img_dir))
         ds.label_dir = str(result.get('resolved_label_dir') or ds.label_dir)
-        ds.last_extract_preview = _dataset_extract_preview_snapshot(result)
+        ds.last_extract_preview = _dataset_extract_preview_snapshot(result, source_path=str(tool_args.get('source_path') or ''))
     elif tool_name == 'extract_images' and result.get('ok'):
         ds.last_extract_result = _dataset_extract_result_snapshot(result)
         if result.get('workflow_ready_path'):
@@ -531,7 +538,7 @@ def apply_tool_result_to_state(
             ds.label_dir = str(result.get('output_label_dir') or '')
             ds.data_yaml = ''
     elif tool_name == 'scan_videos' and result.get('ok'):
-        ds.last_video_scan = _dataset_video_scan_snapshot(result)
+        ds.last_video_scan = _dataset_video_scan_snapshot(result, source_path=str(tool_args.get('source_path') or ''))
     elif tool_name == 'extract_video_frames' and result.get('ok'):
         ds.last_frame_extract = _dataset_frame_extract_snapshot(result)
     elif tool_name == 'split_dataset' and result.get('ok'):

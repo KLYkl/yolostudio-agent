@@ -60,6 +60,22 @@ def main() -> None:
 
     apply_tool_result_to_state(
         state,
+        'preview_extract_images',
+        {
+            'ok': True,
+            'summary': '图片抽取预览完成',
+            'planned_extract_count': 12,
+            'output_dir': '/tmp/extract_preview',
+            'extract_preview_overview': {'planned_extract_count': 12},
+            'action_candidates': [{'tool': 'extract_images', 'description': '执行抽取'}],
+        },
+        {'source_path': '/data/src_images'},
+    )
+    assert state.active_dataset.last_extract_preview['source_path'] == '/data/src_images'
+    assert state.active_dataset.last_extract_preview['extract_preview_overview']['planned_extract_count'] == 12
+
+    apply_tool_result_to_state(
+        state,
         'extract_images',
         {
             'ok': True,
@@ -81,6 +97,21 @@ def main() -> None:
     assert state.active_dataset.last_extract_result['extracted'] == 8
     assert state.active_dataset.last_extract_result['extract_overview']['workflow_ready'] is True
     assert state.active_dataset.last_extract_result['action_candidates'][0]['tool'] == 'scan_dataset'
+
+    apply_tool_result_to_state(
+        state,
+        'scan_videos',
+        {
+            'ok': True,
+            'summary': '视频扫描完成',
+            'total_videos': 3,
+            'video_scan_overview': {'total_videos': 3},
+            'action_candidates': [{'tool': 'extract_video_frames', 'description': '继续抽帧'}],
+        },
+        {'source_path': '/data/videos'},
+    )
+    assert state.active_dataset.last_video_scan['source_path'] == '/data/videos'
+    assert state.active_dataset.last_video_scan['video_scan_overview']['total_videos'] == 3
 
     apply_tool_result_to_state(
         state,

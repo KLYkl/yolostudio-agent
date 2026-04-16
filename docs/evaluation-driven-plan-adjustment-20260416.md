@@ -47,3 +47,6 @@
 
 - 已继续落实“压缩 `chat()` 前置 code 拦截层”的评估意见：`prepare-only` 前置分支已并入 training-plan dialogue 入口，不再单独占据 mainline 顶层拦截。
 - 已继续落实“减少 `intent_parsing.py` 消费端依赖”的评估意见：`agent_client.py` 已从按函数名导入收成模块级 `intent_parsing` 适配层，消费面继续收窄到本地 wrapper。
+
+- 最新批次：extract / training-loop 这组只读 helper 路由已继续真实删减；`preview_extract_images`、`scan_videos`、`inspect_training_loop` 在目标未变化时优先复用 structured state。
+- 最新批次：`agent_client.py` 已继续减少 `intent_parsing` 的消费端 wrapper，extract/realtime 这组 wrapper 已删除，消费面继续收窄。
