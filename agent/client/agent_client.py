@@ -38,7 +38,6 @@ from yolostudio_agent.agent.client.intent_parsing import (
     extract_frame_interval_ms_from_text,
     extract_image_size_from_text,
     extract_max_frames_from_text,
-    extract_metric_signals_from_text,
     extract_model_from_text,
     extract_project_from_text,
     extract_optimizer_from_text,
@@ -58,20 +57,10 @@ from yolostudio_agent.agent.client.intent_parsing import (
     extract_timeout_ms_from_text,
     extract_classes_from_text,
     extract_training_environment_from_text,
-    extract_training_execution_backend_from_text,
     extract_workers_from_text,
     extract_amp_flag_from_text,
-    is_training_discussion_only,
-    wants_training_advanced_details,
-    wants_default_training_environment,
-    wants_clear_project,
-    wants_clear_run_name,
-    wants_clear_batch,
-    wants_clear_fraction,
-    wants_clear_classes,
     looks_like_model_path,
     looks_like_video_path,
-    should_use_video_prediction,
 )
 from yolostudio_agent.agent.client.llm_factory import (
     LlmProviderSettings,
@@ -397,6 +386,42 @@ class YoloStudioAgentClient:
             current = await self.confirm(thread_id, approved=True, stream_handler=stream_handler)
         return current
 
+    async def _execute_adapted_pending_tool(
+        self,
+        *,
+        thread_id: str,
+        pending: dict[str, Any],
+        approved: bool = False,
+        auto_progress_followups: bool = False,
+        stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
+    ) -> dict[str, Any]:
+        parsed = await self.direct_tool(pending["name"], **pending.get("args", {}))
+        final_text = await self._render_tool_result_message(pending['name'], parsed)
+        self._messages.append(AIMessage(content=final_text))
+        self._trim_history()
+        self.memory.save_state(self.session_state)
+
+        if pending.get('name') == 'prepare_dataset_for_training':
+            post_prepare_followup = await self._handle_post_prepare_confirmation_followup(
+                thread_id=thread_id,
+                prepare_parsed=parsed,
+            )
+            if post_prepare_followup is not None:
+                if auto_progress_followups and post_prepare_followup.get('status') == 'needs_confirmation':
+                    next_thread_id = str(post_prepare_followup.get('thread_id') or thread_id).strip()
+                    if next_thread_id:
+                        return await self.confirm(next_thread_id, approved=True, stream_handler=stream_handler)
+                return post_prepare_followup
+
+        result = {
+            "status": "completed",
+            "message": final_text,
+            "tool_call": pending,
+        }
+        if approved:
+            result["approved"] = True
+        return result
+
     def _clear_stale_startup_state(self) -> None:
         pending = self.session_state.pending_confirmation
         if not str(pending.tool_name or '').strip():
@@ -649,16 +674,12 @@ class YoloStudioAgentClient:
                 self.memory.save_state(self.session_state)
                 return self._needs_confirmation_result(thread_id, pending, await self._build_confirmation_message(pending))
             if pending.get('adapted'):
-                parsed = await self.direct_tool(pending['name'], **pending.get('args', {}))
-                final_text = await self._render_tool_result_message(pending['name'], parsed)
-                self._messages.append(AIMessage(content=final_text))
-                self._trim_history()
-                self.memory.save_state(self.session_state)
-                return {
-                    "status": "completed",
-                    "message": final_text,
-                    "tool_call": pending,
-                }
+                return await self._execute_adapted_pending_tool(
+                    thread_id=thread_id,
+                    pending=pending,
+                    auto_progress_followups=bool(auto_approve or self._auto_confirmation_enabled()),
+                    stream_handler=stream_handler,
+                )
             result = await self._graph_invoke(Command(resume="approved"), config=config, stream_handler=stream_handler)
 
         applied_results = self._apply_tool_results(result["messages"], built_messages_len=len(built_messages))
@@ -763,75 +784,13 @@ class YoloStudioAgentClient:
             return await self._execute_remote_training_pipeline(pending.get('args') or {})
 
         if graph_pending is None or graph_pending.get('adapted'):
-            parsed = await self.direct_tool(pending["name"], **pending.get("args", {}))
-            final_text = await self._render_tool_result_message(pending['name'], parsed)
-            self._messages.append(AIMessage(content=final_text))
-            self._trim_history()
-            self.memory.save_state(self.session_state)
-            if pending.get('name') == 'prepare_dataset_for_training':
-                loop_followup_result = await self._continue_training_loop_start_after_prepare(thread_id=thread_id, prepare_result=parsed)
-                if loop_followup_result is not None:
-                    return loop_followup_result
-                loop_followup = self._build_followup_training_loop_request()
-                if loop_followup:
-                    self._set_pending_confirmation(thread_id, loop_followup)
-                    self.memory.save_state(self.session_state)
-                    return self._needs_confirmation_result(thread_id, loop_followup, await self._build_confirmation_message(loop_followup))
-            if pending.get('name') == 'prepare_dataset_for_training' and not pending.get('prepare_only'):
-                synthetic_followup = self._build_followup_training_request()
-                if synthetic_followup:
-                    preflight = await self.direct_tool(
-                        'training_preflight',
-                        model=synthetic_followup['args'].get('model', ''),
-                        data_yaml=synthetic_followup['args'].get('data_yaml', ''),
-                        epochs=int(synthetic_followup['args'].get('epochs', 100)),
-                        device=str(synthetic_followup['args'].get('device', 'auto') or 'auto'),
-                        training_environment=str(synthetic_followup['args'].get('training_environment', '') or ''),
-                        project=str(synthetic_followup['args'].get('project', '') or ''),
-                        name=str(synthetic_followup['args'].get('name', '') or ''),
-                        batch=synthetic_followup['args'].get('batch'),
-                        imgsz=synthetic_followup['args'].get('imgsz'),
-                        fraction=synthetic_followup['args'].get('fraction'),
-                        classes=synthetic_followup['args'].get('classes'),
-                        single_cls=synthetic_followup['args'].get('single_cls'),
-                        optimizer=str(synthetic_followup['args'].get('optimizer', '') or ''),
-                        freeze=synthetic_followup['args'].get('freeze'),
-                        resume=synthetic_followup['args'].get('resume'),
-                        lr0=synthetic_followup['args'].get('lr0'),
-                        patience=synthetic_followup['args'].get('patience'),
-                        workers=synthetic_followup['args'].get('workers'),
-                        amp=synthetic_followup['args'].get('amp'),
-                    )
-                    draft = self._build_training_plan_draft(
-                        user_text=self._recent_user_text(),
-                        dataset_path=self.session_state.active_dataset.dataset_root or self.session_state.active_dataset.img_dir,
-                        readiness=self.session_state.active_dataset.last_readiness,
-                        preflight=preflight,
-                        next_tool_name='start_training' if preflight.get('ready_to_start') else '',
-                        next_tool_args=dict(synthetic_followup.get('args') or {}) if preflight.get('ready_to_start') else {},
-                        planned_training_args=dict(synthetic_followup.get('args') or {}),
-                    )
-                    self._save_training_plan_draft(draft)
-                    if not preflight.get('ready_to_start'):
-                        reply = await self._render_prepare_followup_message(parsed, preflight)
-                        self._messages.append(AIMessage(content=reply))
-                        self._trim_history()
-                        self.memory.save_state(self.session_state)
-                        return {
-                            "status": "error",
-                            "message": reply,
-                            "tool_call": synthetic_followup,
-                            "approved": True,
-                        }
-                    self._set_pending_confirmation(thread_id, synthetic_followup)
-                    self.memory.save_state(self.session_state)
-                    return self._needs_confirmation_result(thread_id, synthetic_followup, await self._build_confirmation_message(synthetic_followup))
-            return {
-                "status": "completed",
-                "message": final_text,
-                "tool_call": pending,
-                "approved": True,
-            }
+            return await self._execute_adapted_pending_tool(
+                thread_id=thread_id,
+                pending=pending,
+                approved=True,
+                auto_progress_followups=self._auto_confirmation_enabled(),
+                stream_handler=stream_handler,
+            )
 
         result = await self._graph_invoke(Command(resume="approved"), config=config, stream_handler=stream_handler)
         applied_results = self._apply_tool_results(result["messages"], built_messages_len=0)
@@ -847,71 +806,18 @@ class YoloStudioAgentClient:
             result = await self._graph_invoke(Command(resume="approved"), config=config, stream_handler=stream_handler)
             applied_results = self._apply_tool_results(result["messages"], built_messages_len=0)
 
-        synthetic_followup = None
         if pending.get("name") == "prepare_dataset_for_training":
-            loop_followup_result = await self._continue_training_loop_start_after_prepare(thread_id=thread_id, prepare_result=parsed)
-            if loop_followup_result is not None:
-                return loop_followup_result
-            loop_followup = self._build_followup_training_loop_request()
-            if loop_followup:
-                self._set_pending_confirmation(thread_id, loop_followup)
-                self.memory.save_state(self.session_state)
-                return self._needs_confirmation_result(thread_id, loop_followup, await self._build_confirmation_message(loop_followup))
-        if pending.get("name") == "prepare_dataset_for_training" and not pending.get('prepare_only'):
-            synthetic_followup = self._build_followup_training_request()
-        if synthetic_followup:
-            preflight = await self.direct_tool(
-                'training_preflight',
-                model=synthetic_followup['args'].get('model', ''),
-                data_yaml=synthetic_followup['args'].get('data_yaml', ''),
-                epochs=int(synthetic_followup['args'].get('epochs', 100)),
-                device=str(synthetic_followup['args'].get('device', 'auto') or 'auto'),
-                training_environment=str(synthetic_followup['args'].get('training_environment', '') or ''),
-                project=str(synthetic_followup['args'].get('project', '') or ''),
-                name=str(synthetic_followup['args'].get('name', '') or ''),
-                batch=synthetic_followup['args'].get('batch'),
-                imgsz=synthetic_followup['args'].get('imgsz'),
-                fraction=synthetic_followup['args'].get('fraction'),
-                classes=synthetic_followup['args'].get('classes'),
-                single_cls=synthetic_followup['args'].get('single_cls'),
-                optimizer=str(synthetic_followup['args'].get('optimizer', '') or ''),
-                freeze=synthetic_followup['args'].get('freeze'),
-                resume=synthetic_followup['args'].get('resume'),
-                lr0=synthetic_followup['args'].get('lr0'),
-                patience=synthetic_followup['args'].get('patience'),
-                workers=synthetic_followup['args'].get('workers'),
-                amp=synthetic_followup['args'].get('amp'),
+            prepare_parsed = self._find_applied_tool_result(applied_results, 'prepare_dataset_for_training') or {
+                'ok': True,
+                'summary': '数据准备已完成',
+                'data_yaml': str(self.session_state.active_dataset.data_yaml or ''),
+            }
+            post_prepare_followup = await self._handle_post_prepare_confirmation_followup(
+                thread_id=thread_id,
+                prepare_parsed=prepare_parsed,
             )
-            draft = self._build_training_plan_draft(
-                user_text=self._recent_user_text(),
-                dataset_path=self.session_state.active_dataset.dataset_root or self.session_state.active_dataset.img_dir,
-                readiness=self.session_state.active_dataset.last_readiness,
-                preflight=preflight,
-                next_tool_name='start_training' if preflight.get('ready_to_start') else '',
-                next_tool_args=dict(synthetic_followup.get('args') or {}) if preflight.get('ready_to_start') else {},
-                planned_training_args=dict(synthetic_followup.get('args') or {}),
-            )
-            self._save_training_plan_draft(draft)
-            if not preflight.get('ready_to_start'):
-                preflight_reply = await self._render_prepare_followup_message(
-                    {
-                        'summary': '数据准备已完成',
-                        'data_yaml': str(self.session_state.active_dataset.data_yaml or ''),
-                    },
-                    preflight,
-                )
-                self._messages.append(AIMessage(content=preflight_reply))
-                self._trim_history()
-                self.memory.save_state(self.session_state)
-                return {
-                    "status": "error",
-                    "message": preflight_reply,
-                    "tool_call": synthetic_followup,
-                    "approved": True,
-                }
-            self._set_pending_confirmation(thread_id, synthetic_followup)
-            self.memory.save_state(self.session_state)
-            return self._needs_confirmation_result(thread_id, synthetic_followup, await self._build_confirmation_message(synthetic_followup))
+            if post_prepare_followup is not None:
+                return post_prepare_followup
 
         final_text = self._compose_final_reply(result["messages"], applied_results)
         self._messages.append(AIMessage(content=final_text))
@@ -1062,6 +968,127 @@ class YoloStudioAgentClient:
             )
         ) or any(token in normalized for token in ('status', 'details', 'detail'))
 
+    async def _classify_structured_action(
+        self,
+        *,
+        messages: list[Any],
+        allowed_actions: set[str],
+    ) -> str:
+        parsed = await self._invoke_structured_payload(
+            messages=messages,
+            schema=self._action_router_schema(allowed_actions),
+        )
+        action = str(parsed.get('action') or '').strip().lower()
+        return action if action in allowed_actions else ''
+
+    async def _invoke_structured_payload(
+        self,
+        *,
+        messages: list[Any],
+        schema: dict[str, Any],
+    ) -> dict[str, Any]:
+        if self.planner_llm is None:
+            return {}
+        if self._planner_supports_native_structured_output():
+            try:
+                structured_llm = self.planner_llm.with_structured_output(schema)
+                parsed = await structured_llm.ainvoke(messages)
+                normalized = self._structured_output_payload(parsed)
+                if normalized:
+                    return normalized
+            except Exception:
+                pass
+        try:
+            response = await self.planner_llm.ainvoke(messages)
+            return self._parse_json_object_payload(self._message_text(getattr(response, 'content', response)))
+        except Exception:
+            return {}
+
+    def _planner_supports_native_structured_output(self) -> bool:
+        provider = str(
+            self.helper_llm_settings.provider
+            or self.primary_llm_settings.provider
+            or ''
+        ).strip().lower()
+        if provider != 'ollama':
+            return False
+        return callable(getattr(self.planner_llm, 'with_structured_output', None))
+
+    @staticmethod
+    def _action_router_schema(allowed_actions: set[str]) -> dict[str, Any]:
+        return {
+            'title': 'yolostudio_action_router',
+            'type': 'object',
+            'properties': {
+                'action': {
+                    'type': 'string',
+                    'enum': sorted(allowed_actions),
+                },
+                'reason': {
+                    'type': 'string',
+                },
+            },
+            'required': ['action', 'reason'],
+            'additionalProperties': False,
+        }
+
+    @staticmethod
+    def _structured_output_value(value: Any, key: str) -> Any:
+        if isinstance(value, dict):
+            return value.get(key)
+        if hasattr(value, 'model_dump'):
+            try:
+                dumped = value.model_dump()
+            except Exception:
+                dumped = None
+            if isinstance(dumped, dict):
+                return dumped.get(key)
+        if hasattr(value, key):
+            return getattr(value, key)
+        return None
+
+    @classmethod
+    def _structured_output_payload(cls, value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return dict(value)
+        if hasattr(value, 'model_dump'):
+            try:
+                dumped = value.model_dump()
+            except Exception:
+                dumped = None
+            if isinstance(dumped, dict):
+                return dict(dumped)
+        if hasattr(value, '__dict__'):
+            data = {
+                key: cls._structured_output_value(value, key)
+                for key in getattr(value, '__dict__', {}).keys()
+            }
+            return {key: item for key, item in data.items() if item is not None}
+        return {}
+
+    async def _invoke_renderer_text(
+        self,
+        *,
+        messages: list[Any],
+        failure_event: str = '',
+        failure_payload: dict[str, Any] | None = None,
+    ) -> str:
+        if self.planner_llm is None:
+            return ''
+        try:
+            response = await self.planner_llm.ainvoke(messages)
+            return self._message_text(getattr(response, 'content', response)).strip()
+        except Exception as exc:
+            if failure_event:
+                payload = dict(failure_payload or {})
+                payload.setdefault('error', str(exc))
+                self.memory.append_event(
+                    self.session_state.session_id,
+                    failure_event,
+                    payload,
+                )
+            return ''
+
     async def _classify_pending_followup_action(
         self,
         *,
@@ -1094,15 +1121,10 @@ class YoloStudioAgentClient:
                 )
             ),
         ]
-        try:
-            response = await self.planner_llm.ainvoke(messages)
-            parsed = self._parse_json_object_payload(self._message_text(getattr(response, 'content', response)))
-            action = str(parsed.get('action') or '').strip().lower()
-            if action == 'status_or_detail':
-                return action
-        except Exception:
-            return ''
-        return ''
+        return await self._classify_structured_action(
+            messages=messages,
+            allowed_actions={'status_or_detail'},
+        )
 
     async def _classify_confirmation_reply(self, user_text: str, pending: dict[str, Any]) -> str:
         heuristic = self._classify_confirmation_reply_fallback(user_text)
@@ -1136,9 +1158,22 @@ class YoloStudioAgentClient:
             ),
         ]
         try:
-            response = await self.planner_llm.ainvoke(messages)
-            text = self._message_text(getattr(response, 'content', response))
-            parsed = self._parse_confirmation_reply_payload(text)
+            parsed = await self._invoke_structured_payload(
+                messages=messages,
+                schema={
+                    'title': 'yolostudio_confirmation_reply',
+                    'type': 'object',
+                    'properties': {
+                        'decision': {
+                            'type': 'string',
+                            'enum': ['approve', 'deny', 'edit', 'clarify', 'unclear', 'restate'],
+                        },
+                        'reason': {'type': 'string'},
+                    },
+                    'required': ['decision', 'reason'],
+                    'additionalProperties': False,
+                },
+            )
             decision = self._normalize_confirmation_reply_decision(parsed.get('decision'))
             if decision != 'unclear':
                 return decision
@@ -1247,6 +1282,1271 @@ class YoloStudioAgentClient:
             self.session_state.preferences.default_model = ""
         if self.session_state.preferences.language != "zh-CN":
             self.session_state.preferences.language = "zh-CN"
+
+    async def _complete_cached_tool_result_reply(
+        self,
+        tool_name: str,
+        payload: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if not payload:
+            return None
+        reply = await self._render_tool_result_message(tool_name, payload)
+        if not reply:
+            return None
+        self._messages.append(AIMessage(content=reply))
+        return {'status': 'completed', 'message': reply, 'tool_call': None}
+
+    async def _try_handle_prediction_management_followup(
+        self,
+        *,
+        enabled: bool,
+        user_text: str,
+        normalized_text: str,
+    ) -> dict[str, Any] | None:
+        if not enabled:
+            return None
+        action = await self._classify_prediction_management_followup_action(
+            user_text=user_text,
+            normalized_text=normalized_text,
+        )
+        result = self._prediction_management_followup_result(action)
+        if not result:
+            return None
+        tool_name, payload = result
+        return await self._complete_cached_tool_result_reply(tool_name, payload)
+
+    async def _try_handle_prediction_followup(
+        self,
+        *,
+        enabled: bool,
+        user_text: str,
+        normalized_text: str,
+        fallback_path: str,
+    ) -> dict[str, Any] | None:
+        if not enabled:
+            return None
+        action = await self._classify_prediction_followup_action(
+            user_text=user_text,
+            normalized_text=normalized_text,
+            fallback_path=fallback_path,
+        )
+        if action == 'inspect':
+            inspect_kwargs = self._prediction_followup_kwargs(
+                user_text,
+                fallback_path=fallback_path,
+                allow_context_fallback=True,
+            )
+            if inspect_kwargs:
+                return await self._complete_direct_tool_reply('inspect_prediction_outputs', **inspect_kwargs)
+        if action == 'summary':
+            summary_kwargs = self._prediction_followup_kwargs(
+                user_text,
+                fallback_path=fallback_path,
+                allow_context_fallback=True,
+            )
+            if summary_kwargs:
+                return await self._complete_direct_tool_reply('summarize_prediction_results', **summary_kwargs)
+        return None
+
+    async def _try_handle_extract_followup(
+        self,
+        *,
+        enabled: bool,
+        user_text: str,
+        normalized_text: str,
+    ) -> dict[str, Any] | None:
+        if not enabled:
+            return None
+        action = await self._classify_extract_followup_action(
+            user_text=user_text,
+            normalized_text=normalized_text,
+        )
+        result = self._extract_followup_result(action)
+        if not result:
+            return None
+        tool_name, payload = result
+        return await self._complete_cached_tool_result_reply(tool_name, payload)
+
+    async def _try_handle_dataset_followup(
+        self,
+        *,
+        enabled: bool,
+        user_text: str,
+        normalized_text: str,
+        dataset_path: str,
+    ) -> dict[str, Any] | None:
+        if not enabled:
+            return None
+        action = await self._classify_dataset_followup_action(
+            user_text=user_text,
+            normalized_text=normalized_text,
+            fallback_path=dataset_path,
+        )
+        if action == 'quality':
+            return await self._complete_dataset_quality_reply(dataset_path)
+        if action == 'health':
+            return await self._complete_direct_tool_reply(
+                'run_dataset_health_check',
+                dataset_path=dataset_path,
+                include_duplicates=True,
+                max_duplicate_groups=3,
+            )
+        if action == 'duplicates':
+            return await self._complete_direct_tool_reply('detect_duplicate_images', dataset_path=dataset_path)
+        return None
+
+    async def _try_handle_realtime_followup(
+        self,
+        *,
+        enabled: bool,
+        user_text: str,
+        normalized_text: str,
+    ) -> dict[str, Any] | None:
+        if not enabled:
+            return None
+        action = await self._classify_realtime_followup_action(
+            user_text=user_text,
+            normalized_text=normalized_text,
+        )
+        if action == 'status':
+            status_kwargs = self._build_realtime_session_kwargs(user_text)
+            return await self._complete_direct_tool_reply('check_realtime_prediction_status', **status_kwargs)
+        return None
+
+    async def _try_handle_remote_roundtrip_followup(
+        self,
+        *,
+        enabled: bool,
+        user_text: str,
+        normalized_text: str,
+    ) -> dict[str, Any] | None:
+        if not enabled:
+            return None
+        action = await self._classify_remote_roundtrip_followup_action(
+            user_text=user_text,
+            normalized_text=normalized_text,
+        )
+        if action == 'training_pipeline':
+            return await self._complete_cached_tool_result_reply(
+                'remote_training_pipeline',
+                self.session_state.active_training.last_remote_roundtrip,
+            )
+        if action == 'prediction_pipeline':
+            return await self._complete_cached_tool_result_reply(
+                'remote_prediction_pipeline',
+                self.session_state.active_prediction.last_remote_roundtrip,
+            )
+        return None
+
+    async def _try_handle_remote_transfer_followup(
+        self,
+        *,
+        enabled: bool,
+        user_text: str,
+        normalized_text: str,
+    ) -> dict[str, Any] | None:
+        if not enabled:
+            return None
+        action = await self._classify_remote_transfer_followup_action(
+            user_text=user_text,
+            normalized_text=normalized_text,
+        )
+        if action == 'profiles':
+            return await self._complete_cached_tool_result_reply(
+                'list_remote_profiles',
+                self.session_state.active_remote_transfer.last_profile_listing,
+            )
+        if action == 'upload':
+            return await self._complete_cached_tool_result_reply(
+                'upload_assets_to_remote',
+                self.session_state.active_remote_transfer.last_upload,
+            )
+        if action == 'download':
+            return await self._complete_cached_tool_result_reply(
+                'download_assets_from_remote',
+                self.session_state.active_remote_transfer.last_download,
+            )
+        return None
+
+    async def _try_handle_prediction_requests(
+        self,
+        *,
+        user_text: str,
+        normalized_text: str,
+        prediction_path: str,
+        wants_train: bool,
+        training_command_like: bool,
+        wants_scan_videos: bool,
+        wants_extract_frames: bool,
+        wants_extract_preview: bool,
+        wants_extract_images: bool,
+        wants_remote_upload: bool,
+        wants_prediction_summary: bool,
+        wants_prediction_output_inspection: bool,
+        wants_prediction_report_export: bool,
+        wants_prediction_path_lists: bool,
+        wants_prediction_result_organize: bool,
+        has_prediction_followup_context: bool,
+        has_prediction_management_followup_context: bool,
+        has_explicit_prediction_target: bool,
+    ) -> dict[str, Any] | None:
+        if wants_prediction_output_inspection:
+            inspect_kwargs = self._prediction_followup_kwargs(
+                user_text,
+                fallback_path=prediction_path,
+                allow_context_fallback=True,
+            )
+            if inspect_kwargs:
+                return await self._complete_direct_tool_reply('inspect_prediction_outputs', **inspect_kwargs)
+
+        if wants_prediction_report_export:
+            export_kwargs = self._prediction_followup_kwargs(
+                user_text,
+                fallback_path=prediction_path,
+                allow_context_fallback=True,
+            )
+            export_path = self._extract_output_path_from_text(user_text, self.session_state.active_prediction.output_dir or prediction_path)
+            if export_path:
+                export_kwargs['export_path'] = export_path
+            if export_kwargs:
+                return await self._complete_direct_tool_reply('export_prediction_report', **export_kwargs)
+
+        if wants_prediction_path_lists:
+            path_list_kwargs = self._prediction_followup_kwargs(
+                user_text,
+                fallback_path=prediction_path,
+                allow_context_fallback=True,
+            )
+            export_dir = self._extract_output_path_from_text(user_text, self.session_state.active_prediction.output_dir or prediction_path)
+            if export_dir:
+                path_list_kwargs['export_dir'] = export_dir
+            if path_list_kwargs:
+                return await self._complete_direct_tool_reply('export_prediction_path_lists', **path_list_kwargs)
+
+        if wants_prediction_result_organize:
+            organize_kwargs = self._prediction_followup_kwargs(
+                user_text,
+                fallback_path=prediction_path,
+                allow_context_fallback=True,
+            )
+            destination_dir = self._extract_output_path_from_text(user_text, self.session_state.active_prediction.output_dir or prediction_path)
+            if destination_dir:
+                organize_kwargs['destination_dir'] = destination_dir
+            organize_kwargs['organize_by'] = 'by_class' if '类别' in user_text else 'detected_only'
+            organize_kwargs['include_empty'] = '无命中' in user_text or '空结果' in user_text
+            if organize_kwargs:
+                return await self._complete_direct_tool_reply('organize_prediction_results', **organize_kwargs)
+
+        if wants_prediction_summary:
+            summary_kwargs = self._prediction_followup_kwargs(user_text, fallback_path=prediction_path)
+            if summary_kwargs:
+                return await self._complete_direct_tool_reply('summarize_prediction_results', **summary_kwargs)
+
+            if self._explicitly_references_previous_context(user_text) and self.session_state.active_prediction.last_result:
+                reply = await self._render_tool_result_message('predict_images', self.session_state.active_prediction.last_result)
+                if reply:
+                    self._messages.append(AIMessage(content=reply))
+                    return {'status': 'completed', 'message': reply, 'tool_call': None}
+
+        prediction_management_followup = await self._try_handle_prediction_management_followup(
+            enabled=(
+                has_prediction_management_followup_context
+                and not wants_train
+                and not training_command_like
+                and not wants_scan_videos
+                and not wants_extract_frames
+                and not wants_extract_preview
+                and not wants_extract_images
+                and not wants_remote_upload
+                and not has_explicit_prediction_target
+                and not wants_prediction_output_inspection
+                and not wants_prediction_report_export
+                and not wants_prediction_path_lists
+                and not wants_prediction_result_organize
+            ),
+            user_text=user_text,
+            normalized_text=normalized_text,
+        )
+        if prediction_management_followup:
+            return prediction_management_followup
+
+        prediction_followup = await self._try_handle_prediction_followup(
+            enabled=(
+                has_prediction_followup_context
+                and not wants_train
+                and not training_command_like
+                and not wants_scan_videos
+                and not wants_extract_frames
+                and not wants_extract_preview
+                and not wants_extract_images
+                and not wants_remote_upload
+                and not has_explicit_prediction_target
+            ),
+            user_text=user_text,
+            normalized_text=normalized_text,
+            fallback_path=prediction_path,
+        )
+        if prediction_followup:
+            return prediction_followup
+        return None
+
+    async def _try_handle_dataset_and_extract_requests(
+        self,
+        *,
+        user_text: str,
+        normalized_text: str,
+        dataset_path: str,
+        prediction_path: str,
+        extracted_dataset_path: str,
+        wants_train: bool,
+        wants_predict: bool,
+        training_command_like: bool,
+        wants_remote_upload: bool,
+        wants_scan_videos: bool,
+        wants_extract_frames: bool,
+        wants_extract_preview: bool,
+        wants_extract_images: bool,
+        wants_quality: bool,
+        wants_health: bool,
+        wants_duplicates: bool,
+        wants_readiness: bool,
+        has_extract_followup_context: bool,
+        has_dataset_followup_context: bool,
+    ) -> dict[str, Any] | None:
+        extract_followup = await self._try_handle_extract_followup(
+            enabled=(
+                has_extract_followup_context
+                and not wants_train
+                and not wants_predict
+                and not training_command_like
+                and not wants_remote_upload
+                and not wants_quality
+                and not wants_health
+                and not wants_duplicates
+                and not extracted_dataset_path
+            ),
+            user_text=user_text,
+            normalized_text=normalized_text,
+        )
+        if extract_followup:
+            return extract_followup
+
+        dataset_followup = await self._try_handle_dataset_followup(
+            enabled=(
+                has_dataset_followup_context
+                and bool(dataset_path)
+                and not wants_train
+                and not wants_predict
+                and not training_command_like
+                and not wants_scan_videos
+                and not wants_extract_frames
+                and not wants_extract_preview
+                and not wants_extract_images
+                and not wants_remote_upload
+                and not wants_quality
+                and not wants_health
+                and not wants_duplicates
+                and not extracted_dataset_path
+            ),
+            user_text=user_text,
+            normalized_text=normalized_text,
+            dataset_path=dataset_path,
+        )
+        if dataset_followup:
+            return dataset_followup
+
+        if dataset_path and wants_quality and not wants_train:
+            return await self._complete_dataset_quality_reply(dataset_path)
+
+        if dataset_path and wants_duplicates and not wants_train and not wants_health:
+            return await self._complete_direct_tool_reply('detect_duplicate_images', dataset_path=dataset_path)
+
+        if dataset_path and wants_health and not wants_train:
+            return await self._complete_direct_tool_reply(
+                'run_dataset_health_check',
+                dataset_path=dataset_path,
+                include_duplicates=wants_duplicates,
+            )
+
+        if dataset_path and wants_readiness and not wants_predict and not training_command_like:
+            return await self._complete_readiness_knowledge_reply(dataset_path)
+
+        if dataset_path and wants_extract_preview and not wants_train:
+            return await self._complete_direct_tool_reply('preview_extract_images', **self._build_image_extract_args_from_text(user_text, dataset_path))
+
+        if dataset_path and wants_extract_images and not wants_train and not wants_extract_preview:
+            return await self._complete_direct_tool_reply('extract_images', **self._build_image_extract_args_from_text(user_text, dataset_path))
+
+        if prediction_path and wants_scan_videos and not wants_predict and not training_command_like:
+            return await self._complete_direct_tool_reply('scan_videos', source_path=prediction_path)
+
+        if prediction_path and wants_extract_frames and not wants_predict and not training_command_like:
+            return await self._complete_direct_tool_reply('extract_video_frames', **self._build_video_extract_args_from_text(user_text, prediction_path))
+        return None
+
+    async def _try_handle_training_history_followup(
+        self,
+        *,
+        enabled: bool,
+        user_text: str,
+        normalized_text: str,
+    ) -> dict[str, Any] | None:
+        if not enabled:
+            return None
+        action = await self._classify_training_history_followup_action(
+            user_text=user_text,
+            normalized_text=normalized_text,
+        )
+        if action == 'runs' and self.session_state.active_training.recent_runs:
+            return await self._complete_cached_tool_result_reply(
+                'list_training_runs',
+                {
+                    'ok': True,
+                    'summary': '训练历史查询完成',
+                    'runs': list(self.session_state.active_training.recent_runs),
+                },
+            )
+        if action == 'inspect':
+            return await self._complete_cached_tool_result_reply(
+                'inspect_training_run',
+                self.session_state.active_training.last_run_inspection,
+            )
+        if action == 'compare':
+            return await self._complete_cached_tool_result_reply(
+                'compare_training_runs',
+                self.session_state.active_training.last_run_comparison,
+            )
+        if action == 'best':
+            return await self._complete_cached_tool_result_reply(
+                'select_best_training_run',
+                self.session_state.active_training.best_run_selection,
+            )
+        return None
+
+    async def _try_handle_training_loop_history_followup(
+        self,
+        *,
+        enabled: bool,
+        user_text: str,
+        normalized_text: str,
+    ) -> dict[str, Any] | None:
+        if not enabled:
+            return None
+        action = await self._classify_training_loop_history_followup_action(
+            user_text=user_text,
+            normalized_text=normalized_text,
+        )
+        if action == 'list' and self.session_state.active_training.recent_loops:
+            return await self._complete_cached_tool_result_reply(
+                'list_training_loops',
+                {
+                    'ok': True,
+                    'summary': '环训练列表已就绪',
+                    'loops': list(self.session_state.active_training.recent_loops),
+                },
+            )
+        if action == 'status':
+            return await self._complete_cached_tool_result_reply(
+                'check_training_loop_status',
+                self.session_state.active_training.last_loop_status,
+            )
+        if action == 'inspect':
+            payload = self.session_state.active_training.last_loop_detail or self.session_state.active_training.last_loop_status
+            return await self._complete_cached_tool_result_reply('inspect_training_loop', payload)
+        return None
+
+    async def _try_handle_knowledge_followup(
+        self,
+        *,
+        enabled: bool,
+        user_text: str,
+        normalized_text: str,
+        metric_signals: list[str],
+        asks_metric_terms: bool,
+    ) -> dict[str, Any] | None:
+        if not enabled:
+            return None
+        action = await self._classify_knowledge_followup_action(
+            user_text=user_text,
+            normalized_text=normalized_text,
+            metric_signals=metric_signals,
+        )
+        if action == 'knowledge':
+            retrieval = self.session_state.active_knowledge.last_retrieval
+            retrieval_topic = str(retrieval.get('topic') or '').strip() or ('training_metrics' if asks_metric_terms else 'workflow')
+            retrieval_stage = str(retrieval.get('stage') or '').strip() or 'post_training'
+            retrieval_signals = list(retrieval.get('signals') or metric_signals)
+            return await self._complete_knowledge_retrieval_reply(
+                topic=retrieval_topic,
+                stage=retrieval_stage,
+                signals=retrieval_signals,
+            )
+        if action == 'analysis':
+            return await self._complete_training_outcome_analysis_reply()
+        if action == 'next_step':
+            return await self._complete_next_training_step_reply('')
+        return None
+
+    async def _try_handle_training_followup(
+        self,
+        *,
+        enabled: bool,
+        user_text: str,
+        normalized_text: str,
+        metric_signals: list[str],
+        asks_metric_terms: bool,
+    ) -> dict[str, Any] | None:
+        if not enabled:
+            return None
+        action = await self._classify_training_followup_action(
+            user_text=user_text,
+            normalized_text=normalized_text,
+            metric_signals=metric_signals,
+        )
+        if action == 'status':
+            return await self._complete_direct_tool_reply('check_training_status')
+        if action == 'analysis':
+            return await self._complete_training_outcome_analysis_reply()
+        if action == 'next_step':
+            return await self._complete_next_training_step_reply('')
+        if action == 'knowledge':
+            return await self._complete_knowledge_retrieval_reply(
+                topic='training_metrics' if asks_metric_terms else 'workflow',
+                stage='post_training',
+                signals=metric_signals,
+            )
+        return None
+
+    async def _try_handle_realtime_requests(
+        self,
+        *,
+        user_text: str,
+        normalized_text: str,
+        wants_train: bool,
+        wants_camera_scan: bool,
+        wants_screen_scan: bool,
+        wants_rtsp_test: bool,
+        wants_realtime_status: bool,
+        wants_realtime_stop: bool,
+        wants_camera_prediction: bool,
+        wants_rtsp_prediction: bool,
+        wants_screen_prediction: bool,
+        has_realtime_context: bool,
+        has_explicit_realtime_target: bool,
+        rtsp_url: str,
+    ) -> dict[str, Any] | None:
+        if wants_camera_scan and not wants_train:
+            return await self._complete_direct_tool_reply('scan_cameras')
+
+        if wants_screen_scan and not wants_train:
+            return await self._complete_direct_tool_reply('scan_screens')
+
+        if wants_rtsp_test and rtsp_url and not wants_train:
+            timeout_ms = self._extract_timeout_ms_from_text(user_text)
+            test_kwargs: dict[str, Any] = {'rtsp_url': rtsp_url}
+            if timeout_ms is not None:
+                test_kwargs['timeout_ms'] = timeout_ms
+            return await self._complete_direct_tool_reply('test_rtsp_stream', **test_kwargs)
+
+        if wants_realtime_status and not wants_train:
+            status_kwargs = self._build_realtime_session_kwargs(user_text)
+            return await self._complete_direct_tool_reply('check_realtime_prediction_status', **status_kwargs)
+
+        if wants_realtime_stop and not wants_train:
+            stop_kwargs = self._build_realtime_session_kwargs(user_text)
+            return await self._complete_direct_tool_reply('stop_realtime_prediction', **stop_kwargs)
+
+        if wants_camera_prediction and not wants_train:
+            return await self._complete_direct_tool_reply(
+                'start_camera_prediction',
+                **self._build_realtime_prediction_args(user_text, source_type='camera'),
+            )
+
+        if wants_rtsp_prediction and not wants_train:
+            return await self._complete_direct_tool_reply(
+                'start_rtsp_prediction',
+                **self._build_realtime_prediction_args(user_text, source_type='rtsp'),
+            )
+
+        if wants_screen_prediction and not wants_train:
+            return await self._complete_direct_tool_reply(
+                'start_screen_prediction',
+                **self._build_realtime_prediction_args(user_text, source_type='screen'),
+            )
+
+        realtime_followup = await self._try_handle_realtime_followup(
+            enabled=(
+                has_realtime_context
+                and not wants_train
+                and not wants_camera_scan
+                and not wants_screen_scan
+                and not wants_rtsp_test
+                and not wants_realtime_stop
+                and not wants_camera_prediction
+                and not wants_rtsp_prediction
+                and not wants_screen_prediction
+                and not has_explicit_realtime_target
+            ),
+            user_text=user_text,
+            normalized_text=normalized_text,
+        )
+        if realtime_followup:
+            return realtime_followup
+        return None
+
+    async def _try_handle_remote_requests(
+        self,
+        *,
+        thread_id: str,
+        user_text: str,
+        normalized_text: str,
+        wants_train: bool,
+        wants_predict: bool,
+        training_command_like: bool,
+        wants_remote_profile_list: bool,
+        wants_remote_upload: bool,
+        wants_remote_prediction_pipeline: bool,
+        wants_remote_training_pipeline: bool,
+        wants_remote_result_return: bool,
+        has_remote_transfer_followup_context: bool,
+        has_remote_roundtrip_followup_context: bool,
+        has_explicit_remote_target: bool,
+        has_explicit_transfer_paths: bool,
+    ) -> dict[str, Any] | None:
+        if wants_remote_profile_list:
+            return await self._complete_direct_tool_reply('list_remote_profiles')
+
+        if wants_remote_prediction_pipeline:
+            pipeline_args = self._build_remote_prediction_pipeline_args(user_text)
+            upload_args = dict(pipeline_args.get('upload_args') or {})
+            local_paths = list(upload_args.get('local_paths') or [])
+            if not local_paths:
+                reply = '当前还不能发起远端预测闭环：请明确给我要上传的本地模型和图片/视频路径。'
+                self._messages.append(AIMessage(content=reply))
+                return {'status': 'completed', 'message': reply, 'tool_call': None}
+            if not str(upload_args.get('server') or '').strip() and not str(upload_args.get('host') or '').strip():
+                reply = '当前还不能发起远端预测闭环：请明确目标服务器，或先列出并选择一个远端 profile。'
+                self._messages.append(AIMessage(content=reply))
+                return {'status': 'completed', 'message': reply, 'tool_call': None}
+            if not str(upload_args.get('remote_root') or '').strip():
+                reply = '当前还不能发起远端预测闭环：请明确远端目录，或先配置一个带默认 remote_root 的远端 profile。'
+                self._messages.append(AIMessage(content=reply))
+                return {'status': 'completed', 'message': reply, 'tool_call': None}
+            pending = {'name': 'remote_prediction_pipeline', 'args': pipeline_args, 'id': None, 'synthetic': True}
+            self._set_pending_confirmation(thread_id, pending)
+            reply = await self._build_confirmation_message(pending)
+            self._messages.append(AIMessage(content=reply))
+            return self._needs_confirmation_result(thread_id, pending, reply)
+
+        if wants_remote_training_pipeline:
+            pipeline_args = self._build_remote_training_pipeline_args(user_text)
+            upload_args = dict(pipeline_args.get('upload_args') or {})
+            local_paths = list(upload_args.get('local_paths') or [])
+            if not local_paths:
+                reply = '当前还不能发起远端训练闭环：请明确给我要上传的本地模型和数据集路径。'
+                self._messages.append(AIMessage(content=reply))
+                return {'status': 'completed', 'message': reply, 'tool_call': None}
+            if not str(upload_args.get('server') or '').strip() and not str(upload_args.get('host') or '').strip():
+                reply = '当前还不能发起远端训练闭环：请明确目标服务器，或先列出并选择一个远端 profile。'
+                self._messages.append(AIMessage(content=reply))
+                return {'status': 'completed', 'message': reply, 'tool_call': None}
+            if not str(upload_args.get('remote_root') or '').strip():
+                reply = '当前还不能发起远端训练闭环：请明确远端目录，或先配置一个带默认 remote_root 的远端 profile。'
+                self._messages.append(AIMessage(content=reply))
+                return {'status': 'completed', 'message': reply, 'tool_call': None}
+            pending = {'name': 'remote_training_pipeline', 'args': pipeline_args, 'id': None, 'synthetic': True}
+            self._set_pending_confirmation(thread_id, pending)
+            reply = await self._build_confirmation_message(pending)
+            self._messages.append(AIMessage(content=reply))
+            return self._needs_confirmation_result(thread_id, pending, reply)
+
+        remote_roundtrip_followup = await self._try_handle_remote_roundtrip_followup(
+            enabled=(
+                has_remote_roundtrip_followup_context
+                and not wants_remote_profile_list
+                and not wants_remote_upload
+                and not wants_remote_prediction_pipeline
+                and not wants_remote_training_pipeline
+                and not wants_remote_result_return
+                and not has_explicit_remote_target
+                and not has_explicit_transfer_paths
+            ),
+            user_text=user_text,
+            normalized_text=normalized_text,
+        )
+        if remote_roundtrip_followup:
+            return remote_roundtrip_followup
+
+        if wants_remote_upload:
+            upload_args = self._build_remote_upload_args(user_text)
+            upload_args = self._apply_remote_defaults(upload_args)
+            local_paths = list(upload_args.get('local_paths') or [])
+            if not local_paths:
+                reply = '当前还不能发起远端上传：请明确给我要上传的本地路径；至少提供一个本地权重、数据集目录或视频路径。'
+                self._messages.append(AIMessage(content=reply))
+                return {'status': 'completed', 'message': reply, 'tool_call': None}
+            if not str(upload_args.get('remote_root') or '').strip():
+                reply = '当前还不能发起远端上传：请明确远端目录，或先配置一个带默认 remote_root 的远端 profile。'
+                self._messages.append(AIMessage(content=reply))
+                return {'status': 'completed', 'message': reply, 'tool_call': None}
+            pending = {'name': 'upload_assets_to_remote', 'args': upload_args, 'id': None, 'synthetic': True}
+            self._set_pending_confirmation(thread_id, pending)
+            reply = await self._build_confirmation_message(pending)
+            self._messages.append(AIMessage(content=reply))
+            return self._needs_confirmation_result(thread_id, pending, reply)
+
+        remote_transfer_followup = await self._try_handle_remote_transfer_followup(
+            enabled=(
+                has_remote_transfer_followup_context
+                and not wants_train
+                and not wants_predict
+                and not training_command_like
+                and not wants_remote_profile_list
+                and not wants_remote_upload
+                and not wants_remote_prediction_pipeline
+                and not wants_remote_training_pipeline
+                and not wants_remote_result_return
+                and not has_explicit_remote_target
+                and not has_explicit_transfer_paths
+            ),
+            user_text=user_text,
+            normalized_text=normalized_text,
+        )
+        if remote_transfer_followup:
+            return remote_transfer_followup
+        return None
+
+    async def _try_handle_training_history_and_loop_requests(
+        self,
+        *,
+        user_text: str,
+        normalized_text: str,
+        has_training_history_followup_context: bool,
+        has_training_loop_history_followup_context: bool,
+        has_training_context: bool,
+        wants_predict: bool,
+        training_command_like: bool,
+        explicit_run_ids: list[str],
+        wants_training_run_inspect: bool,
+        wants_failed_training_run_list: bool,
+        wants_completed_training_run_list: bool,
+        wants_stopped_training_run_list: bool,
+        wants_running_training_run_list: bool,
+        wants_analysis_ready_run_list: bool,
+        wants_training_loop_list: bool,
+        wants_training_loop_status: bool,
+        wants_inspect_training_loop: bool,
+        wants_pause_training_loop: bool,
+        wants_resume_training_loop: bool,
+        wants_stop_training_loop: bool,
+        comparison_run_ids: list[str],
+        wants_training_run_compare: bool,
+        wants_next_step_guidance: bool,
+        wants_best_training_run: bool,
+        wants_training_outcome_analysis: bool,
+        loop_route: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        training_history_followup = await self._try_handle_training_history_followup(
+            enabled=(
+                has_training_history_followup_context
+                and not has_training_context
+                and not wants_predict
+                and not training_command_like
+                and not explicit_run_ids
+                and not wants_training_run_inspect
+                and not wants_failed_training_run_list
+                and not wants_completed_training_run_list
+                and not wants_stopped_training_run_list
+                and not wants_running_training_run_list
+                and not wants_analysis_ready_run_list
+                and not wants_training_loop_list
+                and not wants_training_loop_status
+                and not wants_inspect_training_loop
+                and not wants_pause_training_loop
+                and not wants_resume_training_loop
+                and not wants_stop_training_loop
+            ),
+            user_text=user_text,
+            normalized_text=normalized_text,
+        )
+        if training_history_followup:
+            return training_history_followup
+
+        if wants_training_run_compare and wants_next_step_guidance and not wants_predict and not training_command_like:
+            compare_kwargs: dict[str, Any] = {}
+            if comparison_run_ids:
+                compare_kwargs['left_run_id'] = comparison_run_ids[0]
+                if len(comparison_run_ids) > 1:
+                    compare_kwargs['right_run_id'] = comparison_run_ids[1]
+            return await self._complete_training_compare_next_step_reply(**compare_kwargs)
+
+        if wants_best_training_run and wants_next_step_guidance and not wants_predict and not training_command_like:
+            return await self._complete_best_training_next_step_reply()
+
+        if wants_training_run_compare and wants_training_outcome_analysis and not wants_predict and not training_command_like:
+            compare_kwargs: dict[str, Any] = {}
+            if comparison_run_ids:
+                compare_kwargs['left_run_id'] = comparison_run_ids[0]
+                if len(comparison_run_ids) > 1:
+                    compare_kwargs['right_run_id'] = comparison_run_ids[1]
+            return await self._complete_training_compare_analysis_reply(**compare_kwargs)
+
+        if wants_best_training_run and wants_training_outcome_analysis and not wants_predict and not training_command_like:
+            return await self._complete_best_training_outcome_analysis_reply()
+
+        if explicit_run_ids and wants_next_step_guidance and not wants_predict and not training_command_like and not wants_training_run_compare:
+            return await self._complete_specific_training_run_next_step_reply(explicit_run_ids[0])
+
+        if explicit_run_ids and wants_training_outcome_analysis and not wants_predict and not training_command_like and not wants_training_run_compare:
+            return await self._complete_specific_training_run_outcome_analysis_reply(explicit_run_ids[0])
+
+        if wants_training_run_compare and not wants_predict and not training_command_like:
+            compare_kwargs: dict[str, Any] = {}
+            if comparison_run_ids:
+                compare_kwargs['left_run_id'] = comparison_run_ids[0]
+                if len(comparison_run_ids) > 1:
+                    compare_kwargs['right_run_id'] = comparison_run_ids[1]
+            return await self._complete_direct_tool_reply('compare_training_runs', **compare_kwargs)
+
+        if wants_best_training_run and not wants_predict and not training_command_like:
+            return await self._complete_direct_tool_reply('select_best_training_run')
+
+        if wants_training_run_inspect and not wants_predict and not training_command_like:
+            return await self._complete_direct_tool_reply('inspect_training_run', run_id=explicit_run_ids[0])
+
+        if wants_failed_training_run_list and not wants_predict and not training_command_like:
+            return await self._complete_direct_tool_reply('list_training_runs', run_state='failed')
+
+        if wants_completed_training_run_list and not wants_predict and not training_command_like:
+            return await self._complete_direct_tool_reply('list_training_runs', run_state='completed')
+
+        if wants_stopped_training_run_list and not wants_predict and not training_command_like:
+            return await self._complete_direct_tool_reply('list_training_runs', run_state='stopped')
+
+        if wants_running_training_run_list and not wants_predict and not training_command_like:
+            return await self._complete_direct_tool_reply('list_training_runs', run_state='running')
+
+        if wants_analysis_ready_run_list and not wants_predict and not training_command_like:
+            return await self._complete_direct_tool_reply('list_training_runs', analysis_ready=True)
+
+        if wants_training_loop_list and not wants_predict and not training_command_like:
+            return await self._complete_direct_tool_reply('list_training_loops')
+
+        active_loop_id = str(loop_route.get('loop_id') or '').strip() or self.session_state.active_training.active_loop_id
+
+        if wants_training_loop_status and not wants_predict and not training_command_like:
+            return await self._complete_direct_tool_reply('check_training_loop_status', loop_id=active_loop_id)
+
+        if wants_inspect_training_loop and not wants_predict and not training_command_like:
+            return await self._complete_direct_tool_reply('inspect_training_loop', loop_id=active_loop_id)
+
+        if wants_pause_training_loop and not wants_predict and not training_command_like:
+            return await self._complete_direct_tool_reply('pause_training_loop', loop_id=active_loop_id)
+
+        if wants_resume_training_loop and not wants_predict and not training_command_like:
+            return await self._complete_direct_tool_reply('resume_training_loop', loop_id=active_loop_id)
+
+        if wants_stop_training_loop and not wants_predict and not training_command_like:
+            return await self._complete_direct_tool_reply('stop_training_loop', loop_id=active_loop_id)
+
+        loop_history_followup = await self._try_handle_training_loop_history_followup(
+            enabled=(
+                has_training_loop_history_followup_context
+                and not self.session_state.active_training.active_loop_id
+                and not wants_predict
+                and not training_command_like
+                and not explicit_run_ids
+                and not wants_training_loop_list
+                and not wants_training_loop_status
+                and not wants_inspect_training_loop
+                and not wants_pause_training_loop
+                and not wants_resume_training_loop
+                and not wants_stop_training_loop
+            ),
+            user_text=user_text,
+            normalized_text=normalized_text,
+        )
+        if loop_history_followup:
+            return loop_history_followup
+
+        return None
+
+    async def _try_handle_training_context_requests(
+        self,
+        *,
+        user_text: str,
+        normalized_text: str,
+        dataset_path: str,
+        wants_predict: bool,
+        training_command_like: bool,
+        wants_stop_training: bool,
+        wants_training_provenance: bool,
+        wants_training_evidence: bool,
+        wants_next_step_guidance: bool,
+        wants_training_knowledge: bool,
+        wants_training_outcome_analysis: bool,
+        wants_training_status: bool,
+        wants_training_run_list: bool,
+        wants_training_run_compare: bool,
+        wants_best_training_run: bool,
+        wants_training_run_inspect: bool,
+        wants_failed_training_run_list: bool,
+        wants_completed_training_run_list: bool,
+        wants_stopped_training_run_list: bool,
+        wants_running_training_run_list: bool,
+        wants_analysis_ready_run_list: bool,
+        wants_training_loop_list: bool,
+        wants_training_loop_status: bool,
+        wants_inspect_training_loop: bool,
+        wants_pause_training_loop: bool,
+        wants_resume_training_loop: bool,
+        wants_stop_training_loop: bool,
+        wants_training_loop_start: bool,
+        has_knowledge_followup_context: bool,
+        has_training_followup_context: bool,
+        has_training_context: bool,
+        explicit_run_ids: list[str],
+        has_explicit_training_target: bool,
+        metric_signals: list[str],
+        asks_metric_terms: bool,
+    ) -> dict[str, Any] | None:
+        if wants_training_run_list and not wants_predict and not training_command_like:
+            return await self._complete_direct_tool_reply('list_training_runs')
+
+        knowledge_followup = await self._try_handle_knowledge_followup(
+            enabled=(
+                has_knowledge_followup_context
+                and not has_training_context
+                and not wants_predict
+                and not training_command_like
+                and not wants_stop_training
+                and not explicit_run_ids
+                and not has_explicit_training_target
+                and not wants_training_run_compare
+                and not wants_best_training_run
+                and not wants_training_run_inspect
+                and not wants_training_run_list
+                and not wants_failed_training_run_list
+                and not wants_completed_training_run_list
+                and not wants_stopped_training_run_list
+                and not wants_running_training_run_list
+                and not wants_analysis_ready_run_list
+                and not wants_training_loop_list
+                and not wants_training_loop_status
+                and not wants_inspect_training_loop
+                and not wants_pause_training_loop
+                and not wants_resume_training_loop
+                and not wants_stop_training_loop
+                and not wants_training_loop_start
+            ),
+            user_text=user_text,
+            normalized_text=normalized_text,
+            metric_signals=metric_signals,
+            asks_metric_terms=asks_metric_terms,
+        )
+        if knowledge_followup:
+            return knowledge_followup
+
+        training_followup = await self._try_handle_training_followup(
+            enabled=(
+                has_training_followup_context
+                and not wants_predict
+                and not training_command_like
+                and not wants_stop_training
+                and not explicit_run_ids
+                and not has_explicit_training_target
+                and not wants_training_run_compare
+                and not wants_best_training_run
+                and not wants_training_run_inspect
+                and not wants_training_run_list
+                and not wants_failed_training_run_list
+                and not wants_completed_training_run_list
+                and not wants_stopped_training_run_list
+                and not wants_running_training_run_list
+                and not wants_analysis_ready_run_list
+                and not wants_training_loop_list
+                and not wants_training_loop_status
+                and not wants_inspect_training_loop
+                and not wants_pause_training_loop
+                and not wants_resume_training_loop
+                and not wants_stop_training_loop
+                and not wants_training_loop_start
+            ),
+            user_text=user_text,
+            normalized_text=normalized_text,
+            metric_signals=metric_signals,
+            asks_metric_terms=asks_metric_terms,
+        )
+        if training_followup:
+            return training_followup
+
+        if wants_training_status and not wants_predict and not training_command_like:
+            return await self._complete_direct_tool_reply('check_training_status')
+
+        if wants_stop_training and not wants_predict and not training_command_like:
+            return await self._complete_direct_tool_reply('stop_training')
+
+        if not wants_predict and not training_command_like and wants_training_provenance:
+            return self._complete_training_provenance_reply()
+
+        if not wants_predict and not training_command_like and wants_training_evidence:
+            return self._complete_training_evidence_reply()
+
+        if not wants_predict and not training_command_like and wants_next_step_guidance:
+            return await self._complete_next_training_step_reply(dataset_path if dataset_path else '')
+
+        if not wants_predict and not training_command_like and wants_training_knowledge:
+            return await self._complete_knowledge_retrieval_reply(
+                topic='training_metrics' if asks_metric_terms else 'workflow',
+                stage='post_training',
+                signals=metric_signals,
+            )
+
+        if not wants_predict and not training_command_like and wants_training_outcome_analysis:
+            return await self._complete_training_outcome_analysis_reply()
+        return None
+
+    async def _try_handle_training_and_prediction_requests(
+        self,
+        *,
+        thread_id: str,
+        user_text: str,
+        normalized_text: str,
+        dataset_path: str,
+        prediction_path: str,
+        frame_followup_path: str,
+        wants_train: bool,
+        wants_predict: bool,
+        no_train: bool,
+        readiness_only_query: bool,
+        wants_training_outcome_analysis: bool,
+        wants_next_step_guidance: bool,
+        wants_training_knowledge: bool,
+        wants_training_loop_start: bool,
+        training_command_like: bool,
+        wants_training_revision: bool,
+        wants_stop_training: bool,
+        explicit_run_ids: list[str],
+        wants_best_weight_prediction: bool,
+        wants_split: bool,
+    ) -> dict[str, Any] | None:
+        if wants_training_loop_start and not wants_predict and not training_command_like:
+            active_dataset_root = str(self.session_state.active_dataset.dataset_root or '').strip()
+            active_img_dir = str(self.session_state.active_dataset.img_dir or '').strip()
+            can_reuse_session_yaml = not dataset_path or dataset_path in {active_dataset_root, active_img_dir}
+            resolved_yaml: str | None = None
+            if can_reuse_session_yaml:
+                resolved_yaml = str(
+                    self.session_state.active_dataset.data_yaml
+                    or self.session_state.active_training.data_yaml
+                    or ''
+                ).strip()
+            loop_args = self._collect_requested_training_loop_args(user_text, data_yaml=resolved_yaml)
+            return await self._run_training_loop_start_orchestration(
+                user_text=user_text,
+                thread_id=thread_id,
+                dataset_path=dataset_path,
+                loop_args=loop_args,
+            )
+
+        if (
+            self.session_state.active_training.running
+            and wants_train
+            and wants_training_revision
+            and not wants_stop_training
+            and not any(token in user_text for token in ('新数据', '新数据集', '另一个数据集', '换数据集', '改数据集'))
+            and not wants_predict
+            and not explicit_run_ids
+            and not any(token in user_text for token in ('数据', '数据集', 'dataset', 'img_dir', 'label_dir', '换成', '改成', '改用', '现在用'))
+            and 'resume' not in normalized_text
+        ):
+            reply = (
+                '当前训练还在运行，不能直接热更新 batch、轮数、优化器或设备等核心参数。'
+                '如果要改参数，请先停止当前训练，再生成新的训练计划。'
+            )
+            self._messages.append(AIMessage(content=reply))
+            return {'status': 'completed', 'message': reply, 'tool_call': None}
+
+        if wants_best_weight_prediction and wants_predict and not training_command_like:
+            best_selection = self.session_state.active_training.best_run_selection or {}
+            best_run = best_selection.get('best_run') or {}
+            weight_path = str(best_run.get('best_weight_path') or best_run.get('weights_path') or '').strip()
+            if not weight_path:
+                reply = '我当前不能直接假定“最佳训练”的权重文件路径；请先查看最佳训练详情，或明确给我可用的权重路径。'
+                self._messages.append(AIMessage(content=reply))
+                return {'status': 'completed', 'message': reply, 'tool_call': None}
+
+        if prediction_path and wants_predict and not training_command_like:
+            model = self._extract_model_from_text(user_text) or self.session_state.active_prediction.model or self.session_state.active_training.model
+            predict_tool = 'predict_videos' if self._should_use_video_prediction(user_text, prediction_path) else 'predict_images'
+            return await self._complete_direct_tool_reply(predict_tool, source_path=prediction_path, model=model)
+
+        if wants_train and not dataset_path and not no_train and not readiness_only_query and not wants_training_outcome_analysis and not wants_next_step_guidance and not wants_training_knowledge:
+            requested_model = self._extract_model_from_text(user_text)
+            missing_fields = ['数据集路径']
+            if not requested_model:
+                missing_fields.append('预训练权重/模型')
+            lines = ['当前还不能开始训练：']
+            for field in missing_fields:
+                lines.append(f'- 缺少{field}')
+            lines.append('请先补充最少必要信息；我至少需要数据集目录，训练时还需要可用的预训练权重/模型。')
+            reply = '\n'.join(lines)
+            self._messages.append(AIMessage(content=reply))
+            return {'status': 'completed', 'message': reply, 'tool_call': None}
+
+        if dataset_path and wants_train and not no_train and not readiness_only_query and not wants_training_outcome_analysis and not wants_next_step_guidance and not wants_training_knowledge:
+            readiness = await self.direct_tool('training_readiness', img_dir=dataset_path)
+            await self.direct_tool('list_training_environments')
+            requested_args = self._collect_requested_training_args(
+                user_text,
+                data_yaml=str(readiness.get('resolved_data_yaml') or self.session_state.active_dataset.data_yaml or ''),
+            )
+            if not str(requested_args.get('model') or '').strip():
+                draft_model = str((((self.session_state.active_training.training_plan_draft or {}).get('planned_training_args') or {}).get('model')) or '').strip()
+                preserved_model = ''
+                if frame_followup_path:
+                    preserved_model = draft_model or str(self.session_state.active_training.model or '').strip()
+                elif any(token in user_text for token in ('继续', '刚才', '上次', '恢复')):
+                    preserved_model = draft_model or str(self.session_state.active_training.model or '').strip()
+                if preserved_model:
+                    requested_args['model'] = preserved_model
+            requested_model = str(requested_args.get('model') or '').strip()
+            discussion_only = self._is_training_discussion_only(user_text)
+            execution_backend = self._extract_training_execution_backend_from_text(user_text)
+
+            if not requested_model:
+                draft = self._build_training_plan_draft(
+                    user_text=user_text,
+                    dataset_path=dataset_path,
+                    readiness=readiness,
+                    next_tool_name='',
+                    next_tool_args={},
+                    planned_training_args=requested_args,
+                )
+                blockers = list(draft.get('blockers') or [])
+                blockers.insert(0, '当前缺少预训练权重/模型，先补模型后再确认训练')
+                draft['blockers'] = blockers
+                self._save_training_plan_draft(draft)
+                reply = await self._render_training_plan_message(draft, pending=False)
+                self._messages.append(AIMessage(content=reply))
+                return {'status': 'completed', 'message': reply, 'tool_call': None}
+
+            if execution_backend != 'standard_yolo':
+                draft = self._build_training_plan_draft(
+                    user_text=user_text,
+                    dataset_path=dataset_path,
+                    readiness=readiness,
+                    next_tool_name='',
+                    next_tool_args={},
+                    planned_training_args=requested_args,
+                )
+                self._save_training_plan_draft(draft)
+                reply = await self._render_training_plan_message(draft, pending=False)
+                self._messages.append(AIMessage(content=reply))
+                return {'status': 'completed', 'message': reply, 'tool_call': None}
+
+            can_direct_train = bool(readiness.get('ready')) and bool(readiness.get('resolved_data_yaml'))
+            if can_direct_train:
+                preflight = await self.direct_tool(
+                    'training_preflight',
+                    model=requested_model,
+                    data_yaml=str(requested_args.get('data_yaml') or readiness.get('resolved_data_yaml') or ''),
+                    epochs=int(requested_args.get('epochs', 100)),
+                    device=str(requested_args.get('device', 'auto') or 'auto'),
+                    training_environment=str(requested_args.get('training_environment') or ''),
+                    project=str(requested_args.get('project') or ''),
+                    name=str(requested_args.get('name') or ''),
+                    batch=requested_args.get('batch'),
+                    imgsz=requested_args.get('imgsz'),
+                    fraction=requested_args.get('fraction'),
+                    classes=requested_args.get('classes'),
+                    single_cls=requested_args.get('single_cls'),
+                    optimizer=str(requested_args.get('optimizer', '') or ''),
+                    freeze=requested_args.get('freeze'),
+                    resume=requested_args.get('resume'),
+                    lr0=requested_args.get('lr0'),
+                    patience=requested_args.get('patience'),
+                    workers=requested_args.get('workers'),
+                    amp=requested_args.get('amp'),
+                )
+                next_args = {
+                    'model': str((preflight.get('resolved_args') or {}).get('model') or requested_model),
+                    'data_yaml': str((preflight.get('resolved_args') or {}).get('data_yaml') or readiness.get('resolved_data_yaml') or ''),
+                    'epochs': int((preflight.get('resolved_args') or {}).get('epochs') or requested_args.get('epochs', 100)),
+                    'device': str((preflight.get('resolved_args') or {}).get('device') or requested_args.get('device') or 'auto'),
+                    'training_environment': str((preflight.get('resolved_args') or {}).get('training_environment') or requested_args.get('training_environment') or ''),
+                    'project': str((preflight.get('resolved_args') or {}).get('project') or requested_args.get('project') or ''),
+                    'name': str((preflight.get('resolved_args') or {}).get('name') or requested_args.get('name') or ''),
+                    'batch': (preflight.get('resolved_args') or {}).get('batch', requested_args.get('batch')),
+                    'imgsz': (preflight.get('resolved_args') or {}).get('imgsz', requested_args.get('imgsz')),
+                    'fraction': (preflight.get('resolved_args') or {}).get('fraction', requested_args.get('fraction')),
+                    'classes': (preflight.get('resolved_args') or {}).get('classes', requested_args.get('classes')),
+                    'single_cls': (preflight.get('resolved_args') or {}).get('single_cls', requested_args.get('single_cls')),
+                    'optimizer': str((preflight.get('resolved_args') or {}).get('optimizer') or requested_args.get('optimizer') or ''),
+                    'freeze': (preflight.get('resolved_args') or {}).get('freeze', requested_args.get('freeze')),
+                    'resume': (preflight.get('resolved_args') or {}).get('resume', requested_args.get('resume')),
+                    'lr0': (preflight.get('resolved_args') or {}).get('lr0', requested_args.get('lr0')),
+                    'patience': (preflight.get('resolved_args') or {}).get('patience', requested_args.get('patience')),
+                    'workers': (preflight.get('resolved_args') or {}).get('workers', requested_args.get('workers')),
+                    'amp': (preflight.get('resolved_args') or {}).get('amp', requested_args.get('amp')),
+                }
+                draft = self._build_training_plan_draft(
+                    user_text=user_text,
+                    dataset_path=dataset_path,
+                    readiness=readiness,
+                    preflight=preflight,
+                    next_tool_name='start_training' if preflight.get('ready_to_start') else '',
+                    next_tool_args=next_args if preflight.get('ready_to_start') else {},
+                    planned_training_args=next_args,
+                )
+                self._save_training_plan_draft(draft)
+                reply = await self._render_training_plan_message(draft, pending=bool(preflight.get('ready_to_start') and not discussion_only))
+                self._messages.append(AIMessage(content=reply))
+                if preflight.get('ready_to_start') and not discussion_only:
+                    pending = {'name': 'start_training', 'args': next_args, 'id': None, 'synthetic': True}
+                    self._set_pending_confirmation(thread_id, pending)
+                    return self._needs_confirmation_result(thread_id, pending, reply)
+                return {'status': 'completed', 'message': reply, 'tool_call': None}
+
+            if readiness.get('preparable'):
+                args: dict[str, Any] = {'dataset_path': dataset_path}
+                if wants_split:
+                    args['force_split'] = True
+                explicit_classes_txt = str(requested_args.get('classes_txt') or '').strip()
+                if explicit_classes_txt:
+                    args['classes_txt'] = explicit_classes_txt
+                draft = self._build_training_plan_draft(
+                    user_text=user_text,
+                    dataset_path=dataset_path,
+                    readiness=readiness,
+                    preflight={},
+                    next_tool_name='prepare_dataset_for_training',
+                    next_tool_args=args,
+                    planned_training_args=requested_args,
+                )
+                self._save_training_plan_draft(draft)
+                reply = await self._render_training_plan_message(draft, pending=not discussion_only)
+                self._messages.append(AIMessage(content=reply))
+                if discussion_only:
+                    return {'status': 'completed', 'message': reply, 'tool_call': None}
+                pending = {'name': 'prepare_dataset_for_training', 'args': args, 'id': None, 'synthetic': True}
+                self._set_pending_confirmation(thread_id, pending)
+                return self._needs_confirmation_result(thread_id, pending, reply)
+
+            draft = self._build_training_plan_draft(
+                user_text=user_text,
+                dataset_path=dataset_path,
+                readiness=readiness,
+                preflight={},
+                next_tool_name='',
+                next_tool_args={},
+                planned_training_args=requested_args,
+            )
+            self._save_training_plan_draft(draft)
+            reply = await self._render_training_plan_message(draft, pending=False)
+            self._messages.append(AIMessage(content=reply))
+            return {'status': 'completed', 'message': reply, 'tool_call': None}
+        return None
 
     async def _try_handle_mainline_intent(self, user_text: str, thread_id: str) -> dict[str, Any] | None:
         extracted_dataset_path = self._extract_dataset_path_from_text(user_text)
@@ -1636,923 +2936,191 @@ class YoloStudioAgentClient:
             self._messages.append(AIMessage(content=reply))
             return {'status': 'completed', 'message': reply, 'tool_call': None}
 
-        if wants_camera_scan and not wants_train:
-            return await self._complete_direct_tool_reply('scan_cameras')
-
-        if wants_screen_scan and not wants_train:
-            return await self._complete_direct_tool_reply('scan_screens')
-
-        if wants_rtsp_test and rtsp_url and not wants_train:
-            timeout_ms = self._extract_timeout_ms_from_text(user_text)
-            test_kwargs: dict[str, Any] = {'rtsp_url': rtsp_url}
-            if timeout_ms is not None:
-                test_kwargs['timeout_ms'] = timeout_ms
-            return await self._complete_direct_tool_reply('test_rtsp_stream', **test_kwargs)
-
-        if wants_realtime_status and not wants_train:
-            status_kwargs = self._build_realtime_session_kwargs(user_text)
-            return await self._complete_direct_tool_reply('check_realtime_prediction_status', **status_kwargs)
-
-        if wants_realtime_stop and not wants_train:
-            stop_kwargs = self._build_realtime_session_kwargs(user_text)
-            return await self._complete_direct_tool_reply('stop_realtime_prediction', **stop_kwargs)
-
-        if wants_camera_prediction and not wants_train:
-            return await self._complete_direct_tool_reply(
-                'start_camera_prediction',
-                **self._build_realtime_prediction_args(user_text, source_type='camera'),
-            )
-
-        if wants_rtsp_prediction and not wants_train:
-            return await self._complete_direct_tool_reply(
-                'start_rtsp_prediction',
-                **self._build_realtime_prediction_args(user_text, source_type='rtsp'),
-            )
-
-        if wants_screen_prediction and not wants_train:
-            return await self._complete_direct_tool_reply(
-                'start_screen_prediction',
-                **self._build_realtime_prediction_args(user_text, source_type='screen'),
-            )
-
-        if (
-            has_realtime_context
-            and not wants_train
-            and not wants_camera_scan
-            and not wants_screen_scan
-            and not wants_rtsp_test
-            and not wants_realtime_stop
-            and not wants_camera_prediction
-            and not wants_rtsp_prediction
-            and not wants_screen_prediction
-            and not has_explicit_realtime_target
-        ):
-            realtime_followup_action = await self._classify_realtime_followup_action(
-                user_text=user_text,
-                normalized_text=normalized_text,
-            )
-            if realtime_followup_action == 'status':
-                status_kwargs = self._build_realtime_session_kwargs(user_text)
-                return await self._complete_direct_tool_reply('check_realtime_prediction_status', **status_kwargs)
-
-        if wants_prediction_output_inspection:
-            inspect_kwargs = self._prediction_followup_kwargs(
-                user_text,
-                fallback_path=prediction_path,
-                allow_context_fallback=True,
-            )
-            if inspect_kwargs:
-                return await self._complete_direct_tool_reply('inspect_prediction_outputs', **inspect_kwargs)
-
-        if wants_prediction_report_export:
-            export_kwargs = self._prediction_followup_kwargs(
-                user_text,
-                fallback_path=prediction_path,
-                allow_context_fallback=True,
-            )
-            export_path = self._extract_output_path_from_text(user_text, self.session_state.active_prediction.output_dir or prediction_path)
-            if export_path:
-                export_kwargs['export_path'] = export_path
-            if export_kwargs:
-                return await self._complete_direct_tool_reply('export_prediction_report', **export_kwargs)
-
-        if wants_prediction_path_lists:
-            path_list_kwargs = self._prediction_followup_kwargs(
-                user_text,
-                fallback_path=prediction_path,
-                allow_context_fallback=True,
-            )
-            export_dir = self._extract_output_path_from_text(user_text, self.session_state.active_prediction.output_dir or prediction_path)
-            if export_dir:
-                path_list_kwargs['export_dir'] = export_dir
-            if path_list_kwargs:
-                return await self._complete_direct_tool_reply('export_prediction_path_lists', **path_list_kwargs)
-
-        if wants_prediction_result_organize:
-            organize_kwargs = self._prediction_followup_kwargs(
-                user_text,
-                fallback_path=prediction_path,
-                allow_context_fallback=True,
-            )
-            destination_dir = self._extract_output_path_from_text(user_text, self.session_state.active_prediction.output_dir or prediction_path)
-            if destination_dir:
-                organize_kwargs['destination_dir'] = destination_dir
-            organize_kwargs['organize_by'] = 'by_class' if '类别' in user_text else 'detected_only'
-            organize_kwargs['include_empty'] = '无命中' in user_text or '空结果' in user_text
-            if organize_kwargs:
-                return await self._complete_direct_tool_reply('organize_prediction_results', **organize_kwargs)
-
-        if wants_remote_profile_list:
-            return await self._complete_direct_tool_reply('list_remote_profiles')
-
-        if wants_remote_prediction_pipeline:
-            pipeline_args = self._build_remote_prediction_pipeline_args(user_text)
-            upload_args = dict(pipeline_args.get('upload_args') or {})
-            local_paths = list(upload_args.get('local_paths') or [])
-            if not local_paths:
-                reply = '当前还不能发起远端预测闭环：请明确给我要上传的本地模型和图片/视频路径。'
-                self._messages.append(AIMessage(content=reply))
-                return {'status': 'completed', 'message': reply, 'tool_call': None}
-            if not str(upload_args.get('server') or '').strip() and not str(upload_args.get('host') or '').strip():
-                reply = '当前还不能发起远端预测闭环：请明确目标服务器，或先列出并选择一个远端 profile。'
-                self._messages.append(AIMessage(content=reply))
-                return {'status': 'completed', 'message': reply, 'tool_call': None}
-            if not str(upload_args.get('remote_root') or '').strip():
-                reply = '当前还不能发起远端预测闭环：请明确远端目录，或先配置一个带默认 remote_root 的远端 profile。'
-                self._messages.append(AIMessage(content=reply))
-                return {'status': 'completed', 'message': reply, 'tool_call': None}
-            pending = {'name': 'remote_prediction_pipeline', 'args': pipeline_args, 'id': None, 'synthetic': True}
-            self._set_pending_confirmation(thread_id, pending)
-            reply = await self._build_confirmation_message(pending)
-            self._messages.append(AIMessage(content=reply))
-            return self._needs_confirmation_result(thread_id, pending, reply)
-
-        if wants_remote_training_pipeline:
-            pipeline_args = self._build_remote_training_pipeline_args(user_text)
-            upload_args = dict(pipeline_args.get('upload_args') or {})
-            local_paths = list(upload_args.get('local_paths') or [])
-            if not local_paths:
-                reply = '当前还不能发起远端训练闭环：请明确给我要上传的本地模型和数据集路径。'
-                self._messages.append(AIMessage(content=reply))
-                return {'status': 'completed', 'message': reply, 'tool_call': None}
-            if not str(upload_args.get('server') or '').strip() and not str(upload_args.get('host') or '').strip():
-                reply = '当前还不能发起远端训练闭环：请明确目标服务器，或先列出并选择一个远端 profile。'
-                self._messages.append(AIMessage(content=reply))
-                return {'status': 'completed', 'message': reply, 'tool_call': None}
-            if not str(upload_args.get('remote_root') or '').strip():
-                reply = '当前还不能发起远端训练闭环：请明确远端目录，或先配置一个带默认 remote_root 的远端 profile。'
-                self._messages.append(AIMessage(content=reply))
-                return {'status': 'completed', 'message': reply, 'tool_call': None}
-            pending = {'name': 'remote_training_pipeline', 'args': pipeline_args, 'id': None, 'synthetic': True}
-            self._set_pending_confirmation(thread_id, pending)
-            reply = await self._build_confirmation_message(pending)
-            self._messages.append(AIMessage(content=reply))
-            return self._needs_confirmation_result(thread_id, pending, reply)
+        realtime_request = await self._try_handle_realtime_requests(
+            user_text=user_text,
+            normalized_text=normalized_text,
+            wants_train=wants_train,
+            wants_camera_scan=wants_camera_scan,
+            wants_screen_scan=wants_screen_scan,
+            wants_rtsp_test=wants_rtsp_test,
+            wants_realtime_status=wants_realtime_status,
+            wants_realtime_stop=wants_realtime_stop,
+            wants_camera_prediction=wants_camera_prediction,
+            wants_rtsp_prediction=wants_rtsp_prediction,
+            wants_screen_prediction=wants_screen_prediction,
+            has_realtime_context=has_realtime_context,
+            has_explicit_realtime_target=has_explicit_realtime_target,
+            rtsp_url=rtsp_url,
+        )
+        if realtime_request:
+            return realtime_request
 
         has_explicit_remote_target = bool(self._extract_remote_server_from_text(user_text) or self._extract_remote_root_from_text(user_text))
         has_explicit_transfer_paths = bool(self._extract_all_paths_from_text(user_text))
-        if (
-            has_remote_roundtrip_followup_context
-            and not wants_remote_profile_list
-            and not wants_remote_upload
-            and not wants_remote_prediction_pipeline
-            and not wants_remote_training_pipeline
-            and not wants_remote_result_return
-            and not has_explicit_remote_target
-            and not has_explicit_transfer_paths
-        ):
-            remote_roundtrip_action = await self._classify_remote_roundtrip_followup_action(
-                user_text=user_text,
-                normalized_text=normalized_text,
-            )
-            if remote_roundtrip_action == 'training_pipeline' and self.session_state.active_training.last_remote_roundtrip:
-                reply = await self._render_tool_result_message(
-                    'remote_training_pipeline',
-                    self.session_state.active_training.last_remote_roundtrip,
-                )
-                if reply:
-                    self._messages.append(AIMessage(content=reply))
-                    return {'status': 'completed', 'message': reply, 'tool_call': None}
-            if remote_roundtrip_action == 'prediction_pipeline' and self.session_state.active_prediction.last_remote_roundtrip:
-                reply = await self._render_tool_result_message(
-                    'remote_prediction_pipeline',
-                    self.session_state.active_prediction.last_remote_roundtrip,
-                )
-                if reply:
-                    self._messages.append(AIMessage(content=reply))
-                    return {'status': 'completed', 'message': reply, 'tool_call': None}
-
-        if wants_remote_upload:
-            upload_args = self._build_remote_upload_args(user_text)
-            upload_args = self._apply_remote_defaults(upload_args)
-            local_paths = list(upload_args.get('local_paths') or [])
-            if not local_paths:
-                reply = '当前还不能发起远端上传：请明确给我要上传的本地路径；至少提供一个本地权重、数据集目录或视频路径。'
-                self._messages.append(AIMessage(content=reply))
-                return {'status': 'completed', 'message': reply, 'tool_call': None}
-            if not str(upload_args.get('remote_root') or '').strip():
-                reply = '当前还不能发起远端上传：请明确远端目录，或先配置一个带默认 remote_root 的远端 profile。'
-                self._messages.append(AIMessage(content=reply))
-                return {'status': 'completed', 'message': reply, 'tool_call': None}
-            pending = {'name': 'upload_assets_to_remote', 'args': upload_args, 'id': None, 'synthetic': True}
-            self._set_pending_confirmation(thread_id, pending)
-            reply = await self._build_confirmation_message(pending)
-            self._messages.append(AIMessage(content=reply))
-            return self._needs_confirmation_result(thread_id, pending, reply)
-
-        if (
-            has_remote_transfer_followup_context
-            and not wants_train
-            and not wants_predict
-            and not training_command_like
-            and not wants_remote_profile_list
-            and not wants_remote_upload
-            and not wants_remote_prediction_pipeline
-            and not wants_remote_training_pipeline
-            and not wants_remote_result_return
-            and not has_explicit_remote_target
-            and not has_explicit_transfer_paths
-        ):
-            remote_followup_action = await self._classify_remote_transfer_followup_action(
-                user_text=user_text,
-                normalized_text=normalized_text,
-            )
-            if remote_followup_action == 'profiles' and self.session_state.active_remote_transfer.last_profile_listing:
-                reply = await self._render_tool_result_message(
-                    'list_remote_profiles',
-                    self.session_state.active_remote_transfer.last_profile_listing,
-                )
-                if reply:
-                    self._messages.append(AIMessage(content=reply))
-                    return {'status': 'completed', 'message': reply, 'tool_call': None}
-            if remote_followup_action == 'upload' and self.session_state.active_remote_transfer.last_upload:
-                reply = await self._render_tool_result_message(
-                    'upload_assets_to_remote',
-                    self.session_state.active_remote_transfer.last_upload,
-                )
-                if reply:
-                    self._messages.append(AIMessage(content=reply))
-                    return {'status': 'completed', 'message': reply, 'tool_call': None}
-            if remote_followup_action == 'download' and self.session_state.active_remote_transfer.last_download:
-                reply = await self._render_tool_result_message(
-                    'download_assets_from_remote',
-                    self.session_state.active_remote_transfer.last_download,
-                )
-                if reply:
-                    self._messages.append(AIMessage(content=reply))
-                    return {'status': 'completed', 'message': reply, 'tool_call': None}
-
-        if wants_prediction_summary:
-            summary_kwargs = self._prediction_followup_kwargs(user_text, fallback_path=prediction_path)
-            if summary_kwargs:
-                return await self._complete_direct_tool_reply('summarize_prediction_results', **summary_kwargs)
-
-            if self._explicitly_references_previous_context(user_text) and self.session_state.active_prediction.last_result:
-                reply = await self._render_tool_result_message('predict_images', self.session_state.active_prediction.last_result)
-                if reply:
-                    self._messages.append(AIMessage(content=reply))
-                    return {'status': 'completed', 'message': reply, 'tool_call': None}
+        remote_request = await self._try_handle_remote_requests(
+            thread_id=thread_id,
+            user_text=user_text,
+            normalized_text=normalized_text,
+            wants_train=wants_train,
+            wants_predict=wants_predict,
+            training_command_like=training_command_like,
+            wants_remote_profile_list=wants_remote_profile_list,
+            wants_remote_upload=wants_remote_upload,
+            wants_remote_prediction_pipeline=wants_remote_prediction_pipeline,
+            wants_remote_training_pipeline=wants_remote_training_pipeline,
+            wants_remote_result_return=wants_remote_result_return,
+            has_remote_transfer_followup_context=has_remote_transfer_followup_context,
+            has_remote_roundtrip_followup_context=has_remote_roundtrip_followup_context,
+            has_explicit_remote_target=has_explicit_remote_target,
+            has_explicit_transfer_paths=has_explicit_transfer_paths,
+        )
+        if remote_request:
+            return remote_request
 
         has_explicit_prediction_target = bool(self._extract_dataset_path_from_text(user_text) or self._extract_model_from_text(user_text))
-        if (
-            has_prediction_management_followup_context
-            and not wants_train
-            and not training_command_like
-            and not wants_scan_videos
-            and not wants_extract_frames
-            and not wants_extract_preview
-            and not wants_extract_images
-            and not wants_remote_upload
-            and not has_explicit_prediction_target
-            and not wants_prediction_output_inspection
-            and not wants_prediction_report_export
-            and not wants_prediction_path_lists
-            and not wants_prediction_result_organize
-        ):
-            prediction_management_action = await self._classify_prediction_management_followup_action(
-                user_text=user_text,
-                normalized_text=normalized_text,
-            )
-            prediction_management_result = self._prediction_management_followup_result(prediction_management_action)
-            if prediction_management_result:
-                tool_name, payload = prediction_management_result
-                reply = await self._render_tool_result_message(tool_name, payload)
-                if reply:
-                    self._messages.append(AIMessage(content=reply))
-                    return {'status': 'completed', 'message': reply, 'tool_call': None}
+        prediction_request = await self._try_handle_prediction_requests(
+            user_text=user_text,
+            normalized_text=normalized_text,
+            prediction_path=prediction_path,
+            wants_train=wants_train,
+            training_command_like=training_command_like,
+            wants_scan_videos=wants_scan_videos,
+            wants_extract_frames=wants_extract_frames,
+            wants_extract_preview=wants_extract_preview,
+            wants_extract_images=wants_extract_images,
+            wants_remote_upload=wants_remote_upload,
+            wants_prediction_summary=wants_prediction_summary,
+            wants_prediction_output_inspection=wants_prediction_output_inspection,
+            wants_prediction_report_export=wants_prediction_report_export,
+            wants_prediction_path_lists=wants_prediction_path_lists,
+            wants_prediction_result_organize=wants_prediction_result_organize,
+            has_prediction_followup_context=has_prediction_followup_context,
+            has_prediction_management_followup_context=has_prediction_management_followup_context,
+            has_explicit_prediction_target=has_explicit_prediction_target,
+        )
+        if prediction_request:
+            return prediction_request
 
-        if (
-            has_prediction_followup_context
-            and not wants_train
-            and not training_command_like
-            and not wants_scan_videos
-            and not wants_extract_frames
-            and not wants_extract_preview
-            and not wants_extract_images
-            and not wants_remote_upload
-            and not has_explicit_prediction_target
-        ):
-            prediction_followup_action = await self._classify_prediction_followup_action(
-                user_text=user_text,
-                normalized_text=normalized_text,
-                fallback_path=prediction_path,
-            )
-            if prediction_followup_action == 'inspect':
-                inspect_kwargs = self._prediction_followup_kwargs(
-                    user_text,
-                    fallback_path=prediction_path,
-                    allow_context_fallback=True,
-                )
-                if inspect_kwargs:
-                    return await self._complete_direct_tool_reply('inspect_prediction_outputs', **inspect_kwargs)
-            if prediction_followup_action == 'summary':
-                summary_kwargs = self._prediction_followup_kwargs(
-                    user_text,
-                    fallback_path=prediction_path,
-                    allow_context_fallback=True,
-                )
-                if summary_kwargs:
-                    return await self._complete_direct_tool_reply('summarize_prediction_results', **summary_kwargs)
+        dataset_or_extract_request = await self._try_handle_dataset_and_extract_requests(
+            user_text=user_text,
+            normalized_text=normalized_text,
+            dataset_path=dataset_path,
+            prediction_path=prediction_path,
+            extracted_dataset_path=extracted_dataset_path,
+            wants_train=wants_train,
+            wants_predict=wants_predict,
+            training_command_like=training_command_like,
+            wants_remote_upload=wants_remote_upload,
+            wants_scan_videos=wants_scan_videos,
+            wants_extract_frames=wants_extract_frames,
+            wants_extract_preview=wants_extract_preview,
+            wants_extract_images=wants_extract_images,
+            wants_quality=wants_quality,
+            wants_health=wants_health,
+            wants_duplicates=wants_duplicates,
+            wants_readiness=wants_readiness,
+            has_extract_followup_context=has_extract_followup_context,
+            has_dataset_followup_context=has_dataset_followup_context,
+        )
+        if dataset_or_extract_request:
+            return dataset_or_extract_request
 
-        if (
-            has_extract_followup_context
-            and not wants_train
-            and not wants_predict
-            and not training_command_like
-            and not wants_remote_upload
-            and not wants_quality
-            and not wants_health
-            and not wants_duplicates
-            and not extracted_dataset_path
-        ):
-            extract_followup_action = await self._classify_extract_followup_action(
-                user_text=user_text,
-                normalized_text=normalized_text,
-            )
-            extract_followup_result = self._extract_followup_result(extract_followup_action)
-            if extract_followup_result:
-                tool_name, payload = extract_followup_result
-                reply = await self._render_tool_result_message(tool_name, payload)
-                if reply:
-                    self._messages.append(AIMessage(content=reply))
-                    return {'status': 'completed', 'message': reply, 'tool_call': None}
+        training_history_or_loop = await self._try_handle_training_history_and_loop_requests(
+            user_text=user_text,
+            normalized_text=normalized_text,
+            has_training_history_followup_context=has_training_history_followup_context,
+            has_training_loop_history_followup_context=has_training_loop_history_followup_context,
+            has_training_context=has_training_context,
+            wants_predict=wants_predict,
+            training_command_like=training_command_like,
+            explicit_run_ids=explicit_run_ids,
+            wants_training_run_inspect=wants_training_run_inspect,
+            wants_failed_training_run_list=wants_failed_training_run_list,
+            wants_completed_training_run_list=wants_completed_training_run_list,
+            wants_stopped_training_run_list=wants_stopped_training_run_list,
+            wants_running_training_run_list=wants_running_training_run_list,
+            wants_analysis_ready_run_list=wants_analysis_ready_run_list,
+            wants_training_loop_list=wants_training_loop_list,
+            wants_training_loop_status=wants_training_loop_status,
+            wants_inspect_training_loop=wants_inspect_training_loop,
+            wants_pause_training_loop=wants_pause_training_loop,
+            wants_resume_training_loop=wants_resume_training_loop,
+            wants_stop_training_loop=wants_stop_training_loop,
+            comparison_run_ids=comparison_run_ids,
+            wants_training_run_compare=wants_training_run_compare,
+            wants_next_step_guidance=wants_next_step_guidance,
+            wants_best_training_run=wants_best_training_run_analysis or wants_best_training_run,
+            wants_training_outcome_analysis=wants_training_outcome_analysis,
+            loop_route=loop_route,
+        )
+        if training_history_or_loop:
+            return training_history_or_loop
 
-        if (
-            has_dataset_followup_context
-            and dataset_path
-            and not wants_train
-            and not wants_predict
-            and not training_command_like
-            and not wants_scan_videos
-            and not wants_extract_frames
-            and not wants_extract_preview
-            and not wants_extract_images
-            and not wants_remote_upload
-            and not wants_quality
-            and not wants_health
-            and not wants_duplicates
-            and not extracted_dataset_path
-        ):
-            dataset_followup_action = await self._classify_dataset_followup_action(
-                user_text=user_text,
-                normalized_text=normalized_text,
-                fallback_path=dataset_path,
-            )
-            if dataset_followup_action == 'quality':
-                return await self._complete_dataset_quality_reply(dataset_path)
-            if dataset_followup_action == 'health':
-                return await self._complete_direct_tool_reply(
-                    'run_dataset_health_check',
-                    dataset_path=dataset_path,
-                    include_duplicates=True,
-                    max_duplicate_groups=3,
-                )
-            if dataset_followup_action == 'duplicates':
-                return await self._complete_direct_tool_reply('detect_duplicate_images', dataset_path=dataset_path)
+        training_context_request = await self._try_handle_training_context_requests(
+            user_text=user_text,
+            normalized_text=normalized_text,
+            dataset_path=dataset_path,
+            wants_predict=wants_predict,
+            training_command_like=training_command_like,
+            wants_stop_training=wants_stop_training,
+            wants_training_provenance=wants_training_provenance,
+            wants_training_evidence=wants_training_evidence,
+            wants_next_step_guidance=wants_next_step_guidance,
+            wants_training_knowledge=wants_training_knowledge,
+            wants_training_outcome_analysis=wants_training_outcome_analysis,
+            wants_training_status=wants_training_status,
+            wants_training_run_list=wants_training_run_list,
+            wants_training_run_compare=wants_training_run_compare,
+            wants_best_training_run=wants_best_training_run,
+            wants_training_run_inspect=wants_training_run_inspect,
+            wants_failed_training_run_list=wants_failed_training_run_list,
+            wants_completed_training_run_list=wants_completed_training_run_list,
+            wants_stopped_training_run_list=wants_stopped_training_run_list,
+            wants_running_training_run_list=wants_running_training_run_list,
+            wants_analysis_ready_run_list=wants_analysis_ready_run_list,
+            wants_training_loop_list=wants_training_loop_list,
+            wants_training_loop_status=wants_training_loop_status,
+            wants_inspect_training_loop=wants_inspect_training_loop,
+            wants_pause_training_loop=wants_pause_training_loop,
+            wants_resume_training_loop=wants_resume_training_loop,
+            wants_stop_training_loop=wants_stop_training_loop,
+            wants_training_loop_start=wants_training_loop_start,
+            has_knowledge_followup_context=has_knowledge_followup_context,
+            has_training_followup_context=has_training_followup_context,
+            has_training_context=has_training_context,
+            explicit_run_ids=explicit_run_ids,
+            has_explicit_training_target=has_explicit_training_target,
+            metric_signals=metric_signals,
+            asks_metric_terms=asks_metric_terms,
+        )
+        if training_context_request:
+            return training_context_request
 
-        if dataset_path and wants_quality and not wants_train:
-            return await self._complete_dataset_quality_reply(dataset_path)
+        training_or_prediction_request = await self._try_handle_training_and_prediction_requests(
+            thread_id=thread_id,
+            user_text=user_text,
+            normalized_text=normalized_text,
+            dataset_path=dataset_path,
+            prediction_path=prediction_path,
+            frame_followup_path=frame_followup_path,
+            wants_train=wants_train,
+            wants_predict=wants_predict,
+            no_train=no_train,
+            readiness_only_query=readiness_only_query,
+            wants_training_outcome_analysis=wants_training_outcome_analysis,
+            wants_next_step_guidance=wants_next_step_guidance,
+            wants_training_knowledge=wants_training_knowledge,
+            wants_training_loop_start=wants_training_loop_start,
+            training_command_like=training_command_like,
+            wants_training_revision=wants_training_revision,
+            wants_stop_training=wants_stop_training,
+            explicit_run_ids=explicit_run_ids,
+            wants_best_weight_prediction=wants_best_weight_prediction,
+            wants_split=wants_split,
+        )
+        if training_or_prediction_request:
+            return training_or_prediction_request
 
-        if dataset_path and wants_duplicates and not wants_train and not wants_health:
-            return await self._complete_direct_tool_reply('detect_duplicate_images', dataset_path=dataset_path)
-
-        if dataset_path and wants_health and not wants_train:
-            return await self._complete_direct_tool_reply(
-                'run_dataset_health_check',
-                dataset_path=dataset_path,
-                include_duplicates=wants_duplicates,
-            )
-
-        if dataset_path and wants_readiness and not wants_predict and not training_command_like:
-            return await self._complete_readiness_knowledge_reply(dataset_path)
-
-        if (
-            has_training_history_followup_context
-            and not has_training_context
-            and not wants_predict
-            and not training_command_like
-            and not explicit_run_ids
-            and not wants_training_run_inspect
-            and not wants_failed_training_run_list
-            and not wants_completed_training_run_list
-            and not wants_stopped_training_run_list
-            and not wants_running_training_run_list
-            and not wants_analysis_ready_run_list
-            and not wants_training_loop_list
-            and not wants_training_loop_status
-            and not wants_inspect_training_loop
-            and not wants_pause_training_loop
-            and not wants_resume_training_loop
-            and not wants_stop_training_loop
-        ):
-            training_history_action = await self._classify_training_history_followup_action(
-                user_text=user_text,
-                normalized_text=normalized_text,
-            )
-            if training_history_action == 'runs' and self.session_state.active_training.recent_runs:
-                reply = await self._render_tool_result_message(
-                    'list_training_runs',
-                    {
-                        'ok': True,
-                        'summary': '训练历史查询完成',
-                        'runs': list(self.session_state.active_training.recent_runs),
-                    },
-                )
-                if reply:
-                    self._messages.append(AIMessage(content=reply))
-                    return {'status': 'completed', 'message': reply, 'tool_call': None}
-            if training_history_action == 'inspect' and self.session_state.active_training.last_run_inspection:
-                reply = await self._render_tool_result_message(
-                    'inspect_training_run',
-                    self.session_state.active_training.last_run_inspection,
-                )
-                if reply:
-                    self._messages.append(AIMessage(content=reply))
-                    return {'status': 'completed', 'message': reply, 'tool_call': None}
-            if training_history_action == 'compare' and self.session_state.active_training.last_run_comparison:
-                reply = await self._render_tool_result_message(
-                    'compare_training_runs',
-                    self.session_state.active_training.last_run_comparison,
-                )
-                if reply:
-                    self._messages.append(AIMessage(content=reply))
-                    return {'status': 'completed', 'message': reply, 'tool_call': None}
-            if training_history_action == 'best' and self.session_state.active_training.best_run_selection:
-                reply = await self._render_tool_result_message(
-                    'select_best_training_run',
-                    self.session_state.active_training.best_run_selection,
-                )
-                if reply:
-                    self._messages.append(AIMessage(content=reply))
-                    return {'status': 'completed', 'message': reply, 'tool_call': None}
-
-        if wants_training_run_compare and wants_next_step_guidance and not wants_predict and not training_command_like:
-            compare_kwargs: dict[str, Any] = {}
-            if comparison_run_ids:
-                compare_kwargs['left_run_id'] = comparison_run_ids[0]
-                if len(comparison_run_ids) > 1:
-                    compare_kwargs['right_run_id'] = comparison_run_ids[1]
-            return await self._complete_training_compare_next_step_reply(**compare_kwargs)
-
-        if wants_best_training_run and wants_next_step_guidance and not wants_predict and not training_command_like:
-            return await self._complete_best_training_next_step_reply()
-
-        if wants_training_run_compare and wants_training_outcome_analysis and not wants_predict and not training_command_like:
-            compare_kwargs: dict[str, Any] = {}
-            if comparison_run_ids:
-                compare_kwargs['left_run_id'] = comparison_run_ids[0]
-                if len(comparison_run_ids) > 1:
-                    compare_kwargs['right_run_id'] = comparison_run_ids[1]
-            return await self._complete_training_compare_analysis_reply(**compare_kwargs)
-
-        if wants_best_training_run_analysis and not wants_predict and not training_command_like:
-            return await self._complete_best_training_outcome_analysis_reply()
-
-        if explicit_run_ids and wants_next_step_guidance and not wants_predict and not training_command_like and not wants_training_run_compare:
-            return await self._complete_specific_training_run_next_step_reply(explicit_run_ids[0])
-
-        if explicit_run_ids and wants_training_outcome_analysis and not wants_predict and not training_command_like and not wants_training_run_compare:
-            return await self._complete_specific_training_run_outcome_analysis_reply(explicit_run_ids[0])
-
-        if wants_training_run_compare and not wants_predict and not training_command_like:
-            compare_kwargs: dict[str, Any] = {}
-            if comparison_run_ids:
-                compare_kwargs['left_run_id'] = comparison_run_ids[0]
-                if len(comparison_run_ids) > 1:
-                    compare_kwargs['right_run_id'] = comparison_run_ids[1]
-            return await self._complete_direct_tool_reply('compare_training_runs', **compare_kwargs)
-
-        if wants_best_training_run and not wants_predict and not training_command_like:
-            return await self._complete_direct_tool_reply('select_best_training_run')
-
-        if wants_training_run_inspect and not wants_predict and not training_command_like:
-            return await self._complete_direct_tool_reply('inspect_training_run', run_id=explicit_run_ids[0])
-
-        if wants_failed_training_run_list and not wants_predict and not training_command_like:
-            return await self._complete_direct_tool_reply('list_training_runs', run_state='failed')
-
-        if wants_completed_training_run_list and not wants_predict and not training_command_like:
-            return await self._complete_direct_tool_reply('list_training_runs', run_state='completed')
-
-        if wants_stopped_training_run_list and not wants_predict and not training_command_like:
-            return await self._complete_direct_tool_reply('list_training_runs', run_state='stopped')
-
-        if wants_running_training_run_list and not wants_predict and not training_command_like:
-            return await self._complete_direct_tool_reply('list_training_runs', run_state='running')
-
-        if wants_analysis_ready_run_list and not wants_predict and not training_command_like:
-            return await self._complete_direct_tool_reply('list_training_runs', analysis_ready=True)
-
-        if wants_training_loop_list and not wants_predict and not training_command_like:
-            return await self._complete_direct_tool_reply('list_training_loops')
-
-        active_loop_id = str(loop_route.get('loop_id') or '').strip() or self.session_state.active_training.active_loop_id
-
-        if wants_training_loop_status and not wants_predict and not training_command_like:
-            return await self._complete_direct_tool_reply('check_training_loop_status', loop_id=active_loop_id)
-
-        if wants_inspect_training_loop and not wants_predict and not training_command_like:
-            return await self._complete_direct_tool_reply('inspect_training_loop', loop_id=active_loop_id)
-
-        if wants_pause_training_loop and not wants_predict and not training_command_like:
-            return await self._complete_direct_tool_reply('pause_training_loop', loop_id=active_loop_id)
-
-        if wants_resume_training_loop and not wants_predict and not training_command_like:
-            return await self._complete_direct_tool_reply('resume_training_loop', loop_id=active_loop_id)
-
-        if wants_stop_training_loop and not wants_predict and not training_command_like:
-            return await self._complete_direct_tool_reply('stop_training_loop', loop_id=active_loop_id)
-
-        if (
-            has_training_loop_history_followup_context
-            and not self.session_state.active_training.active_loop_id
-            and not wants_predict
-            and not training_command_like
-            and not explicit_run_ids
-            and not wants_training_loop_list
-            and not wants_training_loop_status
-            and not wants_inspect_training_loop
-            and not wants_pause_training_loop
-            and not wants_resume_training_loop
-            and not wants_stop_training_loop
-        ):
-            loop_history_action = await self._classify_training_loop_history_followup_action(
-                user_text=user_text,
-                normalized_text=normalized_text,
-            )
-            if loop_history_action == 'list' and self.session_state.active_training.recent_loops:
-                reply = await self._render_tool_result_message(
-                    'list_training_loops',
-                    {
-                        'ok': True,
-                        'summary': '环训练列表已就绪',
-                        'loops': list(self.session_state.active_training.recent_loops),
-                    },
-                )
-                if reply:
-                    self._messages.append(AIMessage(content=reply))
-                    return {'status': 'completed', 'message': reply, 'tool_call': None}
-            if loop_history_action == 'status' and self.session_state.active_training.last_loop_status:
-                reply = await self._render_tool_result_message(
-                    'check_training_loop_status',
-                    self.session_state.active_training.last_loop_status,
-                )
-                if reply:
-                    self._messages.append(AIMessage(content=reply))
-                    return {'status': 'completed', 'message': reply, 'tool_call': None}
-            if loop_history_action == 'inspect' and (
-                self.session_state.active_training.last_loop_detail or self.session_state.active_training.last_loop_status
-            ):
-                payload = self.session_state.active_training.last_loop_detail or self.session_state.active_training.last_loop_status
-                reply = await self._render_tool_result_message(
-                    'inspect_training_loop',
-                    payload,
-                )
-                if reply:
-                    self._messages.append(AIMessage(content=reply))
-                    return {'status': 'completed', 'message': reply, 'tool_call': None}
-
-        if wants_training_run_list and not wants_predict and not training_command_like:
-            return await self._complete_direct_tool_reply('list_training_runs')
-
-        if (
-            has_knowledge_followup_context
-            and not has_training_context
-            and not wants_predict
-            and not training_command_like
-            and not wants_stop_training
-            and not explicit_run_ids
-            and not has_explicit_training_target
-            and not wants_training_run_compare
-            and not wants_best_training_run
-            and not wants_training_run_inspect
-            and not wants_training_run_list
-            and not wants_failed_training_run_list
-            and not wants_completed_training_run_list
-            and not wants_stopped_training_run_list
-            and not wants_running_training_run_list
-            and not wants_analysis_ready_run_list
-            and not wants_training_loop_list
-            and not wants_training_loop_status
-            and not wants_inspect_training_loop
-            and not wants_pause_training_loop
-            and not wants_resume_training_loop
-            and not wants_stop_training_loop
-            and not wants_training_loop_start
-        ):
-            knowledge_followup_action = await self._classify_knowledge_followup_action(
-                user_text=user_text,
-                normalized_text=normalized_text,
-                metric_signals=metric_signals,
-            )
-            if knowledge_followup_action == 'knowledge':
-                retrieval = self.session_state.active_knowledge.last_retrieval
-                retrieval_topic = str(retrieval.get('topic') or '').strip() or ('training_metrics' if asks_metric_terms else 'workflow')
-                retrieval_stage = str(retrieval.get('stage') or '').strip() or 'post_training'
-                retrieval_signals = list(retrieval.get('signals') or metric_signals)
-                return await self._complete_knowledge_retrieval_reply(
-                    topic=retrieval_topic,
-                    stage=retrieval_stage,
-                    signals=retrieval_signals,
-                )
-            if knowledge_followup_action == 'analysis':
-                return await self._complete_training_outcome_analysis_reply()
-            if knowledge_followup_action == 'next_step':
-                return await self._complete_next_training_step_reply('')
-
-        if (
-            has_training_followup_context
-            and not wants_predict
-            and not training_command_like
-            and not wants_stop_training
-            and not explicit_run_ids
-            and not has_explicit_training_target
-            and not wants_training_run_compare
-            and not wants_best_training_run
-            and not wants_training_run_inspect
-            and not wants_training_run_list
-            and not wants_failed_training_run_list
-            and not wants_completed_training_run_list
-            and not wants_stopped_training_run_list
-            and not wants_running_training_run_list
-            and not wants_analysis_ready_run_list
-            and not wants_training_loop_list
-            and not wants_training_loop_status
-            and not wants_inspect_training_loop
-            and not wants_pause_training_loop
-            and not wants_resume_training_loop
-            and not wants_stop_training_loop
-            and not wants_training_loop_start
-        ):
-            training_followup_action = await self._classify_training_followup_action(
-                user_text=user_text,
-                normalized_text=normalized_text,
-                metric_signals=metric_signals,
-            )
-            if training_followup_action == 'status':
-                return await self._complete_direct_tool_reply('check_training_status')
-            if training_followup_action == 'analysis':
-                return await self._complete_training_outcome_analysis_reply()
-            if training_followup_action == 'next_step':
-                return await self._complete_next_training_step_reply('')
-            if training_followup_action == 'knowledge':
-                return await self._complete_knowledge_retrieval_reply(
-                    topic='training_metrics' if asks_metric_terms else 'workflow',
-                    stage='post_training',
-                    signals=metric_signals,
-                )
-
-        if wants_training_status and not wants_predict and not training_command_like:
-            return await self._complete_direct_tool_reply('check_training_status')
-
-        if wants_stop_training and not wants_predict and not training_command_like:
-            return await self._complete_direct_tool_reply('stop_training')
-
-        if wants_training_loop_start and not wants_predict and not training_command_like:
-            active_dataset_root = str(self.session_state.active_dataset.dataset_root or '').strip()
-            active_img_dir = str(self.session_state.active_dataset.img_dir or '').strip()
-            can_reuse_session_yaml = not dataset_path or dataset_path in {active_dataset_root, active_img_dir}
-            resolved_yaml: str | None = None
-            if can_reuse_session_yaml:
-                resolved_yaml = str(
-                    self.session_state.active_dataset.data_yaml
-                    or self.session_state.active_training.data_yaml
-                    or ''
-                ).strip()
-            loop_args = self._collect_requested_training_loop_args(user_text, data_yaml=resolved_yaml)
-            return await self._run_training_loop_start_orchestration(
-                user_text=user_text,
-                thread_id=thread_id,
-                dataset_path=dataset_path,
-                loop_args=loop_args,
-            )
-
-        if (
-            self.session_state.active_training.running
-            and wants_train
-            and wants_training_revision
-            and not wants_stop_training
-            and not any(token in user_text for token in ('新数据', '新数据集', '另一个数据集', '换数据集', '改数据集'))
-            and not wants_predict
-            and not explicit_run_ids
-            and not any(token in user_text for token in ('数据', '数据集', 'dataset', 'img_dir', 'label_dir', '换成', '改成', '改用', '现在用'))
-            and 'resume' not in normalized_text
-        ):
-            reply = (
-                '当前训练还在运行，不能直接热更新 batch、轮数、优化器或设备等核心参数。'
-                '如果要改参数，请先停止当前训练，再生成新的训练计划。'
-            )
-            self._messages.append(AIMessage(content=reply))
-            return {'status': 'completed', 'message': reply, 'tool_call': None}
-
-        if not wants_predict and not training_command_like and wants_training_provenance:
-            return self._complete_training_provenance_reply()
-
-        if not wants_predict and not training_command_like and wants_training_evidence:
-            return self._complete_training_evidence_reply()
-
-        if not wants_predict and not training_command_like and wants_next_step_guidance:
-            return await self._complete_next_training_step_reply(dataset_path if dataset_path else '')
-
-        if not wants_predict and not training_command_like and wants_training_knowledge:
-            return await self._complete_knowledge_retrieval_reply(
-                topic='training_metrics' if asks_metric_terms else 'workflow',
-                stage='post_training',
-                signals=metric_signals,
-            )
-
-        if not wants_predict and not training_command_like and wants_training_outcome_analysis:
-            return await self._complete_training_outcome_analysis_reply()
-
-        if dataset_path and wants_extract_preview and not wants_train:
-            return await self._complete_direct_tool_reply('preview_extract_images', **self._build_image_extract_args_from_text(user_text, dataset_path))
-
-        if dataset_path and wants_extract_images and not wants_train and not wants_extract_preview:
-            return await self._complete_direct_tool_reply('extract_images', **self._build_image_extract_args_from_text(user_text, dataset_path))
-
-        if prediction_path and wants_scan_videos and not wants_predict and not training_command_like:
-            return await self._complete_direct_tool_reply('scan_videos', source_path=prediction_path)
-
-        if prediction_path and wants_extract_frames and not wants_predict and not training_command_like:
-            return await self._complete_direct_tool_reply('extract_video_frames', **self._build_video_extract_args_from_text(user_text, prediction_path))
-
-        if wants_best_weight_prediction and wants_predict and not training_command_like:
-            best_selection = self.session_state.active_training.best_run_selection or {}
-            best_run = best_selection.get('best_run') or {}
-            weight_path = str(best_run.get('best_weight_path') or best_run.get('weights_path') or '').strip()
-            if not weight_path:
-                reply = '我当前不能直接假定“最佳训练”的权重文件路径；请先查看最佳训练详情，或明确给我可用的权重路径。'
-                self._messages.append(AIMessage(content=reply))
-                return {'status': 'completed', 'message': reply, 'tool_call': None}
-
-        if prediction_path and wants_predict and not training_command_like:
-            model = self._extract_model_from_text(user_text) or self.session_state.active_prediction.model or self.session_state.active_training.model
-            predict_tool = 'predict_videos' if self._should_use_video_prediction(user_text, prediction_path) else 'predict_images'
-            return await self._complete_direct_tool_reply(predict_tool, source_path=prediction_path, model=model)
-
-        if wants_train and not dataset_path and not no_train and not readiness_only_query and not wants_training_outcome_analysis and not wants_next_step_guidance and not wants_training_knowledge:
-            requested_model = self._extract_model_from_text(user_text)
-            missing_fields = ['数据集路径']
-            if not requested_model:
-                missing_fields.append('预训练权重/模型')
-            lines = ['当前还不能开始训练：']
-            for field in missing_fields:
-                lines.append(f'- 缺少{field}')
-            lines.append('请先补充最少必要信息；我至少需要数据集目录，训练时还需要可用的预训练权重/模型。')
-            reply = '\n'.join(lines)
-            self._messages.append(AIMessage(content=reply))
-            return {'status': 'completed', 'message': reply, 'tool_call': None}
-
-        if dataset_path and wants_train and not no_train and not readiness_only_query and not wants_training_outcome_analysis and not wants_next_step_guidance and not wants_training_knowledge:
-            readiness = await self.direct_tool('training_readiness', img_dir=dataset_path)
-            await self.direct_tool('list_training_environments')
-            requested_args = self._collect_requested_training_args(
-                user_text,
-                data_yaml=str(readiness.get('resolved_data_yaml') or self.session_state.active_dataset.data_yaml or ''),
-            )
-            if not str(requested_args.get('model') or '').strip():
-                draft_model = str((((self.session_state.active_training.training_plan_draft or {}).get('planned_training_args') or {}).get('model')) or '').strip()
-                preserved_model = ''
-                if frame_followup_path:
-                    preserved_model = draft_model or str(self.session_state.active_training.model or '').strip()
-                elif any(token in user_text for token in ('继续', '刚才', '上次', '恢复')):
-                    preserved_model = draft_model or str(self.session_state.active_training.model or '').strip()
-                if preserved_model:
-                    requested_args['model'] = preserved_model
-            requested_model = str(requested_args.get('model') or '').strip()
-            discussion_only = self._is_training_discussion_only(user_text)
-            execution_backend = self._extract_training_execution_backend_from_text(user_text)
-
-            if not requested_model:
-                draft = self._build_training_plan_draft(
-                    user_text=user_text,
-                    dataset_path=dataset_path,
-                    readiness=readiness,
-                    next_tool_name='',
-                    next_tool_args={},
-                    planned_training_args=requested_args,
-                )
-                blockers = list(draft.get('blockers') or [])
-                blockers.insert(0, '当前缺少预训练权重/模型，先补模型后再确认训练')
-                draft['blockers'] = blockers
-                self._save_training_plan_draft(draft)
-                reply = await self._render_training_plan_message(draft, pending=False)
-                self._messages.append(AIMessage(content=reply))
-                return {'status': 'completed', 'message': reply, 'tool_call': None}
-
-            if execution_backend != 'standard_yolo':
-                draft = self._build_training_plan_draft(
-                    user_text=user_text,
-                    dataset_path=dataset_path,
-                    readiness=readiness,
-                    next_tool_name='',
-                    next_tool_args={},
-                    planned_training_args=requested_args,
-                )
-                self._save_training_plan_draft(draft)
-                reply = await self._render_training_plan_message(draft, pending=False)
-                self._messages.append(AIMessage(content=reply))
-                return {'status': 'completed', 'message': reply, 'tool_call': None}
-
-            can_direct_train = bool(readiness.get('ready')) and bool(readiness.get('resolved_data_yaml'))
-            if can_direct_train:
-                preflight = await self.direct_tool(
-                    'training_preflight',
-                    model=requested_model,
-                    data_yaml=str(requested_args.get('data_yaml') or readiness.get('resolved_data_yaml') or ''),
-                    epochs=int(requested_args.get('epochs', 100)),
-                    device=str(requested_args.get('device', 'auto') or 'auto'),
-                    training_environment=str(requested_args.get('training_environment') or ''),
-                    project=str(requested_args.get('project') or ''),
-                    name=str(requested_args.get('name') or ''),
-                    batch=requested_args.get('batch'),
-                    imgsz=requested_args.get('imgsz'),
-                    fraction=requested_args.get('fraction'),
-                    classes=requested_args.get('classes'),
-                    single_cls=requested_args.get('single_cls'),
-                    optimizer=str(requested_args.get('optimizer', '') or ''),
-                    freeze=requested_args.get('freeze'),
-                    resume=requested_args.get('resume'),
-                    lr0=requested_args.get('lr0'),
-                    patience=requested_args.get('patience'),
-                    workers=requested_args.get('workers'),
-                    amp=requested_args.get('amp'),
-                )
-                next_args = {
-                    'model': str((preflight.get('resolved_args') or {}).get('model') or requested_model),
-                    'data_yaml': str((preflight.get('resolved_args') or {}).get('data_yaml') or readiness.get('resolved_data_yaml') or ''),
-                    'epochs': int((preflight.get('resolved_args') or {}).get('epochs') or requested_args.get('epochs', 100)),
-                    'device': str((preflight.get('resolved_args') or {}).get('device') or requested_args.get('device') or 'auto'),
-                    'training_environment': str((preflight.get('resolved_args') or {}).get('training_environment') or requested_args.get('training_environment') or ''),
-                    'project': str((preflight.get('resolved_args') or {}).get('project') or requested_args.get('project') or ''),
-                    'name': str((preflight.get('resolved_args') or {}).get('name') or requested_args.get('name') or ''),
-                    'batch': (preflight.get('resolved_args') or {}).get('batch', requested_args.get('batch')),
-                    'imgsz': (preflight.get('resolved_args') or {}).get('imgsz', requested_args.get('imgsz')),
-                    'fraction': (preflight.get('resolved_args') or {}).get('fraction', requested_args.get('fraction')),
-                    'classes': (preflight.get('resolved_args') or {}).get('classes', requested_args.get('classes')),
-                    'single_cls': (preflight.get('resolved_args') or {}).get('single_cls', requested_args.get('single_cls')),
-                    'optimizer': str((preflight.get('resolved_args') or {}).get('optimizer') or requested_args.get('optimizer') or ''),
-                    'freeze': (preflight.get('resolved_args') or {}).get('freeze', requested_args.get('freeze')),
-                    'resume': (preflight.get('resolved_args') or {}).get('resume', requested_args.get('resume')),
-                    'lr0': (preflight.get('resolved_args') or {}).get('lr0', requested_args.get('lr0')),
-                    'patience': (preflight.get('resolved_args') or {}).get('patience', requested_args.get('patience')),
-                    'workers': (preflight.get('resolved_args') or {}).get('workers', requested_args.get('workers')),
-                    'amp': (preflight.get('resolved_args') or {}).get('amp', requested_args.get('amp')),
-                }
-                draft = self._build_training_plan_draft(
-                    user_text=user_text,
-                    dataset_path=dataset_path,
-                    readiness=readiness,
-                    preflight=preflight,
-                    next_tool_name='start_training' if preflight.get('ready_to_start') else '',
-                    next_tool_args=next_args if preflight.get('ready_to_start') else {},
-                    planned_training_args=next_args,
-                )
-                self._save_training_plan_draft(draft)
-                reply = await self._render_training_plan_message(draft, pending=bool(preflight.get('ready_to_start') and not discussion_only))
-                self._messages.append(AIMessage(content=reply))
-                if preflight.get('ready_to_start') and not discussion_only:
-                    self._set_pending_confirmation(thread_id, {'name': 'start_training', 'args': next_args, 'id': None, 'synthetic': True})
-                    return self._needs_confirmation_result(thread_id, {'name': 'start_training', 'args': next_args, 'id': None, 'synthetic': True}, reply)
-                return {'status': 'completed', 'message': reply, 'tool_call': None}
-
-            if readiness.get('preparable'):
-                args: dict[str, Any] = {'dataset_path': dataset_path}
-                if wants_split:
-                    args['force_split'] = True
-                explicit_classes_txt = str(requested_args.get('classes_txt') or '').strip()
-                if explicit_classes_txt:
-                    args['classes_txt'] = explicit_classes_txt
-                draft = self._build_training_plan_draft(
-                    user_text=user_text,
-                    dataset_path=dataset_path,
-                    readiness=readiness,
-                    preflight={},
-                    next_tool_name='prepare_dataset_for_training',
-                    next_tool_args=args,
-                    planned_training_args=requested_args,
-                )
-                self._save_training_plan_draft(draft)
-                reply = await self._render_training_plan_message(draft, pending=not discussion_only)
-                self._messages.append(AIMessage(content=reply))
-                if discussion_only:
-                    return {'status': 'completed', 'message': reply, 'tool_call': None}
-                self._set_pending_confirmation(thread_id, {'name': 'prepare_dataset_for_training', 'args': args, 'id': None, 'synthetic': True})
-                return self._needs_confirmation_result(thread_id, {'name': 'prepare_dataset_for_training', 'args': args, 'id': None, 'synthetic': True}, reply)
-
-            draft = self._build_training_plan_draft(
-                user_text=user_text,
-                dataset_path=dataset_path,
-                readiness=readiness,
-                preflight={},
-                next_tool_name='',
-                next_tool_args={},
-                planned_training_args=requested_args,
-            )
-            self._save_training_plan_draft(draft)
-            reply = await self._render_training_plan_message(draft, pending=False)
-            self._messages.append(AIMessage(content=reply))
-            return {'status': 'completed', 'message': reply, 'tool_call': None}
         return None
 
     def _try_handle_guardrail_intent(self, user_text: str) -> dict[str, Any] | None:
@@ -4295,6 +4863,110 @@ class YoloStudioAgentClient:
                 return message.content
         return ""
 
+    async def _continue_followup_training_after_prepare(
+        self,
+        *,
+        thread_id: str,
+        synthetic_followup: dict[str, Any],
+        prepare_parsed: dict[str, Any],
+    ) -> dict[str, Any]:
+        followup_args = dict(synthetic_followup.get('args') or {})
+        preflight = await self.direct_tool(
+            'training_preflight',
+            model=followup_args.get('model', ''),
+            data_yaml=followup_args.get('data_yaml', ''),
+            epochs=int(followup_args.get('epochs', 100)),
+            device=str(followup_args.get('device', 'auto') or 'auto'),
+            training_environment=str(followup_args.get('training_environment', '') or ''),
+            project=str(followup_args.get('project', '') or ''),
+            name=str(followup_args.get('name', '') or ''),
+            batch=followup_args.get('batch'),
+            imgsz=followup_args.get('imgsz'),
+            fraction=followup_args.get('fraction'),
+            classes=followup_args.get('classes'),
+            single_cls=followup_args.get('single_cls'),
+            optimizer=str(followup_args.get('optimizer', '') or ''),
+            freeze=followup_args.get('freeze'),
+            resume=followup_args.get('resume'),
+            lr0=followup_args.get('lr0'),
+            patience=followup_args.get('patience'),
+            workers=followup_args.get('workers'),
+            amp=followup_args.get('amp'),
+        )
+        draft = self._build_training_plan_draft(
+            user_text=self._recent_user_text(),
+            dataset_path=self.session_state.active_dataset.dataset_root or self.session_state.active_dataset.img_dir,
+            readiness=self.session_state.active_dataset.last_readiness,
+            preflight=preflight,
+            next_tool_name='start_training' if preflight.get('ready_to_start') else '',
+            next_tool_args=followup_args if preflight.get('ready_to_start') else {},
+            planned_training_args=followup_args,
+        )
+        self._save_training_plan_draft(draft)
+        if not preflight.get('ready_to_start'):
+            reply = await self._render_prepare_followup_message(prepare_parsed, preflight)
+            self._messages.append(AIMessage(content=reply))
+            self._trim_history()
+            self.memory.save_state(self.session_state)
+            return {
+                "status": "error",
+                "message": reply,
+                "tool_call": synthetic_followup,
+                "approved": True,
+            }
+        self._set_pending_confirmation(thread_id, synthetic_followup)
+        self.memory.save_state(self.session_state)
+        return self._needs_confirmation_result(
+            thread_id,
+            synthetic_followup,
+            await self._build_confirmation_message(synthetic_followup),
+        )
+
+    @staticmethod
+    def _find_applied_tool_result(
+        applied_results: list[tuple[str, dict[str, Any]]],
+        tool_name: str,
+    ) -> dict[str, Any] | None:
+        canonical_name = canonical_tool_name(tool_name)
+        for applied_tool_name, parsed in reversed(applied_results):
+            if canonical_tool_name(applied_tool_name) == canonical_name:
+                return dict(parsed or {})
+        return None
+
+    async def _handle_post_prepare_confirmation_followup(
+        self,
+        *,
+        thread_id: str,
+        prepare_parsed: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        loop_followup_result = await self._continue_training_loop_start_after_prepare(
+            thread_id=thread_id,
+            prepare_result=prepare_parsed,
+        )
+        if loop_followup_result is not None:
+            return loop_followup_result
+        loop_followup = self._build_followup_training_loop_request()
+        if loop_followup:
+            self._set_pending_confirmation(thread_id, loop_followup)
+            self.memory.save_state(self.session_state)
+            return self._needs_confirmation_result(
+                thread_id,
+                loop_followup,
+                await self._build_confirmation_message(loop_followup),
+            )
+        if not prepare_parsed or prepare_parsed.get('ok') is False:
+            return None
+        synthetic_followup = None
+        if not prepare_parsed.get('prepare_only'):
+            synthetic_followup = self._build_followup_training_request()
+        if synthetic_followup:
+            return await self._continue_followup_training_after_prepare(
+                thread_id=thread_id,
+                synthetic_followup=synthetic_followup,
+                prepare_parsed=prepare_parsed,
+            )
+        return None
+
     def _build_followup_training_request(self) -> dict[str, Any] | None:
         draft = self.session_state.active_training.training_plan_draft or {}
         if str(draft.get('execution_mode') or '').strip().lower() == 'prepare_only':
@@ -4451,7 +5123,10 @@ class YoloStudioAgentClient:
         return looks_like_video_path(path)
 
     def _should_use_video_prediction(self, user_text: str, path: str) -> bool:
-        return should_use_video_prediction(user_text, path)
+        normalized = str(user_text or '').lower()
+        if looks_like_video_path(path):
+            return True
+        return any(token in user_text for token in ('视频', '录像')) or 'video' in normalized
 
     def _extract_output_path_from_text(self, text: str, source_path: str = '') -> str:
         return extract_output_path_from_text(text, source_path)
@@ -4561,7 +5236,18 @@ class YoloStudioAgentClient:
 
     @staticmethod
     def _extract_metric_signals_from_text(text: str) -> list[str]:
-        return extract_metric_signals_from_text(text)
+        normalized = text.lower()
+        signals: list[str] = []
+        if ((('precision' in normalized) or ('精确率' in text)) and ((('recall' in normalized) or ('召回' in text)))):
+            if re.search(r'(precision|精确率).{0,8}(高|偏高).{0,12}(recall|召回).{0,8}(低|偏低)', text, flags=re.I):
+                signals.append('high_precision_low_recall')
+            if re.search(r'(precision|精确率).{0,8}(低|偏低).{0,12}(recall|召回).{0,8}(高|偏高)', text, flags=re.I):
+                signals.append('low_precision_high_recall')
+        if re.search(r'(map50|mAP50|mAP).{0,8}(低|偏低)', text, flags=re.I) or 'map低' in normalized:
+            signals.append('low_map_overall')
+        if '只有loss' in normalized or '只看loss' in normalized or '只有 loss' in text:
+            signals.append('loss_only_metrics')
+        return signals
 
     @staticmethod
     def _extract_batch_size_from_text(text: str) -> int | None:
@@ -4621,11 +5307,42 @@ class YoloStudioAgentClient:
 
     @staticmethod
     def _extract_training_execution_backend_from_text(text: str) -> str:
-        return extract_training_execution_backend_from_text(text)
+        lowered = text.lower()
+        if any(token in text for token in ('不用自定义脚本', '不用脚本了', '切回标准 yolo', '改成标准 yolo', '用标准 yolo')) or any(token in lowered for token in ("don't use custom script", 'switch back to standard yolo')):
+            return 'standard_yolo'
+        if any(token in text for token in ('不用 trainer', '不用自定义trainer', '不用自定义训练器', '切回标准训练器')) or any(token in lowered for token in ('switch back to standard trainer',)):
+            return 'standard_yolo'
+        script_path = extract_custom_training_script_from_text(text)
+        if script_path or any(token in text for token in ('自定义训练脚本', 'python脚本训练', '脚本训练')):
+            return 'custom_script'
+        trainer_explicit = any(token in text for token in ('自定义 trainer', '自定义trainer', '自定义训练器'))
+        trainer_context = any(token in text for token in ('trainer 讨论', 'trainer方案', 'trainer 先讨论', 'trainer 先不管'))
+        trainer_switch = re.search(r'(?:改成|切到|换成|用|讨论)\s*(?:自定义\s*)?trainer', lowered) is not None
+        if trainer_explicit or trainer_context or trainer_switch:
+            return 'custom_trainer'
+        return 'standard_yolo'
 
     @staticmethod
     def _is_training_discussion_only(text: str) -> bool:
-        return is_training_discussion_only(text)
+        lowered = str(text or '').lower()
+        return any(
+            token in text or token in lowered
+            for token in (
+                '先别执行',
+                '先不要执行',
+                '先别启动',
+                '先不要启动',
+                '先看计划',
+                '先看看计划',
+                '先给我计划',
+                '先讨论',
+                '只讨论',
+                '先别急着执行',
+                '先做方案',
+                '先 dry-run',
+                '先 preflight',
+            )
+        )
 
     @staticmethod
     def _extract_lr0_from_text(text: str) -> float | None:
@@ -4645,27 +5362,118 @@ class YoloStudioAgentClient:
 
     @staticmethod
     def _wants_default_training_environment(text: str) -> bool:
-        return wants_default_training_environment(text)
+        lowered = str(text or '').lower()
+        return any(
+            token in text or token in lowered
+            for token in (
+                '恢复默认环境',
+                '用默认环境',
+                '切回默认环境',
+                '环境恢复默认',
+                '不要指定环境',
+            )
+        )
 
     @staticmethod
     def _wants_clear_project(text: str) -> bool:
-        return wants_clear_project(text)
+        lowered = str(text or '').lower()
+        return any(
+            token in text or token in lowered
+            for token in (
+                'project 不要了',
+                '不要 project',
+                '清空 project',
+                '恢复默认输出目录',
+                '输出目录用默认',
+                '不要输出目录',
+            )
+        )
 
     @staticmethod
     def _wants_clear_run_name(text: str) -> bool:
-        return wants_clear_run_name(text)
+        lowered = str(text or '').lower()
+        return any(
+            token in text or token in lowered
+            for token in (
+                'name 不要了',
+                '不要 name',
+                '清空 name',
+                '运行名不要了',
+                '实验名不要了',
+                '不要输出名',
+            )
+        )
 
     @staticmethod
     def _wants_clear_batch(text: str) -> bool:
-        return wants_clear_batch(text)
+        lowered = str(text or '').lower()
+        return any(
+            token in text or token in lowered
+            for token in (
+                '恢复默认 batch',
+                'batch 恢复默认',
+                'batch 不要了',
+                '不要 batch',
+                'batch 清掉',
+                'batch 取消',
+                'batch 先取消',
+            )
+        )
 
     @staticmethod
     def _wants_clear_fraction(text: str) -> bool:
-        return wants_clear_fraction(text)
+        lowered = str(text or '').lower()
+        return any(
+            token in text or token in lowered
+            for token in (
+                '恢复全量数据',
+                '恢复全部数据',
+                '全部数据都训练',
+                '取消抽样',
+                '不做抽样',
+                '取消 fraction',
+                'fraction 取消',
+                'fraction 不要了',
+                '不要 fraction',
+                '不限制数据比例',
+            )
+        )
 
     @staticmethod
     def _wants_clear_classes(text: str) -> bool:
-        return wants_clear_classes(text)
+        lowered = str(text or '').lower()
+        return any(
+            token in text or token in lowered
+            for token in (
+                '取消类别限制',
+                '类别限制取消',
+                '类别限制先取消',
+                '把类别限制取消',
+                '不要类别限制',
+                '类别限制去掉',
+                '不限制类别',
+                '恢复全类别',
+                '全部类别都训练',
+                '不要 classes',
+                '取消 classes',
+            )
+        )
+
+    @staticmethod
+    def _wants_training_advanced_details(text: str) -> bool:
+        lowered = str(text or '').lower()
+        return any(
+            token in text or token in lowered
+            for token in (
+                '高级参数',
+                '高级配置',
+                '展开参数',
+                '详细参数',
+                '更多参数',
+                'advanced',
+                'hyperparameter',
+            )
+        )
 
     def _collect_training_clear_fields(self, user_text: str) -> set[str]:
         clear_fields: set[str] = set()
@@ -5066,8 +5874,28 @@ class YoloStudioAgentClient:
             ),
         ]
         try:
-            response = await self.planner_llm.ainvoke(messages)
-            parsed = self._parse_json_object_payload(self._message_text(getattr(response, 'content', response)))
+            parsed = await self._invoke_structured_payload(
+                messages=messages,
+                schema={
+                    'title': 'yolostudio_training_loop_start_plan',
+                    'type': 'object',
+                    'properties': {
+                        'next_tool': {
+                            'type': 'string',
+                            'enum': [
+                                'training_readiness',
+                                'list_training_environments',
+                                'prepare_dataset_for_training',
+                                'start_training_loop',
+                                'block',
+                            ],
+                        },
+                        'reason': {'type': 'string'},
+                    },
+                    'required': ['next_tool', 'reason'],
+                    'additionalProperties': False,
+                },
+            )
             plan = self._normalize_training_loop_start_plan(
                 parsed=parsed,
                 user_text=user_text,
@@ -5472,15 +6300,10 @@ class YoloStudioAgentClient:
                 )
             ),
         ]
-        try:
-            response = await self.planner_llm.ainvoke(messages)
-            parsed = self._parse_json_object_payload(self._message_text(getattr(response, 'content', response)))
-            action = str(parsed.get('action') or '').strip().lower()
-            if action in {'status', 'inspect'}:
-                return action
-        except Exception:
-            return ''
-        return ''
+        return await self._classify_structured_action(
+            messages=messages,
+            allowed_actions={'status', 'inspect'},
+        )
 
     async def _classify_training_followup_action(
         self,
@@ -5524,15 +6347,10 @@ class YoloStudioAgentClient:
                 )
             ),
         ]
-        try:
-            response = await self.planner_llm.ainvoke(messages)
-            parsed = self._parse_json_object_payload(self._message_text(getattr(response, 'content', response)))
-            action = str(parsed.get('action') or '').strip().lower()
-            if action in {'status', 'analysis', 'next_step', 'knowledge'}:
-                return action
-        except Exception:
-            return ''
-        return ''
+        return await self._classify_structured_action(
+            messages=messages,
+            allowed_actions={'status', 'analysis', 'next_step', 'knowledge'},
+        )
 
     async def _classify_training_history_followup_action(
         self,
@@ -5580,15 +6398,10 @@ class YoloStudioAgentClient:
                 )
             ),
         ]
-        try:
-            response = await self.planner_llm.ainvoke(messages)
-            parsed = self._parse_json_object_payload(self._message_text(getattr(response, 'content', response)))
-            action = str(parsed.get('action') or '').strip().lower()
-            if action in {'runs', 'inspect', 'compare', 'best'}:
-                return action
-        except Exception:
-            return ''
-        return ''
+        return await self._classify_structured_action(
+            messages=messages,
+            allowed_actions={'runs', 'inspect', 'compare', 'best'},
+        )
 
     async def _classify_training_loop_history_followup_action(
         self,
@@ -5628,15 +6441,10 @@ class YoloStudioAgentClient:
                 )
             ),
         ]
-        try:
-            response = await self.planner_llm.ainvoke(messages)
-            parsed = self._parse_json_object_payload(self._message_text(getattr(response, 'content', response)))
-            action = str(parsed.get('action') or '').strip().lower()
-            if action in {'list', 'status', 'inspect'}:
-                return action
-        except Exception:
-            return ''
-        return ''
+        return await self._classify_structured_action(
+            messages=messages,
+            allowed_actions={'list', 'status', 'inspect'},
+        )
 
     async def _classify_knowledge_followup_action(
         self,
@@ -5681,15 +6489,10 @@ class YoloStudioAgentClient:
                 )
             ),
         ]
-        try:
-            response = await self.planner_llm.ainvoke(messages)
-            parsed = self._parse_json_object_payload(self._message_text(getattr(response, 'content', response)))
-            action = str(parsed.get('action') or '').strip().lower()
-            if action in {'knowledge', 'analysis', 'next_step'}:
-                return action
-        except Exception:
-            return ''
-        return ''
+        return await self._classify_structured_action(
+            messages=messages,
+            allowed_actions={'knowledge', 'analysis', 'next_step'},
+        )
 
     async def _classify_prediction_followup_action(
         self,
@@ -5724,15 +6527,10 @@ class YoloStudioAgentClient:
                 )
             ),
         ]
-        try:
-            response = await self.planner_llm.ainvoke(messages)
-            parsed = self._parse_json_object_payload(self._message_text(getattr(response, 'content', response)))
-            action = str(parsed.get('action') or '').strip().lower()
-            if action in {'summary', 'inspect'}:
-                return action
-        except Exception:
-            return ''
-        return ''
+        return await self._classify_structured_action(
+            messages=messages,
+            allowed_actions={'summary', 'inspect'},
+        )
 
     async def _classify_realtime_followup_action(
         self,
@@ -5768,15 +6566,10 @@ class YoloStudioAgentClient:
                 )
             ),
         ]
-        try:
-            response = await self.planner_llm.ainvoke(messages)
-            parsed = self._parse_json_object_payload(self._message_text(getattr(response, 'content', response)))
-            action = str(parsed.get('action') or '').strip().lower()
-            if action == 'status':
-                return action
-        except Exception:
-            return ''
-        return ''
+        return await self._classify_structured_action(
+            messages=messages,
+            allowed_actions={'status'},
+        )
 
     async def _classify_prediction_management_followup_action(
         self,
@@ -5816,15 +6609,10 @@ class YoloStudioAgentClient:
                 )
             ),
         ]
-        try:
-            response = await self.planner_llm.ainvoke(messages)
-            parsed = self._parse_json_object_payload(self._message_text(getattr(response, 'content', response)))
-            action = str(parsed.get('action') or '').strip().lower()
-            if action in {'inspect', 'export', 'path_lists', 'organize'}:
-                return action
-        except Exception:
-            return ''
-        return ''
+        return await self._classify_structured_action(
+            messages=messages,
+            allowed_actions={'inspect', 'export', 'path_lists', 'organize'},
+        )
 
     async def _classify_dataset_followup_action(
         self,
@@ -5862,15 +6650,10 @@ class YoloStudioAgentClient:
                 )
             ),
         ]
-        try:
-            response = await self.planner_llm.ainvoke(messages)
-            parsed = self._parse_json_object_payload(self._message_text(getattr(response, 'content', response)))
-            action = str(parsed.get('action') or '').strip().lower()
-            if action in {'quality', 'health', 'duplicates'}:
-                return action
-        except Exception:
-            return ''
-        return ''
+        return await self._classify_structured_action(
+            messages=messages,
+            allowed_actions={'quality', 'health', 'duplicates'},
+        )
 
     async def _classify_extract_followup_action(
         self,
@@ -5910,15 +6693,10 @@ class YoloStudioAgentClient:
                 )
             ),
         ]
-        try:
-            response = await self.planner_llm.ainvoke(messages)
-            parsed = self._parse_json_object_payload(self._message_text(getattr(response, 'content', response)))
-            action = str(parsed.get('action') or '').strip().lower()
-            if action in {'preview', 'extract', 'video_scan', 'frame_extract'}:
-                return action
-        except Exception:
-            return ''
-        return ''
+        return await self._classify_structured_action(
+            messages=messages,
+            allowed_actions={'preview', 'extract', 'video_scan', 'frame_extract'},
+        )
 
     def _extract_followup_result(self, action: str) -> tuple[str, dict[str, Any]] | None:
         ds = self.session_state.active_dataset
@@ -5981,15 +6759,10 @@ class YoloStudioAgentClient:
                 )
             ),
         ]
-        try:
-            response = await self.planner_llm.ainvoke(messages)
-            parsed = self._parse_json_object_payload(self._message_text(getattr(response, 'content', response)))
-            action = str(parsed.get('action') or '').strip().lower()
-            if action in {'profiles', 'upload', 'download'}:
-                return action
-        except Exception:
-            return ''
-        return ''
+        return await self._classify_structured_action(
+            messages=messages,
+            allowed_actions={'profiles', 'upload', 'download'},
+        )
 
     async def _classify_remote_roundtrip_followup_action(
         self,
@@ -6035,15 +6808,10 @@ class YoloStudioAgentClient:
                 )
             ),
         ]
-        try:
-            response = await self.planner_llm.ainvoke(messages)
-            parsed = self._parse_json_object_payload(self._message_text(getattr(response, 'content', response)))
-            action = str(parsed.get('action') or '').strip().lower()
-            if action in {'training_pipeline', 'prediction_pipeline'}:
-                return action
-        except Exception:
-            return ''
-        return ''
+        return await self._classify_structured_action(
+            messages=messages,
+            allowed_actions={'training_pipeline', 'prediction_pipeline'},
+        )
 
     @staticmethod
     def _extract_training_loop_max_rounds(text: str) -> int | None:
@@ -6218,7 +6986,7 @@ class YoloStudioAgentClient:
             'custom_script': custom_script,
             'training_environment': env_name,
             'planned_training_args': planned_training_args,
-            'advanced_details_requested': wants_training_advanced_details(user_text),
+            'advanced_details_requested': self._wants_training_advanced_details(user_text),
             'preflight_summary': preflight.get('summary') or '',
             'command_preview': list(preflight.get('command_preview') or []),
             'blockers': blockers,
@@ -6444,18 +7212,16 @@ class YoloStudioAgentClient:
                 )
             ),
         ]
-        try:
-            response = await self.planner_llm.ainvoke(messages)
-            text = self._message_text(getattr(response, 'content', response))
-            if text:
-                return text
-        except Exception as exc:
-            self.memory.append_event(
-                self.session_state.session_id,
-                'planner_render_failed',
-                {'error': str(exc), 'dataset_path': facts.get('dataset_path', ''), 'next_step': facts.get('next_step', '')},
-            )
-            return self._training_plan_render_error(draft, pending=pending, error=exc)
+        text = await self._invoke_renderer_text(
+            messages=messages,
+            failure_event='planner_render_failed',
+            failure_payload={
+                'dataset_path': facts.get('dataset_path', ''),
+                'next_step': facts.get('next_step', ''),
+            },
+        )
+        if text:
+            return text
         return self._training_plan_render_error(draft, pending=pending)
 
     async def _build_confirmation_message(self, tool_call: dict[str, Any]) -> str:
@@ -6551,13 +7317,13 @@ class YoloStudioAgentClient:
                 )
             ),
         ]
-        try:
-            response = await self.planner_llm.ainvoke(messages)
-            text = self._message_text(getattr(response, 'content', response))
-            if text:
-                return text
-        except Exception as exc:
-            return self._confirmation_render_error(tool_call, error=exc)
+        text = await self._invoke_renderer_text(
+            messages=messages,
+            failure_event='confirmation_render_failed',
+            failure_payload={'tool': str(tool_call.get('name') or '')},
+        )
+        if text:
+            return text
         return self._confirmation_render_error(tool_call)
 
     def _tool_result_user_facts(self, tool_name: str, parsed: dict[str, Any]) -> dict[str, Any]:
@@ -6869,21 +7635,16 @@ class YoloStudioAgentClient:
                 )
             ),
         ]
-        try:
-            response = await self.planner_llm.ainvoke(messages)
-            text = self._message_text(getattr(response, 'content', response))
-            if text:
-                return text
-        except Exception as exc:
-            self.memory.append_event(
-                self.session_state.session_id,
-                'multi_tool_result_render_failed',
-                {
-                    'tools': [tool_name for tool_name, _ in normalized_results],
-                    'error': str(exc),
-                    'objective': str(objective or '').strip(),
-                },
-            )
+        text = await self._invoke_renderer_text(
+            messages=messages,
+            failure_event='multi_tool_result_render_failed',
+            failure_payload={
+                'tools': [tool_name for tool_name, _ in normalized_results],
+                'objective': str(objective or '').strip(),
+            },
+        )
+        if text:
+            return text
         return self._fallback_multi_tool_result_message(normalized_results, extra_notes=cleaned_notes)
 
     def _tool_result_render_error(self, tool_name: str, parsed: dict[str, Any], error: Exception | None = None) -> str:
@@ -6931,17 +7692,13 @@ class YoloStudioAgentClient:
                 )
             ),
         ]
-        try:
-            response = await self.planner_llm.ainvoke(messages)
-            text = self._message_text(getattr(response, 'content', response))
-            if text:
-                return text
-        except Exception as exc:
-            self.memory.append_event(
-                self.session_state.session_id,
-                'prepare_followup_render_failed',
-                {'error': str(exc), 'ready_to_start': bool(preflight.get('ready_to_start'))},
-            )
+        text = await self._invoke_renderer_text(
+            messages=messages,
+            failure_event='prepare_followup_render_failed',
+            failure_payload={'ready_to_start': bool(preflight.get('ready_to_start'))},
+        )
+        if text:
+            return text
         return await self._render_multi_tool_result_message(
             [
                 ('prepare_dataset_for_training', prepare_parsed),
@@ -6995,18 +7752,13 @@ class YoloStudioAgentClient:
                 )
             ),
         ]
-        try:
-            response = await self.planner_llm.ainvoke(messages)
-            text = self._message_text(getattr(response, 'content', response))
-            if text:
-                return text
-        except Exception as exc:
-            self.memory.append_event(
-                self.session_state.session_id,
-                'tool_result_render_failed',
-                {'tool': tool_name, 'error': str(exc), 'ok': bool(parsed.get('ok'))},
-            )
-            return self._tool_result_render_error(tool_name, parsed, error=exc)
+        text = await self._invoke_renderer_text(
+            messages=messages,
+            failure_event='tool_result_render_failed',
+            failure_payload={'tool': tool_name, 'ok': bool(parsed.get('ok'))},
+        )
+        if text:
+            return text
         return self._tool_result_render_error(tool_name, parsed)
 
     async def _try_handle_training_plan_dialogue(self, user_text: str, thread_id: str) -> dict[str, Any] | None:
@@ -7399,7 +8151,7 @@ class YoloStudioAgentClient:
             }
         )
         execution_backend = self._extract_training_execution_backend_from_text(user_text)
-        advanced_requested = wants_training_advanced_details(user_text) or bool(revised_draft.get('advanced_details_requested'))
+        advanced_requested = self._wants_training_advanced_details(user_text) or bool(revised_draft.get('advanced_details_requested'))
         if any(token in user_text for token in ('只做准备', '只准备', '先准备不要训练')):
             revised_draft['execution_mode'] = 'prepare_only'
             revised_draft['next_step_tool'] = 'prepare_dataset_for_training'

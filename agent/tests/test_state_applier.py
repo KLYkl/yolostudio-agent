@@ -20,6 +20,46 @@ def main() -> None:
 
     apply_tool_result_to_state(
         state,
+        'scan_dataset',
+        {
+            'ok': True,
+            'summary': '数据集扫描完成',
+            'dataset_root': '/tmp/dataset',
+            'resolved_img_dir': '/tmp/dataset/images',
+            'resolved_label_dir': '/tmp/dataset/labels',
+            'detected_data_yaml': '/tmp/dataset/data.yaml',
+            'total_images': 120,
+            'labeled_images': 118,
+            'missing_labels': 2,
+            'empty_labels': 1,
+            'scan_overview': {'image_count': 120, 'class_count': 3},
+            'action_candidates': [{'tool': 'run_dataset_health_check', 'description': '继续做健康检查'}],
+        },
+    )
+    assert state.active_dataset.last_scan['scan_overview']['class_count'] == 3
+    assert state.active_dataset.last_scan['action_candidates'][0]['tool'] == 'run_dataset_health_check'
+    assert state.active_dataset.last_scan['detected_data_yaml'] == '/tmp/dataset/data.yaml'
+
+    apply_tool_result_to_state(
+        state,
+        'run_dataset_health_check',
+        {
+            'ok': True,
+            'summary': '数据集健康检查完成',
+            'dataset_root': '/tmp/dataset',
+            'resolved_img_dir': '/tmp/dataset/images',
+            'risk_level': 'medium',
+            'issue_count': 4,
+            'duplicate_groups': 2,
+            'health_overview': {'duplicate_groups': 2, 'corrupt_images': 0},
+            'action_candidates': [{'tool': 'detect_duplicate_images', 'description': '查看重复图片详情'}],
+        },
+    )
+    assert state.active_dataset.last_health_check['health_overview']['duplicate_groups'] == 2
+    assert state.active_dataset.last_health_check['action_candidates'][0]['tool'] == 'detect_duplicate_images'
+
+    apply_tool_result_to_state(
+        state,
         'extract_images',
         {
             'ok': True,
@@ -30,6 +70,8 @@ def main() -> None:
             'workflow_ready_path': '/tmp/extract',
             'output_img_dir': '/tmp/extract/images',
             'output_label_dir': '/tmp/extract/labels',
+            'extract_overview': {'extracted': 8, 'workflow_ready': True},
+            'action_candidates': [{'tool': 'scan_dataset', 'description': '继续做数据扫描'}],
         },
         {'source_path': '/data/src'},
     )
@@ -37,6 +79,8 @@ def main() -> None:
     assert state.active_dataset.img_dir == '/tmp/extract/images'
     assert state.active_dataset.label_dir == '/tmp/extract/labels'
     assert state.active_dataset.last_extract_result['extracted'] == 8
+    assert state.active_dataset.last_extract_result['extract_overview']['workflow_ready'] is True
+    assert state.active_dataset.last_extract_result['action_candidates'][0]['tool'] == 'scan_dataset'
 
     apply_tool_result_to_state(
         state,
@@ -143,6 +187,44 @@ def main() -> None:
     )
     assert state.active_prediction.last_organized_result['organization_overview']['bucket_count'] == 2
     assert state.active_prediction.last_organized_result['action_candidates'][0]['tool'] == 'export_prediction_path_lists'
+
+    apply_tool_result_to_state(
+        state,
+        'scan_cameras',
+        {
+            'ok': True,
+            'summary': '发现 2 个摄像头',
+            'camera_count': 2,
+            'cameras': [{'camera_id': 0}, {'camera_id': 1}],
+            'camera_overview': {'camera_count': 2},
+            'action_candidates': [{'tool': 'start_camera_prediction', 'description': '启动摄像头预测'}],
+        },
+    )
+    assert state.active_prediction.last_realtime_status['camera_overview']['camera_count'] == 2
+    assert state.active_prediction.last_realtime_status['action_candidates'][0]['tool'] == 'start_camera_prediction'
+
+    apply_tool_result_to_state(
+        state,
+        'check_realtime_prediction_status',
+        {
+            'ok': True,
+            'summary': '实时预测进行中',
+            'session_id': 'rt-1',
+            'source_type': 'camera',
+            'source_label': 'camera:0',
+            'status': 'running',
+            'processed_frames': 25,
+            'detected_frames': 8,
+            'total_detections': 12,
+            'class_counts': {'excavator': 12},
+            'output_dir': '/tmp/realtime',
+            'report_path': '/tmp/realtime/status.json',
+            'realtime_status_overview': {'processed_frames': 25},
+            'action_candidates': [{'tool': 'stop_realtime_prediction', 'description': '停止实时预测'}],
+        },
+    )
+    assert state.active_prediction.last_realtime_status['realtime_status_overview']['processed_frames'] == 25
+    assert state.active_prediction.last_realtime_status['action_candidates'][0]['tool'] == 'stop_realtime_prediction'
 
     apply_tool_result_to_state(
         state,
@@ -393,6 +475,23 @@ def main() -> None:
 
     apply_tool_result_to_state(
         state,
+        'retrieve_training_knowledge',
+        {
+            'ok': True,
+            'summary': '检索到训练知识',
+            'topic': 'optimizer',
+            'stage': 'after_metrics',
+            'model_family': 'yolov8',
+            'matched_rule_ids': ['optimizer_rule'],
+            'retrieval_overview': {'rule_count': 1},
+            'action_candidates': [{'tool': 'recommend_next_training_step', 'description': '给出下一步建议'}],
+        },
+    )
+    assert state.active_knowledge.last_retrieval['retrieval_overview']['rule_count'] == 1
+    assert state.active_knowledge.last_retrieval['action_candidates'][0]['tool'] == 'recommend_next_training_step'
+
+    apply_tool_result_to_state(
+        state,
         'recommend_next_training_step',
         {
             'ok': True,
@@ -400,9 +499,49 @@ def main() -> None:
             'recommended_action': 'continue_observing',
             'matched_rule_ids': ['generic_next_continue_observing'],
             'signals': ['training_running'],
+            'recommendation_overview': {'recommended_action': 'continue_observing'},
+            'action_candidates': [{'tool': 'check_training_status', 'description': '继续观察训练状态'}],
         },
     )
     assert state.active_knowledge.last_recommendation['recommended_action'] == 'continue_observing'
+    assert state.active_knowledge.last_recommendation['recommendation_overview']['recommended_action'] == 'continue_observing'
+    assert state.active_knowledge.last_recommendation['action_candidates'][0]['tool'] == 'check_training_status'
+
+    apply_tool_result_to_state(
+        state,
+        'list_remote_profiles',
+        {
+            'ok': True,
+            'summary': '发现 1 个远端配置',
+            'profiles_path': '/tmp/remote_profiles.json',
+            'default_profile': 'lab',
+            'profiles': [{'name': 'lab', 'target_label': 'lab-host', 'remote_root': '/srv/lab'}],
+            'ssh_aliases': ['lab'],
+            'profile_overview': {'profile_count': 1},
+            'action_candidates': [{'tool': 'upload_assets_to_remote', 'description': '上传产物到远端'}],
+        },
+    )
+    assert state.active_remote_transfer.last_profile_listing['profile_overview']['profile_count'] == 1
+    assert state.active_remote_transfer.last_profile_listing['action_candidates'][0]['tool'] == 'upload_assets_to_remote'
+
+    apply_tool_result_to_state(
+        state,
+        'upload_assets_to_remote',
+        {
+            'ok': True,
+            'summary': '远端上传完成',
+            'target_label': 'lab-host',
+            'profile_name': 'lab',
+            'remote_root': '/srv/lab',
+            'uploaded_count': 2,
+            'uploaded_items': ['/srv/lab/a', '/srv/lab/b'],
+            'transfer_overview': {'uploaded_count': 2},
+            'action_candidates': [{'tool': 'download_assets_from_remote', 'description': '下载远端结果'}],
+        },
+    )
+    assert state.active_remote_transfer.last_upload['transfer_overview']['uploaded_count'] == 2
+    assert state.active_remote_transfer.last_upload['action_candidates'][0]['tool'] == 'download_assets_from_remote'
+
     print('state applier ok')
 
 
