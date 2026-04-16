@@ -22,9 +22,9 @@ from yolostudio_agent.agent.server.tools import predict_tools
 
 WEIGHTS_ROOT = Path(r"C:\datasets\weights")
 VIDEOS_ROOT = Path(r"C:\datasets\videos")
-WORK_ROOT = Path(r"C:\workspace\yolodo2.0\agent_plan\agent\tests\_tmp_prediction_real_media")
-OUT_JSON = Path(r"C:\workspace\yolodo2.0\agent_plan\agent\tests\test_prediction_real_media_local_output.json")
-OUT_MD = Path(r"C:\workspace\yolodo2.0\agent_plan\doc\prediction_real_media_validation_2026-04-11.md")
+WORK_ROOT = Path(__file__).resolve().parent / '_tmp_prediction_real_media'
+OUT_JSON = Path(__file__).resolve().parent / 'test_prediction_real_media_local_output.json'
+OUT_MD = Path(__file__).resolve().parents[2] / 'doc' / 'prediction_real_media_validation_2026-04-11.md'
 LOCAL_YOLO_PYTHON = Path(r"C:\Miniconda3\envs\yolo\python.exe")
 
 

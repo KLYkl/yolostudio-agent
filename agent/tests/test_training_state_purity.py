@@ -34,7 +34,7 @@ class _DummyGraph:
         return None
 
 
-WORK = Path(r'C:\workspace\yolodo2.0\agent_plan\agent\tests\_tmp_training_state_purity')
+WORK = Path(__file__).resolve().parent / '_tmp_training_state_purity'
 
 
 def main() -> None:

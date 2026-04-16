@@ -2634,12 +2634,12 @@ class YoloStudioAgentClient:
         plan_dialogue = await self._try_handle_training_plan_dialogue(user_text, thread_id)
         if plan_dialogue is not None:
             return plan_dialogue
-        extracted_dataset_path = self._extract_dataset_path_from_text(user_text)
+        extracted_dataset_path = intent_parsing.extract_dataset_path_from_text(user_text)
         frame_followup_path = ''
         if any(token in user_text for token in ('这些帧', '刚才抽的帧', '刚才这些帧', '这些抽出来的帧', '这些图片', '刚才抽的图片')):
             frame_followup_path = str((self.session_state.active_dataset.last_frame_extract or {}).get('output_dir') or '').strip()
         dataset_path = extracted_dataset_path or frame_followup_path or self.session_state.active_dataset.dataset_root or self.session_state.active_dataset.img_dir
-        prediction_path = self._extract_dataset_path_from_text(user_text) or self.session_state.active_prediction.source_path
+        prediction_path = intent_parsing.extract_dataset_path_from_text(user_text) or self.session_state.active_prediction.source_path
         normalized_text = user_text.lower()
         metric_signals = self._extract_metric_signals_from_text(user_text)
         has_training_context = bool(
@@ -3040,8 +3040,8 @@ class YoloStudioAgentClient:
         if realtime_request:
             return realtime_request
 
-        has_explicit_remote_target = bool(self._extract_remote_server_from_text(user_text) or self._extract_remote_root_from_text(user_text))
-        has_explicit_transfer_paths = bool(self._extract_all_paths_from_text(user_text))
+        has_explicit_remote_target = bool(intent_parsing.extract_remote_server_from_text(user_text) or intent_parsing.extract_remote_root_from_text(user_text))
+        has_explicit_transfer_paths = bool(intent_parsing.extract_all_paths_from_text(user_text))
         remote_request = await self._try_handle_remote_requests(
             thread_id=thread_id,
             user_text=user_text,
@@ -3062,7 +3062,7 @@ class YoloStudioAgentClient:
         if remote_request:
             return remote_request
 
-        has_explicit_prediction_target = bool(self._extract_dataset_path_from_text(user_text) or intent_parsing.extract_model_from_text(user_text))
+        has_explicit_prediction_target = bool(intent_parsing.extract_dataset_path_from_text(user_text) or intent_parsing.extract_model_from_text(user_text))
         prediction_request = await self._try_handle_prediction_requests(
             user_text=user_text,
             normalized_text=normalized_text,
@@ -4201,13 +4201,6 @@ class YoloStudioAgentClient:
                 },
             )
 
-    def _extract_dataset_path_from_text(self, text: str) -> str:
-        return intent_parsing.extract_dataset_path_from_text(text)
-
-    @staticmethod
-    def _extract_all_paths_from_text(text: str) -> list[str]:
-        return intent_parsing.extract_all_paths_from_text(text)
-
     def _looks_like_prepare_only_request(self, text: str) -> bool:
         normalized = str(text or '').strip().lower()
         if not normalized:
@@ -4236,12 +4229,12 @@ class YoloStudioAgentClient:
         )
         if has_followup_training_intent and not any(token in text for token in prepare_only_overrides):
             return False
-        return bool(self._extract_dataset_path_from_text(text))
+        return bool(intent_parsing.extract_dataset_path_from_text(text))
 
     async def _try_handle_prepare_only_intent(self, user_text: str, thread_id: str) -> dict[str, Any] | None:
         if not self._looks_like_prepare_only_request(user_text):
             return None
-        dataset_path = str(self._extract_dataset_path_from_text(user_text) or '').strip()
+        dataset_path = str(intent_parsing.extract_dataset_path_from_text(user_text) or '').strip()
         if not dataset_path:
             return None
         dataset_candidate = Path(dataset_path).expanduser()
@@ -4312,18 +4305,6 @@ class YoloStudioAgentClient:
         return re.findall(r'train_log_[A-Za-z0-9_-]+', text)
 
     @staticmethod
-    def _looks_like_model_path(path: str) -> bool:
-        return intent_parsing.looks_like_model_path(path)
-
-    @staticmethod
-    def _extract_remote_server_from_text(text: str) -> str:
-        return intent_parsing.extract_remote_server_from_text(text)
-
-    @staticmethod
-    def _extract_remote_root_from_text(text: str) -> str:
-        return intent_parsing.extract_remote_root_from_text(text)
-
-    @staticmethod
     def _explicitly_references_previous_context(text: str) -> bool:
         normalized = str(text or '').strip().lower()
         if not normalized:
@@ -4354,12 +4335,12 @@ class YoloStudioAgentClient:
         ]
         raw_paths = []
         seen_paths: set[str] = set()
-        for item in [*quoted_paths, *self._extract_all_paths_from_text(user_text)]:
+        for item in [*quoted_paths, *intent_parsing.extract_all_paths_from_text(user_text)]:
             if item and item not in seen_paths:
                 seen_paths.add(item)
                 raw_paths.append(item)
-        remote_root = self._extract_remote_root_from_text(user_text)
-        server = self._extract_remote_server_from_text(user_text)
+        remote_root = intent_parsing.extract_remote_root_from_text(user_text)
+        server = intent_parsing.extract_remote_server_from_text(user_text)
         allow_reuse = self._explicitly_references_previous_context(user_text)
 
         local_paths: list[str] = []
@@ -4553,7 +4534,7 @@ class YoloStudioAgentClient:
         if not uploaded_items:
             return {'ok': False, 'error': '远端上传完成了，但没有可用于预测的远端输入项。'}
 
-        model_items = [item for item in uploaded_items if self._looks_like_model_path(str(item.get('local_path') or item.get('remote_path') or ''))]
+        model_items = [item for item in uploaded_items if intent_parsing.looks_like_model_path(str(item.get('local_path') or item.get('remote_path') or ''))]
         source_items = [item for item in uploaded_items if item not in model_items]
         if not model_items:
             return {'ok': False, 'error': '当前远端预测闭环缺少模型文件；请至少上传一个 .pt / .onnx 模型。'}
@@ -4599,7 +4580,7 @@ class YoloStudioAgentClient:
         uploaded_items = list(upload_result.get('uploaded_items') or [])
         if not uploaded_items:
             return {'ok': False, 'error': '远端上传完成了，但没有可用于训练的远端输入项。'}
-        model_items = [item for item in uploaded_items if self._looks_like_model_path(str(item.get('local_path') or item.get('remote_path') or ''))]
+        model_items = [item for item in uploaded_items if intent_parsing.looks_like_model_path(str(item.get('local_path') or item.get('remote_path') or ''))]
         dataset_items = [
             item for item in uploaded_items
             if item not in model_items and str(item.get('item_type') or '') == 'directory'
@@ -5145,10 +5126,6 @@ class YoloStudioAgentClient:
             "synthetic": True,
         }
 
-    @staticmethod
-    def _looks_like_video_path(path: str) -> bool:
-        return intent_parsing.looks_like_video_path(path)
-
     def _should_use_video_prediction(self, user_text: str, path: str) -> bool:
         normalized = str(user_text or '').lower()
         if intent_parsing.looks_like_video_path(path):
@@ -5196,7 +5173,7 @@ class YoloStudioAgentClient:
         allow_context_fallback: bool = False,
     ) -> dict[str, Any]:
         kwargs: dict[str, Any] = {}
-        explicit_target = self._extract_dataset_path_from_text(user_text)
+        explicit_target = intent_parsing.extract_dataset_path_from_text(user_text)
         allow_reuse = self._explicitly_references_previous_context(user_text)
         should_reuse_context = allow_reuse or allow_context_fallback
         if explicit_target:
@@ -7708,10 +7685,35 @@ class YoloStudioAgentClient:
         return []
 
     def _fallback_tool_result_text(self, tool_name: str, parsed: dict[str, Any]) -> str:
-        if self._structured_overview_payloads(parsed) or parsed.get('action_candidates'):
-            structured_text = stringify_tool_result_facts(parsed).strip()
-            if structured_text:
-                return structured_text
+        grounded_preferred_tools = {
+            'check_training_status',
+            'check_training_loop_status',
+            'start_training',
+            'start_training_loop',
+            'pause_training_loop',
+            'resume_training_loop',
+            'stop_training_loop',
+            'scan_cameras',
+            'scan_screens',
+            'test_rtsp_stream',
+            'check_realtime_prediction_status',
+            'start_camera_prediction',
+            'start_rtsp_prediction',
+            'start_screen_prediction',
+            'stop_realtime_prediction',
+            'list_remote_profiles',
+        }
+        prefer_grounded = tool_name in grounded_preferred_tools and (
+            tool_name in {'scan_cameras', 'scan_screens', 'test_rtsp_stream', 'check_realtime_prediction_status', 'start_camera_prediction', 'start_rtsp_prediction', 'start_screen_prediction', 'stop_realtime_prediction', 'list_remote_profiles'}
+            or not (self._structured_overview_payloads(parsed) or parsed.get('action_candidates'))
+        )
+        if prefer_grounded:
+            grounded_text = self._build_grounded_tool_reply([(tool_name, parsed)])
+            if grounded_text:
+                return grounded_text
+        structured_text = stringify_tool_result_facts(parsed).strip()
+        if structured_text:
+            return structured_text
         return (
             self._build_grounded_tool_reply([(tool_name, parsed)])
             or str(parsed.get('summary') or parsed.get('message') or parsed.get('error') or '').strip()
@@ -8115,13 +8117,13 @@ class YoloStudioAgentClient:
             )
         )
         wants_analysis_only = any(token in user_text for token in ('只分析', '只看结果', '不要接着训', '不要继续训', '不要继续训练'))
-        latest_dataset_path = self._extract_dataset_path_from_text(user_text)
-        all_paths = self._extract_all_paths_from_text(user_text)
+        latest_dataset_path = intent_parsing.extract_dataset_path_from_text(user_text)
+        all_paths = intent_parsing.extract_all_paths_from_text(user_text)
         project_path_hint = intent_parsing.extract_project_from_text(user_text)
         custom_script_hint = intent_parsing.extract_custom_training_script_from_text(user_text)
         dataset_candidates = [
             item for item in all_paths
-            if not self._looks_like_model_path(item)
+            if not intent_parsing.looks_like_model_path(item)
             and item != project_path_hint
             and item != custom_script_hint
         ]

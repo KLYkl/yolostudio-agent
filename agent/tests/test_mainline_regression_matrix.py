@@ -20,8 +20,8 @@ if __package__ in {None, ""}:
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient, build_agent_client
 
-OUT_JSON = Path(r'C:\workspace\yolodo2.0\agent_plan\agent\tests\test_mainline_regression_matrix_output.json')
-OUT_MD = Path(r'C:\workspace\yolodo2.0\agent_plan\doc\mainline_regression_matrix_report_2026-04-11.md')
+OUT_JSON = Path(__file__).resolve().parent / 'test_mainline_regression_matrix_output.json'
+OUT_MD = Path(__file__).resolve().parents[2] / 'doc' / 'mainline_regression_matrix_report_2026-04-11.md'
 STANDARD_ROOT = '/data/test_dataset/'
 DIRTY_ROOT = '/data/agent_cap_tests/zyb'
 NONSTANDARD_ROOT = '/data/agent_cap_tests/nonstandard_dataset'

@@ -25,8 +25,8 @@ DATASET_ROOT = os.getenv('YOLOSTUDIO_TEST_DATASET_ROOT', '/data/agent_cap_tests/
 MCP_URL = os.getenv('YOLOSTUDIO_TEST_MCP_URL', 'http://127.0.0.1:18080/mcp')
 OLLAMA_URL = os.getenv('YOLOSTUDIO_TEST_OLLAMA_URL', 'http://127.0.0.1:11435')
 DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY', '')
-OUTPUT = Path(r'C:\workspace\yolodo2.0\agent_plan\agent\tests\test_zyb_large_dataset_output.json')
-MEM_ROOT = Path(r'C:\workspace\yolodo2.0\agent_plan\agent\tests\_tmp_zyb_memory')
+OUTPUT = Path(__file__).resolve().parent / 'test_zyb_large_dataset_output.json'
+MEM_ROOT = Path(__file__).resolve().parent / '_tmp_zyb_memory'
 
 
 def _norm(payload: Any) -> dict[str, Any]:

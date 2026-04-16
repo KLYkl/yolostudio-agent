@@ -19,7 +19,7 @@ if __package__ in {None, ""}:
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient, build_agent_client
 
-OUT = Path(r'C:\workspace\yolodo2.0\agent_plan\agent\tests\test_zyb_10_method_output.json')
+OUT = Path(__file__).resolve().parent / 'test_zyb_10_method_output.json'
 DATASET_ROOT = '/data/agent_cap_tests/zyb'
 MODEL_PATH = '/models/yolov8n.pt'
 

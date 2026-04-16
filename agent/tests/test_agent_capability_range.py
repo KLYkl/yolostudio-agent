@@ -18,7 +18,7 @@ if __package__ in {None, ""}:
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient, build_agent_client
 
-OUT = Path(r'C:\workspace\yolodo2.0\agent_plan\agent\tests\test_agent_capability_range_output.json')
+OUT = Path(__file__).resolve().parent / 'test_agent_capability_range_output.json'
 
 
 def _now_id() -> str:

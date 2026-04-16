@@ -184,7 +184,7 @@ class _FakePlannerLlm:
         return _FakePlannerResponse(self.reply)
 
 
-WORK = Path(r'C:\workspace\yolodo2.0\agent_plan\agent\tests\_tmp_prediction_route')
+WORK = Path(__file__).resolve().parent / '_tmp_prediction_route'
 
 
 async def _run() -> None:

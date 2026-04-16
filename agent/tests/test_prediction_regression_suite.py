@@ -24,9 +24,9 @@ from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudio
 from yolostudio_agent.agent.client.tool_adapter import adapt_tools_for_chat_model
 from yolostudio_agent.agent.server.tools import predict_tools
 
-OUT_JSON = Path(r'C:\workspace\yolodo2.0\agent_plan\agent\tests\test_prediction_regression_suite_output.json')
-OUT_MD = Path(r'C:\workspace\yolodo2.0\agent_plan\doc\prediction_regression_report_2026-04-11.md')
-WORK = Path(r'C:\workspace\yolodo2.0\agent_plan\agent\tests\_tmp_prediction_suite')
+OUT_JSON = Path(__file__).resolve().parent / 'test_prediction_regression_suite_output.json'
+OUT_MD = Path(__file__).resolve().parents[2] / 'doc' / 'prediction_regression_report_2026-04-11.md'
+WORK = Path(__file__).resolve().parent / '_tmp_prediction_suite'
 
 
 class _DummyGraph:

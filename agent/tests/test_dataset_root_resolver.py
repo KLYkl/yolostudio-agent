@@ -15,7 +15,7 @@ if __package__ in {None, ""}:
 
 from yolostudio_agent.agent.server.services.dataset_root import resolve_dataset_inputs, resolve_dataset_root
 
-WORK = Path(r'C:\workspace\yolodo2.0\agent_plan\agent\tests\_tmp_dataset_root')
+WORK = Path(__file__).resolve().parent / '_tmp_dataset_root'
 
 
 def _mkdirs(base: Path, *parts: str) -> Path:
@@ -71,13 +71,13 @@ def main() -> None:
         assert standard_result['ok'] is True
         assert standard_result['structure_type'] == 'yolo_standard'
         assert standard_result['resolved_from_root'] is True
-        assert standard_result['img_dir'].endswith('standard\\images')
-        assert standard_result['label_dir'].endswith('standard\\labels')
+        assert standard_result['img_dir'].replace('\\', '/').endswith('standard/images')
+        assert standard_result['label_dir'].replace('\\', '/').endswith('standard/labels')
 
         assert split_result['ok'] is True
         assert split_result['structure_type'] == 'yolo_split'
         assert split_result['is_split'] is True
-        assert split_result['split_info']['train_img_dir'].endswith('split\\images\\train')
+        assert split_result['split_info']['train_img_dir'].replace('\\', '/').endswith('split/images/train')
 
         assert direct_images_result['ok'] is True
         assert direct_images_result['structure_type'] == 'images_dir'
@@ -86,13 +86,13 @@ def main() -> None:
         assert alias_named_result['ok'] is True
         assert alias_named_result['structure_type'] == 'yolo_standard'
         assert alias_named_result['resolved_from_root'] is True
-        assert alias_named_result['img_dir'].endswith('alias_named\\pics')
-        assert alias_named_result['label_dir'].endswith('alias_named\\ann')
+        assert alias_named_result['img_dir'].replace('\\', '/').endswith('alias_named/pics')
+        assert alias_named_result['label_dir'].replace('\\', '/').endswith('alias_named/ann')
         assert alias_named_result['resolution_method'] == 'image=name,label=name'
 
         assert images_only_result['ok'] is True
         assert images_only_result['structure_type'] == 'images_only'
-        assert images_only_result['img_dir'].endswith('images_only\\pics')
+        assert images_only_result['img_dir'].replace('\\', '/').endswith('images_only/pics')
         assert images_only_result['label_dir'] == ''
 
         assert unknown_result['ok'] is True
