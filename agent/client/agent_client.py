@@ -22,46 +22,7 @@ from yolostudio_agent.agent.client.context_builder import ContextBuilder
 from yolostudio_agent.agent.client.event_retriever import EventRetriever
 from yolostudio_agent.agent.client.grounded_reply_builder import build_grounded_tool_reply
 from yolostudio_agent.agent.client.state_applier import apply_tool_result_to_state
-from yolostudio_agent.agent.client.intent_parsing import (
-    build_image_extract_args_from_text,
-    build_video_extract_args_from_text,
-    extract_all_paths_from_text,
-    extract_batch_size_from_text,
-    extract_camera_id_from_text,
-    extract_count_from_text,
-    extract_custom_training_script_from_text,
-    extract_classes_txt_from_text,
-    extract_dataset_path_from_text,
-    extract_device_from_text,
-    extract_epochs_from_text,
-    extract_fraction_from_text,
-    extract_frame_interval_ms_from_text,
-    extract_image_size_from_text,
-    extract_max_frames_from_text,
-    extract_model_from_text,
-    extract_project_from_text,
-    extract_optimizer_from_text,
-    extract_lr0_from_text,
-    extract_output_path_from_text,
-    extract_remote_root_from_text,
-    extract_remote_server_from_text,
-    extract_ratio_from_text,
-    extract_realtime_session_id_from_text,
-    extract_resume_flag_from_text,
-    extract_rtsp_url_from_text,
-    extract_run_name_from_text,
-    extract_screen_id_from_text,
-    extract_freeze_from_text,
-    extract_single_cls_flag_from_text,
-    extract_patience_from_text,
-    extract_timeout_ms_from_text,
-    extract_classes_from_text,
-    extract_training_environment_from_text,
-    extract_workers_from_text,
-    extract_amp_flag_from_text,
-    looks_like_model_path,
-    looks_like_video_path,
-)
+from yolostudio_agent.agent.client import intent_parsing
 from yolostudio_agent.agent.client.llm_factory import (
     LlmProviderSettings,
     build_llm,
@@ -2656,9 +2617,6 @@ class YoloStudioAgentClient:
         guardrail = self._try_handle_guardrail_intent(user_text)
         if guardrail is not None:
             return guardrail
-        prepare_only = await self._try_handle_prepare_only_intent(user_text, thread_id)
-        if prepare_only is not None:
-            return prepare_only
         plan_dialogue = await self._try_handle_training_plan_dialogue(user_text, thread_id)
         if plan_dialogue is not None:
             return plan_dialogue
@@ -4230,11 +4188,11 @@ class YoloStudioAgentClient:
             )
 
     def _extract_dataset_path_from_text(self, text: str) -> str:
-        return extract_dataset_path_from_text(text)
+        return intent_parsing.extract_dataset_path_from_text(text)
 
     @staticmethod
     def _extract_all_paths_from_text(text: str) -> list[str]:
-        return extract_all_paths_from_text(text)
+        return intent_parsing.extract_all_paths_from_text(text)
 
     def _looks_like_prepare_only_request(self, text: str) -> bool:
         normalized = str(text or '').strip().lower()
@@ -4341,15 +4299,15 @@ class YoloStudioAgentClient:
 
     @staticmethod
     def _looks_like_model_path(path: str) -> bool:
-        return looks_like_model_path(path)
+        return intent_parsing.looks_like_model_path(path)
 
     @staticmethod
     def _extract_remote_server_from_text(text: str) -> str:
-        return extract_remote_server_from_text(text)
+        return intent_parsing.extract_remote_server_from_text(text)
 
     @staticmethod
     def _extract_remote_root_from_text(text: str) -> str:
-        return extract_remote_root_from_text(text)
+        return intent_parsing.extract_remote_root_from_text(text)
 
     @staticmethod
     def _explicitly_references_previous_context(text: str) -> bool:
@@ -5229,48 +5187,48 @@ class YoloStudioAgentClient:
 
     @staticmethod
     def _extract_model_from_text(text: str) -> str:
-        return extract_model_from_text(text)
+        return intent_parsing.extract_model_from_text(text)
 
     @staticmethod
     def _looks_like_video_path(path: str) -> bool:
-        return looks_like_video_path(path)
+        return intent_parsing.looks_like_video_path(path)
 
     def _should_use_video_prediction(self, user_text: str, path: str) -> bool:
         normalized = str(user_text or '').lower()
-        if looks_like_video_path(path):
+        if intent_parsing.looks_like_video_path(path):
             return True
         return any(token in user_text for token in ('视频', '录像')) or 'video' in normalized
 
     def _extract_output_path_from_text(self, text: str, source_path: str = '') -> str:
-        return extract_output_path_from_text(text, source_path)
+        return intent_parsing.extract_output_path_from_text(text, source_path)
 
     @staticmethod
     def _extract_rtsp_url_from_text(text: str) -> str:
-        return extract_rtsp_url_from_text(text)
+        return intent_parsing.extract_rtsp_url_from_text(text)
 
     @staticmethod
     def _extract_realtime_session_id_from_text(text: str) -> str:
-        return extract_realtime_session_id_from_text(text)
+        return intent_parsing.extract_realtime_session_id_from_text(text)
 
     @staticmethod
     def _extract_camera_id_from_text(text: str) -> int | None:
-        return extract_camera_id_from_text(text)
+        return intent_parsing.extract_camera_id_from_text(text)
 
     @staticmethod
     def _extract_screen_id_from_text(text: str) -> int | None:
-        return extract_screen_id_from_text(text)
+        return intent_parsing.extract_screen_id_from_text(text)
 
     @staticmethod
     def _extract_frame_interval_ms_from_text(text: str) -> int | None:
-        return extract_frame_interval_ms_from_text(text)
+        return intent_parsing.extract_frame_interval_ms_from_text(text)
 
     @staticmethod
     def _extract_max_frames_from_text(text: str) -> int | None:
-        return extract_max_frames_from_text(text)
+        return intent_parsing.extract_max_frames_from_text(text)
 
     @staticmethod
     def _extract_timeout_ms_from_text(text: str) -> int | None:
-        return extract_timeout_ms_from_text(text)
+        return intent_parsing.extract_timeout_ms_from_text(text)
 
     def _build_realtime_session_kwargs(self, user_text: str) -> dict[str, Any]:
         session_id = self._extract_realtime_session_id_from_text(user_text) or self.session_state.active_prediction.realtime_session_id
@@ -5331,21 +5289,21 @@ class YoloStudioAgentClient:
 
     @staticmethod
     def _extract_count_from_text(text: str) -> int | None:
-        return extract_count_from_text(text)
+        return intent_parsing.extract_count_from_text(text)
 
     @staticmethod
     def _extract_ratio_from_text(text: str) -> float | None:
-        return extract_ratio_from_text(text)
+        return intent_parsing.extract_ratio_from_text(text)
 
     def _build_image_extract_args_from_text(self, user_text: str, source_path: str) -> dict[str, Any]:
-        return build_image_extract_args_from_text(user_text, source_path)
+        return intent_parsing.build_image_extract_args_from_text(user_text, source_path)
 
     def _build_video_extract_args_from_text(self, user_text: str, source_path: str) -> dict[str, Any]:
-        return build_video_extract_args_from_text(user_text, source_path)
+        return intent_parsing.build_video_extract_args_from_text(user_text, source_path)
 
     @staticmethod
     def _extract_epochs_from_text(text: str) -> int | None:
-        return extract_epochs_from_text(text)
+        return intent_parsing.extract_epochs_from_text(text)
 
     @staticmethod
     def _extract_metric_signals_from_text(text: str) -> list[str]:
@@ -5364,59 +5322,59 @@ class YoloStudioAgentClient:
 
     @staticmethod
     def _extract_batch_size_from_text(text: str) -> int | None:
-        return extract_batch_size_from_text(text)
+        return intent_parsing.extract_batch_size_from_text(text)
 
     @staticmethod
     def _extract_image_size_from_text(text: str) -> int | None:
-        return extract_image_size_from_text(text)
+        return intent_parsing.extract_image_size_from_text(text)
 
     @staticmethod
     def _extract_device_from_text(text: str) -> str:
-        return extract_device_from_text(text)
+        return intent_parsing.extract_device_from_text(text)
 
     @staticmethod
     def _extract_training_environment_from_text(text: str, known_environments: list[dict[str, Any]] | None = None) -> str:
-        return extract_training_environment_from_text(text, known_environments)
+        return intent_parsing.extract_training_environment_from_text(text, known_environments)
 
     @staticmethod
     def _extract_project_from_text(text: str) -> str:
-        return extract_project_from_text(text)
+        return intent_parsing.extract_project_from_text(text)
 
     @staticmethod
     def _extract_run_name_from_text(text: str) -> str:
-        return extract_run_name_from_text(text)
+        return intent_parsing.extract_run_name_from_text(text)
 
     @staticmethod
     def _extract_fraction_from_text(text: str) -> float | None:
-        return extract_fraction_from_text(text)
+        return intent_parsing.extract_fraction_from_text(text)
 
     @staticmethod
     def _extract_classes_from_text(text: str) -> list[int] | None:
-        return extract_classes_from_text(text)
+        return intent_parsing.extract_classes_from_text(text)
 
     @staticmethod
     def _extract_classes_txt_from_text(text: str) -> str:
-        return extract_classes_txt_from_text(text)
+        return intent_parsing.extract_classes_txt_from_text(text)
 
     @staticmethod
     def _extract_single_cls_flag_from_text(text: str) -> bool | None:
-        return extract_single_cls_flag_from_text(text)
+        return intent_parsing.extract_single_cls_flag_from_text(text)
 
     @staticmethod
     def _extract_optimizer_from_text(text: str) -> str:
-        return extract_optimizer_from_text(text)
+        return intent_parsing.extract_optimizer_from_text(text)
 
     @staticmethod
     def _extract_freeze_from_text(text: str) -> int | None:
-        return extract_freeze_from_text(text)
+        return intent_parsing.extract_freeze_from_text(text)
 
     @staticmethod
     def _extract_resume_flag_from_text(text: str) -> bool | None:
-        return extract_resume_flag_from_text(text)
+        return intent_parsing.extract_resume_flag_from_text(text)
 
     @staticmethod
     def _extract_custom_training_script_from_text(text: str) -> str:
-        return extract_custom_training_script_from_text(text)
+        return intent_parsing.extract_custom_training_script_from_text(text)
 
     @staticmethod
     def _extract_training_execution_backend_from_text(text: str) -> str:
@@ -5425,7 +5383,7 @@ class YoloStudioAgentClient:
             return 'standard_yolo'
         if any(token in text for token in ('不用 trainer', '不用自定义trainer', '不用自定义训练器', '切回标准训练器')) or any(token in lowered for token in ('switch back to standard trainer',)):
             return 'standard_yolo'
-        script_path = extract_custom_training_script_from_text(text)
+        script_path = intent_parsing.extract_custom_training_script_from_text(text)
         if script_path or any(token in text for token in ('自定义训练脚本', 'python脚本训练', '脚本训练')):
             return 'custom_script'
         trainer_explicit = any(token in text for token in ('自定义 trainer', '自定义trainer', '自定义训练器'))
@@ -5459,19 +5417,19 @@ class YoloStudioAgentClient:
 
     @staticmethod
     def _extract_lr0_from_text(text: str) -> float | None:
-        return extract_lr0_from_text(text)
+        return intent_parsing.extract_lr0_from_text(text)
 
     @staticmethod
     def _extract_patience_from_text(text: str) -> int | None:
-        return extract_patience_from_text(text)
+        return intent_parsing.extract_patience_from_text(text)
 
     @staticmethod
     def _extract_workers_from_text(text: str) -> int | None:
-        return extract_workers_from_text(text)
+        return intent_parsing.extract_workers_from_text(text)
 
     @staticmethod
     def _extract_amp_flag_from_text(text: str) -> bool | None:
-        return extract_amp_flag_from_text(text)
+        return intent_parsing.extract_amp_flag_from_text(text)
 
     @staticmethod
     def _wants_default_training_environment(text: str) -> bool:
@@ -8071,6 +8029,10 @@ class YoloStudioAgentClient:
             token in normalized for token in ('training loop', 'loop training', 'auto retrain', 'auto training loop')
         ):
             return None
+        if not draft and not pending:
+            prepare_only = await self._try_handle_prepare_only_intent(user_text, thread_id)
+            if prepare_only is not None:
+                return prepare_only
         clear_fields = self._collect_training_clear_fields(user_text)
         discussion_only_hint = self._is_training_discussion_only(user_text) or any(token in user_text for token in ('不执行', '不要执行', '暂不执行', '先不执行'))
         training_readiness_question = any(

@@ -44,3 +44,6 @@
 - 已开始落实“真实减少 helper 中旧 direct-tool 分支”的评估意见：prediction summary 与 training compare 显式请求在目标未变化时优先复用 structured state，不再重复触发只读工具调用。
 - 同批次已继续扩大到 prediction inspect 的显式目标请求：当 report/output 目标与当前 structured state 一致时，也直接走 cached result。
 - 同批次已继续扩大到 prediction export / path-lists 的显式目标请求；同时 dataset duplicate 显式请求增加 target-aware cache gate，避免跨数据集误复用 structured state。
+
+- 已继续落实“压缩 `chat()` 前置 code 拦截层”的评估意见：`prepare-only` 前置分支已并入 training-plan dialogue 入口，不再单独占据 mainline 顶层拦截。
+- 已继续落实“减少 `intent_parsing.py` 消费端依赖”的评估意见：`agent_client.py` 已从按函数名导入收成模块级 `intent_parsing` 适配层，消费面继续收窄到本地 wrapper。
