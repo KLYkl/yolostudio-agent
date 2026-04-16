@@ -544,7 +544,12 @@ def _summarize_tool_result_mapping(value: dict[str, Any]) -> str:
         ('dataset_root', '数据集'),
         ('resolved_data_yaml', 'data.yaml'),
         ('output_dir', '输出目录'),
+        ('export_path', '导出路径'),
+        ('export_dir', '导出目录'),
+        ('destination_dir', '目标目录'),
         ('report_path', '报告路径'),
+        ('source_output_dir', '源输出目录'),
+        ('source_report_path', '源报告路径'),
         ('save_dir', '结果目录'),
     )
     for field, label in path_fields:

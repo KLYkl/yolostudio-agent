@@ -134,8 +134,47 @@
    - 工作区 clean
    - 形成最终阶段性提交，供审查
 
+## Batch 2 最终验收执行记录（2026-04-16）
+- 最终验收口径：
+  - 以 `agent_client.py` / `intent_parsing.py` / `grounded_reply_builder.py` 的当前结构统计为基线；
+  - 以 training plan / pending / roundtrip / realtime / prediction / training follow-up / history / grounded reply / adapter / facts 作为跨域回归集合；
+  - 远端验证环境统一为 `/opt/yolostudio-agent/agent_plan` + `yolostudio-agent-server`。
+- 最终结构基线：
+  - `agent_client.py`：8901 行
+  - `intent_parsing.py`：558 行
+  - `grounded_reply_builder.py`：1329 行
+  - `planner_llm.ainvoke(`：2
+  - `_complete_direct_tool_reply(`：27
+  - `_complete_cached_tool_result_reply(`：31
+  - `return intent_parsing.`：0
+- 最终测试基线说明：
+  - `test_training_plan_dialogue.py` 已补齐到远端，不再存在“本地有、远端缺”的差异。
+  - 本地仍缺 `langchain_core`，因此 `test_tool_adapter.py` 与 `test_tool_result_facts.py` 在最终验收中继续以远端环境为准；其余主链回归本地可直接覆盖。
+
 
 - Batch 1 最新批次：training/realtime/remote/history 这组高频只读查询已统一切到 `_complete_cached_or_direct_tool_reply`，不再在 helper 里散落“先 cached 再 direct_tool”的重复分支。
 - Batch 1 最新批次：新增非 running 状态下的训练状态缓存门与环训练状态缓存门；running 训练/实时仍保持实时工具查询，避免把动态状态误缓存成旧结果。
 - Batch 1 最新批次：`grounded_reply_builder` 的 fallback 触发面已进一步收窄——只有缺少 structured overview / action_candidates 的受控工具才优先 grounded，其余优先 structured facts。
 - Batch 1 最新批次：`agent_client.py` 中 `_complete_direct_tool_reply(` 的文本出现次数已由上一批结束时的 45 降到 27，`planner_llm.ainvoke(` 仍保持 2，不回升。
+## Batch 2 completed — final acceptance (2026-04-16)
+- Final acceptance passed locally and remotely.
+- `tool_adapter.py` now surfaces export/target paths in facts-first summaries (`export_path`, `export_dir`, `destination_dir`, `source_output_dir`, `source_report_path`), closing the last prediction-management acceptance gap.
+- Current acceptance baseline passed on remote `yolostudio-agent-server` at `/opt/yolostudio-agent/agent_plan`:
+  - `test_training_plan_dialogue.py`
+  - `test_pending_confirmation_dialogue_route.py`
+  - `test_training_loop_client_roundtrip.py`
+  - `test_training_loop_dialogue_matrix.py`
+  - `test_realtime_prediction_route.py`
+  - `test_prediction_route.py`
+  - `test_prediction_management_route.py`
+  - `test_dataset_followup_route.py`
+  - `test_extract_route.py`
+  - `test_training_followup_route.py`
+  - `test_training_history_followup_route.py`
+  - `test_training_loop_history_followup_route.py`
+  - `test_remote_transfer_followup_route.py`
+  - `test_remote_pipeline_followup_route.py`
+  - `test_grounded_tool_reply.py`
+  - `test_tool_adapter.py`
+  - `test_tool_result_facts.py`
+- Batch 2 acceptance criteria are now satisfied; next step is final clean commit only.
