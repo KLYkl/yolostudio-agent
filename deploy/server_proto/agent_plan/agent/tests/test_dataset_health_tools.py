@@ -17,7 +17,7 @@ if __package__ in {None, ""}:
 import yolostudio_agent.agent.server.tools.data_tools as data_tools
 
 
-TMP_ROOT = Path('D:/yolodo2.0/agent_plan/.tmp_dataset_health_tools')
+TMP_ROOT = Path('C:/workspace/yolodo2.0/agent_plan/.tmp_dataset_health_tools')
 
 
 def _make_image(path: Path, size: tuple[int, int], color: tuple[int, int, int], *, fmt: str = 'JPEG') -> None:
@@ -67,12 +67,17 @@ def main() -> None:
         assert report_path.exists(), result
         assert result['report_path'] == str(report_path.resolve())
         assert result['warnings'], result
+        assert result['health_overview']['duplicate_group_count'] == 1
+        assert result['health_overview']['exported_report'] is True
+        assert result['action_candidates'][0]['tool'] in {'scan_dataset', 'validate_dataset'}
 
         dup = data_tools.detect_duplicate_images(str(dataset_root), method='md5')
         assert dup['ok'] is True, dup
         assert dup['duplicate_groups'] == 1, dup
         assert dup['duplicate_extra_files'] == 1, dup
         assert dup['groups'], dup
+        assert dup['duplicate_overview']['duplicate_groups'] == 1
+        assert dup['action_candidates'][0]['tool'] == 'run_dataset_health_check'
         sample_paths = dup['groups'][0]['paths']
         assert any(path.endswith('good_a.jpg') for path in sample_paths), dup
         assert any(path.endswith('good_a_copy.jpg') for path in sample_paths), dup

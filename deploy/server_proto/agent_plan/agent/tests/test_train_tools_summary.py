@@ -66,6 +66,8 @@ def main() -> None:
         assert status['progress']['progress_ratio'] == 1.0
         assert status['observation_stage'] == 'final'
         assert status['next_actions'][0].startswith('可继续调用 summarize_training_run')
+        assert status['status_overview']['run_state'] == 'completed'
+        assert status['action_candidates'][0]['tool'] == 'summarize_training_run'
 
         summary = train_tools.summarize_training_run()
         assert summary['ok'] is True
@@ -74,6 +76,8 @@ def main() -> None:
         assert summary['metrics']['precision'] == 0.71
         assert summary['latest_metrics']['metrics']['precision'] == 0.71
         assert summary['next_actions']
+        assert summary['summary_overview']['run_state'] == 'completed'
+        assert summary['action_candidates'][0]['tool'] == 'analyze_training_outcome'
         print('train tools summary ok')
     finally:
         train_tools.service = original_service

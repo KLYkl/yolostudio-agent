@@ -159,6 +159,21 @@ class _NoLLMGraph:
 WORK = Path(__file__).resolve().parent / '_tmp_realtime_prediction_route'
 
 
+class _FakePlannerResponse:
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+
+class _FakePlannerLlm:
+    def __init__(self, reply) -> None:
+        self.reply = reply
+
+    async def ainvoke(self, messages):
+        if callable(self.reply):
+            return _FakePlannerResponse(self.reply(messages))
+        return _FakePlannerResponse(self.reply)
+
+
 def _make_client(session_id: str) -> YoloStudioAgentClient:
     root = WORK / session_id
     settings = AgentSettings(session_id=session_id, memory_root=str(root))
@@ -347,6 +362,112 @@ async def _scenario_status_and_stop_routes() -> None:
     assert 'realtime_prediction_report.json' in stop_turn['message'], stop_turn
 
 
+async def _scenario_followup_routes() -> None:
+    client = _make_client('followup')
+    client.session_state.active_prediction.realtime_session_id = 'realtime-camera-12345678'
+    client.session_state.active_prediction.realtime_source_type = 'camera'
+    client.session_state.active_prediction.realtime_source_label = 'camera:0'
+    client.session_state.active_prediction.realtime_status = 'running'
+    client.session_state.active_prediction.output_dir = '/tmp/realtime-camera'
+    client.session_state.active_prediction.last_realtime_status = {
+        'summary': '实时预测运行中: 已处理 12 帧, 有检测 4 帧, 总检测 6',
+        'session_id': 'realtime-camera-12345678',
+        'source_type': 'camera',
+        'source_label': 'camera:0',
+        'status': 'running',
+        'processed_frames': 12,
+        'detected_frames': 4,
+        'total_detections': 6,
+        'output_dir': '/tmp/realtime-camera',
+    }
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    def _planner_reply(messages) -> str:
+        text = '\n'.join(str(getattr(message, 'content', message)) for message in messages)
+        if '实时预测跟进路由器' in text:
+            return '{"action":"status","reason":"用户在追问当前实时预测的详细状态"}'
+        return '实时预测运行中，当前已经处理 24 帧。'
+
+    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((tool_name, dict(kwargs)))
+        assert tool_name == 'check_realtime_prediction_status'
+        result = {
+            'ok': True,
+            'summary': '实时预测运行中: 已处理 24 帧, 有检测 8 帧, 总检测 11',
+            'session_id': kwargs['session_id'],
+            'source_type': 'camera',
+            'source_label': 'camera:0',
+            'status': 'running',
+            'processed_frames': 24,
+            'detected_frames': 8,
+            'total_detections': 11,
+            'class_counts': {'excavator': 11},
+            'output_dir': '/tmp/realtime-camera',
+            'report_path': '',
+            'action_candidates': [{'tool': 'stop_realtime_prediction', 'description': '如需结束，可停止实时预测'}],
+            'running': True,
+        }
+        client._apply_to_state(tool_name, result, kwargs)
+        return result
+
+    client.planner_llm = _FakePlannerLlm(_planner_reply)  # type: ignore[assignment]
+    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+    followup_turn = await client.chat('现在是什么情况了？我需要详细一点的实时预测信息')
+    assert followup_turn['status'] == 'completed', followup_turn
+    assert calls == [('check_realtime_prediction_status', {'session_id': 'realtime-camera-12345678'})], calls
+    assert '24 帧' in followup_turn['message'], followup_turn
+
+
+async def _scenario_cached_camera_scan_routes() -> None:
+    client = _make_client('cached-scan-cameras')
+    client.session_state.active_prediction.last_realtime_status = {
+        'summary': '摄像头扫描完成: 发现 2 个可用摄像头',
+        'camera_overview': {'camera_count': 2},
+        'camera_count': 2,
+        'cameras': [{'id': 0, 'name': '摄像头 0'}, {'id': 1, 'name': '摄像头 1'}],
+        'action_candidates': [{'tool': 'start_camera_prediction', 'description': '选择一个摄像头开始实时预测'}],
+    }
+
+    async def _unexpected_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        raise AssertionError(f'cached camera scan should not call direct tool: {tool_name} {kwargs}')
+
+    client.direct_tool = _unexpected_direct_tool  # type: ignore[assignment]
+    turn = await client.chat('先扫描可用摄像头。')
+    assert turn['status'] == 'completed', turn
+    assert '发现 2 个可用摄像头' in turn['message'], turn
+    assert 'camera_count=2' in turn['message'], turn
+
+
+async def _scenario_cached_realtime_status_routes() -> None:
+    client = _make_client('cached-realtime-status')
+    client.session_state.active_prediction.realtime_session_id = 'realtime-camera-12345678'
+    client.session_state.active_prediction.realtime_source_type = 'camera'
+    client.session_state.active_prediction.realtime_source_label = 'camera:0'
+    client.session_state.active_prediction.realtime_status = 'stopped'
+    client.session_state.active_prediction.last_realtime_status = {
+        'summary': '实时预测已停止: 已处理 12 帧，检测到 6 个目标',
+        'session_id': 'realtime-camera-12345678',
+        'source_type': 'camera',
+        'source_label': 'camera:0',
+        'status': 'stopped',
+        'processed_frames': 12,
+        'detected_frames': 4,
+        'total_detections': 6,
+        'realtime_status_overview': {'processed_frames': 12},
+        'report_path': '/tmp/realtime-camera/realtime_prediction_report.json',
+        'action_candidates': [{'tool': 'inspect_prediction_outputs', 'description': '查看导出的实时预测报告'}],
+    }
+
+    async def _unexpected_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        raise AssertionError(f'cached realtime status should not call direct tool: {tool_name} {kwargs}')
+
+    client.direct_tool = _unexpected_direct_tool  # type: ignore[assignment]
+    turn = await client.chat('看下实时预测状态')
+    assert turn['status'] == 'completed', turn
+    assert '已处理 12 帧' in turn['message'], turn
+    assert 'realtime_prediction_report.json' in turn['message'], turn
+
+
 def main() -> None:
     shutil.rmtree(WORK, ignore_errors=True)
     try:
@@ -356,6 +477,9 @@ def main() -> None:
         run(_scenario_start_rtsp_routes())
         run(_scenario_start_screen_routes())
         run(_scenario_status_and_stop_routes())
+        run(_scenario_followup_routes())
+        run(_scenario_cached_camera_scan_routes())
+        run(_scenario_cached_realtime_status_routes())
         print('realtime prediction route ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)

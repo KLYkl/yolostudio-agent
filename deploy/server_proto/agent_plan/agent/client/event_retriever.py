@@ -29,36 +29,21 @@ class EventRetriever:
         *,
         recent_limit: int = 12,
         event_window: int = 40,
+        include_history_context: bool = True,
     ) -> MemoryDigest:
         events = self.memory_store.read_events(session_id, limit=event_window)
         recent_events = events[-recent_limit:]
         lines: list[str] = []
 
-        if state.active_dataset.last_scan:
-            scan = state.active_dataset.last_scan
-            lines.append(
-                f"最近扫描: {scan.get('total_images', '未知')} 张图, 缺失标签 {scan.get('missing_labels', '未知')}, 空标签 {scan.get('empty_labels', '未知')}"
-            )
-        if state.active_dataset.last_validate:
-            validate = state.active_dataset.last_validate
-            lines.append(
-                f"最近校验: issue_count={validate.get('issue_count', '未知')}, has_issues={validate.get('has_issues', '未知')}"
-            )
-        if state.active_dataset.last_readiness:
-            readiness = state.active_dataset.last_readiness
-            lines.append(
-                f"最近 readiness: ready={readiness.get('ready', '未知')}, risk_level={readiness.get('risk_level', '未知')}, blockers={len(readiness.get('blockers') or [])}"
-            )
-        if state.active_training.model or state.active_training.data_yaml or state.active_training.last_status:
-            status = state.active_training.last_status or {}
-            lines.append(
-                f"最近训练状态: running={status.get('running', state.active_training.running)}, model={state.active_training.model or '未设置'}, data={state.active_training.data_yaml or '未设置'}, device={state.active_training.device or '未设置'}"
-            )
-        if state.active_knowledge.last_recommendation:
-            recommendation = state.active_knowledge.last_recommendation
-            lines.append(
-                f"最近训练建议: action={recommendation.get('recommended_action', '未知')}, summary={recommendation.get('summary', '无')}"
-            )
+        if state.active_training.running:
+            lines.append('当前有训练在跑。')
+        if state.active_training.active_loop_status:
+            lines.append(f"当前环训练状态: {state.active_training.active_loop_status}")
+        if state.active_prediction.realtime_session_id:
+            lines.append(f"当前实时预测会话: {state.active_prediction.realtime_session_id}")
+
+        if not include_history_context:
+            return MemoryDigest(summary_lines=lines, recent_events=recent_events)
 
         latest_tools: dict[str, dict[str, Any]] = {}
         confirmation_requested = 0

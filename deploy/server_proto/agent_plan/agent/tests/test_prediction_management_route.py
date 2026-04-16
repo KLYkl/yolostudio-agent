@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 import types
@@ -146,14 +147,100 @@ _install_fake_test_dependencies()
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
 from yolostudio_agent.agent.tests._coroutine_runner import run
+from langchain_core.messages import AIMessage, ToolMessage
 
 
-class _NoLLMGraph:
+class _GraphState:
+    def __init__(self, messages):
+        self.values = {'messages': list(messages)}
+        self.next = ()
+
+
+class _PredictionManagementGraph:
+    def __init__(self) -> None:
+        self.client: YoloStudioAgentClient | None = None
+        self._last_state = _GraphState([])
+
+    def bind(self, client: YoloStudioAgentClient) -> None:
+        self.client = client
+
     def get_state(self, config):
-        return None
+        del config
+        return self._last_state
 
-    async def ainvoke(self, *args, **kwargs):
-        raise AssertionError('prediction management follow-up should stay on routed flows, not fallback to graph')
+    async def _cached_reply(self, payload, tool_name: str, result: dict[str, Any]) -> dict[str, Any]:
+        assert self.client is not None
+        reply = str(result.get('summary') or '')
+        if not reply:
+            reply = await self.client._render_tool_result_message(tool_name, result) or str(result.get('error') or '操作已完成')
+        messages = list(payload['messages']) + [AIMessage(content=reply)]
+        self._last_state = _GraphState(messages)
+        return {'messages': messages}
+
+    async def _tool_reply(self, payload, tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        assert self.client is not None
+        observed = await self.client.direct_tool(tool_name, _state_mode='observe', **kwargs)
+        reply = await self.client._render_tool_result_message(tool_name, observed)
+        if not reply:
+            reply = str(observed.get('summary') or observed.get('error') or '操作已完成')
+        tool_call = {'id': f'tc-{len(payload["messages"])}', 'name': tool_name, 'args': kwargs}
+        messages = list(payload['messages']) + [
+            AIMessage(content='', tool_calls=[tool_call]),
+            ToolMessage(content=json.dumps(observed, ensure_ascii=False), name=tool_name, tool_call_id=tool_call['id']),
+            AIMessage(content=reply),
+        ]
+        self._last_state = _GraphState(messages)
+        return {'messages': messages}
+
+    async def ainvoke(self, payload, config=None):
+        del config
+        assert self.client is not None
+        summary = '\n'.join(str(getattr(message, 'content', message)) for message in payload['messages'][:2])
+        user_text = str(getattr(payload['messages'][-1], 'content', ''))
+        pred = self.client.session_state.active_prediction
+
+        if '保存在哪' in user_text:
+            assert 'report_path:' in summary
+            if pred.last_inspection:
+                return await self._cached_reply(payload, 'inspect_prediction_outputs', dict(pred.last_inspection))
+            return await self._tool_reply(payload, 'inspect_prediction_outputs', report_path=pred.report_path)
+
+        if '报告' in user_text:
+            explicit_target = ''
+            if 'prediction_summary_v2.md' in user_text:
+                explicit_target = '/tmp/predict-out/prediction_summary_v2.md'
+            elif 'prediction_summary.md' in user_text:
+                explicit_target = '/tmp/predict-out/prediction_summary.md'
+            cached_target = str((pred.last_export or {}).get('export_path') or '')
+            if pred.last_export and (not explicit_target or explicit_target == cached_target):
+                assert 'last_export_path:' in summary
+                return await self._cached_reply(payload, 'export_prediction_report', dict(pred.last_export))
+            kwargs = {'export_path': explicit_target} if explicit_target else {'report_path': pred.report_path}
+            return await self._tool_reply(payload, 'export_prediction_report', **kwargs)
+
+        if '路径清单' in user_text:
+            explicit_dir = ''
+            if 'path_lists_v2' in user_text:
+                explicit_dir = '/tmp/predict-out/path_lists_v2'
+            elif '/tmp/predict-out/path_lists' in user_text:
+                explicit_dir = '/tmp/predict-out/path_lists'
+            cached_dir = str((pred.last_path_lists or {}).get('export_dir') or '')
+            if pred.last_path_lists and (not explicit_dir or explicit_dir == cached_dir):
+                assert 'last_path_lists_dir:' in summary
+                return await self._cached_reply(payload, 'export_prediction_path_lists', dict(pred.last_path_lists))
+            kwargs = {'export_dir': explicit_dir} if explicit_dir else {'report_path': pred.report_path}
+            return await self._tool_reply(payload, 'export_prediction_path_lists', **kwargs)
+
+        if '整理预测结果' in user_text or '按类别整理' in user_text:
+            return await self._tool_reply(
+                payload,
+                'organize_prediction_results',
+                report_path=pred.report_path,
+                organize_by='by_class',
+                include_empty=False,
+            )
+
+        raise AssertionError(f'unexpected graph request: {user_text}')
 
 
 WORK = Path(__file__).resolve().parent / '_tmp_prediction_management_route'
@@ -162,7 +249,9 @@ WORK = Path(__file__).resolve().parent / '_tmp_prediction_management_route'
 def _make_client(session_id: str) -> YoloStudioAgentClient:
     root = WORK / session_id
     settings = AgentSettings(session_id=session_id, memory_root=str(root))
-    client = YoloStudioAgentClient(graph=_NoLLMGraph(), settings=settings, tool_registry={})
+    graph = _PredictionManagementGraph()
+    client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
+    graph.bind(client)
     client.session_state.active_prediction.output_dir = '/tmp/predict-out'
     client.session_state.active_prediction.report_path = '/tmp/predict-out/prediction_report.json'
     client.session_state.active_prediction.source_path = '/tmp/images'
@@ -176,6 +265,7 @@ async def _scenario_inspect_routes_to_prediction_output_inspection() -> None:
     calls: list[tuple[str, dict[str, Any]]] = []
 
     async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        state_mode = str(kwargs.pop('_state_mode', 'persistent'))
         calls.append((tool_name, dict(kwargs)))
         result = {
             'ok': True,
@@ -186,7 +276,8 @@ async def _scenario_inspect_routes_to_prediction_output_inspection() -> None:
             'artifact_roots': ['/tmp/predict-out', '/tmp/predict-out/annotated', '/tmp/predict-out/labels_yolo'],
             'path_list_files': {},
         }
-        client._apply_to_state(tool_name, result, kwargs)
+        if state_mode != 'observe':
+            client._apply_to_state(tool_name, result, kwargs)
         return result
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
@@ -202,6 +293,7 @@ async def _scenario_export_routes_to_prediction_report_export() -> None:
     calls: list[tuple[str, dict[str, Any]]] = []
 
     async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        state_mode = str(kwargs.pop('_state_mode', 'persistent'))
         calls.append((tool_name, dict(kwargs)))
         result = {
             'ok': True,
@@ -209,10 +301,11 @@ async def _scenario_export_routes_to_prediction_report_export() -> None:
             'mode': 'images',
             'output_dir': '/tmp/predict-out',
             'report_path': '/tmp/predict-out/prediction_report.json',
-            'export_path': '/tmp/predict-out/prediction_summary.md',
+            'export_path': kwargs.get('export_path') or '/tmp/predict-out/prediction_summary.md',
             'export_format': 'markdown',
         }
-        client._apply_to_state(tool_name, result, kwargs)
+        if state_mode != 'observe':
+            client._apply_to_state(tool_name, result, kwargs)
         return result
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
@@ -223,12 +316,28 @@ async def _scenario_export_routes_to_prediction_report_export() -> None:
     assert 'prediction_summary.md' in turn['message'], turn
     assert client.session_state.active_prediction.last_export['export_path'].endswith('prediction_summary.md')
 
+    before_cached = len(calls)
+    cached_turn = await client.chat('再把这次预测结果导成报告。')
+    assert cached_turn['status'] == 'completed', cached_turn
+    assert '预测报告导出完成' in cached_turn['message'], cached_turn
+    assert len(calls) == before_cached, calls
+
+    explicit_same_target = await client.chat('把这次预测结果导成 /tmp/predict-out/prediction_summary.md 报告。')
+    assert explicit_same_target['status'] == 'completed', explicit_same_target
+    assert len(calls) == before_cached, calls
+
+    explicit_new_target = await client.chat('把这次预测结果导成 /tmp/predict-out/prediction_summary_v2.md 报告。')
+    assert explicit_new_target['status'] == 'completed', explicit_new_target
+    assert calls[-1][0] == 'export_prediction_report', calls
+    assert calls[-1][1]['export_path'] == '/tmp/predict-out/prediction_summary_v2.md', calls
+
 
 async def _scenario_path_lists_route_exports_lists() -> None:
     client = _make_client('lists')
     calls: list[tuple[str, dict[str, Any]]] = []
 
     async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        state_mode = str(kwargs.pop('_state_mode', 'persistent'))
         calls.append((tool_name, dict(kwargs)))
         result = {
             'ok': True,
@@ -236,7 +345,7 @@ async def _scenario_path_lists_route_exports_lists() -> None:
             'mode': 'images',
             'output_dir': '/tmp/predict-out',
             'report_path': '/tmp/predict-out/prediction_report.json',
-            'export_dir': '/tmp/predict-out/path_lists',
+            'export_dir': kwargs.get('export_dir') or '/tmp/predict-out/path_lists',
             'detected_items_path': '/tmp/predict-out/path_lists/detected_items.txt',
             'empty_items_path': '/tmp/predict-out/path_lists/empty_items.txt',
             'failed_items_path': '/tmp/predict-out/path_lists/failed_items.txt',
@@ -244,7 +353,8 @@ async def _scenario_path_lists_route_exports_lists() -> None:
             'empty_count': 1,
             'failed_count': 0,
         }
-        client._apply_to_state(tool_name, result, kwargs)
+        if state_mode != 'observe':
+            client._apply_to_state(tool_name, result, kwargs)
         return result
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
@@ -254,12 +364,28 @@ async def _scenario_path_lists_route_exports_lists() -> None:
     assert 'path_lists' in turn['message'], turn
     assert client.session_state.active_prediction.last_path_lists['detected_count'] == 2
 
+    before_cached = len(calls)
+    cached_turn = await client.chat('再给我这次预测的路径清单。')
+    assert cached_turn['status'] == 'completed', cached_turn
+    assert '路径清单导出完成' in cached_turn['message'], cached_turn
+    assert len(calls) == before_cached, calls
+
+    explicit_same_dir = await client.chat('把这次预测的路径清单导出到 /tmp/predict-out/path_lists')
+    assert explicit_same_dir['status'] == 'completed', explicit_same_dir
+    assert len(calls) == before_cached, calls
+
+    explicit_new_dir = await client.chat('把这次预测的路径清单导出到 /tmp/predict-out/path_lists_v2')
+    assert explicit_new_dir['status'] == 'completed', explicit_new_dir
+    assert calls[-1][0] == 'export_prediction_path_lists', calls
+    assert calls[-1][1]['export_dir'] == '/tmp/predict-out/path_lists_v2', calls
+
 
 async def _scenario_organize_routes_to_prediction_result_organizer() -> None:
     client = _make_client('organize')
     calls: list[tuple[str, dict[str, Any]]] = []
 
     async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        state_mode = str(kwargs.pop('_state_mode', 'persistent'))
         calls.append((tool_name, dict(kwargs)))
         result = {
             'ok': True,
@@ -274,7 +400,8 @@ async def _scenario_organize_routes_to_prediction_result_organizer() -> None:
             'bucket_stats': {'Excavator': 1, 'bulldozer': 1},
             'sample_outputs': ['/tmp/predict-out/organized_by_class/Excavator/a.jpg'],
         }
-        client._apply_to_state(tool_name, result, kwargs)
+        if state_mode != 'observe':
+            client._apply_to_state(tool_name, result, kwargs)
         return result
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]

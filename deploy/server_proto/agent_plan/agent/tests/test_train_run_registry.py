@@ -18,7 +18,7 @@ if __package__ in {None, ""}:
 from yolostudio_agent.agent.server.services.train_service import TrainService
 
 
-WORK = Path(r'D:\yolodo2.0\agent_plan\agent\tests\_tmp_train_run_registry')
+WORK = Path(__file__).resolve().parent / '_tmp_train_run_registry'
 
 
 def _spawn_sleep(seconds: int) -> subprocess.Popen:

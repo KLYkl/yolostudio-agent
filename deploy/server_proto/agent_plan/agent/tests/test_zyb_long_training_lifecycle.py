@@ -12,9 +12,9 @@ try:
 except Exception:
     MultiServerMCPClient = None  # type: ignore[assignment]
 
-DEFAULT_OUT = r'D:\yolodo2.0\agent_plan\agent\tests\test_zyb_long_training_lifecycle_output.json'
-DEFAULT_DATASET_ROOT = '/home/kly/agent_cap_tests/zyb'
-DEFAULT_MODEL_PATH = '/home/kly/yolov8n.pt'
+DEFAULT_OUT = str(Path(__file__).with_name('test_zyb_long_training_lifecycle_output.json'))
+DEFAULT_DATASET_ROOT = '/data/example_dataset'
+DEFAULT_MODEL_PATH = '/models/yolov8n.pt'
 DEFAULT_EPOCHS = 30
 DEFAULT_STATUS_DELAYS = [15, 35, 60]
 DEFAULT_MCP_URL = 'http://127.0.0.1:8080/mcp'

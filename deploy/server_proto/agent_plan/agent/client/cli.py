@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
-import json
 import sys
 from pathlib import Path
+import locale
+import os
 
 if __package__ in {None, ""}:
     repo_root = Path(__file__).resolve().parents[2]
@@ -15,80 +17,130 @@ if __package__ in {None, ""}:
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, build_agent_client
 
-for stream_name in ("stdin", "stdout", "stderr"):
+for stream_name in ("stdout", "stderr"):
     stream = getattr(sys, stream_name, None)
     if hasattr(stream, "reconfigure"):
         stream.reconfigure(encoding="utf-8")
 
-SLASH_COMMANDS = {
-    "/help": "显示可用命令",
-    "/context": "显示当前结构化上下文",
-    "/gpu": "直接查询 GPU 状态（不经过 LLM）",
-    "/status": "直接查询训练状态（不经过 LLM）",
-    "/session": "显示当前会话元信息",
-}
+
+def _candidate_input_encodings() -> list[str]:
+    candidates: list[str] = []
+    for raw in (
+        getattr(sys.stdin, "encoding", None),
+        os.getenv("PYTHONIOENCODING"),
+        locale.getpreferredencoding(False),
+        "utf-8",
+        "utf-8-sig",
+        "gb18030",
+        "gbk",
+        "cp936",
+    ):
+        if not raw:
+            continue
+        encoding = str(raw).split(":", 1)[0].strip()
+        if encoding and encoding not in candidates:
+            candidates.append(encoding)
+    return candidates
 
 
-def _pretty_result(result: dict) -> str:
-    if not isinstance(result, dict):
-        return str(result)
-    if result.get('summary'):
-        extra = {k: v for k, v in result.items() if k not in {'summary'}}
-        return result['summary'] if not extra else result['summary'] + "\n" + json.dumps(extra, ensure_ascii=False, indent=2)
-    return json.dumps(result, ensure_ascii=False, indent=2)
+def _decode_terminal_input(raw: bytes) -> str:
+    for encoding in _candidate_input_encodings():
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
 
 
-async def handle_slash_command(agent, command: str) -> str | None:
-    cmd = command.strip().lower()
-    if cmd == "/help":
-        return "\n".join(f"  {name}: {desc}" for name, desc in SLASH_COMMANDS.items())
-    if cmd == "/context":
-        return agent.context_summary()
-    if cmd == "/gpu":
-        return _pretty_result(await agent.direct_tool("check_gpu_status"))
-    if cmd == "/status":
-        return _pretty_result(await agent.direct_tool("check_training_status"))
-    if cmd == "/session":
-        return agent.session_summary()
-    return None
+def _read_user_input(prompt: str) -> str:
+    print(f"{prompt}: ", end="", flush=True)
+    buffer = getattr(sys.stdin, "buffer", None)
+    if buffer is None:
+        line = sys.stdin.readline()
+        if line == "":
+            raise EOFError
+        return line.rstrip("\r\n")
+
+    raw = buffer.readline()
+    if raw == b"":
+        raise EOFError
+    return _decode_terminal_input(raw).rstrip("\r\n")
+
+
+def _parse_cli_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(add_help=True)
+    parser.add_argument("session_id", nargs="?", default="default", help="会话 ID")
+    parser.add_argument("--confirm", choices=["manual", "auto"], default=None, help="确认模式")
+    parser.add_argument(
+        "--provider",
+        choices=["ollama", "deepseek", "openai_compatible", "openai-compatible", "openai"],
+        default=None,
+        help="LLM provider",
+    )
+    parser.add_argument("--model", default=None, help="LLM 模型名")
+    parser.add_argument("--base-url", dest="base_url", default=None, help="LLM base URL")
+    return parser.parse_args(argv)
+
+
+def _is_exit_command(user: str) -> bool:
+    return str(user or "").strip().lower() in {"exit", "quit"}
 
 
 async def main() -> None:
-    session_id = sys.argv[1] if len(sys.argv) > 1 else "default"
-    agent = await build_agent_client(AgentSettings(session_id=session_id))
+    args = _parse_cli_args(sys.argv[1:])
+    settings = AgentSettings(session_id=args.session_id)
+    if args.confirm:
+        settings.confirmation_mode = args.confirm
+    if args.provider:
+        settings.provider = args.provider
+    if args.model:
+        settings.model = args.model
+    if args.base_url:
+        settings.base_url = args.base_url
+    agent = await build_agent_client(settings)
     print(agent.preview())
-    print("输入 exit / quit 退出；输入 /help 查看快捷命令。")
+    print("输入 exit / quit 退出。")
 
-    pending_thread_id: str | None = None
     while True:
-        prompt = "Confirm" if pending_thread_id else "You"
-        user = input(f"{prompt}: ").strip()
-        if user.lower() in {"exit", "quit"}:
+        try:
+            user = _read_user_input("You").strip()
+        except EOFError:
+            print()
+            break
+        if not user:
+            print("Agent: 请输入内容。")
+            continue
+        if _is_exit_command(user):
             break
 
-        if pending_thread_id:
-            lowered = user.lower()
-            approved = lowered in {"y", "yes"}
-            if lowered not in {"y", "yes", "n", "no"}:
-                print("Agent: 请输入 y 或 n。")
-                continue
-            result = await agent.confirm(pending_thread_id, approved=approved)
-            pending_thread_id = None
+        stream_state = {"token_started": False, "tool_calls": set()}
+
+        async def _handle_stream(event: dict) -> None:
+            event_type = str(event.get("type") or "")
+            if event_type == "token":
+                text = str(event.get("text") or "")
+                if not text:
+                    return
+                if not stream_state["token_started"]:
+                    print("Agent: ", end="", flush=True)
+                    stream_state["token_started"] = True
+                print(text, end="", flush=True)
+                return
+            if event_type == "tool_call":
+                tool_name = str(event.get("tool_name") or "").strip()
+                if not tool_name or tool_name in stream_state["tool_calls"]:
+                    return
+                if stream_state["token_started"]:
+                    print()
+                    stream_state["token_started"] = False
+                print(f"[Agent] 调用工具: {tool_name}", flush=True)
+                stream_state["tool_calls"].add(tool_name)
+
+        result = await agent.chat(user, stream_handler=_handle_stream)
+        if stream_state["token_started"]:
+            print()
+        if not stream_state["token_started"]:
             print(f"Agent: {result['message']}")
-            continue
-
-        if user.startswith("/"):
-            result = await handle_slash_command(agent, user)
-            if result is not None:
-                print(f"[System] {result}")
-            else:
-                print(f"[System] 未知命令: {user}，输入 /help 查看可用命令")
-            continue
-
-        result = await agent.chat(user)
-        print(f"Agent: {result['message']}")
-        if result["status"] == "needs_confirmation":
-            pending_thread_id = result["thread_id"]
 
 
 if __name__ == "__main__":

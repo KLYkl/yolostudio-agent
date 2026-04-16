@@ -18,7 +18,7 @@ if __package__ in {None, ''}:
 
 from yolostudio_agent.agent.server.services.prediction_video_helpers import predict_single_video
 
-TMP_ROOT = Path('D:/yolodo2.0/agent_plan/.tmp_prediction_video_helper_test')
+TMP_ROOT = Path('C:/workspace/yolodo2.0/agent_plan/.tmp_prediction_video_helper_test')
 
 
 def _make_video(path: Path) -> None:

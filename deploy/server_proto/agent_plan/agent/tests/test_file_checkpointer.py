@@ -17,7 +17,7 @@ from langgraph.checkpoint.base import empty_checkpoint
 from yolostudio_agent.agent.client.file_checkpointer import FileCheckpointSaver
 
 
-WORK = Path(r'D:\yolodo2.0\agent_plan\agent\tests\_tmp_file_checkpointer')
+WORK = Path(__file__).resolve().parent / '_tmp_file_checkpointer'
 
 
 def main() -> None:

@@ -21,12 +21,12 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, build_agent_client
 
-DATASET_ROOT = os.getenv('YOLOSTUDIO_TEST_DATASET_ROOT', '/home/kly/agent_cap_tests/zyb')
+DATASET_ROOT = os.getenv('YOLOSTUDIO_TEST_DATASET_ROOT', '/data/agent_cap_tests/zyb')
 MCP_URL = os.getenv('YOLOSTUDIO_TEST_MCP_URL', 'http://127.0.0.1:18080/mcp')
 OLLAMA_URL = os.getenv('YOLOSTUDIO_TEST_OLLAMA_URL', 'http://127.0.0.1:11435')
 DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY', '')
-OUTPUT = Path(r'D:\yolodo2.0\agent_plan\agent\tests\test_zyb_large_dataset_output.json')
-MEM_ROOT = Path(r'D:\yolodo2.0\agent_plan\agent\tests\_tmp_zyb_memory')
+OUTPUT = Path(__file__).resolve().parent / 'test_zyb_large_dataset_output.json'
+MEM_ROOT = Path(__file__).resolve().parent / '_tmp_zyb_memory'
 
 
 def _norm(payload: Any) -> dict[str, Any]:
@@ -134,13 +134,13 @@ async def main() -> None:
     train_case: dict[str, Any] = {'tool': 'start_training_smoke', 'args': {}, 'duration_sec': None, 'result': {'ok': False, 'error': 'prepare did not yield trainable yaml'}}
     if prepared_yaml:
         start_ts = time.time()
-        started = _norm(await tool_map['start_training'].ainvoke({'model': '/home/kly/yolov8n.pt', 'data_yaml': prepared_yaml, 'epochs': 2, 'device': 'auto'}))
+        started = _norm(await tool_map['start_training'].ainvoke({'model': '/models/yolov8n.pt', 'data_yaml': prepared_yaml, 'epochs': 2, 'device': 'auto'}))
         await asyncio.sleep(6)
         status = _norm(await tool_map['check_training_status'].ainvoke({}))
         stop = _norm(await tool_map['stop_training'].ainvoke({})) if status.get('running') else {'ok': True, 'summary': 'training already finished before stop'}
         train_case = {
             'tool': 'start_training_smoke',
-            'args': {'model': '/home/kly/yolov8n.pt', 'data_yaml': prepared_yaml, 'epochs': 2, 'device': 'auto'},
+            'args': {'model': '/models/yolov8n.pt', 'data_yaml': prepared_yaml, 'epochs': 2, 'device': 'auto'},
             'duration_sec': round(time.time() - start_ts, 3),
             'result': {
                 'start': started,

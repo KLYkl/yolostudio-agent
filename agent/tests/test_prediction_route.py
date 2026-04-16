@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 from pathlib import Path
 import sys
 import types
+from typing import Any
 
 if __package__ in {None, ""}:
     repo_root = Path(__file__).resolve().parents[2]
@@ -162,11 +164,74 @@ except Exception:
     sys.modules['langgraph.checkpoint.memory'] = checkpoint_mod
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from langchain_core.messages import AIMessage, ToolMessage
 
 
-class _DummyGraph:
+class _GraphState:
+    def __init__(self, messages):
+        self.values = {'messages': list(messages)}
+        self.next = ()
+
+
+class _PredictionGraph:
+    def __init__(self) -> None:
+        self.client: YoloStudioAgentClient | None = None
+        self._last_state = _GraphState([])
+
+    def bind(self, client: YoloStudioAgentClient) -> None:
+        self.client = client
+
     def get_state(self, config):
-        return None
+        del config
+        return self._last_state
+
+    async def _cached_reply(self, payload, tool_name: str, result: dict[str, Any]) -> dict[str, Any]:
+        assert self.client is not None
+        reply = str(result.get('summary') or '')
+        if not reply:
+            reply = await self.client._render_tool_result_message(tool_name, result) or str(result.get('error') or '操作已完成')
+        messages = list(payload['messages']) + [AIMessage(content=reply)]
+        self._last_state = _GraphState(messages)
+        return {'messages': messages}
+
+    async def _tool_reply(self, payload, tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        assert self.client is not None
+        observed = await self.client.direct_tool(tool_name, _state_mode='observe', **kwargs)
+        reply = await self.client._render_tool_result_message(tool_name, observed)
+        if not reply:
+            reply = str(observed.get('summary') or observed.get('error') or '操作已完成')
+        tool_call = {'id': f'tc-{len(payload["messages"])}', 'name': tool_name, 'args': kwargs}
+        messages = list(payload['messages']) + [
+            AIMessage(content='', tool_calls=[tool_call]),
+            ToolMessage(content=json.dumps(observed, ensure_ascii=False), name=tool_name, tool_call_id=tool_call['id']),
+            AIMessage(content=reply),
+        ]
+        self._last_state = _GraphState(messages)
+        return {'messages': messages}
+
+    async def ainvoke(self, payload, config=None):
+        del config
+        assert self.client is not None
+        summary = '\n'.join(str(getattr(message, 'content', message)) for message in payload['messages'][:2])
+        user_text = str(getattr(payload['messages'][-1], 'content', ''))
+        pred = self.client.session_state.active_prediction
+
+        if '总结' in user_text and '预测' in user_text:
+            assert 'last_result_summary:' in summary
+            if pred.last_summary:
+                return await self._cached_reply(payload, 'summarize_prediction_results', dict(pred.last_summary))
+            return await self._tool_reply(payload, 'summarize_prediction_results', report_path=pred.report_path)
+
+        if any(token in user_text for token in ('详细一点的信息', '那个预测输出再详细一点', 'prediction_report.json')):
+            assert 'report_path:' in summary
+            report_path = '/tmp/predict/prediction_report.json' if 'prediction_report.json' in user_text else pred.report_path
+            if pred.last_inspection and str((pred.last_inspection or {}).get('report_path') or '') == report_path:
+                assert 'last_inspection_summary:' in summary
+                return await self._cached_reply(payload, 'inspect_prediction_outputs', dict(pred.last_inspection))
+            assert 'last_result_summary:' in summary or 'last_summary_text:' in summary
+            return await self._tool_reply(payload, 'inspect_prediction_outputs', report_path=report_path)
+
+        raise AssertionError(f'unexpected graph request: {user_text}')
 
 
 class _FakePlannerResponse:
@@ -192,10 +257,13 @@ async def _run() -> None:
     WORK.mkdir(parents=True, exist_ok=True)
     try:
         settings = AgentSettings(session_id='prediction-route-smoke', memory_root=str(WORK))
-        client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+        graph = _PredictionGraph()
+        client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
+        graph.bind(client)
         calls: list[tuple[str, dict[str, str]]] = []
 
         async def _fake_direct_tool(tool_name: str, **kwargs):
+            state_mode = str(kwargs.pop('_state_mode', 'persistent'))
             calls.append((tool_name, dict(kwargs)))
             if tool_name == 'predict_images':
                 assert kwargs['source_path'] == '/data/images'
@@ -217,7 +285,8 @@ async def _run() -> None:
                     'warnings': [],
                     'next_actions': ['可查看标注结果目录: /tmp/predict/annotated'],
                 }
-                client._apply_to_state('predict_images', result, kwargs)
+                if state_mode != 'observe':
+                    client._apply_to_state('predict_images', result, kwargs)
                 return result
             if tool_name == 'inspect_prediction_outputs':
                 assert kwargs['report_path'] == '/tmp/predict/prediction_report.json'
@@ -230,7 +299,8 @@ async def _run() -> None:
                     'path_list_files': {'detected': '/tmp/predict/detected.txt'},
                     'action_candidates': [{'description': '可继续导出预测报告', 'tool': 'export_prediction_report'}],
                 }
-                client._apply_to_state('inspect_prediction_outputs', result, kwargs)
+                if state_mode != 'observe':
+                    client._apply_to_state('inspect_prediction_outputs', result, kwargs)
                 return result
             assert tool_name == 'summarize_prediction_results'
             assert kwargs['report_path'] == '/tmp/predict/prediction_report.json'
@@ -252,73 +322,42 @@ async def _run() -> None:
                 'model': '/models/yolov8n.pt',
                 'source_path': '/data/images',
             }
-            client._apply_to_state('summarize_prediction_results', result, kwargs)
+            if state_mode != 'observe':
+                client._apply_to_state('summarize_prediction_results', result, kwargs)
             return result
 
         client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
 
-        routed = await client._try_handle_mainline_intent('请用 /models/yolov8n.pt 预测 /data/images 这个目录里的图片', 'thread-1')
-        assert routed is not None, routed
+        routed = await client.chat('请用 /models/yolov8n.pt 预测 /data/images 这个目录里的图片')
         assert routed['status'] == 'completed', routed
         assert '预测完成' in routed['message'], routed
         assert client.session_state.active_prediction.model == '/models/yolov8n.pt'
         assert client.session_state.active_prediction.source_path == '/data/images'
 
-        routed2 = await client._try_handle_mainline_intent('总结一下刚才预测结果', 'thread-2')
-        assert routed2 is not None, routed2
+        routed2 = await client.chat('总结一下刚才预测结果')
         assert routed2['status'] == 'completed', routed2
         assert '总检测框 1' in routed2['message'], routed2
         assert '标注结果目录' in routed2['message'], routed2
         assert calls[-1][0] == 'summarize_prediction_results', calls
 
         before = len(calls)
-        routed3 = await client._try_handle_mainline_intent('总结预测结果', 'thread-3')
-        assert routed3 is not None, routed3
+        routed3 = await client.chat('总结预测结果')
         assert routed3['status'] == 'completed', routed3
         assert '总检测框 1' in routed3['message'], routed3
         assert len(calls) == before, calls
 
-        def _planner_reply(messages):
-            text = '\n'.join(str(getattr(message, 'content', message)) for message in messages)
-            if '预测跟进路由器' in text:
-                return '{"action":"inspect","reason":"用户要求更详细的预测信息"}'
-            return '预测输出检查完成，可继续查看输出目录和报告。'
-
-        client.planner_llm = _FakePlannerLlm(_planner_reply)  # type: ignore[assignment]
-        routed4 = await client._try_handle_mainline_intent('现在是什么情况了？我需要详细一点的信息', 'thread-4')
-        assert routed4 is not None, routed4
+        routed4 = await client.chat('现在是什么情况了？我需要详细一点的信息')
         assert routed4['status'] == 'completed', routed4
         assert '预测输出检查完成' in routed4['message'], routed4
         assert calls[-1][0] == 'inspect_prediction_outputs', calls
 
         before_cached_followup = len(calls)
-        routed5 = await client._try_handle_mainline_intent('那个预测输出再详细一点', 'thread-5')
-        assert routed5 is not None, routed5
+        routed5 = await client.chat('那个预测输出再详细一点')
         assert routed5['status'] == 'completed', routed5
         assert '预测输出检查完成' in routed5['message'], routed5
         assert len(calls) == before_cached_followup, calls
 
-        routed6 = await client._try_handle_prediction_requests(
-            user_text='看看 /tmp/predict/prediction_report.json 这个预测输出',
-            normalized_text='看看 /tmp/predict/prediction_report.json 这个预测输出',
-            prediction_path='/data/images',
-            wants_train=False,
-            training_command_like=False,
-            wants_scan_videos=False,
-            wants_extract_frames=False,
-            wants_extract_preview=False,
-            wants_extract_images=False,
-            wants_remote_upload=False,
-            wants_prediction_summary=False,
-            wants_prediction_output_inspection=True,
-            wants_prediction_report_export=False,
-            wants_prediction_path_lists=False,
-            wants_prediction_result_organize=False,
-            has_prediction_followup_context=True,
-            has_prediction_management_followup_context=True,
-            has_explicit_prediction_target=True,
-        )
-        assert routed6 is not None, routed6
+        routed6 = await client.chat('看看 /tmp/predict/prediction_report.json 这个预测输出')
         assert routed6['status'] == 'completed', routed6
         assert '预测输出检查完成' in routed6['message'], routed6
         assert len(calls) == before_cached_followup, calls

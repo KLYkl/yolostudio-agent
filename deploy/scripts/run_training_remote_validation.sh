@@ -60,6 +60,7 @@ if [[ -x "$APP_ROOT/manage_mcp_server.sh" ]]; then
 fi
 
 cd "$APP_ROOT"
+export PYTHONPATH="$APP_ROOT:$APP_ROOT/agent_plan${PYTHONPATH:+:$PYTHONPATH}"
 export YOLO_TRAIN_TEST_MODE="direct_tools"
 export YOLO_TRAIN_OUT="$OUTPUT_ROOT/remote_training_lifecycle.json"
 export YOLO_TRAIN_DATASET_ROOT="$DATASET_ROOT"

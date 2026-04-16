@@ -12,6 +12,11 @@ class GpuInfo:
     uuid: str
     free_mb: int
     busy: bool
+    total_mb: int = 0
+    utilization_pct: int = 0
+    compute_process_count: int = 0
+    compute_used_mb: int = 0
+    busy_reason: str = ''
 
 
 class GpuAllocationPolicy:
@@ -20,9 +25,57 @@ class GpuAllocationPolicy:
     MANUAL_ONLY = 'manual_only'
 
 
+def _parse_int(raw: str | int | float | None) -> int:
+    text = str(raw or '').strip().replace('MiB', '').replace('%', '').strip()
+    if not text:
+        return 0
+    try:
+        return int(float(text))
+    except Exception:
+        return 0
+
+
+def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
+    raw = str(os.getenv(name, str(default)) or str(default)).strip()
+    try:
+        return max(int(raw), minimum)
+    except Exception:
+        return max(default, minimum)
+
+
+def get_busy_utilization_threshold_pct() -> int:
+    return _env_int('YOLOSTUDIO_GPU_BUSY_UTILIZATION_THRESHOLD_PCT', 10, minimum=0)
+
+
+def get_busy_compute_memory_threshold_mb() -> int:
+    return _env_int('YOLOSTUDIO_GPU_BUSY_COMPUTE_MEMORY_THRESHOLD_MB', 1024, minimum=0)
+
+
+def _classify_gpu_busy(gpu: GpuInfo) -> tuple[bool, str]:
+    if gpu.compute_process_count <= 0:
+        return False, ''
+
+    util_threshold = get_busy_utilization_threshold_pct()
+    memory_threshold_mb = get_busy_compute_memory_threshold_mb()
+
+    reasons: list[str] = []
+    if gpu.utilization_pct >= util_threshold > 0:
+        reasons.append(f'GPU 利用率 {gpu.utilization_pct}% ≥ {util_threshold}%')
+    if gpu.compute_used_mb >= memory_threshold_mb > 0:
+        reasons.append(f'compute 显存占用 {gpu.compute_used_mb} MiB ≥ {memory_threshold_mb} MiB')
+
+    if reasons:
+        return True, '；'.join(reasons)
+
+    return False, (
+        f'仅检测到轻量 compute 占用（{gpu.compute_process_count} 个进程，'
+        f'compute 显存 {gpu.compute_used_mb} MiB，GPU 利用率 {gpu.utilization_pct}%）'
+    )
+
+
 def query_gpu_status() -> list[GpuInfo]:
     gpu_result = subprocess.run(
-        ['nvidia-smi', '--query-gpu=index,gpu_uuid,memory.free', '--format=csv,noheader,nounits'],
+        ['nvidia-smi', '--query-gpu=index,gpu_uuid,memory.free,memory.total,utilization.gpu', '--format=csv,noheader,nounits'],
         capture_output=True, text=True, timeout=10,
     )
     if gpu_result.returncode != 0:
@@ -31,23 +84,40 @@ def query_gpu_status() -> list[GpuInfo]:
     gpus: list[GpuInfo] = []
     for line in gpu_result.stdout.strip().splitlines():
         parts = [p.strip() for p in line.split(',')]
-        if len(parts) < 3:
+        if len(parts) < 5:
             continue
-        gpus.append(GpuInfo(index=parts[0], uuid=parts[1], free_mb=int(parts[2]), busy=False))
+        gpus.append(
+            GpuInfo(
+                index=parts[0],
+                uuid=parts[1],
+                free_mb=_parse_int(parts[2]),
+                busy=False,
+                total_mb=_parse_int(parts[3]),
+                utilization_pct=_parse_int(parts[4]),
+            )
+        )
 
     app_result = subprocess.run(
-        ['nvidia-smi', '--query-compute-apps=gpu_uuid,pid,process_name', '--format=csv,noheader'],
+        ['nvidia-smi', '--query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory', '--format=csv,noheader'],
         capture_output=True, text=True, timeout=10,
     )
     if app_result.returncode == 0 and app_result.stdout.strip():
-        busy_uuids: set[str] = set()
+        app_stats: dict[str, dict[str, int]] = {}
         for line in app_result.stdout.strip().splitlines():
             parts = [p.strip() for p in line.split(',')]
-            if parts:
-                busy_uuids.add(parts[0])
+            if len(parts) < 1:
+                continue
+            gpu_uuid = parts[0]
+            stats = app_stats.setdefault(gpu_uuid, {'count': 0, 'used_mb': 0})
+            stats['count'] += 1
+            stats['used_mb'] += _parse_int(parts[3] if len(parts) > 3 else 0)
         for gpu in gpus:
-            if gpu.uuid in busy_uuids:
-                gpu.busy = True
+            stats = app_stats.get(gpu.uuid)
+            if not stats:
+                continue
+            gpu.compute_process_count = int(stats.get('count') or 0)
+            gpu.compute_used_mb = int(stats.get('used_mb') or 0)
+            gpu.busy, gpu.busy_reason = _classify_gpu_busy(gpu)
 
     return gpus
 
@@ -105,6 +175,15 @@ def get_gpu_status_summary() -> str:
         return '无法获取 GPU 信息（nvidia-smi 不可用）'
     lines = [f'GPU 策略: {describe_gpu_policy()}']
     for gpu in gpus:
-        status = '忙碌（有进程占用）' if gpu.busy else '空闲'
-        lines.append(f'GPU {gpu.index}: {status}, 空闲显存 {gpu.free_mb} MiB')
+        if gpu.busy:
+            status = f'忙碌（{gpu.busy_reason or "资源占用较高"}）'
+        elif gpu.compute_process_count > 0:
+            status = f'可复用（{gpu.busy_reason or "仅轻量 compute 占用"}）'
+        else:
+            status = '空闲'
+        lines.append(
+            f'GPU {gpu.index}: {status}, 空闲显存 {gpu.free_mb} MiB'
+            + (f', compute 占用 {gpu.compute_used_mb} MiB' if gpu.compute_process_count > 0 else '')
+            + (f', 利用率 {gpu.utilization_pct}%' if gpu.total_mb > 0 or gpu.utilization_pct else '')
+        )
     return '\n'.join(lines)

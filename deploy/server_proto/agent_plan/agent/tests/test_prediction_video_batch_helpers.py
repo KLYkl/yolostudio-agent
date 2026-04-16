@@ -15,7 +15,7 @@ if __package__ in {None, ''}:
 
 from yolostudio_agent.agent.server.services.prediction_video_batch_helpers import predict_videos_batch
 
-TMP_ROOT = Path('D:/yolodo2.0/agent_plan/.tmp_prediction_video_batch_helper_test')
+TMP_ROOT = Path('C:/workspace/yolodo2.0/agent_plan/.tmp_prediction_video_batch_helper_test')
 
 
 def _predict_single_video(_predictor, *, video_path: Path, output_root: Path, **_kwargs):

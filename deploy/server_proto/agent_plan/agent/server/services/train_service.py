@@ -21,6 +21,9 @@ from yolostudio_agent.agent.server.services.gpu_utils import (
 from yolostudio_agent.agent.server.services.train_log_parser import parse_latest_metrics, parse_training_log
 from yolostudio_agent.agent.server.services.training_result_helpers import build_training_facts, summarize_training_run as build_training_run_summary
 
+_TRAINING_ENV_PROBE_TIMEOUT_SECONDS = 8
+_TRAINING_ENV_PROBE_CACHE: dict[str, dict[str, Any]] = {}
+
 
 class TrainService:
     def __init__(self, state_dir: str | Path | None = None) -> None:
@@ -1525,7 +1528,7 @@ def _discover_training_environments() -> list[dict[str, Any]]:
             'yolo_executable': yolo_in_path,
             'python_executable': _resolve_python_in_env(env_path) if env_path else '',
             'source': 'path',
-            'selected_by_default': True,
+            'selected_by_default': False,
         })
         seen_yolo_paths.add(str(Path(yolo_in_path).resolve()))
 
@@ -1549,6 +1552,15 @@ def _discover_training_environments() -> list[dict[str, Any]]:
         seen_yolo_paths.add(resolved_yolo)
 
     if environments:
+        ranked: list[tuple[tuple[int, int, int], int, dict[str, Any]]] = []
+        for discovery_index, item in enumerate(environments):
+            probe = _probe_training_environment(item)
+            item['runtime_probe'] = probe
+            ranked.append((_training_environment_rank(item), discovery_index, item))
+        ranked.sort(key=lambda entry: (entry[0], -entry[1]), reverse=True)
+        environments = [entry[2] for entry in ranked]
+        for item in environments:
+            item['selected_by_default'] = False
         environments[0]['selected_by_default'] = True
     return environments
 
@@ -1566,6 +1578,131 @@ def _match_training_environment(environments: list[dict[str, Any]], requested_na
         if requested in candidates:
             return item
     return None
+
+
+def _probe_training_environment(environment: dict[str, Any]) -> dict[str, Any]:
+    env_path = str(environment.get('env_path') or '').strip()
+    python_executable = str(environment.get('python_executable') or '').strip()
+    cache_key = env_path or python_executable or str(environment.get('name') or '').strip()
+    if not cache_key:
+        return {'status': 'unknown'}
+
+    cached = _TRAINING_ENV_PROBE_CACHE.get(cache_key)
+    if cached is not None:
+        return dict(cached)
+
+    if not python_executable or not Path(python_executable).exists():
+        result = {
+            'status': 'python_missing',
+            'supports_gpu': False,
+            'cuda_available': False,
+            'device_count': 0,
+        }
+        _TRAINING_ENV_PROBE_CACHE[cache_key] = result
+        return dict(result)
+
+    probe_code = (
+        'import json\n'
+        'payload = {}\n'
+        'try:\n'
+        '    import torch\n'
+        '    payload["torch_version"] = getattr(torch, "__version__", None)\n'
+        '    payload["cuda_available"] = bool(torch.cuda.is_available())\n'
+        '    payload["device_count"] = int(torch.cuda.device_count())\n'
+        '    payload["cuda_version"] = getattr(torch.version, "cuda", None)\n'
+        'except Exception as exc:\n'
+        '    payload["error"] = f"{type(exc).__name__}: {exc}"\n'
+        'print(json.dumps(payload, ensure_ascii=False))\n'
+    )
+
+    try:
+        completed = subprocess.run(
+            [python_executable, '-c', probe_code],
+            capture_output=True,
+            text=True,
+            timeout=_TRAINING_ENV_PROBE_TIMEOUT_SECONDS,
+            shell=False,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+        result = {
+            'status': 'probe_error',
+            'supports_gpu': False,
+            'cuda_available': False,
+            'device_count': 0,
+            'error': f'{type(exc).__name__}: {exc}',
+        }
+        _TRAINING_ENV_PROBE_CACHE[cache_key] = result
+        return dict(result)
+
+    stdout_lines = [line.strip() for line in str(completed.stdout or '').splitlines() if line.strip()]
+    stderr_lines = [line.strip() for line in str(completed.stderr or '').splitlines() if line.strip()]
+    payload: dict[str, Any] = {}
+    if stdout_lines:
+        try:
+            payload = json.loads(stdout_lines[-1])
+        except json.JSONDecodeError:
+            payload = {}
+
+    cuda_available = bool(payload.get('cuda_available'))
+    try:
+        device_count = int(payload.get('device_count') or 0)
+    except (TypeError, ValueError):
+        device_count = 0
+    supports_gpu = cuda_available and device_count > 0
+    status = 'ok' if completed.returncode == 0 and payload else 'probe_error'
+    result = {
+        'status': status,
+        'supports_gpu': supports_gpu,
+        'cuda_available': cuda_available,
+        'device_count': device_count,
+        'torch_version': payload.get('torch_version'),
+        'cuda_version': payload.get('cuda_version'),
+        'error': payload.get('error') or ('; '.join(stderr_lines[:2]) if stderr_lines else None),
+    }
+    _TRAINING_ENV_PROBE_CACHE[cache_key] = result
+    return dict(result)
+
+
+def _training_environment_rank(environment: dict[str, Any]) -> tuple[int, int, int]:
+    probe = environment.get('runtime_probe') or {}
+    if not isinstance(probe, dict):
+        probe = {}
+    supports_gpu = bool(probe.get('supports_gpu'))
+    cuda_available = bool(probe.get('cuda_available'))
+    try:
+        device_count = int(probe.get('device_count') or 0)
+    except (TypeError, ValueError):
+        device_count = 0
+
+    if supports_gpu:
+        capability_rank = 3
+    elif cuda_available or device_count > 0:
+        capability_rank = 2
+    else:
+        capability_rank = 1
+
+    dedicated_rank = 0 if _is_root_training_environment(environment) else 1
+
+    try:
+        source_rank = 1 if str(environment.get('source') or '').strip().lower() == 'path' else 0
+    except Exception:
+        source_rank = 0
+
+    return (capability_rank, dedicated_rank, device_count, source_rank)
+
+
+def _is_root_training_environment(environment: dict[str, Any]) -> bool:
+    name_candidates = {
+        str(environment.get('name') or '').strip().lower(),
+        str(environment.get('display_name') or '').strip().lower(),
+        Path(str(environment.get('env_path') or '')).name.strip().lower() if environment.get('env_path') else '',
+    }
+    if any(candidate in {'base', 'root'} for candidate in name_candidates if candidate):
+        return True
+    env_path = str(environment.get('env_path') or '').strip()
+    if not env_path:
+        return False
+    return Path(env_path).name.strip().lower() in {'miniconda3', 'anaconda3', '.conda'}
 
 
 def _normalize_classes_arg(classes: list[int] | str | None) -> list[int] | None:

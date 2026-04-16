@@ -20,13 +20,13 @@ if __package__ in {None, ""}:
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient, build_agent_client
 
-OUT_JSON = Path(r'D:\yolodo2.0\agent_plan\agent\tests\test_mainline_regression_matrix_output.json')
-OUT_MD = Path(r'D:\yolodo2.0\agent_plan\doc\mainline_regression_matrix_report_2026-04-11.md')
-STANDARD_ROOT = '/home/kly/test_dataset/'
-DIRTY_ROOT = '/home/kly/agent_cap_tests/zyb'
-NONSTANDARD_ROOT = '/home/kly/agent_cap_tests/nonstandard_dataset'
-UNKNOWN_ROOT = '/home/kly/agent_cap_tests/unknown_dataset'
-MODEL_PATH = '/home/kly/yolov8n.pt'
+OUT_JSON = Path(__file__).resolve().parent / 'test_mainline_regression_matrix_output.json'
+OUT_MD = Path(__file__).resolve().parents[2] / 'doc' / 'mainline_regression_matrix_report_2026-04-11.md'
+STANDARD_ROOT = '/data/test_dataset/'
+DIRTY_ROOT = '/data/agent_cap_tests/zyb'
+NONSTANDARD_ROOT = '/data/agent_cap_tests/nonstandard_dataset'
+UNKNOWN_ROOT = '/data/agent_cap_tests/unknown_dataset'
+MODEL_PATH = '/models/yolov8n.pt'
 
 
 def _now_id() -> str:
@@ -317,7 +317,7 @@ async def case_agent_duplicate_grounded(provider: str, model: str) -> dict[str, 
         'detect_duplicate_images' in tools,
         ('83' in message) or ('重复组' in message),
         ('删除' not in message) or ('不要删除' in prompt),
-        ('/home/kly/agent_cap_tests/zyb' in message) or ('样例' in message),
+        ('/data/agent_cap_tests/zyb' in message) or ('样例' in message),
     )
     return {
         'id': f'agent_{provider}_duplicate_grounded',

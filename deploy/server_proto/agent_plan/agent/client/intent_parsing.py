@@ -4,8 +4,50 @@ import re
 from typing import Any
 
 
-MODEL_SUFFIXES = ('.pt', '.onnx', '.yaml', '.yml')
+MODEL_SUFFIXES = ('.pt', '.onnx')
+MODEL_CONFIG_SUFFIXES = ('.yaml', '.yml')
 VIDEO_SUFFIXES = ('.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm')
+PATH_ACTION_SUFFIX_MARKERS = (
+    '按默认比例',
+    '先不要开始训练',
+    '不要开始训练',
+    '先不要训练',
+    '不要训练',
+    '准备训练数据',
+    '准备数据集',
+    '准备数据',
+    '划分训练集',
+    '划分数据集',
+    '生成data.yaml',
+    '生成 data.yaml',
+    '生成yaml',
+    '生成 yaml',
+    '开始训练',
+    '启动训练',
+    '开始预测',
+    '启动预测',
+    '导出报告',
+    '总结结果',
+    '分析结果',
+    '然后',
+    '并且',
+    '并',
+)
+
+
+def _trim_trailing_path_noise(value: str) -> str:
+    text = str(value or '').strip().rstrip('。，“”,,;；')
+    if not text:
+        return ''
+    for marker in PATH_ACTION_SUFFIX_MARKERS:
+        index = text.find(marker)
+        if index <= 0:
+            continue
+        prefix = text[:index].rstrip('/\\ ')
+        if prefix.startswith('/') or re.match(r'^[A-Za-z]:[\\/]', prefix) or prefix.startswith('~'):
+            text = prefix
+            break
+    return text.rstrip('。，“”,,;；')
 
 
 def extract_all_paths_from_text(text: str) -> list[str]:
@@ -17,7 +59,7 @@ def extract_all_paths_from_text(text: str) -> list[str]:
     seen: set[str] = set()
     for pattern in patterns:
         for match in re.finditer(pattern, text):
-            value = match.group(1).rstrip('。，“”,,;；')
+            value = _trim_trailing_path_noise(match.group(1))
             if value and value not in seen:
                 seen.add(value)
                 items.append(value)
@@ -34,7 +76,7 @@ def extract_remote_root_from_text(text: str) -> str:
     for pattern in patterns:
         match = re.search(pattern, text, flags=re.I)
         if match:
-            return match.group(1).rstrip('。，“”,,;；')
+            return _trim_trailing_path_noise(match.group(1))
     paths = extract_all_paths_from_text(text)
     for item in reversed(paths):
         if item.startswith('/'):
@@ -59,7 +101,15 @@ def extract_remote_server_from_text(text: str) -> str:
 
 
 def looks_like_model_path(path: str) -> bool:
-    return str(path).lower().endswith(MODEL_SUFFIXES)
+    text = str(path or '').strip().lower()
+    if not text:
+        return False
+    if text.endswith(MODEL_SUFFIXES):
+        return True
+    if text.endswith(MODEL_CONFIG_SUFFIXES):
+        basename = text.replace('\\', '/').rsplit('/', 1)[-1]
+        return basename.startswith('yolo') or 'model' in basename or 'cfg' in basename
+    return False
 
 
 def extract_dataset_path_from_text(text: str) -> str:
@@ -70,10 +120,31 @@ def extract_dataset_path_from_text(text: str) -> str:
     return ''
 
 
+def extract_classes_txt_from_text(text: str) -> str:
+    patterns = (
+        r'(?:classes(?:_txt)?|类名(?:文件|列表|来源)?)\s*(?:使用|用|来自|是|为|路径是|路径为|[:=：])?\s*([A-Za-z]:\\[^\s，,。；;\"\'<>]+\.txt)',
+        r'(?:classes(?:_txt)?|类名(?:文件|列表|来源)?)\s*(?:使用|用|来自|是|为|路径是|路径为|[:=：])?\s*(/[^\s，,。；;\"\'<>]+\.txt)',
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.I)
+        if match:
+            return _trim_trailing_path_noise(match.group(1))
+    for item in extract_all_paths_from_text(text):
+        lowered = item.replace('\\', '/').rsplit('/', 1)[-1].lower()
+        if lowered.endswith('.txt') and 'classes' in lowered:
+            return item
+    return ''
+
+
 def extract_model_from_text(text: str) -> str:
-    match = re.search(r'([A-Za-z0-9_./\-]+\.(?:pt|onnx|yaml))', text)
+    match = re.search(r'([A-Za-z0-9_./\-]+\.(?:pt|onnx))', text)
     if match:
         return match.group(1)
+    yaml_match = re.search(r'([A-Za-z0-9_./\-]+\.(?:yaml|yml))', text, flags=re.I)
+    if yaml_match:
+        candidate = yaml_match.group(1)
+        if looks_like_model_path(candidate):
+            return candidate
     match = re.search(r'\b(yolo[a-zA-Z0-9._-]+)\b', text, flags=re.I)
     if match:
         token = match.group(1)
@@ -161,13 +232,6 @@ def extract_timeout_ms_from_text(text: str) -> int | None:
         unit = match.group(2).lower()
         return int(value * 1000) if unit in {'秒', 's'} else int(value)
     return None
-
-
-def should_use_video_prediction(user_text: str, path: str) -> bool:
-    normalized = user_text.lower()
-    if looks_like_video_path(path):
-        return True
-    return any(token in user_text for token in ('视频', '录像')) or 'video' in normalized
 
 
 def extract_output_path_from_text(text: str, source_path: str = '') -> str:
@@ -379,22 +443,6 @@ def extract_fraction_from_text(text: str) -> float | None:
     return None
 
 
-def wants_clear_batch(text: str) -> bool:
-    lowered = text.lower()
-    return any(
-        token in text or token in lowered
-        for token in (
-            '恢复默认 batch',
-            'batch 恢复默认',
-            'batch 不要了',
-            '不要 batch',
-            'batch 清掉',
-            'batch 取消',
-            'batch 先取消',
-        )
-    )
-
-
 def extract_classes_from_text(text: str) -> list[int] | None:
     patterns = [
         r'classes\s*[=:]?\s*([0-9,\s]+)',
@@ -508,155 +556,3 @@ def extract_custom_training_script_from_text(text: str) -> str:
         return match.group(1)
     return ''
 
-
-def extract_training_execution_backend_from_text(text: str) -> str:
-    lowered = text.lower()
-    if any(token in text for token in ('不用自定义脚本', '不用脚本了', '切回标准 yolo', '改成标准 yolo', '用标准 yolo')) or any(token in lowered for token in ('don\'t use custom script', 'switch back to standard yolo')):
-        return 'standard_yolo'
-    if any(token in text for token in ('不用 trainer', '不用自定义trainer', '不用自定义训练器', '切回标准训练器')) or any(token in lowered for token in ('switch back to standard trainer',)):
-        return 'standard_yolo'
-    script_path = extract_custom_training_script_from_text(text)
-    if script_path or any(token in text for token in ('自定义训练脚本', 'python脚本训练', '脚本训练')):
-        return 'custom_script'
-    trainer_explicit = any(token in text for token in ('自定义 trainer', '自定义trainer', '自定义训练器'))
-    trainer_context = any(token in text for token in ('trainer 讨论', 'trainer方案', 'trainer 先讨论', 'trainer 先不管'))
-    trainer_switch = re.search(r'(?:改成|切到|换成|用|讨论)\s*(?:自定义\s*)?trainer\b', lowered) is not None
-    if trainer_explicit or trainer_context or trainer_switch:
-        return 'custom_trainer'
-    return 'standard_yolo'
-
-
-def wants_default_training_environment(text: str) -> bool:
-    lowered = text.lower()
-    return any(
-        token in text or token in lowered
-        for token in (
-            '恢复默认环境',
-            '用默认环境',
-            '切回默认环境',
-            '环境恢复默认',
-            '不要指定环境',
-        )
-    )
-
-
-def wants_clear_project(text: str) -> bool:
-    lowered = text.lower()
-    return any(
-        token in text or token in lowered
-        for token in (
-            'project 不要了',
-            '不要 project',
-            '清空 project',
-            '恢复默认输出目录',
-            '输出目录用默认',
-            '不要输出目录',
-        )
-    )
-
-
-def wants_clear_run_name(text: str) -> bool:
-    lowered = text.lower()
-    return any(
-        token in text or token in lowered
-        for token in (
-            'name 不要了',
-            '不要 name',
-            '清空 name',
-            '运行名不要了',
-            '实验名不要了',
-            '不要输出名',
-        )
-    )
-
-
-def wants_clear_fraction(text: str) -> bool:
-    lowered = text.lower()
-    return any(
-        token in text or token in lowered
-        for token in (
-            '恢复全量数据',
-            '恢复全部数据',
-            '全部数据都训练',
-            '取消抽样',
-            '不做抽样',
-            '取消 fraction',
-            'fraction 取消',
-            'fraction 不要了',
-            '不要 fraction',
-            '不限制数据比例',
-        )
-    )
-
-
-def wants_clear_classes(text: str) -> bool:
-    lowered = text.lower()
-    return any(
-        token in text or token in lowered
-        for token in (
-            '取消类别限制',
-            '类别限制取消',
-            '类别限制先取消',
-            '把类别限制取消',
-            '不要类别限制',
-            '类别限制去掉',
-            '不限制类别',
-            '恢复全类别',
-            '全部类别都训练',
-            '不要 classes',
-            '取消 classes',
-        )
-    )
-
-
-def is_training_discussion_only(text: str) -> bool:
-    lowered = text.lower()
-    return any(
-        token in text or token in lowered
-        for token in (
-            '先别执行',
-            '先不要执行',
-            '先别启动',
-            '先不要启动',
-            '先看计划',
-            '先看看计划',
-            '先给我计划',
-            '先讨论',
-            '只讨论',
-            '先别急着执行',
-            '先做方案',
-            '先 dry-run',
-            '先 preflight',
-        )
-    )
-
-
-def wants_training_advanced_details(text: str) -> bool:
-    lowered = text.lower()
-    return any(
-        token in text or token in lowered
-        for token in (
-            '高级参数',
-            '高级配置',
-            '展开参数',
-            '详细参数',
-            '更多参数',
-            'advanced',
-            'hyperparameter',
-        )
-    )
-
-
-def extract_metric_signals_from_text(text: str) -> list[str]:
-    normalized = text.lower()
-    signals: list[str] = []
-    if ((("precision" in normalized) or ('精确率' in text)) and ((("recall" in normalized) or ('召回' in text)))):
-        if re.search(r'(precision|精确率).{0,8}(高|偏高).{0,12}(recall|召回).{0,8}(低|偏低)', text, flags=re.I):
-            signals.append('high_precision_low_recall')
-        if re.search(r'(precision|精确率).{0,8}(低|偏低).{0,12}(recall|召回).{0,8}(高|偏高)', text, flags=re.I):
-            signals.append('low_precision_high_recall')
-    if re.search(r'(map50|mAP50|mAP).{0,8}(低|偏低)', text, flags=re.I) or 'map低' in normalized:
-        signals.append('low_map_overall')
-    if '只有loss' in normalized or '只看loss' in normalized or '只有 loss' in text:
-        signals.append('loss_only_metrics')
-    return signals

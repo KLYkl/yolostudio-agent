@@ -222,6 +222,8 @@ def main() -> None:
     tools = [
         StructuredTool.from_function(func=_noop, name='detect_duplicate_images', description='dup'),
         StructuredTool.from_function(func=_noop, name='run_dataset_health_check', description='health'),
+        StructuredTool.from_function(func=_noop, name='dataset_training_readiness', description='dataset-readiness'),
+        StructuredTool.from_function(func=_noop, name='training_readiness', description='training-readiness'),
         StructuredTool.from_function(func=_noop, name='prepare_dataset_for_training', description='prepare'),
         StructuredTool.from_function(func=_noop, name='predict_images', description='predict'),
         StructuredTool.from_function(func=_noop, name='predict_videos', description='predict-videos'),
@@ -304,6 +306,45 @@ def main() -> None:
         'scp_from_server',
     ):
         assert alias in names, names
+
+    canonical_only = adapt_tools_for_chat_model(tools, include_aliases=False)
+    canonical_names = {tool.name for tool in canonical_only}
+    assert canonical_names == {
+        'detect_duplicate_images',
+        'run_dataset_health_check',
+        'dataset_training_readiness',
+        'training_readiness',
+        'prepare_dataset_for_training',
+        'predict_images',
+        'predict_videos',
+        'summarize_prediction_results',
+        'inspect_prediction_outputs',
+        'export_prediction_report',
+        'export_prediction_path_lists',
+        'organize_prediction_results',
+        'scan_cameras',
+        'scan_screens',
+        'test_rtsp_stream',
+        'start_camera_prediction',
+        'start_rtsp_prediction',
+        'start_screen_prediction',
+        'check_realtime_prediction_status',
+        'stop_realtime_prediction',
+        'preview_convert_format',
+        'convert_format',
+        'preview_modify_labels',
+        'modify_labels',
+        'generate_missing_labels',
+        'generate_empty_labels',
+        'preview_categorize_by_class',
+        'categorize_by_class',
+        'list_remote_profiles',
+        'upload_assets_to_remote',
+        'download_assets_from_remote',
+    }, canonical_names
+    canonical_map = {tool.name: tool for tool in canonical_only}
+    assert '只检查数据集本身是否已经具备直接训练的结构条件' in canonical_map['dataset_training_readiness'].description
+    assert '不要用于纯数据集可训练性问题' in canonical_map['training_readiness'].description
 
     print('tool alias adapter ok')
 

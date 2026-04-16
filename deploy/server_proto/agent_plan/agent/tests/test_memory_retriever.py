@@ -18,7 +18,7 @@ from yolostudio_agent.agent.client.session_state import SessionState
 
 
 def main() -> None:
-    root = Path('D:/yolodo2.0/agent_plan/.tmp_memory_retriever_test')
+    root = Path('C:/workspace/yolodo2.0/agent_plan/.tmp_memory_retriever_test')
     if root.exists():
         shutil.rmtree(root)
     root.mkdir(parents=True, exist_ok=True)
@@ -69,12 +69,16 @@ def main() -> None:
         digest = retriever.build_digest(state.session_id, state)
         text = digest.to_text()
 
-        assert '最近扫描' in text
-        assert '最近校验' in text
+        assert '最近调用过的工具' in text
         assert '人工确认记录' in text
         assert 'scan_dataset' in text
         assert 'validate_dataset' in text
         assert len(digest.recent_events) == 4
+
+        minimal_digest = retriever.build_digest(state.session_id, state, include_history_context=False)
+        minimal_text = minimal_digest.to_text()
+        assert '最近调用过的工具' not in minimal_text
+        assert '人工确认记录' not in minimal_text
 
         recent = store.read_events(state.session_id, limit=2)
         assert len(recent) == 2

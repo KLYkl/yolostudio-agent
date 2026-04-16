@@ -394,7 +394,7 @@ async def _run() -> None:
 
         turn9 = await client.confirm(turn8['thread_id'], approved=False)
         assert turn9['status'] == 'cancelled', turn9
-        assert '已取消操作：start_training' in turn9['message']
+        assert '先不执行这一步' in turn9['message']
         assert '当前计划已保留' in turn9['message']
         assert client.session_state.active_training.training_plan_draft != {}
 

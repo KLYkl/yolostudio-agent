@@ -61,6 +61,8 @@ def main() -> None:
         assert preview['planned_dir_stats'] == {'cam_a': 1, 'cam_b': 1}, preview
         assert preview['copy_labels_effective'] is True, preview
         assert preview['workflow_ready_path'] == str(preview_output.resolve()), preview
+        assert preview['extract_preview_overview']['planned_extract_count'] == 2, preview
+        assert preview['action_candidates'], preview
 
         extract_output = TMP_ROOT / 'extract_out'
         extracted = extract_tools.extract_images(
@@ -79,6 +81,8 @@ def main() -> None:
         assert Path(extracted['output_img_dir']).is_dir(), extracted
         assert Path(extracted['output_label_dir']).is_dir(), extracted
         assert extracted['workflow_ready'] is True, extracted
+        assert extracted['extract_overview']['workflow_ready'] is True, extracted
+        assert extracted['action_candidates'], extracted
 
         scan = data_tools.scan_dataset(extracted['workflow_ready_path'])
         assert scan['ok'] is True, scan
@@ -100,6 +104,7 @@ def main() -> None:
         )
         assert conflict_preview['ok'] is True, conflict_preview
         assert conflict_preview['conflict_count'] >= 2, conflict_preview
+        assert conflict_preview['extract_preview_overview']['conflict_count'] >= 2, conflict_preview
 
         empty_root = TMP_ROOT / 'empty_dataset'
         (empty_root / 'images').mkdir(parents=True, exist_ok=True)
@@ -107,6 +112,7 @@ def main() -> None:
         assert empty_preview['ok'] is True, empty_preview
         assert empty_preview['available_images'] == 0, empty_preview
         assert empty_preview['planned_extract_count'] == 0, empty_preview
+        assert empty_preview['extract_preview_overview']['available_images'] == 0, empty_preview
 
         print('extract tools ok')
     finally:

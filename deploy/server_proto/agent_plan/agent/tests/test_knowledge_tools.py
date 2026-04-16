@@ -29,20 +29,41 @@ def main() -> None:
     assert result['ok'] is True
     assert 'generic_post_high_precision_low_recall' in result['matched_rule_ids']
     assert result['source_summary']
+    assert result['retrieval_overview']['matched_rule_count'] >= 1
+    assert result['matched_rule_overview'][0]['id']
+    assert 'action_candidates' in result
 
     outcome = analyze_training_outcome(
         metrics={'precision': 0.84, 'recall': 0.38, 'map50': 0.42},
         data_quality={'duplicate_groups': 1},
+        comparison={
+            'ok': True,
+            'highlights': ['precision提升 +0.1000'],
+            'metric_deltas': {
+                'precision': {'left': 0.84, 'right': 0.74, 'delta': 0.1},
+            },
+        },
         model_family='yolo',
         task_type='detection',
     )
     assert outcome['ok'] is True
     assert 'high_precision_low_recall' in outcome['signals']
+    assert 'comparison_precision_improved' in outcome['signals']
     assert outcome['next_actions']
     assert outcome['source_summary']
+    assert outcome['analysis_overview']['matched_rule_count'] >= 1
+    assert outcome['analysis_overview']['comparison_attached'] is True
+    assert outcome['action_candidates'][0]['tool'] == 'recommend_next_training_step'
 
     next_step = recommend_next_training_step(
         readiness={'missing_label_ratio': 0.31, 'ready': False},
+        comparison={
+            'ok': True,
+            'highlights': ['recall下降 -0.0600'],
+            'metric_deltas': {
+                'recall': {'left': 0.31, 'right': 0.37, 'delta': -0.06},
+            },
+        },
         model_family='yolo',
         task_type='detection',
     )
@@ -50,6 +71,9 @@ def main() -> None:
     assert next_step['recommended_action'] == 'fix_data_quality'
     assert next_step['next_actions']
     assert next_step['source_summary']
+    assert next_step['recommendation_overview']['recommended_action'] == 'fix_data_quality'
+    assert next_step['recommendation_overview']['comparison_attached'] is True
+    assert next_step['action_candidates'][0]['action'] == 'fix_data_quality'
     print('knowledge tools ok')
 
 

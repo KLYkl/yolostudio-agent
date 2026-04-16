@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -19,12 +20,12 @@ if __package__ in {None, ""}:
 from yolostudio_agent.agent.server.tools import predict_tools
 
 
-WEIGHTS_ROOT = Path(r"C:\Users\29615\OneDrive\桌面\yuntian")
-VIDEOS_ROOT = Path(r"H:\foto")
-WORK_ROOT = Path(r"D:\yolodo2.0\agent_plan\agent\tests\_tmp_prediction_real_media")
-OUT_JSON = Path(r"D:\yolodo2.0\agent_plan\agent\tests\test_prediction_real_media_local_output.json")
-OUT_MD = Path(r"D:\yolodo2.0\agent_plan\doc\prediction_real_media_validation_2026-04-11.md")
-LOCAL_YOLO_PYTHON = Path(r"D:\Anaconda\envs\yolo\python.exe")
+WEIGHTS_ROOT = Path(r"C:\datasets\weights")
+VIDEOS_ROOT = Path(r"C:\datasets\videos")
+WORK_ROOT = Path(__file__).resolve().parent / '_tmp_prediction_real_media'
+OUT_JSON = Path(__file__).resolve().parent / 'test_prediction_real_media_local_output.json'
+OUT_MD = Path(__file__).resolve().parents[2] / 'doc' / 'prediction_real_media_validation_2026-04-11.md'
+LOCAL_YOLO_PYTHON = Path(r"C:\Miniconda3\envs\yolo\python.exe")
 
 
 def _choose_weights(limit: int = 3) -> list[dict[str, Any]]:

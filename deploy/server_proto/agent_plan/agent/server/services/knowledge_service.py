@@ -219,9 +219,9 @@ class KnowledgeService:
                 continue
             topic_score = self._topic_score(rule, topic)
             signal_score, matched_signals = self._signal_score(rule, requested_signals)
-            if requested_signals and signal_score == 0 and topic_score == 0:
+            if requested_signals and signal_score == 0:
                 continue
-            if topic and topic_score == 0 and not matched_signals:
+            if not requested_signals and topic and topic_score == 0 and not matched_signals:
                 continue
             score = float(rule.get('priority', 0)) * 10.0
             score += topic_score * 3.0
@@ -245,6 +245,31 @@ class KnowledgeService:
                 seen.add(text)
                 ordered.append(text)
         return ordered
+
+    @staticmethod
+    def _rule_overview(rule: dict[str, Any]) -> dict[str, Any]:
+        return {
+            'id': rule.get('id'),
+            'topic': rule.get('topic'),
+            'stage': rule.get('stage'),
+            'family': rule.get('family'),
+            'task_type': rule.get('task_type'),
+            'action_type': rule.get('action_type'),
+            'source_type': rule.get('source_type'),
+            'origin': rule.get('origin'),
+            'evidence_level': rule.get('evidence_level'),
+            'matched_signals': list(rule.get('matched_signals') or []),
+        }
+
+    @staticmethod
+    def _playbook_overview(playbook: dict[str, Any]) -> dict[str, Any]:
+        return {
+            'title': playbook.get('title'),
+            'path': playbook.get('path'),
+            'topics': list(playbook.get('topics') or []),
+            'families': list(playbook.get('families') or []),
+            'stages': list(playbook.get('stages') or []),
+        }
 
     @staticmethod
     def _extract_metric_bundle(metrics: dict[str, Any] | None) -> dict[str, Any]:
@@ -295,8 +320,10 @@ class KnowledgeService:
             total_epochs = _to_int(payload['progress'].get('total_epochs'))
         if epoch is not None and total_epochs:
             facts.append(f'训练进度 {epoch}/{total_epochs}')
-            if total_epochs > 0 and epoch / total_epochs < 0.2:
+            if total_epochs > 0 and (epoch / total_epochs < 0.2 or total_epochs <= 3):
                 signals.append('early_training_observation')
+                if total_epochs <= 3:
+                    facts.append(f'当前训练总轮数较短(total_epochs={total_epochs})')
 
         precision = cls._metric_value(payload, 'precision', 'metrics/precision(B)', 'box_precision', 'P')
         recall = cls._metric_value(payload, 'recall', 'metrics/recall(B)', 'box_recall', 'R')
@@ -408,6 +435,53 @@ class KnowledgeService:
             signals.append('prediction_no_detections')
         return KnowledgeService._dedupe(signals), facts
 
+    @staticmethod
+    def _derive_comparison_signals(comparison: dict[str, Any] | None) -> tuple[list[str], list[str]]:
+        payload = dict(comparison or {})
+        if not payload or payload.get('ok') is False:
+            return [], []
+
+        signals: list[str] = []
+        facts: list[str] = []
+        highlights = [str(item).strip() for item in payload.get('highlights') or [] if str(item).strip()]
+        if highlights:
+            facts.extend([f'训练对比: {item}' for item in highlights[:3]])
+            signals.append('training_comparison_available')
+
+        metric_deltas = payload.get('metric_deltas') or {}
+
+        def _delta(metric_name: str) -> float | None:
+            record = metric_deltas.get(metric_name)
+            if isinstance(record, dict):
+                return _to_float(record.get('delta'))
+            return None
+
+        map50_delta = _delta('map50')
+        if map50_delta is not None:
+            facts.append(f'对比 mAP50 delta={map50_delta:+.4f}')
+            if map50_delta >= 0.05:
+                signals.append('comparison_map_improved')
+            elif map50_delta <= -0.05:
+                signals.append('comparison_map_declined')
+
+        precision_delta = _delta('precision')
+        if precision_delta is not None:
+            facts.append(f'对比 precision delta={precision_delta:+.4f}')
+            if precision_delta >= 0.05:
+                signals.append('comparison_precision_improved')
+            elif precision_delta <= -0.05:
+                signals.append('comparison_precision_declined')
+
+        recall_delta = _delta('recall')
+        if recall_delta is not None:
+            facts.append(f'对比 recall delta={recall_delta:+.4f}')
+            if recall_delta >= 0.05:
+                signals.append('comparison_recall_improved')
+            elif recall_delta <= -0.05:
+                signals.append('comparison_recall_declined')
+
+        return KnowledgeService._dedupe(signals), KnowledgeService._dedupe(facts)
+
     def retrieve_training_knowledge(
         self,
         *,
@@ -449,9 +523,16 @@ class KnowledgeService:
             'signals': signals or [],
             'matched_rule_ids': matched_ids,
             'matched_rules': matched_rules,
+            'matched_rule_overview': [self._rule_overview(rule) for rule in matched_rules],
             'playbooks': playbooks,
+            'playbook_overview': [self._playbook_overview(item) for item in playbooks],
             'source_summary': source_summary,
             'source_types_used': list(source_summary.keys()),
+            'retrieval_overview': {
+                'matched_rule_count': len(matched_rules),
+                'playbook_count': len(playbooks),
+                'source_types_used': list(source_summary.keys()),
+            },
             'knowledge_policy': {
                 'case_sources_included': include_case_sources,
                 'test_sources_included': include_test_sources,
@@ -464,6 +545,7 @@ class KnowledgeService:
         *,
         metrics: dict[str, Any] | None = None,
         data_quality: dict[str, Any] | None = None,
+        comparison: dict[str, Any] | None = None,
         prediction_summary: dict[str, Any] | None = None,
         model_family: str = 'yolo',
         task_type: str = 'detection',
@@ -472,9 +554,10 @@ class KnowledgeService:
     ) -> dict[str, Any]:
         metric_signals, metric_facts = self._derive_metric_signals(metrics)
         data_signals, data_facts = self._derive_data_quality_signals(data_quality)
+        comparison_signals, comparison_facts = self._derive_comparison_signals(comparison)
         prediction_signals, prediction_facts = self._derive_prediction_signals(prediction_summary)
-        signals = self._dedupe(metric_signals + data_signals + prediction_signals)
-        facts = self._dedupe(metric_facts + data_facts + prediction_facts)
+        signals = self._dedupe(metric_signals + data_signals + comparison_signals + prediction_signals)
+        facts = self._dedupe(metric_facts + data_facts + comparison_facts + prediction_facts)
 
         matched_rules = self.match_rules(
             topic='training_metrics',
@@ -519,9 +602,18 @@ class KnowledgeService:
             'recommendation': top.get('recommendation', '先收集更完整的训练指标，再决定是否调参') if top else '先收集更完整的训练指标，再决定是否调参',
             'matched_rule_ids': [rule['id'] for rule in matched_rules],
             'matched_rules': matched_rules,
+            'matched_rule_overview': [self._rule_overview(rule) for rule in matched_rules],
             'playbooks': playbooks,
+            'playbook_overview': [self._playbook_overview(item) for item in playbooks],
             'source_summary': source_summary,
             'source_types_used': list(source_summary.keys()),
+            'analysis_overview': {
+                'matched_rule_count': len(matched_rules),
+                'playbook_count': len(playbooks),
+                'assessment': top.get('action_type', 'collect_metrics_first') if top else 'collect_metrics_first',
+                'source_types_used': list(source_summary.keys()),
+                'comparison_attached': bool(comparison),
+            },
             'knowledge_policy': {
                 'case_sources_included': include_case_sources,
                 'test_sources_included': include_test_sources,
@@ -535,6 +627,7 @@ class KnowledgeService:
         readiness: dict[str, Any] | None = None,
         health: dict[str, Any] | None = None,
         status: dict[str, Any] | None = None,
+        comparison: dict[str, Any] | None = None,
         prediction_summary: dict[str, Any] | None = None,
         model_family: str = 'yolo',
         task_type: str = 'detection',
@@ -544,9 +637,10 @@ class KnowledgeService:
         readiness_signals, readiness_facts = self._derive_data_quality_signals(readiness)
         health_signals, health_facts = self._derive_data_quality_signals(health)
         status_signals, status_facts = self._derive_metric_signals(status)
+        comparison_signals, comparison_facts = self._derive_comparison_signals(comparison)
         prediction_signals, prediction_facts = self._derive_prediction_signals(prediction_summary)
-        signals = self._dedupe(readiness_signals + health_signals + status_signals + prediction_signals)
-        facts = self._dedupe(readiness_facts + health_facts + status_facts + prediction_facts)
+        signals = self._dedupe(readiness_signals + health_signals + status_signals + comparison_signals + prediction_signals)
+        facts = self._dedupe(readiness_facts + health_facts + status_facts + comparison_facts + prediction_facts)
         if (status or {}).get('running'):
             signals = self._dedupe(signals + ['training_running'])
 
@@ -591,9 +685,18 @@ class KnowledgeService:
             'why': top.get('interpretation', '当前已有事实仍不足以支持更激进的建议') if top else '当前已有事实仍不足以支持更激进的建议',
             'matched_rule_ids': [rule['id'] for rule in matched_rules],
             'matched_rules': matched_rules,
+            'matched_rule_overview': [self._rule_overview(rule) for rule in matched_rules],
             'playbooks': playbooks,
+            'playbook_overview': [self._playbook_overview(item) for item in playbooks],
             'source_summary': source_summary,
             'source_types_used': list(source_summary.keys()),
+            'recommendation_overview': {
+                'matched_rule_count': len(matched_rules),
+                'playbook_count': len(playbooks),
+                'recommended_action': top.get('action_type', 'collect_metrics_first') if top else 'collect_metrics_first',
+                'source_types_used': list(source_summary.keys()),
+                'comparison_attached': bool(comparison),
+            },
             'knowledge_policy': {
                 'case_sources_included': include_case_sources,
                 'test_sources_included': include_test_sources,

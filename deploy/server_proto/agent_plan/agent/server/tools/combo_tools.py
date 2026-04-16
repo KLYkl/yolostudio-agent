@@ -10,10 +10,35 @@ from yolostudio_agent.agent.server.tools.data_tools import generate_yaml, scan_d
 _EARLY_BLOCK_TYPES = {'unknown', 'images_only', 'flat'}
 
 
+def _tool_candidate(*, tool: str, reason: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {'kind': 'tool_call', 'tool': tool, 'reason': reason}
+    if args:
+        payload['args'] = args
+    return payload
+
+
+def _action_candidates_from_next_actions(next_actions: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for item in next_actions or []:
+        if not isinstance(item, dict):
+            continue
+        tool = str(item.get('tool') or '').strip()
+        if not tool:
+            continue
+        candidates.append(_tool_candidate(
+            tool=tool,
+            reason=str(item.get('description') or '').strip() or tool,
+            args=dict(item.get('args_hint') or {}),
+        ))
+    return candidates
+
+
 def prepare_dataset_for_training(
     dataset_path: str,
     split_ratio: float = 0.8,
     force_split: bool = False,
+    classes_txt: str = '',
+    classes_text: str = '',
 ) -> dict[str, Any]:
     """将数据集准备到可训练状态：解析根目录、扫描、校验、按需划分并生成 YAML。
 
@@ -66,7 +91,7 @@ def prepare_dataset_for_training(
     validate = validate_dataset(
         img_dir=img_dir,
         label_dir=label_dir,
-        classes_txt=scan.get('detected_classes_txt', ''),
+        classes_txt=classes_txt or scan.get('detected_classes_txt', ''),
     )
     steps_completed.append({'step': 'validate', **validate})
     if not validate.get('ok'):
@@ -107,13 +132,25 @@ def prepare_dataset_for_training(
                 'next_actions': ['请检查数据集是否适合划分，或显式指定已准备好的 data.yaml'],
             }
 
+        split_train_path = str(
+            split_result.get('resolved_train_path')
+            or split_result.get('train_path')
+            or ''
+        ).strip()
+        split_val_path = str(
+            split_result.get('resolved_val_path')
+            or split_result.get('val_path')
+            or ''
+        ).strip()
+        split_output_dir = str(split_result.get('output_dir') or '').strip()
+
         yaml_result = generate_yaml(
-            train_path=split_result.get('train_path', ''),
-            val_path=split_result.get('val_path', ''),
+            train_path=split_train_path,
+            val_path=split_val_path,
             classes=scan.get('classes', []),
-            classes_txt=scan.get('detected_classes_txt', ''),
-            img_dir=img_dir,
-            label_dir=label_dir,
+            classes_text=classes_text,
+            classes_txt=classes_txt or scan.get('detected_classes_txt', ''),
+            img_dir=split_output_dir,
             output_path=split_result.get('suggested_yaml_path', ''),
         )
         steps_completed.append({'step': 'generate_yaml', **yaml_result})
@@ -147,7 +184,8 @@ def prepare_dataset_for_training(
             train_path=train_path,
             val_path=val_path,
             classes=scan.get('classes', []),
-            classes_txt=scan.get('detected_classes_txt', ''),
+            classes_text=classes_text,
+            classes_txt=classes_txt or scan.get('detected_classes_txt', ''),
             img_dir=img_dir,
             label_dir=label_dir,
             output_path=str((Path(dataset_root) / 'data.yaml').resolve()),
@@ -180,12 +218,25 @@ def prepare_dataset_for_training(
     return {
         'ok': readiness.get('ok', False),
         'summary': summary,
+        'prepare_overview': {
+            'ready': ready,
+            'blocked_at': None if ready else 'readiness',
+            'dataset_root': dataset_root,
+            'data_yaml': generated_yaml,
+            'data_yaml_source': data_yaml_source,
+            'force_split_applied': bool(should_split),
+            'split_reason': split_reason,
+            'risk_level': readiness.get('risk_level', validate.get('risk_level', 'none')),
+            'warning_count': len(warnings),
+            'action_count': len([step['step'] for step in steps_completed if step.get('ok')]),
+        },
         'dataset_root': dataset_root,
         'img_dir': img_dir,
         'label_dir': label_dir,
         'data_yaml': generated_yaml,
         'data_yaml_source': data_yaml_source,
         'detected_classes_txt': scan.get('detected_classes_txt', ''),
+        'effective_classes_txt': classes_txt or scan.get('detected_classes_txt', ''),
         'class_name_source': scan.get('class_name_source', ''),
         'risk_level': readiness.get('risk_level', validate.get('risk_level', 'none')),
         'warnings': warnings,
@@ -198,5 +249,6 @@ def prepare_dataset_for_training(
         'blocked_at': None if ready else 'readiness',
         'actions_taken': [step['step'] for step in steps_completed if step.get('ok')],
         'steps_completed': steps_completed,
+        'action_candidates': _action_candidates_from_next_actions(readiness.get('next_actions', [])),
         'next_actions': readiness.get('next_actions', []),
     }

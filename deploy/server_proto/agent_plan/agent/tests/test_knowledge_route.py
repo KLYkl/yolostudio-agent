@@ -189,11 +189,11 @@ async def _run() -> None:
 
         async def _fake_direct_tool(tool_name: str, **kwargs: Any):
             calls.append((tool_name, dict(kwargs)))
-            if tool_name == 'training_readiness':
+            if tool_name == 'dataset_training_readiness':
                 assert kwargs['img_dir'] == '/data/dataset'
                 result = {
                     'ok': True,
-                    'summary': '训练前检查完成: 数据可训练，但样本量偏小。',
+                    'summary': '数据集训练就绪检查完成: 数据可训练，但样本量偏小。',
                     'dataset_root': '/data/dataset',
                     'resolved_img_dir': '/data/dataset/images',
                     'resolved_label_dir': '/data/dataset/labels',
@@ -204,16 +204,30 @@ async def _run() -> None:
                     'blockers': [],
                     'next_actions': ['可继续 prepare_dataset_for_training 或 start_training'],
                 }
+            elif tool_name == 'training_readiness':
+                assert kwargs['img_dir'] == '/data/dataset'
+                result = {
+                    'ok': True,
+                    'summary': '训练前检查完成: 数据可训练，环境可用。',
+                    'ready_to_start': True,
+                    'resolved_device': 'auto',
+                    'training_environment': {'name': 'yolodo'},
+                    'warnings': ['样本量较小'],
+                    'blockers': [],
+                    'next_actions': ['可以继续 summarize_training_run / recommend_next_training_step'],
+                }
             elif tool_name == 'recommend_next_training_step':
                 status_payload = kwargs.get('status') or {}
                 comparison_payload = kwargs.get('comparison') or {}
                 if comparison_payload:
                     assert comparison_payload == client.session_state.active_training.last_run_comparison
                     assert status_payload == comparison_payload.get('left_run')
-                elif status_payload.get('run_state') == 'completed':
-                    assert status_payload == client.session_state.active_training.last_summary
                 else:
-                    assert status_payload == client.session_state.active_training.last_status
+                    if status_payload.get('run_state') == 'completed':
+                        assert status_payload.get('analysis_ready') is True
+                        assert status_payload.get('metrics', {}).get('precision') == 0.82
+                    else:
+                        assert status_payload == client.session_state.active_training.last_status
                 result = {
                     'ok': True,
                     'summary': '下一步建议: 优先保持小步迭代。',
@@ -283,7 +297,10 @@ async def _run() -> None:
                     assert comparison_payload == client.session_state.active_training.last_run_comparison
                     assert kwargs['metrics'] == comparison_payload.get('left_run')
                 else:
-                    assert kwargs['metrics'] == client.session_state.active_training.last_summary
+                    metrics_payload = kwargs['metrics']
+                    assert metrics_payload.get('run_state') == 'completed'
+                    assert metrics_payload.get('analysis_ready') is True
+                    assert metrics_payload.get('metrics', {}).get('precision') == 0.82
                 result = {
                     'ok': True,
                     'summary': '训练结果分析: 当前更像漏检问题。',
@@ -309,15 +326,15 @@ async def _run() -> None:
         routed = await client._try_handle_mainline_intent('这个 /data/dataset 现在适合训练吗？', 'thread-1')
         assert routed is not None
         assert routed['status'] == 'completed'
-        assert '训练前检查完成' in routed['message']
-        assert '优先动作' in routed['message']
-        assert calls[0][0] == 'training_readiness'
+        assert '数据可训练' in routed['message']
+        assert '建议动作' in routed['message']
+        assert calls[0][0] == 'dataset_training_readiness'
         assert calls[1][0] == 'recommend_next_training_step'
 
         routed2 = await client._try_handle_mainline_intent('precision 高 recall 低说明什么？', 'thread-2')
         assert routed2 is not None
         assert routed2['status'] == 'completed'
-        assert '命中规则' in routed2['message']
+        assert '知识检索完成' in routed2['message']
         assert calls[-1][0] == 'retrieve_training_knowledge'
 
         routed3 = await client._try_handle_mainline_intent('这次训练效果怎么样？', 'thread-3')
@@ -332,22 +349,23 @@ async def _run() -> None:
         assert routed4 is not None
         assert routed4['status'] == 'completed'
         assert '训练结果汇总' in routed4['message']
-        assert '优先动作' in routed4['message']
+        assert '建议动作' in routed4['message']
+        assert calls[-3][0] == 'training_readiness'
         assert calls[-2][0] == 'summarize_training_run'
         assert calls[-1][0] == 'recommend_next_training_step'
 
         routed5 = await client._try_handle_mainline_intent('对比最近两次训练后下一步怎么做？', 'thread-5')
         assert routed5 is not None
         assert routed5['status'] == 'completed'
-        assert '对比对象: train_log_200 vs train_log_100' in routed5['message']
-        assert '优先动作' in routed5['message']
+        assert '训练对比完成' in routed5['message']
+        assert '建议动作' in routed5['message']
         assert calls[-2][0] == 'compare_training_runs'
         assert calls[-1][0] == 'recommend_next_training_step'
 
         routed6 = await client._try_handle_mainline_intent('对比最近两次训练效果怎么看？', 'thread-6')
         assert routed6 is not None
         assert routed6['status'] == 'completed'
-        assert '对比对象: train_log_200 vs train_log_100' in routed6['message']
+        assert '训练对比完成' in routed6['message']
         assert '训练结果分析' in routed6['message']
         assert calls[-2][0] == 'compare_training_runs'
         assert calls[-1][0] == 'analyze_training_outcome'

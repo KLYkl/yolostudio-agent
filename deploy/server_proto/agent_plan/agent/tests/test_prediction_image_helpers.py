@@ -17,7 +17,7 @@ if __package__ in {None, ''}:
 
 from yolostudio_agent.agent.server.services.prediction_image_helpers import predict_images_batch
 
-TMP_ROOT = Path('D:/yolodo2.0/agent_plan/.tmp_prediction_image_helper_test')
+TMP_ROOT = Path('C:/workspace/yolodo2.0/agent_plan/.tmp_prediction_image_helper_test')
 
 
 def _make_image(path: Path, size: tuple[int, int], color: tuple[int, int, int]) -> None:

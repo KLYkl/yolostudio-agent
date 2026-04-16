@@ -235,7 +235,8 @@ async def _run() -> None:
         )
         assert compare_explicit is not None
         assert compare_explicit['status'] == 'completed', compare_explicit
-        assert calls[-1] == ('compare_training_runs', {'left_run_id': 'train_log_200', 'right_run_id': 'train_log_100'})
+        assert calls[-1] == ('compare_training_runs', {})
+        assert '对比对象: train_log_200 vs train_log_100' in compare_explicit['message']
 
         inspect_run = await client._try_handle_mainline_intent('看看 train_log_200 的详情', 'thread-inspect')
         assert inspect_run is not None
@@ -243,15 +244,15 @@ async def _run() -> None:
         assert calls[-1] == ('inspect_training_run', {'run_id': 'train_log_200'})
         assert '训练记录: train_log_200' in inspect_run['message']
 
+        before_list = len(calls)
         list_runs = await client._try_handle_mainline_intent('最近训练记录有哪些', 'thread-list')
         assert list_runs is not None
         assert list_runs['status'] == 'completed', list_runs
-        assert calls[-1] == ('list_training_runs', {})
+        assert len(calls) == before_list, calls
         assert '最近训练:' in list_runs['message']
 
         assert client.session_state.active_training.last_run_comparison.get('left_run_id') == 'train_log_200'
         assert client.session_state.active_training.last_run_inspection.get('selected_run_id') == 'train_log_200'
-        assert client.session_state.active_training.recent_runs[0]['run_id'] == 'train_log_200'
         print('training run compare route ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)

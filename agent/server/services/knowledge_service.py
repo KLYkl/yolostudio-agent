@@ -435,6 +435,53 @@ class KnowledgeService:
             signals.append('prediction_no_detections')
         return KnowledgeService._dedupe(signals), facts
 
+    @staticmethod
+    def _derive_comparison_signals(comparison: dict[str, Any] | None) -> tuple[list[str], list[str]]:
+        payload = dict(comparison or {})
+        if not payload or payload.get('ok') is False:
+            return [], []
+
+        signals: list[str] = []
+        facts: list[str] = []
+        highlights = [str(item).strip() for item in payload.get('highlights') or [] if str(item).strip()]
+        if highlights:
+            facts.extend([f'训练对比: {item}' for item in highlights[:3]])
+            signals.append('training_comparison_available')
+
+        metric_deltas = payload.get('metric_deltas') or {}
+
+        def _delta(metric_name: str) -> float | None:
+            record = metric_deltas.get(metric_name)
+            if isinstance(record, dict):
+                return _to_float(record.get('delta'))
+            return None
+
+        map50_delta = _delta('map50')
+        if map50_delta is not None:
+            facts.append(f'对比 mAP50 delta={map50_delta:+.4f}')
+            if map50_delta >= 0.05:
+                signals.append('comparison_map_improved')
+            elif map50_delta <= -0.05:
+                signals.append('comparison_map_declined')
+
+        precision_delta = _delta('precision')
+        if precision_delta is not None:
+            facts.append(f'对比 precision delta={precision_delta:+.4f}')
+            if precision_delta >= 0.05:
+                signals.append('comparison_precision_improved')
+            elif precision_delta <= -0.05:
+                signals.append('comparison_precision_declined')
+
+        recall_delta = _delta('recall')
+        if recall_delta is not None:
+            facts.append(f'对比 recall delta={recall_delta:+.4f}')
+            if recall_delta >= 0.05:
+                signals.append('comparison_recall_improved')
+            elif recall_delta <= -0.05:
+                signals.append('comparison_recall_declined')
+
+        return KnowledgeService._dedupe(signals), KnowledgeService._dedupe(facts)
+
     def retrieve_training_knowledge(
         self,
         *,
@@ -498,6 +545,7 @@ class KnowledgeService:
         *,
         metrics: dict[str, Any] | None = None,
         data_quality: dict[str, Any] | None = None,
+        comparison: dict[str, Any] | None = None,
         prediction_summary: dict[str, Any] | None = None,
         model_family: str = 'yolo',
         task_type: str = 'detection',
@@ -506,9 +554,10 @@ class KnowledgeService:
     ) -> dict[str, Any]:
         metric_signals, metric_facts = self._derive_metric_signals(metrics)
         data_signals, data_facts = self._derive_data_quality_signals(data_quality)
+        comparison_signals, comparison_facts = self._derive_comparison_signals(comparison)
         prediction_signals, prediction_facts = self._derive_prediction_signals(prediction_summary)
-        signals = self._dedupe(metric_signals + data_signals + prediction_signals)
-        facts = self._dedupe(metric_facts + data_facts + prediction_facts)
+        signals = self._dedupe(metric_signals + data_signals + comparison_signals + prediction_signals)
+        facts = self._dedupe(metric_facts + data_facts + comparison_facts + prediction_facts)
 
         matched_rules = self.match_rules(
             topic='training_metrics',
@@ -563,6 +612,7 @@ class KnowledgeService:
                 'playbook_count': len(playbooks),
                 'assessment': top.get('action_type', 'collect_metrics_first') if top else 'collect_metrics_first',
                 'source_types_used': list(source_summary.keys()),
+                'comparison_attached': bool(comparison),
             },
             'knowledge_policy': {
                 'case_sources_included': include_case_sources,
@@ -577,6 +627,7 @@ class KnowledgeService:
         readiness: dict[str, Any] | None = None,
         health: dict[str, Any] | None = None,
         status: dict[str, Any] | None = None,
+        comparison: dict[str, Any] | None = None,
         prediction_summary: dict[str, Any] | None = None,
         model_family: str = 'yolo',
         task_type: str = 'detection',
@@ -586,9 +637,10 @@ class KnowledgeService:
         readiness_signals, readiness_facts = self._derive_data_quality_signals(readiness)
         health_signals, health_facts = self._derive_data_quality_signals(health)
         status_signals, status_facts = self._derive_metric_signals(status)
+        comparison_signals, comparison_facts = self._derive_comparison_signals(comparison)
         prediction_signals, prediction_facts = self._derive_prediction_signals(prediction_summary)
-        signals = self._dedupe(readiness_signals + health_signals + status_signals + prediction_signals)
-        facts = self._dedupe(readiness_facts + health_facts + status_facts + prediction_facts)
+        signals = self._dedupe(readiness_signals + health_signals + status_signals + comparison_signals + prediction_signals)
+        facts = self._dedupe(readiness_facts + health_facts + status_facts + comparison_facts + prediction_facts)
         if (status or {}).get('running'):
             signals = self._dedupe(signals + ['training_running'])
 
@@ -643,6 +695,7 @@ class KnowledgeService:
                 'playbook_count': len(playbooks),
                 'recommended_action': top.get('action_type', 'collect_metrics_first') if top else 'collect_metrics_first',
                 'source_types_used': list(source_summary.keys()),
+                'comparison_attached': bool(comparison),
             },
             'knowledge_policy': {
                 'case_sources_included': include_case_sources,

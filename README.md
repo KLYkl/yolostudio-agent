@@ -46,7 +46,7 @@ It is intentionally separate from the desktop product code so the agent / MCP la
 agent/                      Source-of-truth agent client, server, tools, and tests
 knowledge/                  Rule-based knowledge base used by the agent
 deploy/scripts/             Remote validation, roundtrip, and bridge helpers
-deploy/server_proto/        Mirrored prototype package used for remote deployment flows
+  deploy/server_proto/        Managed runtime mirror for remote deployment flows
 docs/                       Selected workflow notes and test plans
 ```
 
@@ -139,6 +139,7 @@ Replace them with values that match your own environment.
 
 ## Notes
 
-- `agent/` is the source-of-truth implementation; `deploy/server_proto/` mirrors the runtime package used in remote deployment paths.
+- `agent/` is the source-of-truth implementation; the managed runtime mirror is refreshed with `python deploy/scripts/sync_server_proto.py`.
+- `deploy/server_proto/` is not a hand-edited code source. Only deploy-only paths such as `.venv`, `core/`, `utils/`, and the mirror README stay local to that package.
 - `docs/` only contains selected public notes / plans suitable for the repository.
 - Local machine-specific paths, hosts, and secrets are intentionally sanitized before publication.

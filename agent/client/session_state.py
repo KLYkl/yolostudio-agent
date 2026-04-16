@@ -67,6 +67,8 @@ class RemoteTransferContext:
 
 @dataclass(slots=True)
 class TrainingContext:
+    workflow_state: str = "idle"
+    loop_workflow_state: str = "loop_idle"
     running: bool = False
     model: str = ""
     data_yaml: str = ""
@@ -104,6 +106,7 @@ class TrainingContext:
     active_loop_id: str = ""
     active_loop_name: str = ""
     active_loop_status: str = ""
+    active_loop_request: dict[str, Any] = field(default_factory=dict)
     last_loop_status: dict[str, Any] = field(default_factory=dict)
     last_loop_detail: dict[str, Any] = field(default_factory=dict)
     recent_loops: list[dict[str, Any]] = field(default_factory=list)

@@ -12,11 +12,16 @@ if __package__ in {None, ''}:
             sys.path.insert(0, path)
 
 from yolostudio_agent.agent.client.session_state import SessionState
-from yolostudio_agent.agent.client.state_applier import apply_tool_result_to_state
+from yolostudio_agent.agent.client.state_applier import (
+    CRITICAL_STATEFUL_TOOLS,
+    STATEFUL_TOOL_PROJECTORS,
+    apply_tool_result_to_state,
+)
 
 
 def main() -> None:
     state = SessionState(session_id='state-applier-smoke')
+    assert CRITICAL_STATEFUL_TOOLS.issubset(set(STATEFUL_TOOL_PROJECTORS)), STATEFUL_TOOL_PROJECTORS.keys()
 
     apply_tool_result_to_state(
         state,
@@ -426,6 +431,37 @@ def main() -> None:
     assert state.active_training.active_loop_id == 'loop-123'
     assert state.active_training.last_loop_status['max_rounds'] == 3
     assert 'rounds' not in state.active_training.last_loop_status
+
+    apply_tool_result_to_state(
+        state,
+        'start_training_loop',
+        {
+            'ok': True,
+            'summary': '环训练已启动：loop-demo（loop_id=loop-123）',
+            'loop_id': 'loop-123',
+            'loop_name': 'loop-demo',
+            'status': 'queued',
+            'managed_level': 'conservative_auto',
+            'boundaries': {'max_rounds': 3},
+            'next_round_plan': {'round_index': 1},
+        },
+        {
+            'model': '/tmp/loop-yolov8n.pt',
+            'data_yaml': '/tmp/loop-data.yaml',
+            'device': 'auto',
+            'training_environment': 'yolodo',
+            'epochs': 12,
+            'batch': 6,
+        },
+    )
+    assert state.active_training.model == '/tmp/loop-yolov8n.pt'
+    assert state.active_training.data_yaml == '/tmp/data2.yaml'
+    assert state.active_training.training_environment == 'yolodo'
+    assert state.active_training.device == 'auto'
+    assert state.active_training.batch == 6
+    assert state.active_training.active_loop_name == 'loop-demo'
+    assert state.active_training.active_loop_request['data_yaml'] == '/tmp/loop-data.yaml'
+    assert state.active_training.active_loop_request['model'] == '/tmp/loop-yolov8n.pt'
 
     apply_tool_result_to_state(
         state,

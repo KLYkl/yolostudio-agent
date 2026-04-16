@@ -35,7 +35,7 @@ async def main() -> None:
         settings.base_url = os.getenv('YOLOSTUDIO_LLM_BASE_URL', settings.base_url)
         settings.api_key = os.getenv('YOLOSTUDIO_LLM_API_KEY', settings.api_key)
     agent = await build_agent_client(settings)
-    first = await agent.chat('数据在 /home/kly/test_dataset/，按默认划分比例，然后用yolov8n模型进行训练')
+    first = await agent.chat('数据在 /data/test_dataset/，按默认划分比例，然后用yolov8n模型进行训练')
     print('first', json.dumps(first, ensure_ascii=False))
     if first.get('status') != 'needs_confirmation':
         raise SystemExit('expected first confirmation')

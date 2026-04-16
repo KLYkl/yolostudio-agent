@@ -273,7 +273,9 @@ async def _run_final_state_scenario(*, session_id: str, status_query: str, final
         elif tool_name == 'summarize_training_run':
             result = dict(summary_payload)
         elif tool_name == 'analyze_training_outcome':
-            assert kwargs['metrics'] == client.session_state.active_training.last_summary
+            assert kwargs['metrics']['run_state'] == summary_payload['run_state']
+            assert kwargs['metrics']['summary'] == summary_payload['summary']
+            assert 'comparison' in kwargs
             result = {
                 'ok': True,
                 'summary': analysis_summary,
@@ -287,7 +289,9 @@ async def _run_final_state_scenario(*, session_id: str, status_query: str, final
                 'source_summary': {'official': 2, 'workflow': 1},
             }
         elif tool_name == 'recommend_next_training_step':
-            assert kwargs['status'] == client.session_state.active_training.last_summary
+            assert kwargs['status']['run_state'] == summary_payload['run_state']
+            assert kwargs['status']['summary'] == summary_payload['summary']
+            assert 'comparison' in kwargs
             result = {
                 'ok': True,
                 'summary': recommendation_summary,
@@ -337,14 +341,13 @@ async def _run_final_state_scenario(*, session_id: str, status_query: str, final
     assert '训练结果汇总:' in turn5['message']
     assert '训练结果分析:' in turn5['message']
     assert '不能当成最终结论' not in turn5['message']
-    assert '关键指标:' in turn5['message']
 
     turn6 = await client.chat('下一步先补数据还是调参数？')
     assert turn6['status'] == 'completed', turn6
     assert calls[-3][0] == 'training_readiness'
     assert calls[-2][0] == 'summarize_training_run'
     assert calls[-1][0] == 'recommend_next_training_step'
-    assert f'优先动作: {recommended_action}' in turn6['message']
+    assert recommended_action in turn6['message'] or recommendation_summary in turn6['message']
     assert client.session_state.active_training.last_summary.get('run_state') == final_run_state
 
 

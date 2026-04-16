@@ -20,7 +20,29 @@ from langgraph.types import Command
 
 from yolostudio_agent.agent.client.context_builder import ContextBuilder
 from yolostudio_agent.agent.client.event_retriever import EventRetriever
+from yolostudio_agent.agent.client.followup_router import (
+    classify_dataset_followup_action,
+    classify_extract_followup_action,
+    classify_knowledge_followup_action,
+    classify_prediction_followup_action,
+    classify_prediction_management_followup_action,
+    classify_realtime_followup_action,
+    classify_remote_roundtrip_followup_action,
+    classify_remote_transfer_followup_action,
+    classify_training_followup_action,
+    classify_training_history_followup_action,
+    classify_training_loop_followup_action,
+    classify_training_loop_history_followup_action,
+)
 from yolostudio_agent.agent.client.grounded_reply_builder import build_grounded_tool_reply
+from yolostudio_agent.agent.client.hitl_manager import (
+    build_cancel_message as build_pending_cancel_message,
+    build_pending_action_payload,
+    confirmation_user_facts,
+    pending_action_objective,
+    pending_action_summary,
+    pending_review_config,
+)
 from yolostudio_agent.agent.client.state_applier import apply_tool_result_to_state
 from yolostudio_agent.agent.client import intent_parsing
 from yolostudio_agent.agent.client.llm_factory import (
@@ -31,6 +53,21 @@ from yolostudio_agent.agent.client.llm_factory import (
 )
 from yolostudio_agent.agent.client.mcp_connection import build_mcp_connection_config
 from yolostudio_agent.agent.client.memory_store import MemoryStore
+from yolostudio_agent.agent.client.reply_renderer import (
+    build_confirmation_message as build_confirmation_message_reply,
+    build_confirmation_prompt as build_confirmation_prompt_reply,
+    compact_action_candidates,
+    confirmation_render_error as confirmation_render_error_reply,
+    remote_pipeline_applied_results,
+    render_confirmation_message as render_confirmation_message_reply,
+    render_multi_tool_result_message as render_multi_tool_result_message_reply,
+    render_tool_result_message as render_tool_result_message_reply,
+    structured_overview_payloads,
+    tool_result_render_error,
+    tool_result_user_facts,
+    fallback_multi_tool_result_message as fallback_multi_tool_result_message_reply,
+    fallback_tool_result_text as fallback_tool_result_text_reply,
+)
 from yolostudio_agent.agent.client.remote_transfer_tools import build_local_transfer_tools
 from yolostudio_agent.agent.client.session_state import SessionState, utc_now
 from yolostudio_agent.agent.client.tool_adapter import (
@@ -39,7 +76,34 @@ from yolostudio_agent.agent.client.tool_adapter import (
     normalize_tool_args,
     stringify_tool_result_facts,
 )
+from yolostudio_agent.agent.client.tool_policy import (
+    build_manual_interrupt_tool_names,
+    pending_allowed_decisions,
+    resolve_tool_execution_policy,
+)
 from yolostudio_agent.agent.client.tool_result_parser import parse_tool_message
+from yolostudio_agent.agent.client.training_workflow import sync_training_workflow_state
+from yolostudio_agent.agent.client.training_plan_service import (
+    build_training_loop_start_draft as build_training_loop_start_draft_service,
+    build_training_loop_start_fallback_plan as build_training_loop_start_fallback_plan_service,
+    plan_training_loop_start as plan_training_loop_start_service,
+    render_training_plan_message as render_training_plan_message_service,
+    run_training_loop_start_orchestration as run_training_loop_start_orchestration_service,
+    training_plan_render_error,
+    training_plan_user_facts,
+)
+from yolostudio_agent.agent.client.training_followup_service import (
+    complete_best_training_next_step_reply as complete_best_training_next_step_reply_service,
+    complete_best_training_outcome_analysis_reply as complete_best_training_outcome_analysis_reply_service,
+    complete_next_training_step_reply as complete_next_training_step_reply_service,
+    complete_specific_training_run_next_step_reply as complete_specific_training_run_next_step_reply_service,
+    complete_specific_training_run_outcome_analysis_reply as complete_specific_training_run_outcome_analysis_reply_service,
+    complete_training_compare_analysis_reply as complete_training_compare_analysis_reply_service,
+    complete_training_compare_next_step_reply as complete_training_compare_next_step_reply_service,
+    complete_training_evidence_reply as complete_training_evidence_reply_service,
+    complete_training_outcome_analysis_reply as complete_training_outcome_analysis_reply_service,
+    complete_training_provenance_reply as complete_training_provenance_reply_service,
+)
 
 SYSTEM_PROMPT = """你是 YoloStudio Agent，负责帮助用户解决数据准备、训练、预测和远端传输问题。
 
@@ -50,6 +114,9 @@ SYSTEM_PROMPT = """你是 YoloStudio Agent，负责帮助用户解决数据准�
 4. 最终回答必须由你自己组织成自然中文；除非用户明确要求调试细节，否则不要输出工具名、字段名、原始 JSON、命令 payload 或伪代码式调用示例。
 5. 会修改数据、上传文件或启动长任务时，不要先在自然语言里自作主张执行；当参数足够时生成工具调用，由外部确认流程拦截。
 6. 如果工具失败，直接解释失败原因，并告诉用户下一步最实际的动作。
+7. 对 dataset / prediction / knowledge 的低风险追问，先看结构化上下文里是否已经有刚才的缓存结果；如果用户没有给新路径、新报告、新导出目标或新的知识主题，就优先复用这些事实直接回答，不要机械重复调用同一个工具。
+8. 如果用户明确给了新的数据集路径、报告路径、输出目录、导出路径或整理目录，再调用对应工具；否则优先沿用上下文中的 dataset_root/img_dir、report_path/output_dir、topic/stage/signals。
+9. 用户只要求“更详细一点”“刚才那个再展开”时，优先基于已缓存结果解释；只有缓存缺关键事实时才补调用轻量工具。
 
 关键边界：
 - dataset_training_readiness：只判断数据集本身是否已经具备直接训练的结构条件，不检查 GPU、device 或训练环境。
@@ -61,21 +128,6 @@ SYSTEM_PROMPT = """你是 YoloStudio Agent，负责帮助用户解决数据准�
 - 只有用户明确要求时，才展开参数细节、工具名或 JSON。
 - 如果问题本身不需要工具，直接回答。"""
 
-HIGH_RISK_TOOLS = {
-    "start_training",
-    "start_training_loop",
-    "split_dataset",
-    "augment_dataset",
-    "prepare_dataset_for_training",
-    "convert_format",
-    "modify_labels",
-    "clean_orphan_labels",
-    "generate_empty_labels",
-    "generate_missing_labels",
-    "categorize_by_class",
-    "upload_assets_to_remote",
-}
-
 GPU_SENSITIVE_TOOLS = {
     "check_gpu_status",
     "prepare_dataset_for_training",
@@ -84,71 +136,6 @@ GPU_SENSITIVE_TOOLS = {
     "start_training",
     "start_training_loop",
 }
-
-SYNTHETIC_TOOL_SURFACE_METADATA = {
-    "remote_prediction_pipeline": {
-        "read_only": False,
-        "destructive": False,
-        "confirmation_required": True,
-        "open_world": True,
-        "risk_level": "medium",
-    },
-    "remote_training_pipeline": {
-        "read_only": False,
-        "destructive": False,
-        "confirmation_required": True,
-        "open_world": True,
-        "risk_level": "high",
-    },
-}
-
-
-def _raw_tool_surface_metadata(tool: Any) -> dict[str, Any]:
-    return dict(
-        getattr(tool, 'metadata', None)
-        or getattr(tool, 'tool_metadata', None)
-        or {}
-    )
-
-
-def _raw_tool_surface_annotations(tool: Any) -> dict[str, Any]:
-    annotations = getattr(tool, 'annotations', None) or getattr(tool, 'tool_annotations', None)
-    if annotations is None:
-        return {}
-    if isinstance(annotations, dict):
-        return dict(annotations)
-    values: dict[str, Any] = {}
-    for attr_name in ('readOnlyHint', 'destructiveHint', 'idempotentHint', 'openWorldHint'):
-        value = getattr(annotations, attr_name, None)
-        if value is not None:
-            values[attr_name] = value
-    return values
-
-
-def _raw_tool_requires_confirmation(tool: Any) -> bool:
-    name = canonical_tool_name(getattr(tool, 'name', ''))
-    metadata = _raw_tool_surface_metadata(tool)
-    if 'confirmation_required' in metadata:
-        return bool(metadata.get('confirmation_required'))
-    if bool(metadata.get('destructive')):
-        return True
-    annotations = _raw_tool_surface_annotations(tool)
-    if 'destructiveHint' in annotations and bool(annotations.get('destructiveHint')):
-        return True
-    return name in HIGH_RISK_TOOLS
-
-
-def _build_manual_interrupt_tool_names(raw_tools: list[Any]) -> list[str]:
-    names: list[str] = []
-    seen: set[str] = set()
-    for tool in raw_tools:
-        name = canonical_tool_name(getattr(tool, 'name', ''))
-        if not name or name in seen:
-            continue
-        if _raw_tool_requires_confirmation(tool):
-            seen.add(name)
-            names.append(name)
-    return names
 
 
 @dataclass(slots=True)
@@ -208,6 +195,7 @@ class YoloStudioAgentClient:
         self.event_retriever = EventRetriever(self.memory)
         self.session_state: SessionState = self.memory.load_state(settings.session_id)
         self._clear_stale_startup_state()
+        self._sync_training_workflow_state(reason='startup_sync')
         self._sync_preferences()
         self.memory.save_state(self.session_state)
         self._record_llm_runtime_config()
@@ -393,6 +381,17 @@ class YoloStudioAgentClient:
         if not str(pending.tool_name or '').strip():
             self._clear_training_plan_draft()
 
+    def _sync_training_workflow_state(self, *, reason: str = '') -> None:
+        sync_training_workflow_state(
+            self.session_state,
+            append_event=lambda event_type, payload: self.memory.append_event(
+                self.session_state.session_id,
+                event_type,
+                payload,
+            ),
+            reason=reason,
+        )
+
     @staticmethod
     def _strip_ephemeral_context(state: SessionState) -> SessionState:
         ds = state.active_dataset
@@ -444,6 +443,7 @@ class YoloStudioAgentClient:
         rt.last_profile_listing = {}
         rt.last_upload = {}
         rt.last_download = {}
+        sync_training_workflow_state(state)
         return state
 
     def _should_reuse_history_context(self, user_text: str) -> bool:
@@ -452,6 +452,49 @@ class YoloStudioAgentClient:
         if str(self.session_state.pending_confirmation.tool_name or '').strip():
             return True
         if self.session_state.active_training.training_plan_draft:
+            return True
+        lowered = str(user_text or '').lower()
+        low_risk_cache_context = bool(
+            self.session_state.active_dataset.last_scan
+            or self.session_state.active_dataset.last_validate
+            or self.session_state.active_dataset.last_health_check
+            or self.session_state.active_dataset.last_duplicate_check
+            or self.session_state.active_prediction.last_result
+            or self.session_state.active_prediction.last_summary
+            or self.session_state.active_prediction.last_inspection
+            or self.session_state.active_prediction.last_export
+            or self.session_state.active_prediction.last_path_lists
+            or self.session_state.active_prediction.last_organized_result
+            or self.session_state.active_knowledge.last_retrieval
+            or self.session_state.active_knowledge.last_analysis
+            or self.session_state.active_knowledge.last_recommendation
+        )
+        if low_risk_cache_context and any(
+            token in user_text or token in lowered
+            for token in (
+                '详细一点',
+                '再详细',
+                '再展开',
+                '总结',
+                '摘要',
+                '输出',
+                '报告',
+                '清单',
+                '整理后',
+                '健康检查',
+                '重复',
+                '规则',
+                '解释',
+                '怎么落地',
+                '现在是什么情况',
+                'summary',
+                'report',
+                'output',
+                'details',
+                'duplicate',
+                'knowledge',
+            )
+        ):
             return True
         return False
 
@@ -487,62 +530,17 @@ class YoloStudioAgentClient:
         self.memory.save_state(self.session_state)
         return parsed
 
-    def _tool_surface_metadata(self, tool_name: str) -> dict[str, Any]:
-        canonical_name = canonical_tool_name(tool_name)
-        tool = self.tool_registry.get(canonical_name)
-        metadata = dict(
-            getattr(tool, 'metadata', None)
-            or getattr(tool, 'tool_metadata', None)
-            or {}
-        )
-        if metadata:
-            return metadata
-        return dict(SYNTHETIC_TOOL_SURFACE_METADATA.get(canonical_name) or {})
-
-    def _tool_surface_annotations(self, tool_name: str) -> dict[str, Any]:
-        canonical_name = canonical_tool_name(tool_name)
-        tool = self.tool_registry.get(canonical_name)
-        annotations = getattr(tool, 'annotations', None) or getattr(tool, 'tool_annotations', None)
-        if annotations is None:
-            return {}
-        if isinstance(annotations, dict):
-            return dict(annotations)
-        values: dict[str, Any] = {}
-        for attr_name in ('readOnlyHint', 'destructiveHint', 'idempotentHint', 'openWorldHint'):
-            value = getattr(annotations, attr_name, None)
-            if value is not None:
-                values[attr_name] = value
-        return values
+    def _tool_policy(self, tool_name: str):
+        return resolve_tool_execution_policy(tool_name, tool_registry=self.tool_registry)
 
     def _tool_is_read_only(self, tool_name: str) -> bool:
-        metadata = self._tool_surface_metadata(tool_name)
-        if 'read_only' in metadata:
-            return bool(metadata.get('read_only'))
-        annotations = self._tool_surface_annotations(tool_name)
-        if 'readOnlyHint' in annotations:
-            return bool(annotations.get('readOnlyHint'))
-        return False
+        return self._tool_policy(tool_name).read_only
 
     def _tool_is_destructive(self, tool_name: str) -> bool:
-        metadata = self._tool_surface_metadata(tool_name)
-        if 'destructive' in metadata:
-            return bool(metadata.get('destructive'))
-        annotations = self._tool_surface_annotations(tool_name)
-        if 'destructiveHint' in annotations:
-            return bool(annotations.get('destructiveHint'))
-        return False
+        return self._tool_policy(tool_name).destructive
 
     def _tool_requires_confirmation(self, tool_name: str) -> bool:
-        canonical_name = canonical_tool_name(tool_name)
-        metadata = self._tool_surface_metadata(canonical_name)
-        explicit = metadata.get('confirmation_required')
-        if explicit is not None:
-            return bool(explicit)
-        if self._tool_is_destructive(canonical_name):
-            return True
-        if self._tool_is_read_only(canonical_name):
-            return False
-        return canonical_name in HIGH_RISK_TOOLS
+        return self._tool_policy(tool_name).confirmation_required
 
     @staticmethod
     def _local_llm_gpu_wait_enabled() -> bool:
@@ -550,16 +548,37 @@ class YoloStudioAgentClient:
         return value in {'1', 'true', 'yes', 'on'}
 
     def _tool_risk_level(self, tool_name: str) -> str:
-        canonical_name = canonical_tool_name(tool_name)
-        metadata = self._tool_surface_metadata(canonical_name)
-        explicit = str(metadata.get('risk_level') or '').strip().lower()
-        if explicit in {'low', 'medium', 'high'}:
-            return explicit
-        if self._tool_requires_confirmation(canonical_name):
-            return 'high'
-        if self._tool_is_read_only(canonical_name):
-            return 'low'
-        return 'medium'
+        return self._tool_policy(tool_name).risk_level
+
+    def _has_training_state_context(self) -> bool:
+        return self.session_state.active_training.workflow_state in {
+            'preflight_ready',
+            'pending_confirmation',
+            'running',
+            'completed',
+            'failed',
+            'stopped',
+        }
+
+    def _has_training_followup_context(self) -> bool:
+        knowledge = self.session_state.active_knowledge
+        return bool(
+            self._has_training_state_context()
+            or knowledge.last_analysis
+            or knowledge.last_recommendation
+            or knowledge.last_retrieval
+        )
+
+    def _has_training_loop_context(self) -> bool:
+        return self.session_state.active_training.loop_workflow_state != 'loop_idle'
+
+    def _has_training_loop_history_followup_context(self) -> bool:
+        training = self.session_state.active_training
+        return bool(
+            training.recent_loops
+            or training.last_loop_status
+            or training.last_loop_detail
+        )
 
     async def chat(self, user_text: str, auto_approve: bool = False, stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None) -> dict[str, Any]:
         if not str(user_text).strip():
@@ -1263,17 +1282,8 @@ class YoloStudioAgentClient:
         user_text: str,
         normalized_text: str,
     ) -> dict[str, Any] | None:
-        if not enabled:
-            return None
-        action = await self._classify_prediction_management_followup_action(
-            user_text=user_text,
-            normalized_text=normalized_text,
-        )
-        result = self._prediction_management_followup_result(action)
-        if not result:
-            return None
-        tool_name, payload = result
-        return await self._complete_cached_tool_result_reply(tool_name, payload)
+        del enabled, user_text, normalized_text
+        return None
 
     async def _try_handle_prediction_followup(
         self,
@@ -1283,33 +1293,7 @@ class YoloStudioAgentClient:
         normalized_text: str,
         fallback_path: str,
     ) -> dict[str, Any] | None:
-        if not enabled:
-            return None
-        action = await self._classify_prediction_followup_action(
-            user_text=user_text,
-            normalized_text=normalized_text,
-            fallback_path=fallback_path,
-        )
-        cached_result = self._prediction_followup_result(action)
-        if cached_result:
-            tool_name, payload = cached_result
-            return await self._complete_cached_tool_result_reply(tool_name, payload)
-        if action == 'inspect':
-            inspect_kwargs = self._prediction_followup_kwargs(
-                user_text,
-                fallback_path=fallback_path,
-                allow_context_fallback=True,
-            )
-            if inspect_kwargs:
-                return await self._complete_direct_tool_reply('inspect_prediction_outputs', **inspect_kwargs)
-        if action == 'summary':
-            summary_kwargs = self._prediction_followup_kwargs(
-                user_text,
-                fallback_path=fallback_path,
-                allow_context_fallback=True,
-            )
-            if summary_kwargs:
-                return await self._complete_direct_tool_reply('summarize_prediction_results', **summary_kwargs)
+        del enabled, user_text, normalized_text, fallback_path
         return None
 
     async def _try_handle_extract_followup(
@@ -1339,28 +1323,7 @@ class YoloStudioAgentClient:
         normalized_text: str,
         dataset_path: str,
     ) -> dict[str, Any] | None:
-        if not enabled:
-            return None
-        action = await self._classify_dataset_followup_action(
-            user_text=user_text,
-            normalized_text=normalized_text,
-            fallback_path=dataset_path,
-        )
-        if action == 'quality':
-            return await self._complete_dataset_quality_reply(dataset_path)
-        cached_result = self._dataset_followup_result(action)
-        if cached_result:
-            tool_name, payload = cached_result
-            return await self._complete_cached_tool_result_reply(tool_name, payload)
-        if action == 'health':
-            return await self._complete_direct_tool_reply(
-                'run_dataset_health_check',
-                dataset_path=dataset_path,
-                include_duplicates=True,
-                max_duplicate_groups=3,
-            )
-        if action == 'duplicates':
-            return await self._complete_direct_tool_reply('detect_duplicate_images', dataset_path=dataset_path)
+        del enabled, user_text, normalized_text, dataset_path
         return None
 
     async def _try_handle_realtime_followup(
@@ -1458,132 +1421,26 @@ class YoloStudioAgentClient:
         has_prediction_management_followup_context: bool,
         has_explicit_prediction_target: bool,
     ) -> dict[str, Any] | None:
-        if wants_prediction_output_inspection:
-            inspect_kwargs = self._prediction_followup_kwargs(
-                user_text,
-                fallback_path=prediction_path,
-                allow_context_fallback=True,
-            )
-            cached_inspect = self._prediction_request_cached_result('inspect', inspect_kwargs)
-            if cached_inspect:
-                tool_name, payload = cached_inspect
-                return await self._complete_cached_tool_result_reply(tool_name, payload)
-            if inspect_kwargs:
-                return await self._complete_direct_tool_reply('inspect_prediction_outputs', **inspect_kwargs)
-
-        if wants_prediction_report_export:
-            export_path = intent_parsing.extract_output_path_from_text(
-                user_text,
-                self.session_state.active_prediction.output_dir or prediction_path,
-            )
-            export_kwargs = self._prediction_followup_kwargs(
-                user_text,
-                fallback_path=prediction_path,
-                allow_context_fallback=True,
-            )
-            if export_path:
-                export_kwargs['export_path'] = export_path
-                if str(export_kwargs.get('output_dir') or '').strip() == export_path:
-                    export_kwargs.pop('output_dir', None)
-            cached_export = self._prediction_management_request_cached_result('export', export_kwargs)
-            if cached_export:
-                tool_name, payload = cached_export
-                return await self._complete_cached_tool_result_reply(tool_name, payload)
-            if export_kwargs:
-                return await self._complete_direct_tool_reply('export_prediction_report', **export_kwargs)
-
-        if wants_prediction_path_lists:
-            export_dir = intent_parsing.extract_output_path_from_text(
-                user_text,
-                self.session_state.active_prediction.output_dir or prediction_path,
-            )
-            path_list_kwargs = self._prediction_followup_kwargs(
-                user_text,
-                fallback_path=prediction_path,
-                allow_context_fallback=True,
-            )
-            if export_dir:
-                path_list_kwargs['export_dir'] = export_dir
-                if str(path_list_kwargs.get('output_dir') or '').strip() == export_dir:
-                    path_list_kwargs.pop('output_dir', None)
-            cached_path_lists = self._prediction_management_request_cached_result('path_lists', path_list_kwargs)
-            if cached_path_lists:
-                tool_name, payload = cached_path_lists
-                return await self._complete_cached_tool_result_reply(tool_name, payload)
-            if path_list_kwargs:
-                return await self._complete_direct_tool_reply('export_prediction_path_lists', **path_list_kwargs)
-
-        if wants_prediction_result_organize:
-            organize_kwargs = self._prediction_followup_kwargs(
-                user_text,
-                fallback_path=prediction_path,
-                allow_context_fallback=True,
-            )
-            destination_dir = intent_parsing.extract_output_path_from_text(user_text, self.session_state.active_prediction.output_dir or prediction_path)
-            organize_by = 'by_class' if '类别' in user_text else 'detected_only'
-            include_empty = '无命中' in user_text or '空结果' in user_text
-            if destination_dir:
-                organize_kwargs['destination_dir'] = destination_dir
-            organize_kwargs['organize_by'] = organize_by
-            organize_kwargs['include_empty'] = include_empty
-            if organize_kwargs:
-                return await self._complete_direct_tool_reply('organize_prediction_results', **organize_kwargs)
-
-        if wants_prediction_summary:
-            summary_kwargs = self._prediction_followup_kwargs(user_text, fallback_path=prediction_path)
-            cached_summary = self._prediction_request_cached_result('summary', summary_kwargs)
-            if cached_summary:
-                tool_name, payload = cached_summary
-                return await self._complete_cached_tool_result_reply(tool_name, payload)
-            if summary_kwargs:
-                return await self._complete_direct_tool_reply('summarize_prediction_results', **summary_kwargs)
-
-            if self._explicitly_references_previous_context(user_text) and self.session_state.active_prediction.last_result:
-                reply = await self._render_tool_result_message('predict_images', self.session_state.active_prediction.last_result)
-                if reply:
-                    self._messages.append(AIMessage(content=reply))
-                    return {'status': 'completed', 'message': reply, 'tool_call': None}
-
-        prediction_management_followup = await self._try_handle_prediction_management_followup(
-            enabled=(
-                has_prediction_management_followup_context
-                and not wants_train
-                and not training_command_like
-                and not wants_scan_videos
-                and not wants_extract_frames
-                and not wants_extract_preview
-                and not wants_extract_images
-                and not wants_remote_upload
-                and not has_explicit_prediction_target
-                and not wants_prediction_output_inspection
-                and not wants_prediction_report_export
-                and not wants_prediction_path_lists
-                and not wants_prediction_result_organize
-            ),
-            user_text=user_text,
-            normalized_text=normalized_text,
+        del (
+            user_text,
+            normalized_text,
+            prediction_path,
+            wants_train,
+            training_command_like,
+            wants_scan_videos,
+            wants_extract_frames,
+            wants_extract_preview,
+            wants_extract_images,
+            wants_remote_upload,
+            wants_prediction_summary,
+            wants_prediction_output_inspection,
+            wants_prediction_report_export,
+            wants_prediction_path_lists,
+            wants_prediction_result_organize,
+            has_prediction_followup_context,
+            has_prediction_management_followup_context,
+            has_explicit_prediction_target,
         )
-        if prediction_management_followup:
-            return prediction_management_followup
-
-        prediction_followup = await self._try_handle_prediction_followup(
-            enabled=(
-                has_prediction_followup_context
-                and not wants_train
-                and not training_command_like
-                and not wants_scan_videos
-                and not wants_extract_frames
-                and not wants_extract_preview
-                and not wants_extract_images
-                and not wants_remote_upload
-                and not has_explicit_prediction_target
-            ),
-            user_text=user_text,
-            normalized_text=normalized_text,
-            fallback_path=prediction_path,
-        )
-        if prediction_followup:
-            return prediction_followup
         return None
 
     async def _try_handle_dataset_and_extract_requests(
@@ -1627,52 +1484,8 @@ class YoloStudioAgentClient:
         if extract_followup:
             return extract_followup
 
-        dataset_followup = await self._try_handle_dataset_followup(
-            enabled=(
-                has_dataset_followup_context
-                and bool(dataset_path)
-                and not wants_train
-                and not wants_predict
-                and not training_command_like
-                and not wants_scan_videos
-                and not wants_extract_frames
-                and not wants_extract_preview
-                and not wants_extract_images
-                and not wants_remote_upload
-                and not wants_quality
-                and not wants_health
-                and not wants_duplicates
-                and not extracted_dataset_path
-            ),
-            user_text=user_text,
-            normalized_text=normalized_text,
-            dataset_path=dataset_path,
-        )
-        if dataset_followup:
-            return dataset_followup
-
         if dataset_path and wants_quality and not wants_train:
             return await self._complete_dataset_quality_reply(dataset_path)
-
-        if dataset_path and wants_duplicates and not wants_train and not wants_health:
-            if has_dataset_followup_context and self._dataset_request_cache_allowed(dataset_path):
-                cached_duplicates = self._dataset_followup_result('duplicates')
-                if cached_duplicates:
-                    tool_name, payload = cached_duplicates
-                    return await self._complete_cached_tool_result_reply(tool_name, payload)
-            return await self._complete_direct_tool_reply('detect_duplicate_images', dataset_path=dataset_path)
-
-        if dataset_path and wants_health and not wants_train:
-            if has_dataset_followup_context and self._dataset_request_cache_allowed(dataset_path):
-                cached_health = self._dataset_followup_result('health')
-                if cached_health:
-                    tool_name, payload = cached_health
-                    return await self._complete_cached_tool_result_reply(tool_name, payload)
-            return await self._complete_direct_tool_reply(
-                'run_dataset_health_check',
-                dataset_path=dataset_path,
-                include_duplicates=wants_duplicates,
-            )
 
         if dataset_path and wants_readiness and not wants_predict and not training_command_like:
             return await self._complete_readiness_knowledge_reply(dataset_path)
@@ -1780,31 +1593,7 @@ class YoloStudioAgentClient:
         metric_signals: list[str],
         asks_metric_terms: bool,
     ) -> dict[str, Any] | None:
-        if not enabled:
-            return None
-        action = await self._classify_knowledge_followup_action(
-            user_text=user_text,
-            normalized_text=normalized_text,
-            metric_signals=metric_signals,
-        )
-        cached_result = self._knowledge_followup_result(action)
-        if cached_result:
-            tool_name, payload = cached_result
-            return await self._complete_cached_tool_result_reply(tool_name, payload)
-        if action == 'knowledge':
-            retrieval = self.session_state.active_knowledge.last_retrieval
-            retrieval_topic = str(retrieval.get('topic') or '').strip() or ('training_metrics' if asks_metric_terms else 'workflow')
-            retrieval_stage = str(retrieval.get('stage') or '').strip() or 'post_training'
-            retrieval_signals = list(retrieval.get('signals') or metric_signals)
-            return await self._complete_knowledge_retrieval_reply(
-                topic=retrieval_topic,
-                stage=retrieval_stage,
-                signals=retrieval_signals,
-            )
-        if action == 'analysis':
-            return await self._complete_training_outcome_analysis_reply()
-        if action == 'next_step':
-            return await self._complete_next_training_step_reply('')
+        del enabled, user_text, normalized_text, metric_signals, asks_metric_terms
         return None
 
     async def _try_handle_training_followup(
@@ -2349,6 +2138,7 @@ class YoloStudioAgentClient:
         training_followup = await self._try_handle_training_followup(
             enabled=(
                 has_training_followup_context
+                and has_training_context
                 and not wants_predict
                 and not training_command_like
                 and not wants_stop_training
@@ -2445,17 +2235,11 @@ class YoloStudioAgentClient:
         wants_split: bool,
     ) -> dict[str, Any] | None:
         if wants_training_loop_start and not wants_predict and not training_command_like:
-            active_dataset_root = str(self.session_state.active_dataset.dataset_root or '').strip()
-            active_img_dir = str(self.session_state.active_dataset.img_dir or '').strip()
-            can_reuse_session_yaml = not dataset_path or dataset_path in {active_dataset_root, active_img_dir}
-            resolved_yaml: str | None = None
-            if can_reuse_session_yaml:
-                resolved_yaml = str(
-                    self.session_state.active_dataset.data_yaml
-                    or self.session_state.active_training.data_yaml
-                    or ''
-                ).strip()
-            loop_args = self._collect_requested_training_loop_args(user_text, data_yaml=resolved_yaml)
+            resolved_yaml = self._session_training_data_yaml(dataset_path=dataset_path)
+            loop_args = self._collect_requested_training_loop_args(
+                user_text,
+                data_yaml=resolved_yaml if resolved_yaml else None,
+            )
             return await self._run_training_loop_start_orchestration(
                 user_text=user_text,
                 thread_id=thread_id,
@@ -2663,6 +2447,7 @@ class YoloStudioAgentClient:
         return None
 
     async def _try_handle_mainline_intent(self, user_text: str, thread_id: str) -> dict[str, Any] | None:
+        self._sync_training_workflow_state(reason='route_eval')
         guardrail = self._try_handle_guardrail_intent(user_text)
         if guardrail is not None:
             return guardrail
@@ -2677,33 +2462,20 @@ class YoloStudioAgentClient:
         prediction_path = intent_parsing.extract_dataset_path_from_text(user_text) or self.session_state.active_prediction.source_path
         normalized_text = user_text.lower()
         metric_signals = self._extract_metric_signals_from_text(user_text)
-        has_training_context = bool(
-            self.session_state.active_training.training_run_summary
-            or self.session_state.active_training.last_summary
-            or self.session_state.active_training.last_status
-        )
+        has_training_context = self._has_training_state_context()
         has_knowledge_followup_context = bool(
             self.session_state.active_knowledge.last_retrieval
             or self.session_state.active_knowledge.last_analysis
             or self.session_state.active_knowledge.last_recommendation
         )
-        has_training_followup_context = bool(
-            has_training_context
-            or self.session_state.active_knowledge.last_analysis
-            or self.session_state.active_knowledge.last_recommendation
-            or self.session_state.active_knowledge.last_retrieval
-        )
+        has_training_followup_context = self._has_training_followup_context()
         has_training_history_followup_context = bool(
             self.session_state.active_training.recent_runs
             or self.session_state.active_training.last_run_inspection
             or self.session_state.active_training.last_run_comparison
             or self.session_state.active_training.best_run_selection
         )
-        has_training_loop_history_followup_context = bool(
-            self.session_state.active_training.recent_loops
-            or self.session_state.active_training.last_loop_status
-            or self.session_state.active_training.last_loop_detail
-        )
+        has_training_loop_history_followup_context = self._has_training_loop_history_followup_context()
         training_status_phrase = (
             any(token in user_text for token in (
                 '训练状态', '当前训练状态', '训练进度', '当前进度',
@@ -2767,6 +2539,7 @@ class YoloStudioAgentClient:
             '预测结果',
             '预测摘要',
             '预测报告',
+            '预测输出',
             '总结预测',
             '总结一下预测',
             '分析预测',
@@ -3907,301 +3680,87 @@ class YoloStudioAgentClient:
         }
 
     async def _complete_training_outcome_analysis_reply(self) -> dict[str, Any]:
-        training_summary = await self.direct_tool('summarize_training_run')
-        result = await self.direct_tool(
-            'analyze_training_outcome',
-            metrics=training_summary,
-            data_quality=self.session_state.active_dataset.last_health_check or self.session_state.active_dataset.last_validate,
-            comparison=self.session_state.active_training.last_run_comparison,
-            prediction_summary=self.session_state.active_prediction.last_result,
-            model_family='yolo',
-            task_type='detection',
+        return await complete_training_outcome_analysis_reply_service(
+            self.session_state,
+            direct_tool=self.direct_tool,
+            render_multi_tool_result_message=self._render_multi_tool_result_message,
+            append_ai_message=lambda reply: self._messages.append(AIMessage(content=reply)),
         )
-        reply = await self._render_multi_tool_result_message(
-            [
-                ('summarize_training_run', training_summary),
-                ('analyze_training_outcome', result),
-            ],
-            objective='训练结果分析说明',
-        )
-        if not reply:
-            reply = result.get('summary') or training_summary.get('summary') or result.get('error') or '训练结果分析已完成'
-        self._messages.append(AIMessage(content=reply))
-        return {
-            'status': 'completed' if training_summary.get('ok', True) and result.get('ok', True) else 'error',
-            'message': reply,
-            'tool_call': None,
-        }
 
     async def _complete_specific_training_run_outcome_analysis_reply(self, run_id: str) -> dict[str, Any]:
-        inspection = await self.direct_tool('inspect_training_run', run_id=run_id)
-        result = await self.direct_tool(
-            'analyze_training_outcome',
-            metrics=inspection,
-            data_quality=self.session_state.active_dataset.last_health_check or self.session_state.active_dataset.last_validate,
-            comparison=self.session_state.active_training.last_run_comparison,
-            prediction_summary=self.session_state.active_prediction.last_result,
-            model_family='yolo',
-            task_type='detection',
+        return await complete_specific_training_run_outcome_analysis_reply_service(
+            self.session_state,
+            run_id=run_id,
+            direct_tool=self.direct_tool,
+            render_multi_tool_result_message=self._render_multi_tool_result_message,
+            append_ai_message=lambda reply: self._messages.append(AIMessage(content=reply)),
         )
-        reply = await self._render_multi_tool_result_message(
-            [
-                ('inspect_training_run', inspection),
-                ('analyze_training_outcome', result),
-            ],
-            objective='指定训练结果分析说明',
-        )
-        if not reply:
-            reply = result.get('summary') or inspection.get('summary') or result.get('error') or '指定训练结果分析已完成'
-        self._messages.append(AIMessage(content=reply))
-        return {
-            'status': 'completed' if inspection.get('ok', True) and result.get('ok', True) else 'error',
-            'message': reply,
-            'tool_call': None,
-        }
 
     async def _complete_best_training_outcome_analysis_reply(self) -> dict[str, Any]:
-        selection = await self.direct_tool('select_best_training_run')
-        best_run = selection.get('best_run') if selection.get('ok') else None
-        result = await self.direct_tool(
-            'analyze_training_outcome',
-            metrics=best_run or self.session_state.active_training.training_run_summary or self.session_state.active_training.last_summary or self.session_state.active_training.last_status,
-            data_quality=self.session_state.active_dataset.last_health_check or self.session_state.active_dataset.last_validate,
-            prediction_summary=self.session_state.active_prediction.last_result,
-            model_family='yolo',
-            task_type='detection',
+        return await complete_best_training_outcome_analysis_reply_service(
+            self.session_state,
+            direct_tool=self.direct_tool,
+            render_multi_tool_result_message=self._render_multi_tool_result_message,
+            append_ai_message=lambda reply: self._messages.append(AIMessage(content=reply)),
         )
-        reply = await self._render_multi_tool_result_message(
-            [
-                ('select_best_training_run', selection),
-                ('analyze_training_outcome', result),
-            ],
-            objective='最佳训练结果分析说明',
-        )
-        if not reply:
-            reply = result.get('summary') or selection.get('summary') or result.get('error') or '最佳训练结果分析已完成'
-        self._messages.append(AIMessage(content=reply))
-        return {
-            'status': 'completed' if selection.get('ok', True) and result.get('ok', True) else 'error',
-            'message': reply,
-            'tool_call': None,
-        }
 
     async def _complete_training_compare_analysis_reply(self, left_run_id: str = '', right_run_id: str = '') -> dict[str, Any]:
-        comparison = await self.direct_tool('compare_training_runs', left_run_id=left_run_id, right_run_id=right_run_id)
-        latest_run = comparison.get('left_run') if comparison.get('ok') else None
-        result = await self.direct_tool(
-            'analyze_training_outcome',
-            metrics=latest_run or self.session_state.active_training.training_run_summary or self.session_state.active_training.last_summary or self.session_state.active_training.last_status,
-            data_quality=self.session_state.active_dataset.last_health_check or self.session_state.active_dataset.last_validate,
-            comparison=comparison if comparison.get('ok') else None,
-            prediction_summary=self.session_state.active_prediction.last_result,
-            model_family='yolo',
-            task_type='detection',
+        return await complete_training_compare_analysis_reply_service(
+            self.session_state,
+            left_run_id=left_run_id,
+            right_run_id=right_run_id,
+            direct_tool=self.direct_tool,
+            render_multi_tool_result_message=self._render_multi_tool_result_message,
+            append_ai_message=lambda reply: self._messages.append(AIMessage(content=reply)),
         )
-        reply = await self._render_multi_tool_result_message(
-            [
-                ('compare_training_runs', comparison),
-                ('analyze_training_outcome', result),
-            ],
-            objective='训练对比分析说明',
-        )
-        if not reply:
-            reply = result.get('summary') or comparison.get('summary') or result.get('error') or '训练对比分析已完成'
-        self._messages.append(AIMessage(content=reply))
-        return {
-            'status': 'completed' if comparison.get('ok', True) and result.get('ok', True) else 'error',
-            'message': reply,
-            'tool_call': None,
-        }
 
     async def _complete_specific_training_run_next_step_reply(self, run_id: str) -> dict[str, Any]:
-        inspection = await self.direct_tool('inspect_training_run', run_id=run_id)
-        result = await self.direct_tool(
-            'recommend_next_training_step',
-            readiness=self.session_state.active_dataset.last_readiness,
-            health=self.session_state.active_dataset.last_health_check,
-            status=inspection,
-            comparison=self.session_state.active_training.last_run_comparison,
-            prediction_summary=self.session_state.active_prediction.last_result,
-            model_family='yolo',
-            task_type='detection',
+        return await complete_specific_training_run_next_step_reply_service(
+            self.session_state,
+            run_id=run_id,
+            direct_tool=self.direct_tool,
+            render_multi_tool_result_message=self._render_multi_tool_result_message,
+            append_ai_message=lambda reply: self._messages.append(AIMessage(content=reply)),
         )
-        reply = await self._render_multi_tool_result_message(
-            [
-                ('inspect_training_run', inspection),
-                ('recommend_next_training_step', result),
-            ],
-            objective='指定训练下一步建议说明',
-        )
-        if not reply:
-            reply = result.get('summary') or inspection.get('summary') or result.get('error') or '指定训练的下一步建议已生成'
-        self._messages.append(AIMessage(content=reply))
-        return {
-            'status': 'completed' if inspection.get('ok', True) and result.get('ok', True) else 'error',
-            'message': reply,
-            'tool_call': None,
-        }
 
     async def _complete_best_training_next_step_reply(self) -> dict[str, Any]:
-        selection = await self.direct_tool('select_best_training_run')
-        best_run = selection.get('best_run') if selection.get('ok') else None
-        result = await self.direct_tool(
-            'recommend_next_training_step',
-            readiness=self.session_state.active_dataset.last_readiness,
-            health=self.session_state.active_dataset.last_health_check,
-            status=best_run or self.session_state.active_training.training_run_summary or self.session_state.active_training.last_summary or self.session_state.active_training.last_status,
-            prediction_summary=self.session_state.active_prediction.last_result,
-            model_family='yolo',
-            task_type='detection',
+        return await complete_best_training_next_step_reply_service(
+            self.session_state,
+            direct_tool=self.direct_tool,
+            render_multi_tool_result_message=self._render_multi_tool_result_message,
+            append_ai_message=lambda reply: self._messages.append(AIMessage(content=reply)),
         )
-        reply = await self._render_multi_tool_result_message(
-            [
-                ('select_best_training_run', selection),
-                ('recommend_next_training_step', result),
-            ],
-            objective='最佳训练下一步建议说明',
-        )
-        if not reply:
-            reply = result.get('summary') or selection.get('summary') or result.get('error') or '最佳训练的下一步建议已生成'
-        self._messages.append(AIMessage(content=reply))
-        return {
-            'status': 'completed' if selection.get('ok', True) and result.get('ok', True) else 'error',
-            'message': reply,
-            'tool_call': None,
-        }
 
     async def _complete_next_training_step_reply(self, dataset_path: str = '') -> dict[str, Any]:
-        readiness: dict[str, Any] | None = None
-        if dataset_path:
-            readiness = await self.direct_tool('training_readiness', img_dir=dataset_path)
-        training_summary = await self.direct_tool('summarize_training_run')
-        result = await self.direct_tool(
-            'recommend_next_training_step',
-            readiness=readiness or self.session_state.active_dataset.last_readiness,
-            health=self.session_state.active_dataset.last_health_check,
-            status=training_summary,
-            comparison=self.session_state.active_training.last_run_comparison,
-            prediction_summary=self.session_state.active_prediction.last_result,
-            model_family='yolo',
-            task_type='detection',
+        return await complete_next_training_step_reply_service(
+            self.session_state,
+            dataset_path=dataset_path,
+            direct_tool=self.direct_tool,
+            render_multi_tool_result_message=self._render_multi_tool_result_message,
+            append_ai_message=lambda reply: self._messages.append(AIMessage(content=reply)),
         )
-        results: list[tuple[str, dict[str, Any]]] = []
-        if readiness is not None:
-            results.append(('training_readiness', readiness))
-        results.append(('summarize_training_run', training_summary))
-        results.append(('recommend_next_training_step', result))
-        reply = await self._render_multi_tool_result_message(results, objective='下一步训练建议说明')
-        if not reply:
-            reply = result.get('summary') or training_summary.get('summary') or result.get('error') or '下一步建议已生成'
-        self._messages.append(AIMessage(content=reply))
-        return {
-            'status': 'completed' if training_summary.get('ok', True) and result.get('ok', True) else 'error',
-            'message': reply,
-            'tool_call': None,
-        }
 
     async def _complete_training_compare_next_step_reply(self, left_run_id: str = '', right_run_id: str = '') -> dict[str, Any]:
-        comparison = await self.direct_tool('compare_training_runs', left_run_id=left_run_id, right_run_id=right_run_id)
-        latest_run = comparison.get('left_run') if comparison.get('ok') else None
-        result = await self.direct_tool(
-            'recommend_next_training_step',
-            readiness=self.session_state.active_dataset.last_readiness,
-            health=self.session_state.active_dataset.last_health_check,
-            status=latest_run or self.session_state.active_training.training_run_summary or self.session_state.active_training.last_summary or self.session_state.active_training.last_status,
-            comparison=comparison if comparison.get('ok') else None,
-            prediction_summary=self.session_state.active_prediction.last_result,
-            model_family='yolo',
-            task_type='detection',
+        return await complete_training_compare_next_step_reply_service(
+            self.session_state,
+            left_run_id=left_run_id,
+            right_run_id=right_run_id,
+            direct_tool=self.direct_tool,
+            render_multi_tool_result_message=self._render_multi_tool_result_message,
+            append_ai_message=lambda reply: self._messages.append(AIMessage(content=reply)),
         )
-        reply = await self._render_multi_tool_result_message(
-            [
-                ('compare_training_runs', comparison),
-                ('recommend_next_training_step', result),
-            ],
-            objective='训练对比后的下一步建议说明',
-        )
-        if not reply:
-            reply = result.get('summary') or comparison.get('summary') or result.get('error') or '训练对比后的下一步建议已生成'
-        self._messages.append(AIMessage(content=reply))
-        return {
-            'status': 'completed' if comparison.get('ok', True) and result.get('ok', True) else 'error',
-            'message': reply,
-            'tool_call': None,
-        }
 
     def _complete_training_provenance_reply(self) -> dict[str, Any]:
-        tr = self.session_state.active_training
-        lines: list[str] = []
-        comparison = tr.last_run_comparison or {}
-        best_selection = tr.best_run_selection or {}
-        inspected = tr.last_run_inspection or {}
-        summary = tr.training_run_summary or tr.last_summary or tr.last_status or {}
-
-        if comparison:
-            left_run = comparison.get('left_run') or {}
-            right_run = comparison.get('right_run') or {}
-            left_id = str(left_run.get('run_id') or left_run.get('log_file') or '最近一次训练').strip()
-            right_id = str(right_run.get('run_id') or right_run.get('log_file') or '上一次训练').strip()
-            lines.append(f'我当前主要基于训练对比结果：{left_id} 对比 {right_id}。')
-            if comparison.get('summary'):
-                lines.append(f"- 对比摘要: {comparison.get('summary')}")
-        elif best_selection:
-            best_run = best_selection.get('best_run') or {}
-            best_id = str(best_run.get('run_id') or best_run.get('log_file') or '最近最佳训练').strip()
-            lines.append(f'我当前主要基于最值得参考的训练记录：{best_id}。')
-            if best_selection.get('summary'):
-                lines.append(f"- 选择依据: {best_selection.get('summary')}")
-        elif inspected:
-            selected_id = str(inspected.get('selected_run_id') or inspected.get('log_file') or '指定训练记录').strip()
-            lines.append(f'我当前主要基于你刚查看的训练记录：{selected_id}。')
-            if inspected.get('summary'):
-                lines.append(f"- 记录摘要: {inspected.get('summary')}")
-        elif summary:
-            run_label = str(summary.get('run_id') or summary.get('log_file') or summary.get('summary') or '最近一次训练').strip()
-            lines.append(f'我当前主要基于最近一次训练结果：{run_label}。')
-        else:
-            lines.append('我当前没有可追溯的训练依据；请先查看训练状态、训练详情、训练对比或最佳训练。')
-
-        reply = '\n'.join(lines)
-        self._messages.append(AIMessage(content=reply))
-        return {'status': 'completed', 'message': reply, 'tool_call': None}
+        return complete_training_provenance_reply_service(
+            self.session_state,
+            append_ai_message=lambda reply: self._messages.append(AIMessage(content=reply)),
+        )
 
     def _complete_training_evidence_reply(self) -> dict[str, Any]:
-        tr = self.session_state.active_training
-        kn = self.session_state.active_knowledge
-        lines = ['当前判断主要基于这些事实：']
-
-        summary = tr.training_run_summary or tr.last_summary or tr.last_status or {}
-        if summary.get('summary'):
-            lines.append(f"- 训练事实: {summary.get('summary')}")
-        if summary.get('signals'):
-            lines.append(f"- 训练信号: {', '.join(str(item) for item in list(summary.get('signals') or [])[:4])}")
-
-        comparison = tr.last_run_comparison or {}
-        if comparison.get('summary'):
-            lines.append(f"- 对比依据: {comparison.get('summary')}")
-        if comparison.get('signals'):
-            lines.append(f"- 对比信号: {', '.join(str(item) for item in list(comparison.get('signals') or [])[:4])}")
-
-        analysis = kn.last_analysis or {}
-        if analysis.get('summary'):
-            lines.append(f"- 分析结论: {analysis.get('summary')}")
-        if analysis.get('signals'):
-            lines.append(f"- 分析信号: {', '.join(str(item) for item in list(analysis.get('signals') or [])[:4])}")
-
-        recommendation = kn.last_recommendation or {}
-        if recommendation.get('summary'):
-            lines.append(f"- 建议依据: {recommendation.get('summary')}")
-        if recommendation.get('recommended_action'):
-            lines.append(f"- 当前建议动作: {recommendation.get('recommended_action')}")
-
-        if len(lines) == 1:
-            lines.append('- 当前没有足够的训练分析上下文；请先查看训练结果或重新分析。')
-
-        reply = '\n'.join(lines)
-        self._messages.append(AIMessage(content=reply))
-        return {'status': 'completed', 'message': reply, 'tool_call': None}
+        return complete_training_evidence_reply_service(
+            self.session_state,
+            append_ai_message=lambda reply: self._messages.append(AIMessage(content=reply)),
+        )
 
     @staticmethod
     def _merge_grounded_sections(sections: list[str]) -> str:
@@ -4446,6 +4005,52 @@ class YoloStudioAgentClient:
         return path.as_posix()
 
     @staticmethod
+    def _normalize_context_path(path: str) -> str:
+        text = str(path or '').strip().replace('\\', '/')
+        text = re.sub(r'/+', '/', text)
+        if len(text) > 1 and text.endswith('/'):
+            text = text.rstrip('/')
+        return text
+
+    @classmethod
+    def _dataset_scope_candidates(cls, dataset_path: str) -> list[str]:
+        normalized = cls._normalize_context_path(dataset_path)
+        if not normalized:
+            return []
+        scopes = [normalized]
+        leaf_name = normalized.rsplit('/', 1)[-1].lower()
+        if leaf_name in {'images', 'labels', 'train', 'val', 'test'} and '/' in normalized:
+            parent = normalized.rsplit('/', 1)[0] or '/'
+            if parent not in scopes:
+                scopes.append(parent)
+        return scopes
+
+    @classmethod
+    def _path_within_scope(cls, candidate: str, scope: str) -> bool:
+        candidate_normalized = cls._normalize_context_path(candidate)
+        scope_normalized = cls._normalize_context_path(scope)
+        if not candidate_normalized or not scope_normalized:
+            return False
+        return candidate_normalized == scope_normalized or candidate_normalized.startswith(scope_normalized + '/')
+
+    def _session_training_data_yaml(self, dataset_path: str = '') -> str:
+        ds = self.session_state.active_dataset
+        tr = self.session_state.active_training
+        candidates = [
+            str(ds.data_yaml or '').strip(),
+            str((tr.active_loop_request or {}).get('data_yaml') or '').strip(),
+            str(tr.data_yaml or '').strip(),
+        ]
+        if not str(dataset_path or '').strip():
+            return next((candidate for candidate in candidates if candidate), '')
+
+        scopes = self._dataset_scope_candidates(dataset_path)
+        for candidate in candidates:
+            if candidate and any(self._path_within_scope(candidate, scope) for scope in scopes):
+                return candidate
+        return ''
+
+    @staticmethod
     def _path_looks_like_video(path: str) -> bool:
         suffix = Path(path).suffix.lower()
         return suffix in {'.mp4', '.avi', '.mov', '.mkv', '.wmv', '.m4v', '.flv', '.ts', '.webm'}
@@ -4632,76 +4237,17 @@ class YoloStudioAgentClient:
 
 
     def _pending_allowed_decisions(self, tool_name: str) -> list[str]:
-        normalized = canonical_tool_name(str(tool_name or '').strip())
-        if self._tool_is_read_only(normalized):
-            return ['approve', 'reject', 'clarify']
-        if self._tool_requires_confirmation(normalized):
-            return ['approve', 'reject', 'edit', 'clarify']
-        return ['approve', 'reject', 'clarify']
+        return pending_allowed_decisions(self._tool_policy(tool_name))
 
     def _pending_action_objective(self, tool_name: str, args: dict[str, Any]) -> str:
-        tool_name = str(tool_name or '').strip()
-        dataset_path = str(args.get('dataset_path') or self.session_state.active_dataset.dataset_root or '').strip()
-        data_yaml = str(args.get('data_yaml') or self.session_state.active_training.data_yaml or self.session_state.active_dataset.data_yaml or '').strip()
-        model = str(args.get('model') or self.session_state.active_training.model or '').strip()
-        if tool_name == 'prepare_dataset_for_training':
-            return f'把数据集准备到可训练状态{f"（{dataset_path}）" if dataset_path else ""}'
-        if tool_name == 'start_training':
-            parts = [part for part in [model, data_yaml] if part]
-            return '启动训练' + (f"（{' / '.join(parts)}）" if parts else '')
-        if tool_name == 'start_training_loop':
-            parts = [part for part in [model, data_yaml] if part]
-            return '启动循环训练' + (f"（{' / '.join(parts)}）" if parts else '')
-        if tool_name == 'upload_assets_to_remote':
-            return '把本地资源上传到远端服务器'
-        if tool_name == 'remote_training_pipeline':
-            return '执行远端训练闭环'
-        if tool_name == 'remote_prediction_pipeline':
-            return '执行远端预测闭环'
-        return f'执行 {tool_name}'
+        return pending_action_objective(self.session_state, tool_name, args)
 
     def _pending_action_summary(self, tool_name: str, args: dict[str, Any]) -> str:
-        tool_name = str(tool_name or '').strip()
-        dataset_path = str(args.get('dataset_path') or self.session_state.active_dataset.dataset_root or '').strip()
-        data_yaml = str(args.get('data_yaml') or self.session_state.active_training.data_yaml or self.session_state.active_dataset.data_yaml or '').strip()
-        model = str(args.get('model') or self.session_state.active_training.model or '').strip()
-        if tool_name == 'prepare_dataset_for_training':
-            details = [item for item in [dataset_path or None, 'force_split=true' if args.get('force_split') else None] if item]
-            return '准备数据集' + (f"：{'，'.join(details)}" if details else '')
-        if tool_name == 'start_training':
-            details = [item for item in [f'model={model}' if model else None, f'data={data_yaml}' if data_yaml else None, f"epochs={args.get('epochs')}" if args.get('epochs') is not None else None] if item]
-            return '启动训练' + (f"：{', '.join(details)}" if details else '')
-        if tool_name == 'start_training_loop':
-            details = [item for item in [f'model={model}' if model else None, f'data={data_yaml}' if data_yaml else None, f"max_rounds={args.get('max_rounds')}" if args.get('max_rounds') is not None else None] if item]
-            return '启动循环训练' + (f"：{', '.join(details)}" if details else '')
-        if tool_name == 'upload_assets_to_remote':
-            return '上传资源到远端服务器'
-        if tool_name == 'remote_training_pipeline':
-            return '执行远端训练闭环'
-        if tool_name == 'remote_prediction_pipeline':
-            return '执行远端预测闭环'
-        return f'待确认动作：{tool_name}'
+        return pending_action_summary(self.session_state, tool_name, args)
 
     def _pending_review_config(self, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
-        normalized = canonical_tool_name(tool_name)
-        metadata = self._tool_surface_metadata(normalized)
-        annotations = self._tool_surface_annotations(normalized)
-        read_only = self._tool_is_read_only(normalized)
-        destructive = self._tool_is_destructive(normalized)
-        return {
-            'risk_level': self._tool_risk_level(normalized),
-            'allow_edit': not read_only,
-            'allow_clarify': True,
-            'tool_name': normalized,
-            'confirmation_required': self._tool_requires_confirmation(normalized),
-            'read_only': read_only,
-            'destructive': destructive,
-            'open_world': bool(
-                metadata.get('open_world')
-                if 'open_world' in metadata
-                else annotations.get('openWorldHint')
-            ),
-        }
+        del args
+        return pending_review_config(tool_name, self._tool_policy(tool_name))
 
     def _build_pending_action_payload(
         self,
@@ -4710,20 +4256,13 @@ class YoloStudioAgentClient:
         thread_id: str | None = None,
         decision_state: str = 'pending',
     ) -> dict[str, Any]:
-        tool_name = str(pending.get('name') or '').strip()
-        args = dict(pending.get('args') or {})
-        return {
-            'interrupt_kind': 'tool_approval',
-            'decision_state': decision_state,
-            'thread_id': str(thread_id or pending.get('thread_id') or self.session_state.pending_confirmation.thread_id or '').strip(),
-            'tool_name': tool_name,
-            'tool_args': args,
-            'summary': str(pending.get('summary') or self._pending_action_summary(tool_name, args)).strip(),
-            'objective': str(pending.get('objective') or self._pending_action_objective(tool_name, args)).strip(),
-            'allowed_decisions': list(pending.get('allowed_decisions') or self._pending_allowed_decisions(tool_name)),
-            'review_config': dict(pending.get('review_config') or self._pending_review_config(tool_name, args)),
-            'decision_context': dict(pending.get('decision_context') or self.session_state.pending_confirmation.decision_context or {}),
-        }
+        return build_pending_action_payload(
+            self.session_state,
+            pending,
+            tool_policy_resolver=self._tool_policy,
+            thread_id=thread_id,
+            decision_state=decision_state,
+        )
 
     def _needs_confirmation_result(self, thread_id: str, pending: dict[str, Any], message: str) -> dict[str, Any]:
         return {
@@ -4768,6 +4307,7 @@ class YoloStudioAgentClient:
                 'allowed_decisions': pc.allowed_decisions,
             },
         )
+        self._sync_training_workflow_state(reason='pending_set')
 
     def _clear_pending_confirmation(self) -> None:
         pc = self.session_state.pending_confirmation
@@ -4781,6 +4321,7 @@ class YoloStudioAgentClient:
         pc.review_config = {}
         pc.decision_context = {}
         pc.created_at = ""
+        self._sync_training_workflow_state(reason='pending_cleared')
 
     def _pending_from_state(self) -> dict[str, Any] | None:
         pc = self.session_state.pending_confirmation
@@ -4901,6 +4442,7 @@ class YoloStudioAgentClient:
 
     def _apply_to_state(self, tool_name: str, result: dict[str, Any], tool_args: dict[str, Any] | None = None) -> None:
         apply_tool_result_to_state(self.session_state, tool_name, result, tool_args)
+        self._sync_training_workflow_state(reason=f'tool:{tool_name}')
 
     def _get_pending_tool_call(self, config: dict[str, Any]) -> dict[str, Any] | None:
         state = self.graph.get_state(config)
@@ -5126,8 +4668,7 @@ class YoloStudioAgentClient:
         latest_readiness = self.session_state.active_dataset.last_readiness or {}
         prepared_yaml = str(
             planned_args.get('data_yaml')
-            or self.session_state.active_dataset.data_yaml
-            or self.session_state.active_training.data_yaml
+            or self._session_training_data_yaml(dataset_path=str(draft.get('dataset_path') or ''))
             or ''
         ).strip()
         if not prepared_yaml:
@@ -5620,16 +5161,7 @@ class YoloStudioAgentClient:
         observed_tools = dict(observed_tools or {})
         prepare_result = dict(observed_tools.get('prepare_dataset_for_training') or {})
         readiness = dict(observed_tools.get('training_readiness') or {})
-        active_dataset_root = str(self.session_state.active_dataset.dataset_root or '').strip()
-        active_img_dir = str(self.session_state.active_dataset.img_dir or '').strip()
-        can_reuse_session_yaml = not dataset_path or dataset_path in {active_dataset_root, active_img_dir}
-        session_yaml = ''
-        if can_reuse_session_yaml:
-            session_yaml = str(
-                self.session_state.active_dataset.data_yaml
-                or self.session_state.active_training.data_yaml
-                or ''
-            ).strip()
+        session_yaml = self._session_training_data_yaml(dataset_path=dataset_path)
         return str(
             loop_args.get('data_yaml')
             or prepare_result.get('data_yaml')
@@ -5646,84 +5178,14 @@ class YoloStudioAgentClient:
         loop_args: dict[str, Any],
         observed_tools: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        observed_tools = dict(observed_tools or {})
-        readiness = dict(observed_tools.get('training_readiness') or {})
-        prepare_result = dict(observed_tools.get('prepare_dataset_for_training') or {})
-        model = str(loop_args.get('model') or '').strip()
-        data_yaml = self._known_training_loop_data_yaml(loop_args, observed_tools, dataset_path=dataset_path)
-        if not model:
-            return {
-                'decision': 'block',
-                'reason': '当前还不能开启环训练：缺少预训练权重/模型。请先明确模型，例如 yolov8n.pt。',
-                'planner_source': 'fallback',
-            }
-        if prepare_result.get('ok') and data_yaml:
-            next_args = dict(loop_args)
-            next_args['model'] = model
-            next_args['data_yaml'] = data_yaml
-            if not str(next_args.get('managed_level') or '').strip():
-                next_args['managed_level'] = 'conservative_auto'
-            if next_args.get('max_rounds') in {None, ''}:
-                next_args['max_rounds'] = 5
-            return {
-                'decision': 'start',
-                'next_tool': 'start_training_loop',
-                'next_args': next_args,
-                'reason': '数据已经准备完成，可以直接启动循环训练。',
-                'planner_source': 'fallback',
-            }
-        if data_yaml:
-            next_args = dict(loop_args)
-            next_args['model'] = model
-            next_args['data_yaml'] = data_yaml
-            if not str(next_args.get('managed_level') or '').strip():
-                next_args['managed_level'] = 'conservative_auto'
-            if next_args.get('max_rounds') in {None, ''}:
-                next_args['max_rounds'] = 5
-            return {
-                'decision': 'start',
-                'next_tool': 'start_training_loop',
-                'next_args': next_args,
-                'reason': '当前数据已具备训练条件，可以直接进入循环训练。',
-                'planner_source': 'fallback',
-            }
-        if not readiness:
-            if dataset_path:
-                return {
-                    'decision': 'observe',
-                    'next_tool': 'training_readiness',
-                    'next_args': {'img_dir': dataset_path},
-                    'reason': '先读取训练前检查结果，再决定是 prepare 还是 start。',
-                    'planner_source': 'fallback',
-                }
-            return {
-                'decision': 'block',
-                'reason': '当前还不能开启环训练：缺少可用数据路径，无法判断是否需要先 prepare。',
-                'planner_source': 'fallback',
-            }
-        if readiness and not readiness.get('ok', True) and not readiness.get('preparable'):
-            blockers = [str(item).strip() for item in (readiness.get('blockers') or []) if str(item).strip()]
-            blocker_detail = str(readiness.get('error') or (blockers[0] if blockers else '') or readiness.get('summary') or '').strip()
-            return {
-                'decision': 'block',
-                'reason': f'当前还不能开启环训练：{blocker_detail or "训练前检查失败"}',
-                'planner_source': 'fallback',
-            }
-        if dataset_path and readiness.get('preparable'):
-            return {
-                'decision': 'prepare',
-                'next_tool': 'prepare_dataset_for_training',
-                'next_args': self._build_loop_prepare_args(user_text, dataset_path),
-                'reason': '当前数据还不能直接进入循环训练，先准备数据集，再继续启动 loop。',
-                'planner_source': 'fallback',
-            }
-        blockers = [str(item).strip() for item in (readiness.get('blockers') or []) if str(item).strip()]
-        blocker_detail = str(readiness.get('error') or (blockers[0] if blockers else '') or readiness.get('summary') or '').strip()
-        return {
-            'decision': 'block',
-            'reason': f'当前还不能开启环训练：{blocker_detail or "缺少可训练的 data_yaml。"}',
-            'planner_source': 'fallback',
-        }
+        return build_training_loop_start_fallback_plan_service(
+            user_text=user_text,
+            dataset_path=dataset_path,
+            loop_args=loop_args,
+            observed_tools=observed_tools,
+            known_training_loop_data_yaml=self._known_training_loop_data_yaml,
+            build_loop_prepare_args=self._build_loop_prepare_args,
+        )
 
     async def _plan_training_loop_start(
         self,
@@ -5734,139 +5196,21 @@ class YoloStudioAgentClient:
         observed_tools: dict[str, dict[str, Any]] | None = None,
         step_index: int = 1,
     ) -> dict[str, Any]:
-        observed_tools = dict(observed_tools or {})
-        fallback = self._build_training_loop_start_fallback_plan(
+        return await plan_training_loop_start_service(
+            planner_llm=self.planner_llm,
+            session_id=self.session_state.session_id,
             user_text=user_text,
             dataset_path=dataset_path,
             loop_args=loop_args,
             observed_tools=observed_tools,
+            step_index=step_index,
+            build_training_loop_start_fallback_plan_fn=self._build_training_loop_start_fallback_plan,
+            known_training_loop_data_yaml=self._known_training_loop_data_yaml,
+            compact_training_loop_start_fact=self._compact_training_loop_start_fact,
+            invoke_structured_payload=self._invoke_structured_payload,
+            normalize_training_loop_start_plan=self._normalize_training_loop_start_plan,
+            append_event=lambda event, payload: self.memory.append_event(self.session_state.session_id, event, payload),
         )
-        if self.planner_llm is None:
-            return fallback
-
-        current_data_yaml = self._known_training_loop_data_yaml(loop_args, observed_tools, dataset_path=dataset_path)
-        facts = {
-            'user_request': user_text,
-            'dataset_path': dataset_path,
-            'step_index': step_index,
-            'requested_loop_args': dict(loop_args),
-            'current_data_yaml': current_data_yaml,
-            'observed_tool_names': list(observed_tools.keys()),
-            'observed_tools': {
-                name: self._compact_training_loop_start_fact(name, result)
-                for name, result in observed_tools.items()
-            },
-            'available_tools': [
-                {
-                    'tool': 'training_readiness',
-                    'when': '需要先确认数据是否已具备直接训练条件',
-                    'kind': 'read_only',
-                    'args_rule': {'img_dir': dataset_path or '<dataset_path>'},
-                },
-                {
-                    'tool': 'list_training_environments',
-                    'when': '只有在确实需要补充训练环境事实时才调用',
-                    'kind': 'read_only',
-                    'args_rule': {},
-                },
-                {
-                    'tool': 'prepare_dataset_for_training',
-                    'when': '需要生成 data_yaml / 划分数据 / 准备训练产物时调用',
-                    'kind': 'high_risk',
-                    'args_rule': {'dataset_path': dataset_path or '<dataset_path>'},
-                },
-                {
-                    'tool': 'start_training_loop',
-                    'when': '模型已明确且 data_yaml 已就绪时调用',
-                    'kind': 'high_risk',
-                    'args_rule': {'model': loop_args.get('model') or '<model>', 'data_yaml': current_data_yaml or '<data_yaml>'},
-                },
-            ],
-        }
-        messages = [
-            SystemMessage(
-                content=(
-                    '你是 YoloStudio Agent 的循环训练启动编排器。'
-                    '你要根据当前事实决定“下一步只调用一个什么工具”，而不是写解释性散文。'
-                    '请优先选择最小必要的下一步：如果事实不足，优先选只读工具；如果事实已经足够，直接选真正要执行的高风险工具。'
-                    '不要默认先收集所有事实；只选择你当前真正需要的下一步。'
-                    '输出必须是 JSON，对象格式固定为 '
-                    '{"next_tool":"training_readiness|list_training_environments|prepare_dataset_for_training|start_training_loop|block",'
-                    '"reason":"..."}。'
-                    '如果模型缺失，返回 block。'
-                    '如果 data_yaml 已就绪且模型明确，优先 start_training_loop。'
-                    '如果 data_yaml 缺失但数据可能可准备，优先 training_readiness 或 prepare_dataset_for_training。'
-                    '不要输出 Markdown，不要输出额外文字。'
-                )
-            ),
-            HumanMessage(
-                content=(
-                    '当前事实：\n'
-                    f'{json.dumps(facts, ensure_ascii=False, indent=2)}'
-                )
-            ),
-        ]
-        try:
-            parsed = await self._invoke_structured_payload(
-                messages=messages,
-                schema={
-                    'title': 'yolostudio_training_loop_start_plan',
-                    'type': 'object',
-                    'properties': {
-                        'next_tool': {
-                            'type': 'string',
-                            'enum': [
-                                'training_readiness',
-                                'list_training_environments',
-                                'prepare_dataset_for_training',
-                                'start_training_loop',
-                                'block',
-                            ],
-                        },
-                        'reason': {'type': 'string'},
-                    },
-                    'required': ['next_tool', 'reason'],
-                    'additionalProperties': False,
-                },
-            )
-            plan = self._normalize_training_loop_start_plan(
-                parsed=parsed,
-                user_text=user_text,
-                dataset_path=dataset_path,
-                loop_args=loop_args,
-                observed_tools=observed_tools,
-            )
-            if plan is not None:
-                plan['planner_source'] = 'llm'
-                plan['planner_payload'] = parsed
-                self.memory.append_event(
-                    self.session_state.session_id,
-                    'loop_start_planned',
-                    {
-                        'source': 'llm',
-                        'decision': plan.get('decision'),
-                        'next_tool': plan.get('next_tool'),
-                        'step_index': step_index,
-                    },
-                )
-                return plan
-        except Exception as exc:
-            self.memory.append_event(
-                self.session_state.session_id,
-                'loop_start_plan_failed',
-                {'error': str(exc)},
-            )
-        self.memory.append_event(
-            self.session_state.session_id,
-            'loop_start_planned',
-            {
-                'source': 'fallback',
-                'decision': fallback.get('decision'),
-                'next_tool': fallback.get('next_tool'),
-                'step_index': step_index,
-            },
-        )
-        return fallback
 
     def _normalize_training_loop_start_plan(
         self,
@@ -5945,45 +5289,15 @@ class YoloStudioAgentClient:
         observed_tools: dict[str, dict[str, Any]] | None,
         plan: dict[str, Any],
     ) -> dict[str, Any]:
-        observed_tools = dict(observed_tools or {})
-        readiness = dict(observed_tools.get('training_readiness') or {})
-        prepare_result = dict(observed_tools.get('prepare_dataset_for_training') or {})
-        latest_summary = str(
-            prepare_result.get('summary')
-            or readiness.get('summary')
-            or self.session_state.active_dataset.last_readiness.get('summary')
-            or ''
-        ).strip()
-        planned_args = dict(loop_args)
-        data_yaml = self._known_training_loop_data_yaml(planned_args, observed_tools, dataset_path=dataset_path)
-        if data_yaml:
-            planned_args['data_yaml'] = data_yaml
-        next_tool_name = str(plan.get('next_tool') or '').strip()
-        previous_draft = dict(self.session_state.active_training.training_plan_draft or {})
-        execution_mode = 'prepare_then_loop' if next_tool_name == 'prepare_dataset_for_training' else 'direct_loop'
-        if next_tool_name == 'start_training_loop' and (
-            'prepare_dataset_for_training' in observed_tools
-            or str(previous_draft.get('execution_mode') or '').strip().lower() == 'prepare_then_loop'
-        ):
-            execution_mode = 'prepare_then_loop'
-        return {
-            'source_intent': 'training_loop',
-            'execution_mode': execution_mode,
-            'execution_backend': 'standard_yolo',
-            'dataset_path': dataset_path,
-            'data_summary': latest_summary,
-            'reasoning_summary': str(plan.get('reason') or '').strip(),
-            'planned_training_args': dict(planned_args),
-            'planned_loop_args': dict(planned_args),
-            'next_step_tool': next_tool_name,
-            'next_step_args': dict(plan.get('next_args') or {}),
-            'planner_decision_source': str(plan.get('planner_source') or 'fallback'),
-            'planner_decision': 'prepare' if next_tool_name == 'prepare_dataset_for_training' else 'start',
-            'planner_output': dict(plan.get('planner_payload') or {}),
-            'planner_user_request': user_text,
-            'planner_observed_tools': list(observed_tools.keys()),
-            'editable_fields': ['model', 'epochs', 'batch', 'imgsz', 'device', 'training_environment', 'project', 'name'],
-        }
+        return build_training_loop_start_draft_service(
+            self.session_state,
+            user_text=user_text,
+            dataset_path=dataset_path,
+            loop_args=loop_args,
+            observed_tools=observed_tools,
+            plan=plan,
+            known_training_loop_data_yaml=self._known_training_loop_data_yaml,
+        )
 
     async def _run_training_loop_start_orchestration(
         self,
@@ -5994,74 +5308,25 @@ class YoloStudioAgentClient:
         loop_args: dict[str, Any],
         observed_tools: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        observed: dict[str, dict[str, Any]] = dict(observed_tools or {})
-        if not str(loop_args.get('model') or '').strip():
-            reply = '当前还不能开启环训练：缺少预训练权重/模型。请先明确模型，例如 yolov8n.pt。'
-            self._messages.append(AIMessage(content=reply))
-            return {'status': 'completed', 'message': reply, 'tool_call': None}
-
-        seen_observe_calls: set[tuple[str, str]] = set()
-        for step_index in range(1, 5):
-            known_data_yaml = self._known_training_loop_data_yaml(loop_args, observed, dataset_path=dataset_path)
-            if known_data_yaml:
-                loop_args['data_yaml'] = known_data_yaml
-            plan = await self._plan_training_loop_start(
-                user_text=user_text,
-                dataset_path=dataset_path,
-                loop_args=loop_args,
-                observed_tools=observed,
-                step_index=step_index,
-            )
-            if plan.get('decision') == 'block':
-                reply = str(plan.get('reason') or '当前还不能开启环训练。').strip()
-                self._messages.append(AIMessage(content=reply))
-                return {'status': 'completed', 'message': reply, 'tool_call': None}
-
-            next_tool_name = str(plan.get('next_tool') or '').strip()
-            next_tool_args = dict(plan.get('next_args') or {})
-            if next_tool_name in {'training_readiness', 'list_training_environments'}:
-                observe_key = (next_tool_name, json.dumps(next_tool_args, ensure_ascii=False, sort_keys=True))
-                if observe_key in seen_observe_calls:
-                    reply = '当前还不能稳定规划下一步；读到的事实没有继续收敛。请换一种方式说明需求，或直接明确 data.yaml / 模型。'
-                    self._messages.append(AIMessage(content=reply))
-                    return {'status': 'completed', 'message': reply, 'tool_call': None}
-                seen_observe_calls.add(observe_key)
-                observed_result = await self.direct_tool(next_tool_name, _state_mode='observe', **next_tool_args)
-                observed[next_tool_name] = observed_result
-                self.memory.append_event(
-                    self.session_state.session_id,
-                    'loop_start_observed_tool',
-                    {
-                        'tool': next_tool_name,
-                        'args': next_tool_args,
-                        'result': self._compact_training_loop_start_fact(next_tool_name, observed_result),
-                        'step_index': step_index,
-                    },
-                )
-                continue
-
-            draft = self._build_training_loop_start_draft(
-                user_text=user_text,
-                dataset_path=dataset_path,
-                loop_args=loop_args,
-                observed_tools=observed,
-                plan=plan,
-            )
-            self._save_training_plan_draft(draft)
-            pending = {
-                'name': next_tool_name,
-                'args': next_tool_args,
-                'id': None,
-                'synthetic': True,
-            }
-            self._set_pending_confirmation(thread_id, pending)
-            reply = await self._build_confirmation_message(pending)
-            self._messages.append(AIMessage(content=reply))
-            return self._needs_confirmation_result(thread_id, pending, reply)
-
-        reply = '当前还不能稳定规划循环训练启动步骤：内部编排步数已达到上限。请换一种方式说明需求，或直接给出可训练的 data.yaml。'
-        self._messages.append(AIMessage(content=reply))
-        return {'status': 'completed', 'message': reply, 'tool_call': None}
+        return await run_training_loop_start_orchestration_service(
+            self.session_state,
+            user_text=user_text,
+            thread_id=thread_id,
+            dataset_path=dataset_path,
+            loop_args=loop_args,
+            observed_tools=observed_tools,
+            direct_tool=self.direct_tool,
+            plan_training_loop_start_fn=self._plan_training_loop_start,
+            known_training_loop_data_yaml=self._known_training_loop_data_yaml,
+            append_event=lambda event, payload: self.memory.append_event(self.session_state.session_id, event, payload),
+            compact_training_loop_start_fact=self._compact_training_loop_start_fact,
+            build_training_loop_start_draft_fn=self._build_training_loop_start_draft,
+            save_training_plan_draft=self._save_training_plan_draft,
+            set_pending_confirmation=self._set_pending_confirmation,
+            build_confirmation_message=self._build_confirmation_message,
+            needs_confirmation_result=self._needs_confirmation_result,
+            append_ai_message=lambda reply: self._messages.append(AIMessage(content=reply)),
+        )
 
     async def _continue_training_loop_start_after_prepare(
         self,
@@ -6109,11 +5374,7 @@ class YoloStudioAgentClient:
         explicit_run_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         explicit_run_ids = list(explicit_run_ids or [])
-        has_training_loop_context = bool(
-            self.session_state.active_training.active_loop_id
-            or self.session_state.active_training.last_loop_status
-            or self.session_state.active_training.last_loop_detail
-        )
+        has_training_loop_context = self._has_training_loop_context()
         mentions_loop = any(
             token in user_text for token in ('环训练', '循环训练', '循环训', '循环跑', '自动复训', '自动续训', '自动下一轮', 'agent环训练')
         ) or any(
@@ -6205,37 +5466,13 @@ class YoloStudioAgentClient:
         normalized_text: str,
         loop_id: str,
     ) -> str:
-        if self.planner_llm is None:
-            return ''
-        facts = {
-            'active_loop_id': loop_id or self.session_state.active_training.active_loop_id or '',
-            'last_loop_status_summary': str((self.session_state.active_training.last_loop_status or {}).get('summary') or '').strip(),
-            'last_loop_detail_summary': str((self.session_state.active_training.last_loop_detail or {}).get('summary') or '').strip(),
-            'has_last_loop_status': bool(self.session_state.active_training.last_loop_status),
-            'has_last_loop_detail': bool(self.session_state.active_training.last_loop_detail),
-            'user_text': user_text,
-        }
-        messages = [
-            SystemMessage(
-                content=(
-                    '你是 YoloStudio Agent 的循环训练跟进路由器。'
-                    '当前同一会话里已经存在活动中的循环训练上下文。'
-                    '你只负责判断用户这句跟进，应该查看当前环训练状态、查看当前环训练详情，还是不属于当前环训练上下文。'
-                    '如果用户想要更详细的进展、更多训练信息、轮次信息、完整详情、详细状态，返回 inspect。'
-                    '如果用户只是询问现在怎么样、进度如何、当前情况、现在什么情况、训练情况，返回 status。'
-                    '像“环训练状态怎么样”“查看训练情况”“现在是什么情况了”这类泛状态追问，默认返回 status；'
-                    '只有当用户明确要求“详细一点”“训练详情”“完整详情”“更多训练信息”时，才返回 inspect。'
-                    '如果用户是在说新的训练任务、准备数据、换数据集、换模型，返回 other。'
-                    '输出必须是 JSON，对象格式固定为 '
-                    '{"action":"status|inspect|other","reason":"..."}。'
-                    '不要输出 markdown，不要解释。\n'
-                    f'facts={json.dumps(facts, ensure_ascii=False)}'
-                )
-            ),
-        ]
-        return await self._classify_structured_action(
-            messages=messages,
-            allowed_actions={'status', 'inspect'},
+        return await classify_training_loop_followup_action(
+            planner_llm=self.planner_llm,
+            session_state=self.session_state,
+            user_text=user_text,
+            normalized_text=normalized_text,
+            loop_id=loop_id,
+            classify_structured_action=self._classify_structured_action,
         )
 
     async def _classify_training_followup_action(
@@ -6245,44 +5482,13 @@ class YoloStudioAgentClient:
         normalized_text: str,
         metric_signals: list[str],
     ) -> str:
-        if self.planner_llm is None:
-            return ''
-        active_training = self.session_state.active_training
-        knowledge = self.session_state.active_knowledge
-        facts = {
-            'running': active_training.running,
-            'model': active_training.model,
-            'data_yaml': active_training.data_yaml,
-            'device': active_training.device,
-            'training_environment': active_training.training_environment,
-            'has_last_status': bool(active_training.last_status),
-            'has_last_summary': bool(active_training.last_summary or active_training.training_run_summary),
-            'has_last_analysis': bool(knowledge.last_analysis),
-            'has_last_recommendation': bool(knowledge.last_recommendation),
-            'has_last_retrieval': bool(knowledge.last_retrieval),
-            'metric_signals': metric_signals,
-            'user_text': user_text,
-        }
-        messages = [
-            SystemMessage(
-                content=(
-                    '你是 YoloStudio Agent 的训练跟进路由器。'
-                    '当前同一会话里已经存在 training 上下文。'
-                    '你只负责判断用户这句跟进，应该查看当前训练状态、查看训练结果分析、查看下一步训练建议、查看训练知识解释，还是不属于当前 training 上下文。'
-                    '如果用户是在问现在什么情况、训练进度、详细一点的训练信息、当前训练状态，返回 status。'
-                    '如果用户是在问训练效果如何、结果怎么看、这些指标说明什么、训练是不是收敛了，返回 analysis。'
-                    '如果用户是在问下一步怎么做、先补数据还是先调参数、怎么优化下一轮，返回 next_step。'
-                    '如果用户是在问术语含义、指标是什么意思、训练知识或工作流解释，返回 knowledge。'
-                    '如果用户是在发起新训练、切换到预测、数据集处理、远端传输、训练对比或查看特定 run，返回 other。'
-                    '输出必须是 JSON，对象格式固定为 {"action":"status|analysis|next_step|knowledge|other","reason":"..."}。'
-                    '不要输出 markdown，不要解释。\n'
-                    f'facts={json.dumps(facts, ensure_ascii=False)}'
-                )
-            ),
-        ]
-        return await self._classify_structured_action(
-            messages=messages,
-            allowed_actions={'status', 'analysis', 'next_step', 'knowledge'},
+        return await classify_training_followup_action(
+            planner_llm=self.planner_llm,
+            session_state=self.session_state,
+            user_text=user_text,
+            normalized_text=normalized_text,
+            metric_signals=metric_signals,
+            classify_structured_action=self._classify_structured_action,
         )
 
     async def _classify_training_history_followup_action(
@@ -6291,49 +5497,12 @@ class YoloStudioAgentClient:
         user_text: str,
         normalized_text: str,
     ) -> str:
-        if self.planner_llm is None:
-            return ''
-        active_training = self.session_state.active_training
-        best_run_selection = active_training.best_run_selection or {}
-        best_run = best_run_selection.get('best_run') if isinstance(best_run_selection, dict) else {}
-        facts = {
-            'recent_run_ids': [
-                str(item.get('run_id') or '')
-                for item in list(active_training.recent_runs or [])[:5]
-                if str(item.get('run_id') or '').strip()
-            ],
-            'has_recent_runs': bool(active_training.recent_runs),
-            'has_last_run_inspection': bool(active_training.last_run_inspection),
-            'last_inspection_run_id': active_training.last_run_inspection.get('selected_run_id'),
-            'has_last_run_comparison': bool(active_training.last_run_comparison),
-            'comparison_run_ids': [
-                str(active_training.last_run_comparison.get('left_run_id') or ''),
-                str(active_training.last_run_comparison.get('right_run_id') or ''),
-            ],
-            'has_best_run_selection': bool(best_run_selection),
-            'best_run_id': str((best_run or {}).get('run_id') or best_run_selection.get('best_run_id') or ''),
-            'user_text': user_text,
-        }
-        messages = [
-            SystemMessage(
-                content=(
-                    '你是 YoloStudio Agent 的训练历史跟进路由器。'
-                    '当前同一会话里已经存在 training history 上下文。'
-                    '你只负责判断用户这句跟进，是想继续查看训练列表、查看刚才那条训练详情、查看刚才的训练对比、查看最佳训练记录，还是不属于当前 training history 上下文。'
-                    '如果用户是在问刚才那些训练、最近训练、那批训练记录、历史列表、再概括一下列表，返回 runs。'
-                    '如果用户是在问刚才那条训练详细一点、那条记录怎么看、上一条 run 细节、训练记录详情，返回 inspect。'
-                    '如果用户是在问刚才两条训练差异、对比结论、哪条更好、比较结果，返回 compare。'
-                    '如果用户是在问最佳训练、最好的那条、表现最好的是哪个、最佳 run 详细一点，返回 best。'
-                    '如果用户是在发起新训练、查看当前训练状态、环训练控制、预测、数据集处理、远端传输或查看特定 run id，返回 other。'
-                    '输出必须是 JSON，对象格式固定为 {"action":"runs|inspect|compare|best|other","reason":"..."}。'
-                    '不要输出 markdown，不要解释。\n'
-                    f'facts={json.dumps(facts, ensure_ascii=False)}'
-                )
-            ),
-        ]
-        return await self._classify_structured_action(
-            messages=messages,
-            allowed_actions={'runs', 'inspect', 'compare', 'best'},
+        return await classify_training_history_followup_action(
+            planner_llm=self.planner_llm,
+            session_state=self.session_state,
+            user_text=user_text,
+            normalized_text=normalized_text,
+            classify_structured_action=self._classify_structured_action,
         )
 
     async def _classify_training_loop_history_followup_action(
@@ -6342,41 +5511,12 @@ class YoloStudioAgentClient:
         user_text: str,
         normalized_text: str,
     ) -> str:
-        if self.planner_llm is None:
-            return ''
-        active_training = self.session_state.active_training
-        facts = {
-            'recent_loop_ids': [
-                str(item.get('loop_id') or item.get('loop_name') or '')
-                for item in list(active_training.recent_loops or [])[:5]
-                if str(item.get('loop_id') or item.get('loop_name') or '').strip()
-            ],
-            'has_recent_loops': bool(active_training.recent_loops),
-            'has_last_loop_status': bool(active_training.last_loop_status),
-            'last_loop_status_summary': str((active_training.last_loop_status or {}).get('summary') or '').strip(),
-            'has_last_loop_detail': bool(active_training.last_loop_detail),
-            'last_loop_detail_summary': str((active_training.last_loop_detail or {}).get('summary') or '').strip(),
-            'user_text': user_text,
-        }
-        messages = [
-            SystemMessage(
-                content=(
-                    '你是 YoloStudio Agent 的环训练历史跟进路由器。'
-                    '当前同一会话里已经存在 training loop history 上下文。'
-                    '你只负责判断用户这句跟进，是想继续查看环训练列表、查看刚才那个环训练状态、查看刚才那个环训练详情，还是不属于当前环训练历史上下文。'
-                    '如果用户是在问刚才那些环训练、最近环训练、环训练列表、再概括一下环训练历史，返回 list。'
-                    '如果用户是在问刚才那个环训练现在怎么样、状态如何、当前结论、停在什么阶段，返回 status。'
-                    '如果用户是在问刚才那个环训练详细一点、轮次细节、完整详情、知识闸门细节，返回 inspect。'
-                    '如果用户是在发起新的环训练、当前活动环训练控制、新训练、预测、数据处理或远端传输，返回 other。'
-                    '输出必须是 JSON，对象格式固定为 {"action":"list|status|inspect|other","reason":"..."}。'
-                    '不要输出 markdown，不要解释。\n'
-                    f'facts={json.dumps(facts, ensure_ascii=False)}'
-                )
-            ),
-        ]
-        return await self._classify_structured_action(
-            messages=messages,
-            allowed_actions={'list', 'status', 'inspect'},
+        return await classify_training_loop_history_followup_action(
+            planner_llm=self.planner_llm,
+            session_state=self.session_state,
+            user_text=user_text,
+            normalized_text=normalized_text,
+            classify_structured_action=self._classify_structured_action,
         )
 
     async def _classify_knowledge_followup_action(
@@ -6386,45 +5526,14 @@ class YoloStudioAgentClient:
         normalized_text: str,
         metric_signals: list[str],
     ) -> str:
-        if self.planner_llm is None:
-            return ''
-        knowledge = self.session_state.active_knowledge
-        active_training = self.session_state.active_training
-        facts = {
-            'has_last_retrieval': bool(knowledge.last_retrieval),
-            'last_retrieval': knowledge.last_retrieval,
-            'has_last_analysis': bool(knowledge.last_analysis),
-            'last_analysis': knowledge.last_analysis,
-            'has_last_recommendation': bool(knowledge.last_recommendation),
-            'last_recommendation': knowledge.last_recommendation,
-            'has_training_context': bool(
-                active_training.training_run_summary
-                or active_training.last_summary
-                or active_training.last_status
-                or active_training.running
-            ),
-            'metric_signals': metric_signals,
-            'user_text': user_text,
-        }
-        messages = [
-            SystemMessage(
-                content=(
-                    '你是 YoloStudio Agent 的知识跟进路由器。'
-                    '当前同一会话里已经存在 training knowledge / analysis / recommendation 上下文。'
-                    '你只负责判断用户这句跟进，是想继续查看训练知识解释、继续查看训练结果分析、继续查看下一步训练建议，还是不属于当前知识上下文。'
-                    '如果用户是在追问规则、术语、这些指标是什么意思、刚才那条经验/知识/解释再详细一点，返回 knowledge。'
-                    '如果用户是在追问训练结果怎么看、为什么这样判断、分析再展开一点，返回 analysis。'
-                    '如果用户是在追问下一步该怎么做、建议再具体一点、怎么优化下一轮，返回 next_step。'
-                    '如果用户是在发起新训练、切到预测、数据集处理、远端传输、查看特定 run 或环训练控制，返回 other。'
-                    '输出必须是 JSON，对象格式固定为 {"action":"knowledge|analysis|next_step|other","reason":"..."}。'
-                    '不要输出 markdown，不要解释。\n'
-                    f'facts={json.dumps(facts, ensure_ascii=False)}'
-                )
-            ),
-        ]
-        return await self._classify_structured_action(
-            messages=messages,
-            allowed_actions={'knowledge', 'analysis', 'next_step'},
+        return await classify_knowledge_followup_action(
+            planner_llm=self.planner_llm,
+            session_state=self.session_state,
+            user_text=user_text,
+            normalized_text=normalized_text,
+            metric_signals=metric_signals,
+            has_training_state_context=self._has_training_state_context,
+            classify_structured_action=self._classify_structured_action,
         )
 
     async def _classify_prediction_followup_action(
@@ -6434,35 +5543,13 @@ class YoloStudioAgentClient:
         normalized_text: str,
         fallback_path: str,
     ) -> str:
-        if self.planner_llm is None:
-            return ''
-        active_prediction = self.session_state.active_prediction
-        facts = {
-            'source_path': active_prediction.source_path or fallback_path,
-            'report_path': active_prediction.report_path,
-            'output_dir': active_prediction.output_dir,
-            'model': active_prediction.model,
-            'has_last_result': bool(active_prediction.last_result),
-            'user_text': user_text,
-        }
-        messages = [
-            SystemMessage(
-                content=(
-                    '你是 YoloStudio Agent 的预测跟进路由器。'
-                    '当前同一会话里已经存在 prediction 上下文。'
-                    '你只负责判断用户这句跟进，应该查看预测摘要、查看预测输出详情，还是不属于当前 prediction 上下文。'
-                    '如果用户只是在问现在怎么样、预测情况、结果如何、总结一下，返回 summary。'
-                    '如果用户明确要求更详细的预测信息、输出详情、报告、产物、路径清单、更多细节，返回 inspect。'
-                    '如果用户是在发起新预测、换模型、换路径、切到训练或数据准备，返回 other。'
-                    '输出必须是 JSON，对象格式固定为 {"action":"summary|inspect|other","reason":"..."}。'
-                    '不要输出 markdown，不要解释。\n'
-                    f'facts={json.dumps(facts, ensure_ascii=False)}'
-                )
-            ),
-        ]
-        return await self._classify_structured_action(
-            messages=messages,
-            allowed_actions={'summary', 'inspect'},
+        return await classify_prediction_followup_action(
+            planner_llm=self.planner_llm,
+            session_state=self.session_state,
+            user_text=user_text,
+            normalized_text=normalized_text,
+            fallback_path=fallback_path,
+            classify_structured_action=self._classify_structured_action,
         )
 
     async def _classify_realtime_followup_action(
@@ -6471,37 +5558,12 @@ class YoloStudioAgentClient:
         user_text: str,
         normalized_text: str,
     ) -> str:
-        if self.planner_llm is None:
-            return ''
-        active_prediction = self.session_state.active_prediction
-        facts = {
-            'realtime_session_id': active_prediction.realtime_session_id,
-            'realtime_source_type': active_prediction.realtime_source_type,
-            'realtime_source_label': active_prediction.realtime_source_label,
-            'realtime_status': active_prediction.realtime_status,
-            'output_dir': active_prediction.output_dir,
-            'report_path': active_prediction.report_path,
-            'has_last_realtime_status': bool(active_prediction.last_realtime_status),
-            'last_realtime_status': active_prediction.last_realtime_status,
-            'user_text': user_text,
-        }
-        messages = [
-            SystemMessage(
-                content=(
-                    '你是 YoloStudio Agent 的实时预测跟进路由器。'
-                    '当前同一会话里已经存在 realtime prediction 上下文。'
-                    '你只负责判断用户这句跟进，是否应该查看当前实时预测状态。'
-                    '如果用户是在问现在怎么样、还在跑吗、实时预测情况、处理了多少帧、详细一点的实时信息、当前进度或当前结果，返回 status。'
-                    '如果用户是在发起新的摄像头/RTSP/屏幕预测、测试 RTSP、扫描摄像头/屏幕、切到训练或其他任务，返回 other。'
-                    '输出必须是 JSON，对象格式固定为 {"action":"status|other","reason":"..."}。'
-                    '不要输出 markdown，不要解释。\n'
-                    f'facts={json.dumps(facts, ensure_ascii=False)}'
-                )
-            ),
-        ]
-        return await self._classify_structured_action(
-            messages=messages,
-            allowed_actions={'status'},
+        return await classify_realtime_followup_action(
+            planner_llm=self.planner_llm,
+            session_state=self.session_state,
+            user_text=user_text,
+            normalized_text=normalized_text,
+            classify_structured_action=self._classify_structured_action,
         )
 
     async def _classify_prediction_management_followup_action(
@@ -6510,41 +5572,12 @@ class YoloStudioAgentClient:
         user_text: str,
         normalized_text: str,
     ) -> str:
-        if self.planner_llm is None:
-            return ''
-        active_prediction = self.session_state.active_prediction
-        facts = {
-            'has_last_inspection': bool(active_prediction.last_inspection),
-            'has_last_export': bool(active_prediction.last_export),
-            'has_last_path_lists': bool(active_prediction.last_path_lists),
-            'has_last_organized_result': bool(active_prediction.last_organized_result),
-            'last_inspection': active_prediction.last_inspection,
-            'last_export': active_prediction.last_export,
-            'last_path_lists': active_prediction.last_path_lists,
-            'last_organized_result': active_prediction.last_organized_result,
-            'user_text': user_text,
-        }
-        messages = [
-            SystemMessage(
-                content=(
-                    '你是 YoloStudio Agent 的预测结果管理跟进路由器。'
-                    '当前同一会话里已经存在 prediction management 上下文。'
-                    '你只负责判断用户这句跟进，应该查看预测输出检查结果、查看预测报告导出结果、查看预测路径清单结果、查看预测结果整理结果，还是不属于当前 prediction management 上下文。'
-                    '如果用户是在追问输出目录、产物目录、产物路径、结果里有什么、保存到了哪里，返回 inspect。'
-                    '如果用户是在追问导出的报告、导出的文件、报告路径、markdown/csv 报告，返回 export。'
-                    '如果用户是在追问刚才导出的清单、命中清单、空结果清单、失败清单、列表详情，返回 path_lists。'
-                    '如果用户是在追问整理后的结果、按类别后的目录、复制到了哪里、整理详情，返回 organize。'
-                    '如果用户只是泛泛追问“再详细一点/现在什么情况/那个结果呢”，优先使用当前上下文里最近更具体的结果：organize > path_lists > export > inspect。'
-                    '如果用户是在发起新的预测、换模型、换数据路径、切到训练、抽帧、远端传输，返回 other。'
-                    '输出必须是 JSON，对象格式固定为 {"action":"inspect|export|path_lists|organize|other","reason":"..."}。'
-                    '不要输出 markdown，不要解释。\n'
-                    f'facts={json.dumps(facts, ensure_ascii=False)}'
-                )
-            ),
-        ]
-        return await self._classify_structured_action(
-            messages=messages,
-            allowed_actions={'inspect', 'export', 'path_lists', 'organize'},
+        return await classify_prediction_management_followup_action(
+            planner_llm=self.planner_llm,
+            session_state=self.session_state,
+            user_text=user_text,
+            normalized_text=normalized_text,
+            classify_structured_action=self._classify_structured_action,
         )
 
     async def _classify_dataset_followup_action(
@@ -6554,38 +5587,13 @@ class YoloStudioAgentClient:
         normalized_text: str,
         fallback_path: str,
     ) -> str:
-        if self.planner_llm is None:
-            return ''
-        active_dataset = self.session_state.active_dataset
-        facts = {
-            'dataset_root': active_dataset.dataset_root or fallback_path,
-            'img_dir': active_dataset.img_dir,
-            'data_yaml': active_dataset.data_yaml,
-            'has_scan': bool(active_dataset.last_scan),
-            'has_validate': bool(active_dataset.last_validate),
-            'has_health_check': bool(active_dataset.last_health_check),
-            'has_duplicate_check': bool(active_dataset.last_duplicate_check),
-            'user_text': user_text,
-        }
-        messages = [
-            SystemMessage(
-                content=(
-                    '你是 YoloStudio Agent 的数据集跟进路由器。'
-                    '当前同一会话里已经存在 dataset 上下文。'
-                    '你只负责判断用户这句跟进，应该查看数据集质量总览、查看健康检查详情、查看重复图片详情，还是不属于当前 dataset 上下文。'
-                    '如果用户是在问现在怎么样、数据集情况、详细一点的数据集信息、当前风险、整体状态，返回 quality。'
-                    '如果用户明确在问损坏、尺寸异常、健康检查、坏图、图片质量，返回 health。'
-                    '如果用户明确在问重复、重复图片、相似图片，返回 duplicates。'
-                    '如果用户是在换数据集、发起训练、做预测、抽图、抽帧或扫描视频，返回 other。'
-                    '输出必须是 JSON，对象格式固定为 {"action":"quality|health|duplicates|other","reason":"..."}。'
-                    '不要输出 markdown，不要解释。\n'
-                    f'facts={json.dumps(facts, ensure_ascii=False)}'
-                )
-            ),
-        ]
-        return await self._classify_structured_action(
-            messages=messages,
-            allowed_actions={'quality', 'health', 'duplicates'},
+        return await classify_dataset_followup_action(
+            planner_llm=self.planner_llm,
+            session_state=self.session_state,
+            user_text=user_text,
+            normalized_text=normalized_text,
+            fallback_path=fallback_path,
+            classify_structured_action=self._classify_structured_action,
         )
 
     async def _classify_extract_followup_action(
@@ -6594,41 +5602,12 @@ class YoloStudioAgentClient:
         user_text: str,
         normalized_text: str,
     ) -> str:
-        if self.planner_llm is None:
-            return ''
-        active_dataset = self.session_state.active_dataset
-        facts = {
-            'has_extract_preview': bool(active_dataset.last_extract_preview),
-            'has_extract_result': bool(active_dataset.last_extract_result),
-            'has_video_scan': bool(active_dataset.last_video_scan),
-            'has_frame_extract': bool(active_dataset.last_frame_extract),
-            'extract_preview': active_dataset.last_extract_preview,
-            'extract_result': active_dataset.last_extract_result,
-            'video_scan': active_dataset.last_video_scan,
-            'frame_extract': active_dataset.last_frame_extract,
-            'user_text': user_text,
-        }
-        messages = [
-            SystemMessage(
-                content=(
-                    '你是 YoloStudio Agent 的抽取流程跟进路由器。'
-                    '当前同一会话里已经存在 extract 上下文。'
-                    '你只负责判断用户这句跟进，应该查看抽图预览结果、抽图执行结果、视频扫描结果、抽帧结果，还是不属于当前 extract 上下文。'
-                    '如果用户在问预览、计划抽多少、预览结果，返回 preview。'
-                    '如果用户在问抽图结果、抽样结果、输出目录、抽出来多少图片，返回 extract。'
-                    '如果用户在问视频有多少、扫描结果、有哪些视频，返回 video_scan。'
-                    '如果用户在问抽帧结果、帧输出、帧目录、抽了多少帧，返回 frame_extract。'
-                    '如果用户只是泛泛问“现在什么情况了/详细一点的信息”，优先使用当前上下文里最具体的已完成结果：frame_extract > extract > preview > video_scan。'
-                    '如果用户是在发起新的训练、预测、远端传输、数据质量检查，返回 other。'
-                    '输出必须是 JSON，对象格式固定为 {"action":"preview|extract|video_scan|frame_extract|other","reason":"..."}。'
-                    '不要输出 markdown，不要解释。\n'
-                    f'facts={json.dumps(facts, ensure_ascii=False)}'
-                )
-            ),
-        ]
-        return await self._classify_structured_action(
-            messages=messages,
-            allowed_actions={'preview', 'extract', 'video_scan', 'frame_extract'},
+        return await classify_extract_followup_action(
+            planner_llm=self.planner_llm,
+            session_state=self.session_state,
+            user_text=user_text,
+            normalized_text=normalized_text,
+            classify_structured_action=self._classify_structured_action,
         )
 
     def _extract_followup_result(self, action: str) -> tuple[str, dict[str, Any]] | None:
@@ -6952,38 +5931,12 @@ class YoloStudioAgentClient:
         user_text: str,
         normalized_text: str,
     ) -> str:
-        if self.planner_llm is None:
-            return ''
-        active_remote = self.session_state.active_remote_transfer
-        facts = {
-            'target_label': active_remote.target_label,
-            'profile_name': active_remote.profile_name,
-            'remote_root': active_remote.remote_root,
-            'has_last_profile_listing': bool(active_remote.last_profile_listing),
-            'has_last_upload': bool(active_remote.last_upload),
-            'has_last_download': bool(active_remote.last_download),
-            'user_text': user_text,
-        }
-        messages = [
-            SystemMessage(
-                content=(
-                    '你是 YoloStudio Agent 的远端传输跟进路由器。'
-                    '当前同一会话里已经存在 remote transfer 上下文。'
-                    '你只负责判断用户这句跟进，应该查看远端 profile 列表结果、查看最近一次上传结果、查看最近一次下载结果，还是不属于当前 remote transfer 上下文。'
-                    '如果用户在问远端配置、可用服务器、profile、SSH alias，返回 profiles。'
-                    '如果用户在问上传到哪、远端目录、传输了什么、上传详情、远端传输情况，返回 upload。'
-                    '如果用户在问下载到哪、本机目录、拉回来了什么、下载详情，返回 download。'
-                    '如果用户只是泛泛问“现在什么情况了/详细一点的信息”，优先使用当前上下文里最近完成的方向：download > upload > profiles。'
-                    '如果用户是在发起新的上传/下载/预测/训练闭环，返回 other。'
-                    '输出必须是 JSON，对象格式固定为 {"action":"profiles|upload|download|other","reason":"..."}。'
-                    '不要输出 markdown，不要解释。\n'
-                    f'facts={json.dumps(facts, ensure_ascii=False)}'
-                )
-            ),
-        ]
-        return await self._classify_structured_action(
-            messages=messages,
-            allowed_actions={'profiles', 'upload', 'download'},
+        return await classify_remote_transfer_followup_action(
+            planner_llm=self.planner_llm,
+            session_state=self.session_state,
+            user_text=user_text,
+            normalized_text=normalized_text,
+            classify_structured_action=self._classify_structured_action,
         )
 
     async def _classify_remote_roundtrip_followup_action(
@@ -6992,47 +5945,13 @@ class YoloStudioAgentClient:
         user_text: str,
         normalized_text: str,
     ) -> str:
-        if self.planner_llm is None:
-            return ''
-        active_training = self.session_state.active_training
-        active_prediction = self.session_state.active_prediction
-        facts = {
-            'has_training_remote_roundtrip': bool(active_training.last_remote_roundtrip),
-            'training_remote_roundtrip': active_training.last_remote_roundtrip,
-            'training_running': bool(active_training.running),
-            'has_prediction_remote_roundtrip': bool(active_prediction.last_remote_roundtrip),
-            'prediction_remote_roundtrip': active_prediction.last_remote_roundtrip,
-            'has_local_training_context': bool(
-                active_training.last_status
-                or active_training.last_summary
-                or active_training.training_run_summary
-                or active_training.running
-            ),
-            'has_local_prediction_context': bool(
-                active_prediction.last_result
-                or active_prediction.last_summary
-                or active_prediction.last_inspection
-            ),
-            'user_text': user_text,
-        }
-        messages = [
-            SystemMessage(
-                content=(
-                    '你是 YoloStudio Agent 的远端闭环跟进路由器。'
-                    '当前同一会话里已经存在 remote training / remote prediction roundtrip 上下文。'
-                    '你只负责判断用户这句跟进，是想继续查看远端训练闭环结果、继续查看远端预测闭环结果，还是不属于当前远端闭环上下文。'
-                    '如果用户在追问远端、服务器那边、闭环结果、上传后结果、回传结果、详细一点的远端执行信息，优先返回与当前上下文匹配的 training_pipeline 或 prediction_pipeline。'
-                    '如果用户是在问本地训练状态、本地预测结果、或是在发起新的上传/远端训练/远端预测，返回 other。'
-                    '如果只存在一种远端闭环上下文，而用户是在泛泛追问刚才那次远端执行情况，也返回对应 action。'
-                    '输出必须是 JSON，对象格式固定为 {"action":"training_pipeline|prediction_pipeline|other","reason":"..."}。'
-                    '不要输出 markdown，不要解释。\n'
-                    f'facts={json.dumps(facts, ensure_ascii=False)}'
-                )
-            ),
-        ]
-        return await self._classify_structured_action(
-            messages=messages,
-            allowed_actions={'training_pipeline', 'prediction_pipeline'},
+        return await classify_remote_roundtrip_followup_action(
+            planner_llm=self.planner_llm,
+            session_state=self.session_state,
+            user_text=user_text,
+            normalized_text=normalized_text,
+            has_training_state_context=self._has_training_state_context,
+            classify_structured_action=self._classify_structured_action,
         )
 
     @staticmethod
@@ -7344,480 +6263,75 @@ class YoloStudioAgentClient:
         return mapping.get(normalized, normalized)
 
     def _training_plan_user_facts(self, draft: dict[str, Any], *, pending: bool) -> dict[str, Any]:
-        execution_mode_raw = str(draft.get('execution_mode') or '').strip().lower()
-        next_step_tool = str(draft.get('next_step_tool') or '').strip()
-        loop_like = 'loop' in execution_mode_raw or next_step_tool == 'start_training_loop'
-        args_source = draft.get('planned_loop_args') if loop_like else draft.get('planned_training_args')
-        args = dict(args_source or draft.get('planned_training_args') or {})
-        next_args = dict(draft.get('next_step_args') or {})
-        execution_mode_map = {
-            'prepare_then_train': '先准备再训练',
-            'prepare_then_loop': '先准备再进入循环训练',
-            'direct_train': '直接训练',
-            'direct_loop': '直接启动循环训练',
-            'prepare_only': '只做准备，暂不启动训练',
-            'discussion_only': '先讨论方案，暂不执行',
-            'blocked': '当前存在阻塞，先解决问题',
-        }
-        execution_backend_map = {
-            'standard_yolo': '标准 YOLO 训练',
-            'custom_script': '自定义训练脚本',
-            'custom_trainer': '自定义 Trainer',
-        }
-        return {
-            'pending_confirmation': bool(pending),
-            'dataset_path': str(draft.get('dataset_path') or '').strip(),
-            'current_judgment': str(draft.get('data_summary') or '').strip(),
-            'plan_reason': str(draft.get('reasoning_summary') or '').strip(),
-            'execution_mode': execution_mode_map.get(execution_mode_raw, execution_mode_raw),
-            'execution_backend': execution_backend_map.get(str(draft.get('execution_backend') or ''), str(draft.get('execution_backend') or '').strip()),
-            'training_environment': str(draft.get('training_environment') or '').strip(),
-            'model': str(args.get('model') or '').strip(),
-            'data_yaml': str(args.get('data_yaml') or '').strip(),
-            'classes_txt': str(args.get('classes_txt') or next_args.get('classes_txt') or '').strip(),
-            'project': str(args.get('project') or '').strip(),
-            'name': str(args.get('name') or '').strip(),
-            'epochs': args.get('epochs'),
-            'device': str(args.get('device') or '').strip(),
-            'loop_requested': loop_like,
-            'managed_level': str(args.get('managed_level') or '').strip(),
-            'max_rounds': args.get('max_rounds'),
-            'next_step': self._human_training_step_name(next_step_tool),
-            'next_step_tool': next_step_tool,
-            'blockers': [str(item).strip() for item in (draft.get('blockers') or []) if str(item).strip()],
-            'warnings': [str(item).strip() for item in (draft.get('warnings') or []) if str(item).strip()],
-        }
+        return training_plan_user_facts(draft, pending=pending)
 
     def _training_plan_render_error(self, draft: dict[str, Any], *, pending: bool, error: Exception | None = None) -> str:
-        facts = self._training_plan_user_facts(draft, pending=pending)
-        summary_bits: list[str] = []
-        if facts.get('dataset_path'):
-            summary_bits.append(f"数据集：{facts['dataset_path']}")
-        if facts.get('model'):
-            summary_bits.append(f"模型：{facts['model']}")
-        if facts.get('classes_txt'):
-            summary_bits.append(f"类名文件：{facts['classes_txt']}")
-        if facts.get('next_step'):
-            summary_bits.append(f"下一步：{facts['next_step']}")
-        prefix = '模型这次没有成功生成计划说明。'
-        if error:
-            prefix = f'{prefix} 我不会再用固定模板冒充模型输出。'
-        if summary_bits:
-            return f"{prefix} 当前已确认的计划事实：{'；'.join(summary_bits)}。请稍后重试。"
-        return f'{prefix} 请稍后重试。'
+        return training_plan_render_error(draft, pending=pending, error=error)
 
     async def _render_training_plan_message(self, draft: dict[str, Any], *, pending: bool) -> str:
-        if not draft:
-            return ''
-        if self.planner_llm is None:
-            return self._render_training_plan_draft(draft, pending=pending)
-
-        facts = self._training_plan_user_facts(draft, pending=pending)
-        messages = [
-            SystemMessage(
-                content=(
-                    '你是 YoloStudio Training Agent 的计划说明器。'
-                    '请基于已验证事实，用自然中文向用户说明当前训练计划。'
-                    '不要输出工具名、字段名、JSON、命令、payload、函数名，'
-                    '也不要使用“训练计划草案：”“原因和说明”“关键风险提示”这类固定模板标题。'
-                    '像同一个 Agent 在继续对话一样说明，不要每次都套相同句式。'
-                    '如果是循环训练，请明确说“循环训练”，不要混成普通训练。'
-                    '优先用 2 到 4 句自然中文：先说当前结论，再解释原因，最后说明下一步。'
-                    '如果 pending_confirmation=true，请用一句自然中文说明“如果你同意，我就按这个计划执行”。'
-                    '不要补充未验证事实。'
-                )
-            ),
-            HumanMessage(
-                content=(
-                    '请根据以下已验证事实，直接给用户一段自然中文说明：\n'
-                    f'{json.dumps(facts, ensure_ascii=False, indent=2)}'
-                )
-            ),
-        ]
-        text = await self._invoke_renderer_text(
-            messages=messages,
-            failure_event='planner_render_failed',
-            failure_payload={
-                'dataset_path': facts.get('dataset_path', ''),
-                'next_step': facts.get('next_step', ''),
-            },
+        return await render_training_plan_message_service(
+            planner_llm=self.planner_llm,
+            draft=draft,
+            pending=pending,
+            render_training_plan_draft=self._render_training_plan_draft,
+            invoke_renderer_text=self._invoke_renderer_text,
         )
-        if text:
-            return text
-        return self._training_plan_render_error(draft, pending=pending)
 
     async def _build_confirmation_message(self, tool_call: dict[str, Any]) -> str:
-        args = tool_call.get('args', {})
-        tool_name = str(tool_call.get('name') or '')
-        plan_draft = self.session_state.active_training.training_plan_draft or {}
-        if plan_draft and str(plan_draft.get('next_step_tool') or '').strip() == tool_name:
-            return await self._render_training_plan_message(plan_draft, pending=True)
-        return await self._render_confirmation_message({'name': tool_name, 'args': args})
+        return await build_confirmation_message_reply(
+            self.session_state,
+            tool_call,
+            render_training_plan_message=self._render_training_plan_message,
+            render_confirmation_message=self._render_confirmation_message,
+        )
 
     def _confirmation_user_facts(self, tool_call: dict[str, Any]) -> dict[str, Any]:
-        args = dict(tool_call.get('args') or {})
-        tool_name = str(tool_call.get('name') or '').strip()
-        ds = self.session_state.active_dataset
-        tr = self.session_state.active_training
-        facts: dict[str, Any] = {
-            'tool_name': tool_name,
-            'tool_action': self._human_training_step_name(tool_name),
-            'confirmation_mode': self._confirmation_mode(),
-            'dataset_path': str(args.get('dataset_path') or ds.dataset_root or ds.img_dir or '').strip(),
-            'data_yaml': str(args.get('data_yaml') or tr.data_yaml or ds.data_yaml or '').strip(),
-            'model': str(args.get('model') or tr.model or '').strip(),
-            'classes_txt': str(args.get('classes_txt') or '').strip(),
-            'force_split': bool(args.get('force_split')),
-            'device': str(args.get('device') or tr.device or '').strip(),
-            'training_environment': str(args.get('training_environment') or tr.training_environment or '').strip(),
-            'project': str(args.get('project') or tr.project or '').strip(),
-            'run_name': str(args.get('name') or tr.run_name or '').strip(),
-            'managed_level': str(args.get('managed_level') or '').strip(),
-            'max_rounds': args.get('max_rounds'),
-        }
-        readiness = ds.last_readiness or {}
-        summary = str(readiness.get('summary') or '').strip()
-        if summary:
-            facts['dataset_summary'] = summary
-        readiness_overview = dict(readiness.get('readiness_overview') or {})
-        if readiness_overview:
-            facts['dataset_readiness'] = {
-                'ready': readiness_overview.get('ready'),
-                'preparable': readiness_overview.get('preparable'),
-                'primary_blocker_type': readiness_overview.get('primary_blocker_type'),
-                'blocker_codes': list(readiness_overview.get('blocker_codes') or [])[:4],
-                'risk_level': readiness_overview.get('risk_level'),
-                'warning_count': readiness_overview.get('warning_count'),
-                'blocker_count': readiness_overview.get('blocker_count'),
-                'needs_split': readiness_overview.get('needs_split'),
-                'needs_data_yaml': readiness_overview.get('needs_data_yaml'),
-            }
-        blockers = [str(item).strip() for item in (readiness.get('blockers') or []) if str(item).strip()]
-        if blockers:
-            facts['dataset_blockers'] = blockers[:4]
-        warnings = [str(item).strip() for item in (readiness.get('warnings') or []) if str(item).strip()]
-        if warnings:
-            facts['dataset_warnings'] = warnings[:4]
-        action_candidates = self._compact_action_candidates(readiness.get('action_candidates'))
-        if action_candidates:
-            facts['action_candidates'] = action_candidates
-        return {
-            key: value
-            for key, value in facts.items()
-            if value is not None and value != '' and value != [] and value != {}
-        }
+        return confirmation_user_facts(
+            self.session_state,
+            tool_call,
+            confirmation_mode=self._confirmation_mode(),
+            human_training_step_name=self._human_training_step_name,
+            compact_action_candidates=self._compact_action_candidates,
+        )
 
     def _confirmation_render_error(self, tool_call: dict[str, Any], error: Exception | None = None) -> str:
-        if error:
-            self.memory.append_event(
-                self.session_state.session_id,
-                'confirmation_render_failed',
-                {'tool': str(tool_call.get('name') or ''), 'error': str(error)},
-            )
-        return self._build_confirmation_prompt(tool_call)
+        return confirmation_render_error_reply(
+            tool_call,
+            error=error,
+            append_event=lambda event, payload: self.memory.append_event(self.session_state.session_id, event, payload),
+            build_confirmation_prompt=self._build_confirmation_prompt,
+        )
 
     async def _render_confirmation_message(self, tool_call: dict[str, Any]) -> str:
-        if self.planner_llm is None:
-            return self._build_confirmation_prompt(tool_call)
-        facts = self._confirmation_user_facts(tool_call)
-        messages = [
-            SystemMessage(
-                content=(
-                    '你是 YoloStudio Agent 的确认说明器。'
-                    '请基于已验证事实，用自然中文说明即将执行的动作、原因和关键风险。'
-                    '不要输出工具名、字段名、JSON、命令或 payload。'
-                    '不要使用“原因和说明”“关键风险提示”这类固定小标题，也不要每次都复用同一套句式。'
-                    '如果这是循环训练相关动作，要明确说“循环训练”，不要混成普通训练。'
-                    '最后用一句自然中文询问用户是否继续，不要把确认限制写成 y/n。'
-                    '不要补充未验证事实。'
-                )
-            ),
-            HumanMessage(
-                content=(
-                    '请根据以下已验证事实，直接给用户一段自然中文确认说明：\n'
-                    f'{json.dumps(facts, ensure_ascii=False, indent=2)}'
-                )
-            ),
-        ]
-        text = await self._invoke_renderer_text(
-            messages=messages,
-            failure_event='confirmation_render_failed',
-            failure_payload={'tool': str(tool_call.get('name') or '')},
+        return await render_confirmation_message_reply(
+            planner_llm=self.planner_llm,
+            tool_call=tool_call,
+            build_confirmation_prompt=self._build_confirmation_prompt,
+            confirmation_user_facts=self._confirmation_user_facts,
+            invoke_renderer_text=self._invoke_renderer_text,
+            confirmation_render_error=self._confirmation_render_error,
         )
-        if text:
-            return text
-        return self._confirmation_render_error(tool_call)
 
     def _tool_result_user_facts(self, tool_name: str, parsed: dict[str, Any]) -> dict[str, Any]:
-        facts: dict[str, Any] = {
-            'tool_name': tool_name,
-            'ok': bool(parsed.get('ok')),
-            'summary': str(parsed.get('summary') or parsed.get('message') or parsed.get('error') or '').strip(),
-            'error': str(parsed.get('error') or '').strip(),
-        }
-        for overview_key, overview_value in self._structured_overview_payloads(parsed).items():
-            facts[overview_key] = overview_value
-        action_candidates = self._compact_action_candidates(parsed.get('action_candidates'))
-        if action_candidates:
-            facts['action_candidates'] = action_candidates
-        if tool_name == 'start_training' and parsed.get('ok'):
-            facts['can_check_progress'] = True
-            facts['can_stop_run'] = True
-        for key in (
-            'data_yaml',
-            'output_dir',
-            'save_dir',
-            'project',
-            'name',
-            'device',
-            'pid',
-            'log_file',
-            'train_count',
-            'val_count',
-            'resolved_train_path',
-            'resolved_val_path',
-            'forced',
-            'return_code',
-        ):
-            value = parsed.get(key)
-            if value is None or value == '':
-                continue
-            facts[key] = value
-        if tool_name in {
-            'start_training_loop',
-            'list_training_loops',
-            'check_training_loop_status',
-            'inspect_training_loop',
-            'pause_training_loop',
-            'resume_training_loop',
-            'stop_training_loop',
-        }:
-            for key in (
-                'loop_id',
-                'loop_name',
-                'status',
-                'managed_level',
-                'current_round_index',
-                'completed_rounds',
-                'max_rounds',
-                'best_round_index',
-                'best_target_metric',
-                'failure_count',
-                'no_improvement_streak',
-                'termination_reason',
-                'termination_detail',
-                'active_loop_id',
-            ):
-                value = parsed.get(key)
-                if value is None or value == '':
-                    continue
-                facts[key] = value
-            boundaries = dict(parsed.get('boundaries') or {})
-            if boundaries:
-                facts['target_metric'] = boundaries.get('target_metric')
-                if boundaries.get('target_metric_value') is not None:
-                    facts['target_metric_value'] = boundaries.get('target_metric_value')
-            next_round_plan = dict(parsed.get('next_round_plan') or {})
-            if next_round_plan:
-                facts['next_round_plan'] = {
-                    'round_index': next_round_plan.get('round_index'),
-                    'reason': next_round_plan.get('reason'),
-                    'decision_type': next_round_plan.get('decision_type'),
-                    'change_set': [
-                        {
-                            'field': item.get('field'),
-                            'old': item.get('old'),
-                            'new': item.get('new'),
-                        }
-                        for item in list(next_round_plan.get('change_set') or [])[:4]
-                        if isinstance(item, dict)
-                    ],
-                    'experience_context': next_round_plan.get('experience_context'),
-                }
-            latest_round_card = dict(parsed.get('latest_round_card') or {})
-            if latest_round_card:
-                facts['latest_round_card'] = {
-                    'round_index': latest_round_card.get('round_index'),
-                    'status': latest_round_card.get('status'),
-                    'summary': latest_round_card.get('summary'),
-                    'metrics': latest_round_card.get('metrics') or {},
-                    'changed_params': list(latest_round_card.get('changed_params') or [])[:4],
-                    'knowledge_gate': latest_round_card.get('knowledge_gate'),
-                    'decision': latest_round_card.get('decision'),
-                    'next_plan': latest_round_card.get('next_plan'),
-                    'why': latest_round_card.get('why'),
-                    'recommendation': latest_round_card.get('recommendation'),
-                    'round_review': latest_round_card.get('round_review'),
-                    'round_memory': latest_round_card.get('round_memory'),
-                    'planner_output': latest_round_card.get('planner_output'),
-                    'experience_context': latest_round_card.get('experience_context'),
-                }
-            round_cards = list(parsed.get('round_cards') or [])
-            if round_cards:
-                facts['recent_round_cards'] = [
-                    {
-                        'round_index': item.get('round_index'),
-                        'status': item.get('status'),
-                        'summary': item.get('summary'),
-                        'knowledge_gate': item.get('knowledge_gate'),
-                        'decision': item.get('decision'),
-                        'round_review': item.get('round_review'),
-                        'round_memory': item.get('round_memory'),
-                        'planner_output': item.get('planner_output'),
-                    }
-                    for item in round_cards[-3:]
-                    if isinstance(item, dict)
-                ]
-            loops = list(parsed.get('loops') or [])
-            if loops:
-                facts['loop_count'] = len(loops)
-                facts['recent_loops'] = [
-                    {
-                        'loop_id': item.get('loop_id'),
-                        'loop_name': item.get('loop_name'),
-                        'status': item.get('status'),
-                        'managed_level': item.get('managed_level'),
-                        'current_round_index': item.get('current_round_index'),
-                        'max_rounds': item.get('max_rounds'),
-                        'best_round_index': item.get('best_round_index'),
-                        'best_target_metric': item.get('best_target_metric'),
-                    }
-                    for item in loops[:5]
-                    if isinstance(item, dict)
-                ]
-        for key in ('knowledge_gate_status', 'latest_round_review', 'latest_round_memory', 'latest_planner_output'):
-            value = parsed.get(key)
-            if isinstance(value, dict) and value:
-                facts[key] = value
-            final_summary = dict(parsed.get('final_summary') or {})
-            if final_summary:
-                facts['final_summary'] = {
-                    'status': final_summary.get('status'),
-                    'best_round_index': final_summary.get('best_round_index'),
-                    'best_target_metric_name': final_summary.get('best_target_metric_name'),
-                    'best_target_metric': final_summary.get('best_target_metric'),
-                    'stop_reason': final_summary.get('stop_reason'),
-                    'termination_detail': final_summary.get('termination_detail'),
-                    'round_count': final_summary.get('round_count'),
-                    'last_round_review': final_summary.get('last_round_review'),
-                    'last_round_memory': final_summary.get('last_round_memory'),
-                    'last_planner_output': final_summary.get('last_planner_output'),
-                    'experience_timeline': list(final_summary.get('experience_timeline') or [])[-3:],
-                }
-            if 'action_candidates' not in facts:
-                next_actions = list(parsed.get('next_actions') or [])
-                if next_actions:
-                    facts['next_actions'] = next_actions[:4]
-        if tool_name in {'remote_prediction_pipeline', 'remote_training_pipeline'}:
-            for key in (
-                'remote_source_path',
-                'remote_model_path',
-                'remote_dataset_path',
-                'remote_output_dir',
-                'remote_result_path',
-                'local_result_root',
-                'source_kind',
-                'predict_tool_name',
-                'final_run_state',
-                'wait_for_completion',
-                'download_after_completion',
-            ):
-                value = parsed.get(key)
-                if value is None or value == '':
-                    continue
-                facts[key] = value
-        return facts
+        return tool_result_user_facts(tool_name, parsed)
 
     @staticmethod
     def _compact_action_candidates(action_candidates: Any) -> list[dict[str, Any]]:
-        if not isinstance(action_candidates, list):
-            return []
-        compacted: list[dict[str, Any]] = []
-        for item in action_candidates[:4]:
-            if not isinstance(item, dict):
-                continue
-            compact = {
-                'action': item.get('action'),
-                'tool': item.get('tool'),
-                'description': item.get('description'),
-            }
-            compacted.append({key: value for key, value in compact.items() if value not in (None, '', [], {})})
-        return [item for item in compacted if item]
+        return compact_action_candidates(action_candidates)
 
     @classmethod
     def _structured_overview_payloads(cls, parsed: dict[str, Any]) -> dict[str, Any]:
-        payloads: dict[str, Any] = {}
-        for key, value in parsed.items():
-            if not key.endswith('_overview'):
-                continue
-            if isinstance(value, dict) and value:
-                payloads[key] = dict(value)
-            elif isinstance(value, list) and value:
-                payloads[key] = list(value)
-        for key in ('matched_rule_overview', 'playbook_overview'):
-            value = parsed.get(key)
-            if isinstance(value, list) and value:
-                payloads[key] = list(value)[:4]
-        return payloads
+        return structured_overview_payloads(parsed)
 
     @staticmethod
     def _remote_pipeline_applied_results(tool_name: str, parsed: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
-        normalized = canonical_tool_name(tool_name)
-        if normalized == 'remote_prediction_pipeline':
-            predict_tool_name = str(parsed.get('predict_tool_name') or 'predict_images').strip() or 'predict_images'
-            ordered = [
-                ('upload_assets_to_remote', dict(parsed.get('upload') or {})),
-                (predict_tool_name, dict(parsed.get('predict') or {})),
-                ('download_assets_from_remote', dict(parsed.get('download') or {})),
-            ]
-            return [(name, payload) for name, payload in ordered if payload]
-        if normalized == 'remote_training_pipeline':
-            ordered = [
-                ('upload_assets_to_remote', dict(parsed.get('upload') or {})),
-                ('training_readiness', dict(parsed.get('readiness') or {})),
-                ('prepare_dataset_for_training', dict(parsed.get('prepare') or {})),
-                ('training_preflight', dict(parsed.get('preflight') or {})),
-                ('start_training', dict(parsed.get('start') or {})),
-                ('check_training_status', dict(parsed.get('final_status') or {})),
-                ('summarize_training_run', dict(parsed.get('final_summary') or {})),
-                ('download_assets_from_remote', dict(parsed.get('download') or {})),
-            ]
-            return [(name, payload) for name, payload in ordered if payload]
-        return []
+        return remote_pipeline_applied_results(tool_name, parsed)
 
     def _fallback_tool_result_text(self, tool_name: str, parsed: dict[str, Any]) -> str:
-        grounded_preferred_tools = {
-            'check_training_status',
-            'check_training_loop_status',
-            'start_training',
-            'start_training_loop',
-            'pause_training_loop',
-            'resume_training_loop',
-            'stop_training_loop',
-            'scan_cameras',
-            'scan_screens',
-            'test_rtsp_stream',
-            'check_realtime_prediction_status',
-            'start_camera_prediction',
-            'start_rtsp_prediction',
-            'start_screen_prediction',
-            'stop_realtime_prediction',
-            'list_remote_profiles',
-        }
-        prefer_grounded = tool_name in grounded_preferred_tools and not (
-            self._structured_overview_payloads(parsed) or parsed.get('action_candidates')
-        )
-        if prefer_grounded:
-            grounded_text = self._build_grounded_tool_reply([(tool_name, parsed)])
-            if grounded_text:
-                return grounded_text
-        structured_text = stringify_tool_result_facts(parsed).strip()
-        if structured_text:
-            return structured_text
-        return (
-            self._build_grounded_tool_reply([(tool_name, parsed)])
-            or str(parsed.get('summary') or parsed.get('message') or parsed.get('error') or '').strip()
-            or ('操作执行成功' if parsed.get('ok') else '操作执行失败')
+        return fallback_tool_result_text_reply(
+            tool_name,
+            parsed,
+            build_grounded_tool_reply=self._build_grounded_tool_reply,
         )
 
     def _fallback_multi_tool_result_message(
@@ -7826,18 +6340,12 @@ class YoloStudioAgentClient:
         *,
         extra_notes: list[str] | None = None,
     ) -> str:
-        sections: list[str] = []
-        for tool_name, parsed in applied_results:
-            normalized_name = str(canonical_tool_name(tool_name) or '').strip()
-            if not normalized_name:
-                continue
-            normalized_parsed = parsed if isinstance(parsed, dict) else {'ok': False, 'summary': str(parsed or '').strip()}
-            sections.append(self._fallback_tool_result_text(normalized_name, normalized_parsed))
-        for note in extra_notes or []:
-            text = str(note or '').strip()
-            if text:
-                sections.append(text)
-        return self._merge_grounded_sections(sections)
+        return fallback_multi_tool_result_message_reply(
+            applied_results,
+            extra_notes=extra_notes,
+            build_grounded_tool_reply=self._build_grounded_tool_reply,
+            merge_grounded_sections=self._merge_grounded_sections,
+        )
 
     async def _render_multi_tool_result_message(
         self,
@@ -7846,64 +6354,19 @@ class YoloStudioAgentClient:
         objective: str = '',
         extra_notes: list[str] | None = None,
     ) -> str:
-        normalized_results: list[tuple[str, dict[str, Any]]] = []
-        for tool_name, parsed in applied_results:
-            normalized_name = str(canonical_tool_name(tool_name) or '').strip()
-            if not normalized_name:
-                continue
-            normalized_parsed = parsed if isinstance(parsed, dict) else {'ok': False, 'summary': str(parsed or '').strip()}
-            normalized_results.append((normalized_name, normalized_parsed))
-
-        cleaned_notes = [str(note).strip() for note in (extra_notes or []) if str(note).strip()]
-        if not normalized_results:
-            return self._merge_grounded_sections(cleaned_notes)
-        if len(normalized_results) == 1 and not cleaned_notes:
-            tool_name, parsed = normalized_results[0]
-            return await self._render_tool_result_message(tool_name, parsed)
-        if self.planner_llm is None:
-            return self._fallback_multi_tool_result_message(normalized_results, extra_notes=cleaned_notes)
-
-        facts = {
-            'objective': str(objective or '').strip(),
-            'results': [self._tool_result_user_facts(tool_name, parsed) for tool_name, parsed in normalized_results],
-            'extra_notes': cleaned_notes[:4],
-        }
-        messages = [
-            SystemMessage(
-                content=(
-                    '你是 YoloStudio Agent 的组合结果说明器。'
-                    '请基于多条已验证的工具结果，用自然中文向用户给出一个连贯结论。'
-                    '优先回答最终结果，再补关键事实和下一步。'
-                    '不要输出工具名、字段名、JSON、命令或 payload。'
-                    '不要补充未验证事实。'
-                )
-            ),
-            HumanMessage(
-                content=(
-                    '请根据以下已验证事实，直接给用户一段自然中文说明：\n'
-                    f'{json.dumps(facts, ensure_ascii=False, indent=2)}'
-                )
-            ),
-        ]
-        text = await self._invoke_renderer_text(
-            messages=messages,
-            failure_event='multi_tool_result_render_failed',
-            failure_payload={
-                'tools': [tool_name for tool_name, _ in normalized_results],
-                'objective': str(objective or '').strip(),
-            },
+        return await render_multi_tool_result_message_reply(
+            planner_llm=self.planner_llm,
+            applied_results=applied_results,
+            objective=objective,
+            extra_notes=extra_notes,
+            invoke_renderer_text=self._invoke_renderer_text,
+            render_tool_result_message=self._render_tool_result_message,
+            build_grounded_tool_reply=self._build_grounded_tool_reply,
+            merge_grounded_sections=self._merge_grounded_sections,
         )
-        if text:
-            return text
-        return self._fallback_multi_tool_result_message(normalized_results, extra_notes=cleaned_notes)
 
     def _tool_result_render_error(self, tool_name: str, parsed: dict[str, Any], error: Exception | None = None) -> str:
-        summary = str(parsed.get('summary') or parsed.get('message') or parsed.get('error') or '').strip()
-        if error and summary:
-            return f'模型这次没有成功整理执行结果。我先给你真实摘要：{summary}'
-        if error:
-            return '模型这次没有成功整理执行结果，但工具已经执行完成。请稍后重试。'
-        return summary or ('操作执行成功' if parsed.get('ok') else '操作执行失败')
+        return tool_result_render_error(tool_name, parsed, error=error)
 
     async def _render_prepare_followup_message(self, prepare_parsed: dict[str, Any], preflight: dict[str, Any]) -> str:
         if self.planner_llm is None:
@@ -7958,53 +6421,15 @@ class YoloStudioAgentClient:
         ) or preflight.get('summary') or prepare_parsed.get('summary') or '后续训练预检未通过'
 
     async def _render_tool_result_message(self, tool_name: str, parsed: dict[str, Any]) -> str:
-        remote_pipeline_results = self._remote_pipeline_applied_results(tool_name, parsed)
-        if remote_pipeline_results:
-            objective = '远端训练闭环执行结果' if canonical_tool_name(tool_name) == 'remote_training_pipeline' else '远端预测闭环执行结果'
-            extra_notes: list[str] = []
-            remote_result_path = str(parsed.get('remote_result_path') or '').strip()
-            local_result_root = str(parsed.get('local_result_root') or '').strip()
-            final_run_state = str(parsed.get('final_run_state') or '').strip()
-            if remote_result_path:
-                extra_notes.append(f'远端结果目录: {remote_result_path}')
-            if local_result_root:
-                extra_notes.append(f'本机回传目录: {local_result_root}')
-            if final_run_state:
-                extra_notes.append(f'最终运行状态: {final_run_state}')
-            return await self._render_multi_tool_result_message(
-                remote_pipeline_results,
-                objective=objective,
-                extra_notes=extra_notes or None,
-            )
-        if self.planner_llm is None:
-            return self._fallback_tool_result_text(tool_name, parsed)
-
-        facts = self._tool_result_user_facts(tool_name, parsed)
-        messages = [
-            SystemMessage(
-                content=(
-                    '你是 YoloStudio Agent 的结果说明器。'
-                    '请基于已验证的工具执行结果，用自然中文向用户说明本次执行结果。'
-                    '不要输出工具名、字段名、JSON、命令或 payload。'
-                    '如果成功，先说结果，再补关键事实；如果失败，直接解释失败原因和下一步。'
-                    '不要补充未验证事实。'
-                )
-            ),
-            HumanMessage(
-                content=(
-                    '请根据以下已验证事实，直接给用户一段自然中文说明：\n'
-                    f'{json.dumps(facts, ensure_ascii=False, indent=2)}'
-                )
-            ),
-        ]
-        text = await self._invoke_renderer_text(
-            messages=messages,
-            failure_event='tool_result_render_failed',
-            failure_payload={'tool': tool_name, 'ok': bool(parsed.get('ok'))},
+        return await render_tool_result_message_reply(
+            planner_llm=self.planner_llm,
+            tool_name=tool_name,
+            parsed=parsed,
+            render_multi_tool_result_message=self._render_multi_tool_result_message,
+            invoke_renderer_text=self._invoke_renderer_text,
+            build_grounded_tool_reply=self._build_grounded_tool_reply,
+            merge_grounded_sections=self._merge_grounded_sections,
         )
-        if text:
-            return text
-        return self._tool_result_render_error(tool_name, parsed)
 
     async def _try_handle_training_plan_bootstrap(
         self,
@@ -8583,225 +7008,16 @@ class YoloStudioAgentClient:
         }
 
     def _build_confirmation_prompt(self, tool_call: dict[str, Any]) -> str:
-        args = tool_call.get("args", {})
-        tool_name = str(tool_call.get('name') or '')
-        ds = self.session_state.active_dataset
-        tr = self.session_state.active_training
-        plan_draft = tr.training_plan_draft or {}
-
-        if plan_draft and str(plan_draft.get('next_step_tool') or '').strip() == tool_name:
-            return self._render_training_plan_draft(plan_draft, pending=True)
-
-        if tool_name == 'prepare_dataset_for_training':
-            lines = ['准备执行：数据准备']
-            dataset_path = str(args.get('dataset_path') or ds.dataset_root or ds.img_dir or '').strip()
-            if dataset_path:
-                lines.append(f'数据集: {dataset_path}')
-            readiness = ds.last_readiness or {}
-            resolved_img_dir = str(readiness.get('resolved_img_dir') or ds.img_dir or '').strip()
-            resolved_label_dir = str(readiness.get('resolved_label_dir') or ds.label_dir or '').strip()
-            resolved_yaml = str(readiness.get('resolved_data_yaml') or ds.data_yaml or '').strip()
-            if resolved_img_dir and resolved_label_dir:
-                lines.append('当前状态: 已识别图片目录和标注目录')
-            if not resolved_yaml:
-                lines.append('当前状态: 还没有可用的 data.yaml，本次会自动补齐训练产物')
-            elif readiness.get('ready'):
-                lines.append(f'当前状态: 已有可用 data.yaml（{resolved_yaml}）')
-            if args.get('force_split'):
-                lines.append('附加安排: 按默认比例划分数据')
-            planned_yaml = resolved_yaml or self._remote_join(dataset_path, 'data.yaml') if dataset_path else ''
-            if planned_yaml:
-                lines.append(f'预期产物: data.yaml -> {planned_yaml}')
-            lines.append('如果你想继续，我就执行；如果想先停一下，也可以直接告诉我。')
-            return '\n'.join(lines)
-
-        if tool_name == 'start_training':
-            lines = ['准备执行：启动训练']
-            readiness = ds.last_readiness or {}
-            if readiness.get('summary'):
-                lines.append(f"数据理解: {readiness.get('summary')}")
-            preflight = tr.last_preflight or {}
-            environment = preflight.get('training_environment') or tr.last_environment_probe.get('default_environment') or {}
-            env_name = environment.get('display_name') or environment.get('name')
-            if env_name:
-                lines.append(f'训练环境: {env_name}')
-            model = args.get('model') or tr.model
-            data_yaml = args.get('data_yaml') or tr.data_yaml or ds.data_yaml
-            epochs = args.get('epochs') or (preflight.get('resolved_args') or {}).get('epochs') or 100
-            device = args.get('device') or (preflight.get('resolved_args') or {}).get('device') or 'auto'
-            batch = args.get('batch')
-            if batch is None:
-                batch = (preflight.get('resolved_args') or {}).get('batch')
-            imgsz = args.get('imgsz')
-            if imgsz is None:
-                imgsz = (preflight.get('resolved_args') or {}).get('imgsz')
-            project = args.get('project')
-            if not project:
-                project = (preflight.get('resolved_args') or {}).get('project')
-            run_name = args.get('name')
-            if not run_name:
-                run_name = (preflight.get('resolved_args') or {}).get('name')
-            fraction = args.get('fraction')
-            if fraction is None:
-                fraction = (preflight.get('resolved_args') or {}).get('fraction')
-            classes = args.get('classes')
-            if classes is None:
-                classes = (preflight.get('resolved_args') or {}).get('classes')
-            single_cls = args.get('single_cls')
-            if single_cls is None:
-                single_cls = (preflight.get('resolved_args') or {}).get('single_cls')
-            plan_bits = [f'model={model}', f'data={data_yaml}', f'epochs={epochs}', f'device={device}']
-            if batch is not None:
-                plan_bits.append(f'batch={batch}')
-            if imgsz is not None:
-                plan_bits.append(f'imgsz={imgsz}')
-            lines.append(f"初步安排: {', '.join(str(item) for item in plan_bits)}")
-            output_bits = []
-            if project:
-                output_bits.append(f'project={project}')
-            if run_name:
-                output_bits.append(f'name={run_name}')
-            if output_bits:
-                lines.append(f"输出组织: {', '.join(output_bits)}")
-            advanced_bits = []
-            for key, value in (('fraction', fraction), ('classes', classes), ('single_cls', single_cls)):
-                if value is not None and value != '':
-                    advanced_bits.append(f'{key}={value}')
-            if advanced_bits:
-                lines.append(f"高级参数: {', '.join(advanced_bits)}")
-            if preflight.get('summary'):
-                lines.append(f"预检: {preflight.get('summary')}")
-            command_preview = preflight.get('command_preview') or []
-            if command_preview:
-                preview_text = ' '.join(str(item) for item in command_preview[:6])
-                if len(command_preview) > 6:
-                    preview_text += ' ...'
-                lines.append(f'命令预览: {preview_text}')
-            lines.append('如果你想继续，我就执行；如果想先停一下，也可以直接告诉我。')
-            return '\n'.join(lines)
-
-        if tool_name == 'start_training_loop':
-            lines = ['准备执行：启动环训练']
-            readiness = ds.last_readiness or {}
-            if readiness.get('summary'):
-                lines.append(f"数据理解: {readiness.get('summary')}")
-            if args.get('loop_name'):
-                lines.append(f"环训练名称: {args.get('loop_name')}")
-            model = args.get('model') or tr.model
-            data_yaml = args.get('data_yaml') or tr.data_yaml or ds.data_yaml
-            if model:
-                lines.append(f'模型: {model}')
-            if data_yaml:
-                lines.append(f'数据 YAML: {data_yaml}')
-            lines.append(f"托管级别: {args.get('managed_level') or 'conservative_auto'}")
-            lines.append(f"最大轮数: {args.get('max_rounds') or 5}")
-            if args.get('target_metric'):
-                target_line = f"目标指标: {args.get('target_metric')}"
-                if args.get('target_metric_value') is not None:
-                    target_line += f" >= {args.get('target_metric_value')}"
-                lines.append(target_line)
-            plan_bits = []
-            for key in ('epochs', 'batch', 'imgsz', 'device'):
-                value = args.get(key)
-                if value is not None and value != '':
-                    plan_bits.append(f'{key}={value}')
-            if plan_bits:
-                lines.append(f"首轮参数: {', '.join(str(item) for item in plan_bits)}")
-            allowed_tuning_params = list(args.get('allowed_tuning_params') or [])
-            if allowed_tuning_params:
-                lines.append(f"允许自动调整: {', '.join(str(item) for item in allowed_tuning_params)}")
-            lines.append('如果你想继续，我就执行；如果想先停一下，也可以直接告诉我。')
-            return '\n'.join(lines)
-
-        if tool_name == 'upload_assets_to_remote':
-            lines = ['准备执行：远端上传']
-            target_label = str(args.get('server') or self.session_state.active_remote_transfer.target_label or '').strip()
-            remote_root = str(args.get('remote_root') or self.session_state.active_remote_transfer.remote_root or '').strip()
-            if target_label:
-                lines.append(f'目标服务器: {target_label}')
-            if remote_root:
-                lines.append(f'远端目录: {remote_root}')
-            local_paths = list(args.get('local_paths') or [])
-            if local_paths:
-                lines.append('本地上传项:')
-                lines.extend(f'- {item}' for item in local_paths[:5])
-                if len(local_paths) > 5:
-                    lines.append(f'- 其余 {len(local_paths) - 5} 项已省略')
-            lines.append(
-                '默认策略: 大文件自动分块 + 断点续传 + 哈希校验'
-                f" (threshold={args.get('large_file_threshold_mb', 256)}MB, chunk={args.get('chunk_size_mb', 64)}MB)"
-            )
-            lines.append('说明: 这会把本机文件/目录复制到远端服务器。')
-            lines.append('如果你想继续，我就执行；如果想先停一下，也可以直接告诉我。')
-            return '\n'.join(lines)
-
-        if tool_name == 'remote_prediction_pipeline':
-            lines = ['准备执行：远端预测闭环']
-            pipeline_args = dict(args or {})
-            upload_args = dict(pipeline_args.get('upload_args') or {})
-            target_label = str(upload_args.get('server') or self.session_state.active_remote_transfer.target_label or '').strip()
-            remote_root = str(upload_args.get('remote_root') or self.session_state.active_remote_transfer.remote_root or '').strip()
-            local_paths = list(upload_args.get('local_paths') or [])
-            if target_label:
-                lines.append(f'目标服务器: {target_label}')
-            if remote_root:
-                lines.append(f'远端目录: {remote_root}')
-            if local_paths:
-                lines.append('本地上传项:')
-                lines.extend(f'- {item}' for item in local_paths[:5])
-                if len(local_paths) > 5:
-                    lines.append(f'- 其余 {len(local_paths) - 5} 项已省略')
-            local_result_root = str(pipeline_args.get('local_result_root') or '').strip()
-            if local_result_root:
-                lines.append(f'本机回传目录: {local_result_root}')
-            lines.append('执行链路: 上传本地模型/图片或视频 -> 远端执行 prediction -> 结果下载回本机')
-            lines.append('限制: 待预测输入当前要求是单个文件或单个目录；多个散文件请先整理进目录。')
-            lines.append('如果你想继续，我就执行；如果想先停一下，也可以直接告诉我。')
-            return '\n'.join(lines)
-
-        if tool_name == 'remote_training_pipeline':
-            lines = ['准备执行：远端训练闭环']
-            pipeline_args = dict(args or {})
-            upload_args = dict(pipeline_args.get('upload_args') or {})
-            target_label = str(upload_args.get('server') or self.session_state.active_remote_transfer.target_label or '').strip()
-            remote_root = str(upload_args.get('remote_root') or self.session_state.active_remote_transfer.remote_root or '').strip()
-            local_paths = list(upload_args.get('local_paths') or [])
-            if target_label:
-                lines.append(f'目标服务器: {target_label}')
-            if remote_root:
-                lines.append(f'远端目录: {remote_root}')
-            if local_paths:
-                lines.append('本地上传项:')
-                lines.extend(f'- {item}' for item in local_paths[:5])
-                if len(local_paths) > 5:
-                    lines.append(f'- 其余 {len(local_paths) - 5} 项已省略')
-            lines.append('执行链路: 上传本地模型/数据集 -> 远端做 readiness/prepare/preflight -> 启动训练')
-            if pipeline_args.get('force_split'):
-                lines.append('附加安排: 数据未就绪时自动按默认比例划分并补齐训练产物')
-            if pipeline_args.get('wait_for_completion'):
-                lines.append(
-                    f"等待策略: 启动后轮询训练状态直到结束 (poll={pipeline_args.get('poll_interval_seconds', 15)}s, "
-                    f"max_wait={pipeline_args.get('max_wait_seconds', 7200)}s)"
-                )
-            if pipeline_args.get('download_after_completion'):
-                local_result_root = str(pipeline_args.get('local_result_root') or '').strip()
-                if local_result_root:
-                    lines.append(f'训练产物回传目录: {local_result_root}')
-                lines.append('附加安排: 训练结束后自动把远端 run 目录下载回本机')
-            lines.append('说明: 这会在远端真正启动训练进程，属于高风险动作。')
-            lines.append('如果你想继续，我就执行；如果想先停一下，也可以直接告诉我。')
-            return '\n'.join(lines)
-
-        pretty_args = "\n".join(f"  - {k}: {v}" for k, v in args.items()) or "  - 无参数"
-        return (
-            f"检测到高风险操作：{tool_name}\n"
-            f"参数摘要：\n{pretty_args}\n"
-            "如果你想继续，我就执行；如果想先停一下，也可以直接告诉我。"
+        return build_confirmation_prompt_reply(
+            self.session_state,
+            tool_call,
+            render_training_plan_draft=self._render_training_plan_draft,
+            remote_join=self._remote_join,
         )
 
     @staticmethod
     def _build_cancel_message(tool_call: dict[str, Any]) -> str:
-        return '好，我先不执行这一步。当前计划已保留；如果你想改参数、换模型、追问原因，或者稍后重新确认，都可以直接告诉我。'
+        return build_pending_cancel_message(tool_call)
 
     def _build_empty_reply_fallback(self, messages: list[BaseMessage]) -> str:
         tool_calls: list[str] = []
@@ -8878,7 +7094,7 @@ async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudi
         'checkpointer': FileCheckpointSaver(_checkpoint_path(settings)),
     }
     if str(settings.confirmation_mode or 'manual').strip().lower() == 'manual':
-        interrupt_tool_names = _build_manual_interrupt_tool_names(raw_tools)
+        interrupt_tool_names = build_manual_interrupt_tool_names(raw_tools)
         if interrupt_tool_names:
             react_kwargs['interrupt_before'] = interrupt_tool_names
     graph = create_react_agent(

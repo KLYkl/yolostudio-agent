@@ -8,10 +8,32 @@ from yolostudio_agent.agent.client.event_retriever import MemoryDigest
 from yolostudio_agent.agent.client.session_state import SessionState
 
 
-def _fmt_mapping(data: dict) -> str:
-    if not data:
-        return '无'
-    return '; '.join(f'{k}={v}' for k, v in data.items())
+def _cache_state(data: dict) -> str:
+    return '已缓存' if data else '无'
+
+
+def _non_empty(value: object) -> bool:
+    return value not in (None, '', [], {}, ())
+
+
+def _join_values(values: object, *, limit: int = 4) -> str:
+    if not isinstance(values, (list, tuple, set)):
+        return ''
+    items = [str(item).strip() for item in values if str(item).strip()]
+    if not items:
+        return ''
+    if len(items) > limit:
+        return ', '.join(items[:limit]) + f' 等 {len(items)} 项'
+    return ', '.join(items)
+
+
+def _append_section(lines: list[str], title: str, entries: list[tuple[str, object]]) -> None:
+    filtered = [(key, value) for key, value in entries if _non_empty(value)]
+    if not filtered:
+        return
+    lines.append(f'{title}:')
+    for key, value in filtered:
+        lines.append(f'  {key}: {value}')
 
 
 class ContextBuilder:
@@ -40,80 +62,142 @@ class ContextBuilder:
         rt = state.active_remote_transfer
         pref = state.preferences
         digest_text = digest.to_text() if digest else '无历史摘要'
-        return (
-            '当前结构化上下文:\n'
-            f'- session_id: {state.session_id}\n'
-            '数据集:\n'
-            f'  dataset_root: {ds.dataset_root or "未设置"}\n'
-            f'  img_dir: {ds.img_dir or "未设置"}\n'
-            f'  label_dir: {ds.label_dir or "未设置"}\n'
-            f'  data_yaml: {ds.data_yaml or "未设置"}\n'
-            f'  last_scan: {_fmt_mapping(ds.last_scan)}\n'
-            f'  last_validate: {_fmt_mapping(ds.last_validate)}\n'
-            f'  last_readiness: {_fmt_mapping(ds.last_readiness)}\n'
-            f'  last_split: {_fmt_mapping(ds.last_split)}\n'
-            f'  last_health_check: {_fmt_mapping(ds.last_health_check)}\n'
-            f'  last_duplicate_check: {_fmt_mapping(ds.last_duplicate_check)}\n'
-            f'  last_extract_preview: {_fmt_mapping(ds.last_extract_preview)}\n'
-            f'  last_extract_result: {_fmt_mapping(ds.last_extract_result)}\n'
-            f'  last_video_scan: {_fmt_mapping(ds.last_video_scan)}\n'
-            f'  last_frame_extract: {_fmt_mapping(ds.last_frame_extract)}\n'
-            '训练:\n'
-            f'  running: {tr.running}\n'
-            f'  model: {tr.model or "未设置"}\n'
-            f'  data_yaml: {tr.data_yaml or "未设置"}\n'
-            f'  device: {tr.device or "未设置"}\n'
-            f'  training_environment: {tr.training_environment or "未设置"}\n'
-            f'  project: {tr.project or "未设置"}\n'
-            f'  run_name: {tr.run_name or "未设置"}\n'
-            f'  batch: {tr.batch if tr.batch is not None else "未设置"}\n'
-            f'  imgsz: {tr.imgsz if tr.imgsz is not None else "未设置"}\n'
-            f'  fraction: {tr.fraction if tr.fraction is not None else "未设置"}\n'
-            f'  classes: {tr.classes if tr.classes else "未设置"}\n'
-            f'  single_cls: {tr.single_cls if tr.single_cls is not None else "未设置"}\n'
-            f'  optimizer: {tr.optimizer or "未设置"}\n'
-            f'  freeze: {tr.freeze if tr.freeze is not None else "未设置"}\n'
-            f'  resume: {tr.resume if tr.resume is not None else "未设置"}\n'
-            f'  lr0: {tr.lr0 if tr.lr0 is not None else "未设置"}\n'
-            f'  patience: {tr.patience if tr.patience is not None else "未设置"}\n'
-            f'  workers: {tr.workers if tr.workers is not None else "未设置"}\n'
-            f'  amp: {tr.amp if tr.amp is not None else "未设置"}\n'
-            f'  pid: {tr.pid if tr.pid is not None else "无"}\n'
-            f'  log_file: {tr.log_file or "无"}\n'
-            f'  last_status: {_fmt_mapping(tr.last_status)}\n'
-            f'  last_summary: {_fmt_mapping(tr.last_summary)}\n'
-            f'  training_run_summary: {_fmt_mapping(tr.training_run_summary)}\n'
-            f'  last_run_inspection: {_fmt_mapping(tr.last_run_inspection)}\n'
-            f'  last_run_comparison: {_fmt_mapping(tr.last_run_comparison)}\n'
-            f'  best_run_selection: {_fmt_mapping(tr.best_run_selection)}\n'
-            f'  training_plan_draft: {_fmt_mapping(tr.training_plan_draft)}\n'
-            '预测:\n'
-            f'  source_path: {pred.source_path or "未设置"}\n'
-            f'  model: {pred.model or "未设置"}\n'
-            f'  output_dir: {pred.output_dir or "无"}\n'
-            f'  report_path: {pred.report_path or "无"}\n'
-            f'  last_result: {_fmt_mapping(pred.last_result)}\n'
-            f'  realtime_session_id: {pred.realtime_session_id or "无"}\n'
-            f'  realtime_source_type: {pred.realtime_source_type or "无"}\n'
-            f'  realtime_source_label: {pred.realtime_source_label or "无"}\n'
-            f'  realtime_status: {pred.realtime_status or "无"}\n'
-            f'  last_realtime_status: {_fmt_mapping(pred.last_realtime_status)}\n'
-            '知识:\n'
-            f'  last_retrieval: {_fmt_mapping(kn.last_retrieval)}\n'
-            f'  last_analysis: {_fmt_mapping(kn.last_analysis)}\n'
-            f'  last_recommendation: {_fmt_mapping(kn.last_recommendation)}\n'
-            '远端传输:\n'
-            f'  target_label: {rt.target_label or "无"}\n'
-            f'  profile_name: {rt.profile_name or "无"}\n'
-            f'  remote_root: {rt.remote_root or "无"}\n'
-            f'  last_profile_listing: {_fmt_mapping(rt.last_profile_listing)}\n'
-            f'  last_upload: {_fmt_mapping(rt.last_upload)}\n'
-            '待确认操作:\n'
-            f'  tool: {pc.tool_name or "无"}\n'
-            f'  args: {_fmt_mapping(pc.tool_args)}\n'
-            '偏好:\n'
-            f'  default_model: {pref.default_model or "未设置"}\n'
-            f'  default_epochs: {pref.default_epochs if pref.default_epochs is not None else "未设置"}\n'
-            '历史摘要:\n'
-            f'{digest_text}\n'
+        active_loop_request = dict(tr.active_loop_request or {})
+
+        lines: list[str] = ['当前结构化上下文:']
+        lines.append(f'- session_id: {state.session_id}')
+
+        _append_section(
+            lines,
+            '数据集',
+            [
+                ('dataset_root', ds.dataset_root),
+                ('img_dir', ds.img_dir),
+                ('label_dir', ds.label_dir),
+                ('data_yaml', ds.data_yaml),
+                ('last_scan_summary', str((ds.last_scan or {}).get('summary') or '')),
+                ('last_validate_summary', str((ds.last_validate or {}).get('summary') or '')),
+                ('last_health_summary', str((ds.last_health_check or {}).get('summary') or '')),
+                ('last_health_duplicate_groups', (ds.last_health_check or {}).get('duplicate_groups')),
+                ('last_duplicate_summary', str((ds.last_duplicate_check or {}).get('summary') or '')),
+                ('last_duplicate_groups', (ds.last_duplicate_check or {}).get('duplicate_groups')),
+                ('readiness_cache', _cache_state(ds.last_readiness) if ds.last_readiness else ''),
+                ('health_cache', _cache_state(ds.last_health_check or ds.last_validate) if (ds.last_health_check or ds.last_validate) else ''),
+                ('split_cache', _cache_state(ds.last_split) if ds.last_split else ''),
+                ('extract_cache', _cache_state(ds.last_extract_result or ds.last_frame_extract or ds.last_video_scan or ds.last_extract_preview)
+                 if (ds.last_extract_result or ds.last_frame_extract or ds.last_video_scan or ds.last_extract_preview) else ''),
+            ],
         )
+
+        _append_section(
+            lines,
+            '训练',
+            [
+                ('workflow_state', tr.workflow_state),
+                ('loop_workflow_state', tr.loop_workflow_state),
+                ('running', tr.running if tr.running else ''),
+                ('model', tr.model),
+                ('data_yaml', tr.data_yaml),
+                ('device', tr.device),
+                ('training_environment', tr.training_environment),
+                ('project', tr.project),
+                ('run_name', tr.run_name),
+                ('active_loop_id', tr.active_loop_id),
+                ('active_loop_status', tr.active_loop_status),
+                ('active_loop_model', str(active_loop_request.get('model') or '')),
+                ('active_loop_data_yaml', str(active_loop_request.get('data_yaml') or '')),
+                ('active_loop_managed_level', str(active_loop_request.get('managed_level') or '')),
+                ('preflight_cache', _cache_state(tr.last_preflight) if tr.last_preflight else ''),
+                ('start_cache', _cache_state(tr.last_start_result) if tr.last_start_result else ''),
+                ('status_cache', _cache_state(tr.last_status or tr.last_summary or tr.training_run_summary)
+                 if (tr.last_status or tr.last_summary or tr.training_run_summary) else ''),
+                ('loop_cache', _cache_state(tr.last_loop_status or tr.last_loop_detail)
+                 if (tr.last_loop_status or tr.last_loop_detail) else ''),
+                ('comparison_cache', _cache_state(tr.last_run_comparison) if tr.last_run_comparison else ''),
+                ('training_plan_draft', '待确认' if tr.training_plan_draft else ''),
+            ],
+        )
+
+        _append_section(
+            lines,
+            '预测',
+            [
+                ('source_path', pred.source_path),
+                ('model', pred.model),
+                ('output_dir', pred.output_dir),
+                ('report_path', pred.report_path),
+                ('last_result_summary', str((pred.last_result or {}).get('summary') or '')),
+                ('last_summary_text', str((pred.last_summary or {}).get('summary') or '')),
+                ('last_inspection_summary', str((pred.last_inspection or {}).get('summary') or '')),
+                ('last_export_path', str((pred.last_export or {}).get('export_path') or '')),
+                ('last_export_format', str((pred.last_export or {}).get('export_format') or '')),
+                ('last_path_lists_dir', str((pred.last_path_lists or {}).get('export_dir') or '')),
+                ('last_organized_destination', str((pred.last_organized_result or {}).get('destination_dir') or '')),
+                ('last_organized_mode', str((pred.last_organized_result or {}).get('organize_by') or '')),
+                ('result_cache', _cache_state(pred.last_result or pred.last_summary or pred.last_inspection)
+                 if (pred.last_result or pred.last_summary or pred.last_inspection) else ''),
+                ('realtime_session_id', pred.realtime_session_id),
+                ('realtime_source_type', pred.realtime_source_type),
+                ('realtime_source_label', pred.realtime_source_label),
+                ('realtime_status', pred.realtime_status),
+                ('realtime_cache', _cache_state(pred.last_realtime_status) if pred.last_realtime_status else ''),
+            ],
+        )
+
+        _append_section(
+            lines,
+            '知识',
+            [
+                ('retrieval_topic', str((kn.last_retrieval or {}).get('topic') or '')),
+                ('retrieval_stage', str((kn.last_retrieval or {}).get('stage') or '')),
+                ('retrieval_signals', _join_values((kn.last_retrieval or {}).get('signals'))),
+                ('retrieval_summary', str((kn.last_retrieval or {}).get('summary') or '')),
+                ('analysis_signals', _join_values((kn.last_analysis or {}).get('signals'))),
+                ('analysis_summary', str((kn.last_analysis or {}).get('summary') or '')),
+                ('recommended_action', str((kn.last_recommendation or {}).get('recommended_action') or '')),
+                ('recommendation_summary', str((kn.last_recommendation or {}).get('summary') or '')),
+                ('retrieval_cache', _cache_state(kn.last_retrieval) if kn.last_retrieval else ''),
+                ('analysis_cache', _cache_state(kn.last_analysis) if kn.last_analysis else ''),
+                ('recommendation_cache', _cache_state(kn.last_recommendation) if kn.last_recommendation else ''),
+            ],
+        )
+
+        _append_section(
+            lines,
+            '远端传输',
+            [
+                ('target_label', rt.target_label),
+                ('profile_name', rt.profile_name),
+                ('remote_root', rt.remote_root),
+                ('profile_cache', _cache_state(rt.last_profile_listing) if rt.last_profile_listing else ''),
+                ('upload_cache', _cache_state(rt.last_upload) if rt.last_upload else ''),
+                ('download_cache', _cache_state(rt.last_download) if rt.last_download else ''),
+            ],
+        )
+
+        _append_section(
+            lines,
+            '待确认操作',
+            [
+                ('tool', pc.tool_name),
+                ('summary', pc.summary),
+                ('objective', pc.objective),
+                ('allowed_decisions', ', '.join(pc.allowed_decisions) if (pc.tool_name or pc.summary or pc.objective or pc.decision_context) and pc.allowed_decisions else ''),
+                ('latest_review', str((pc.decision_context or {}).get('decision') or '')),
+            ],
+        )
+
+        _append_section(
+            lines,
+            '偏好',
+            [
+                ('default_model', pref.default_model),
+                ('default_epochs', pref.default_epochs if pref.default_epochs is not None else ''),
+            ],
+        )
+
+        if digest_text != '无历史摘要':
+            lines.append('历史摘要:')
+            lines.append(digest_text)
+
+        return '\n'.join(lines) + '\n'

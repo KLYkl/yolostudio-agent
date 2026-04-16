@@ -17,20 +17,6 @@ from pydantic import BaseModel, Field
 from yolostudio_agent.agent.client.intent_parsing import extract_all_paths_from_text
 
 
-_WINDOWS_SSH_CANDIDATES = {
-    'ssh': [
-        os.getenv('YOLOSTUDIO_SSH_EXE', '').strip(),
-        r'D:\Tools\Git\usr\bin\ssh.exe',
-        r'C:\Program Files\Git\usr\bin\ssh.exe',
-    ],
-    'scp': [
-        os.getenv('YOLOSTUDIO_SCP_EXE', '').strip(),
-        r'D:\Tools\Git\usr\bin\scp.exe',
-        r'C:\Program Files\Git\usr\bin\scp.exe',
-    ],
-}
-
-
 class _ListRemoteProfilesArgs(BaseModel):
     profiles_path: str = Field(default='', description='可选远端 profile 配置文件路径；不传则按默认搜索路径查找。')
 
@@ -149,17 +135,44 @@ def _parse_ssh_config() -> list[dict[str, Any]]:
     return aliases
 
 
+def _default_windows_executable_candidates(name: str) -> list[str]:
+    filename = f'{name}.exe'
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for root in (os.getenv('SystemRoot', '').strip(), os.getenv('WINDIR', '').strip()):
+        if not root:
+            continue
+        candidate = str(Path(root) / 'System32' / 'OpenSSH' / filename)
+        if candidate not in seen:
+            seen.add(candidate)
+            candidates.append(candidate)
+    return candidates
+
+
+def _set_tool_surface_attr(tool: BaseTool, name: str, value: Any) -> None:
+    try:
+        setattr(tool, name, value)
+    except Exception:
+        try:
+            object.__setattr__(tool, name, value)
+        except Exception:
+            try:
+                tool.__dict__[name] = value
+            except Exception:
+                pass
+
+
 def _discover_executable(name: str) -> str:
     explicit_env = os.getenv(f'YOLOSTUDIO_{name.upper()}_EXE', '').strip()
     if explicit_env and Path(explicit_env).exists():
         return explicit_env
-    if os.name == 'nt':
-        for candidate in _WINDOWS_SSH_CANDIDATES.get(name, []):
-            if candidate and Path(candidate).exists():
-                return candidate
     resolved = shutil.which(name)
     if resolved:
         return resolved
+    if os.name == 'nt':
+        for candidate in _default_windows_executable_candidates(name):
+            if candidate and Path(candidate).exists():
+                return candidate
     raise RemoteTransferError(f'未找到可用的 {name} 可执行文件；请安装 ssh/scp，或通过 YOLOSTUDIO_{name.upper()}_EXE 指定路径。')
 def _run_command(command: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
@@ -193,6 +206,58 @@ def _run_checked(command: list[str]) -> subprocess.CompletedProcess[str]:
 
 def _run_checked_bytes(command: list[str], input_bytes: bytes) -> subprocess.CompletedProcess[bytes]:
     proc = _run_command_bytes(command, input_bytes)
+    if proc.returncode != 0:
+        stderr = (proc.stderr or b'').decode('utf-8', errors='ignore').strip()
+        stdout = (proc.stdout or b'').decode('utf-8', errors='ignore').strip()
+        detail = stderr or stdout or f'exit code={proc.returncode}'
+        raise RemoteTransferError(detail)
+    return proc
+
+
+async def _run_command_async(command: list[str]) -> subprocess.CompletedProcess[str]:
+    proc = await asyncio.create_subprocess_exec(
+        *command,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout_bytes, stderr_bytes = await proc.communicate()
+    return subprocess.CompletedProcess(
+        command,
+        proc.returncode,
+        (stdout_bytes or b'').decode('utf-8', errors='ignore'),
+        (stderr_bytes or b'').decode('utf-8', errors='ignore'),
+    )
+
+
+async def _run_command_bytes_async(command: list[str], input_bytes: bytes) -> subprocess.CompletedProcess[bytes]:
+    proc = await asyncio.create_subprocess_exec(
+        *command,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout_bytes, stderr_bytes = await proc.communicate(input_bytes)
+    return subprocess.CompletedProcess(
+        command,
+        proc.returncode,
+        stdout_bytes or b'',
+        stderr_bytes or b'',
+    )
+
+
+async def _run_checked_async(command: list[str]) -> subprocess.CompletedProcess[str]:
+    proc = await _run_command_async(command)
+    if proc.returncode != 0:
+        stderr = (proc.stderr or '').strip()
+        stdout = (proc.stdout or '').strip()
+        detail = stderr or stdout or f'exit code={proc.returncode}'
+        raise RemoteTransferError(detail)
+    return proc
+
+
+async def _run_checked_bytes_async(command: list[str], input_bytes: bytes) -> subprocess.CompletedProcess[bytes]:
+    proc = await _run_command_bytes_async(command, input_bytes)
     if proc.returncode != 0:
         stderr = (proc.stderr or b'').decode('utf-8', errors='ignore').strip()
         stdout = (proc.stdout or b'').decode('utf-8', errors='ignore').strip()
@@ -360,12 +425,30 @@ def _remote_file_size(ssh_args: list[str], ssh_target: str, remote_path: str) ->
         return -1
 
 
+async def _remote_file_size_async(ssh_args: list[str], ssh_target: str, remote_path: str) -> int:
+    script = 'import os,sys; p=sys.argv[1]; print(os.path.getsize(p) if os.path.exists(p) else -1)'
+    proc = await _run_checked_async(ssh_args + [ssh_target, _build_remote_python_command(script, remote_path)])
+    try:
+        return int((proc.stdout or '').strip() or '-1')
+    except ValueError:
+        return -1
+
+
 def _remote_read_text(ssh_args: list[str], ssh_target: str, remote_path: str) -> str:
     script = (
         'import os,sys; p=sys.argv[1]; '
         'print(open(p, "r", encoding="utf-8").read() if os.path.exists(p) else "", end="")'
     )
     proc = _run_checked(ssh_args + [ssh_target, _build_remote_python_command(script, remote_path)])
+    return proc.stdout or ''
+
+
+async def _remote_read_text_async(ssh_args: list[str], ssh_target: str, remote_path: str) -> str:
+    script = (
+        'import os,sys; p=sys.argv[1]; '
+        'print(open(p, "r", encoding="utf-8").read() if os.path.exists(p) else "", end="")'
+    )
+    proc = await _run_checked_async(ssh_args + [ssh_target, _build_remote_python_command(script, remote_path)])
     return proc.stdout or ''
 
 
@@ -384,12 +467,35 @@ def _remote_hash(ssh_args: list[str], ssh_target: str, remote_path: str, algorit
     return (proc.stdout or '').strip()
 
 
+async def _remote_hash_async(ssh_args: list[str], ssh_target: str, remote_path: str, algorithm: str) -> str:
+    script = (
+        'import hashlib, os, sys; '
+        'algo=sys.argv[2]; p=sys.argv[1]; '
+        'h=hashlib.new(algo); '
+        'exists=os.path.exists(p); '
+        'f=open(p, "rb") if exists else None; '
+        '[(h.update(chunk), None) for chunk in iter(lambda: f.read(1024*1024), b"")] if exists else None; '
+        'f.close() if f else None; '
+        'print(h.hexdigest() if exists else "", end="")'
+    )
+    proc = await _run_checked_async(ssh_args + [ssh_target, _build_remote_python_command(script, remote_path, algorithm)])
+    return (proc.stdout or '').strip()
+
+
 def _remote_mkdir(ssh_args: list[str], ssh_target: str, remote_dir: str) -> None:
     _run_checked(ssh_args + [ssh_target, f'mkdir -p {_quote_remote(remote_dir)}'])
 
 
+async def _remote_mkdir_async(ssh_args: list[str], ssh_target: str, remote_dir: str) -> None:
+    await _run_checked_async(ssh_args + [ssh_target, f'mkdir -p {_quote_remote(remote_dir)}'])
+
+
 def _remote_remove(ssh_args: list[str], ssh_target: str, remote_path: str) -> None:
     _run_checked(ssh_args + [ssh_target, f'rm -rf {_quote_remote(remote_path)}'])
+
+
+async def _remote_remove_async(ssh_args: list[str], ssh_target: str, remote_path: str) -> None:
+    await _run_checked_async(ssh_args + [ssh_target, f'rm -rf {_quote_remote(remote_path)}'])
 
 
 def _stream_bytes_to_remote(ssh_args: list[str], ssh_target: str, remote_path: str, payload: bytes) -> None:
@@ -398,13 +504,28 @@ def _stream_bytes_to_remote(ssh_args: list[str], ssh_target: str, remote_path: s
     _run_checked_bytes(ssh_args + [ssh_target, remote_command], payload)
 
 
+async def _stream_bytes_to_remote_async(ssh_args: list[str], ssh_target: str, remote_path: str, payload: bytes) -> None:
+    remote_dir = str(PurePosixPath(remote_path).parent)
+    remote_command = f'mkdir -p {_quote_remote(remote_dir)} && cat > {_quote_remote(remote_path)}'
+    await _run_checked_bytes_async(ssh_args + [ssh_target, remote_command], payload)
+
+
 def _write_text_to_remote(ssh_args: list[str], ssh_target: str, remote_path: str, text: str) -> None:
     _stream_bytes_to_remote(ssh_args, ssh_target, remote_path, text.encode('utf-8'))
+
+
+async def _write_text_to_remote_async(ssh_args: list[str], ssh_target: str, remote_path: str, text: str) -> None:
+    await _stream_bytes_to_remote_async(ssh_args, ssh_target, remote_path, text.encode('utf-8'))
 
 
 def _upload_file_via_scp(scp_args: list[str], ssh_target: str, local_path: str, remote_path: str) -> None:
     remote_spec = f'{ssh_target}:{_quote_remote(remote_path)}'
     _run_checked(list(scp_args) + [local_path, remote_spec])
+
+
+async def _upload_file_via_scp_async(scp_args: list[str], ssh_target: str, local_path: str, remote_path: str) -> None:
+    remote_spec = f'{ssh_target}:{_quote_remote(remote_path)}'
+    await _run_checked_async(list(scp_args) + [local_path, remote_spec])
 
 
 def _download_path_via_scp(scp_args: list[str], ssh_target: str, remote_path: str, local_path: str, *, recursive: bool) -> None:
@@ -413,6 +534,14 @@ def _download_path_via_scp(scp_args: list[str], ssh_target: str, remote_path: st
     if recursive:
         command.append('-r')
     _run_checked(command + [remote_spec, local_path])
+
+
+async def _download_path_via_scp_async(scp_args: list[str], ssh_target: str, remote_path: str, local_path: str, *, recursive: bool) -> None:
+    remote_spec = f'{ssh_target}:{_quote_remote(remote_path)}'
+    command = list(scp_args)
+    if recursive:
+        command.append('-r')
+    await _run_checked_async(command + [remote_spec, local_path])
 
 
 def _ensure_unique_local_path(path: Path) -> Path:
@@ -454,8 +583,55 @@ os.replace(tmp_path, remote_path)
     _run_checked(ssh_args + [ssh_target, _build_remote_python_command(script, chunk_dir, remote_path)])
 
 
+async def _assemble_remote_chunks_async(ssh_args: list[str], ssh_target: str, chunk_dir: str, remote_path: str) -> None:
+    script = '''
+import os
+import re
+import shutil
+import sys
+chunk_dir = sys.argv[1]
+remote_path = sys.argv[2]
+parts = sorted(
+    os.path.join(chunk_dir, name)
+    for name in os.listdir(chunk_dir)
+    if re.fullmatch(r'part_\\d+', name)
+)
+if not parts:
+    raise SystemExit('no chunk parts found')
+os.makedirs(os.path.dirname(remote_path), exist_ok=True)
+tmp_path = remote_path + '.codex_tmp'
+with open(tmp_path, 'wb') as out:
+    for part in parts:
+        with open(part, 'rb') as handle:
+            shutil.copyfileobj(handle, out, 1024 * 1024)
+os.replace(tmp_path, remote_path)
+'''
+    await _run_checked_async(ssh_args + [ssh_target, _build_remote_python_command(script, chunk_dir, remote_path)])
+
+
 def _summarize_hash_settings(verify_hash: bool, hash_algorithm: str) -> str:
     return f'哈希校验({hash_algorithm})' if verify_hash else '未做哈希校验'
+
+
+def _action_candidates_from_next_actions(next_actions: Any) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    if not isinstance(next_actions, list):
+        return candidates
+    for item in next_actions:
+        if isinstance(item, dict):
+            compact = {
+                'action': item.get('action'),
+                'tool': item.get('tool'),
+                'description': item.get('description') or item.get('reason') or item.get('summary'),
+            }
+            compact = {key: value for key, value in compact.items() if value not in (None, '', [], {})}
+            if compact:
+                candidates.append(compact)
+        else:
+            text = str(item or '').strip()
+            if text:
+                candidates.append({'description': text})
+    return candidates
 
 
 def list_remote_profiles(*, profiles_path: str = '') -> dict[str, Any]:
@@ -492,13 +668,26 @@ def list_remote_profiles(*, profiles_path: str = '') -> dict[str, Any]:
         summary = ' / '.join(summary_parts) + '。'
     if default_profile:
         summary += f' 默认 profile: {default_profile}。'
+    next_actions: list[str] = []
+    if profile_rows:
+        next_actions.append('可继续调用 upload_assets_to_remote 上传本地文件或目录')
+    elif ssh_aliases:
+        next_actions.append('可补充远端 profile，或直接用 server/host 参数继续上传下载')
     return {
         'ok': True,
         'summary': summary,
+        'profile_overview': {
+            'profile_count': len(profile_rows),
+            'ssh_alias_count': len(ssh_aliases),
+            'default_profile': default_profile,
+            'profiles_path': config_path,
+        },
         'profiles_path': config_path,
         'default_profile': default_profile,
         'profiles': profile_rows,
         'ssh_aliases': ssh_aliases,
+        'next_actions': next_actions,
+        'action_candidates': _action_candidates_from_next_actions(next_actions),
     }
 
 
@@ -790,10 +979,29 @@ def upload_assets_to_remote(
         f'实际传输 {_format_bytes(transferred_bytes)}，复用 {_format_bytes(skipped_bytes)}；'
         f'{transfer_strategy_summary}。'
     )
+    next_actions = []
+    if resolved_remote_root:
+        next_actions.append(f'可继续在远端目录复用这些产物: {resolved_remote_root}')
+    if skipped_file_count:
+        next_actions.append('后续重复上传时可继续复用已存在文件')
 
     return {
         'ok': True,
         'summary': summary,
+        'transfer_overview': {
+            'target_label': resolved['target_label'],
+            'profile_name': resolved['profile_name'],
+            'remote_root': resolved_remote_root,
+            'uploaded_count': len(top_level_items),
+            'file_count': file_count,
+            'verified_file_count': verified_file_count,
+            'skipped_file_count': skipped_file_count,
+            'chunked_file_count': chunked_file_count,
+            'scp_file_count': scp_file_count,
+            'transferred_bytes': transferred_bytes,
+            'skipped_bytes': skipped_bytes,
+            'total_bytes': total_bytes,
+        },
         'target_label': resolved['target_label'],
         'profile_name': resolved['profile_name'],
         'profiles_path': resolved['config_path'],
@@ -815,6 +1023,8 @@ def upload_assets_to_remote(
         'chunk_size_mb': int(chunk_size_mb),
         'transfer_strategy_summary': transfer_strategy_summary,
         'file_results_preview': file_results[:8],
+        'next_actions': next_actions,
+        'action_candidates': _action_candidates_from_next_actions(next_actions),
     }
 
 
@@ -886,32 +1096,458 @@ def download_assets_from_remote(
         f'远端下载完成：{len(downloaded_items)} 项，'
         f'来源 {resolved["target_label"]}，本地目录 {destination_root}。'
     )
+    next_actions = [f'可继续在本地目录查看或复用下载结果: {destination_root}']
     return {
         'ok': True,
         'summary': summary,
+        'download_overview': {
+            'target_label': resolved['target_label'],
+            'profile_name': resolved['profile_name'],
+            'local_root': str(destination_root),
+            'downloaded_count': len(downloaded_items),
+        },
         'target_label': resolved['target_label'],
         'profile_name': resolved['profile_name'],
         'profiles_path': resolved['config_path'],
         'local_root': str(destination_root),
         'downloaded_count': len(downloaded_items),
         'downloaded_items': downloaded_items,
+        'next_actions': next_actions,
+        'action_candidates': _action_candidates_from_next_actions(next_actions),
     }
 
 
 async def _list_remote_profiles_async(*, profiles_path: str = '') -> dict[str, Any]:
-    return await asyncio.to_thread(list_remote_profiles, profiles_path=profiles_path)
+    return list_remote_profiles(profiles_path=profiles_path)
 
 
-async def _upload_assets_to_remote_async(**kwargs: Any) -> dict[str, Any]:
-    return await asyncio.to_thread(upload_assets_to_remote, **kwargs)
+async def _upload_assets_to_remote_async(
+    *,
+    local_paths: list[str] | None = None,
+    paths_text: str = '',
+    server: str = '',
+    profile: str = '',
+    remote_root: str = '',
+    host: str = '',
+    username: str = '',
+    port: int = 0,
+    recursive: bool = True,
+    create_remote_root: bool = True,
+    profiles_path: str = '',
+    resume: bool = True,
+    verify_hash: bool = True,
+    hash_algorithm: str = 'sha256',
+    large_file_threshold_mb: int = 256,
+    chunk_size_mb: int = 64,
+    show_progress: bool = True,
+) -> dict[str, Any]:
+    algorithm = str(hash_algorithm or 'sha256').strip().lower()
+    if algorithm not in {'sha256', 'md5'}:
+        raise RemoteTransferError(f'不支持的哈希算法: {algorithm}')
+
+    normalized_paths = _normalize_path_tokens(local_paths, paths_text)
+    if not normalized_paths:
+        raise RemoteTransferError('缺少本地上传路径；请至少提供一个本地文件或目录。')
+
+    items: list[dict[str, Any]] = []
+    for raw_path in normalized_paths:
+        local_path = Path(raw_path).expanduser()
+        if not local_path.exists():
+            raise RemoteTransferError(f'本地路径不存在: {local_path}')
+        items.append(
+            {
+                'local_path': str(local_path),
+                'path_obj': local_path,
+                'is_dir': local_path.is_dir(),
+                'basename': local_path.name or local_path.anchor.replace(':', ''),
+            }
+        )
+
+    resolved = _resolve_remote_target(
+        server=server,
+        profile=profile,
+        remote_root=remote_root,
+        host=host,
+        username=username,
+        port=port,
+        profiles_path=profiles_path,
+    )
+
+    ssh_exe = _discover_executable('ssh')
+    scp_exe = _discover_executable('scp')
+    ssh_target = str(resolved['ssh_target'])
+    resolved_remote_root = str(resolved['remote_root'])
+    ssh_args = [ssh_exe]
+    scp_args = [scp_exe]
+    if resolved['port']:
+        ssh_args.extend(['-p', str(resolved['port'])])
+        scp_args.extend(['-P', str(resolved['port'])])
+    ssh_args.extend(['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10'])
+    scp_args.extend(['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10'])
+
+    if create_remote_root:
+        await _remote_mkdir_async(ssh_args, ssh_target, resolved_remote_root)
+
+    threshold_bytes = max(0, int(large_file_threshold_mb)) * 1024 * 1024
+    chunk_size_bytes = max(1, int(chunk_size_mb)) * 1024 * 1024
+
+    top_level_items: list[dict[str, Any]] = []
+    file_entries: list[dict[str, Any]] = []
+    empty_dirs_seen: set[str] = set()
+    total_bytes = 0
+
+    for item in items:
+        local_path = Path(item['path_obj'])
+        remote_base = _join_remote_path(resolved_remote_root, str(item['basename']))
+        item_type = 'directory' if item['is_dir'] else 'file'
+        top_level_items.append(
+            {
+                'local_path': str(local_path),
+                'remote_path': remote_base,
+                'item_type': item_type,
+            }
+        )
+        if item['is_dir']:
+            if not recursive:
+                raise RemoteTransferError(f'目录上传需要 recursive=true: {local_path}')
+            empty_dirs_seen.add(remote_base)
+            for child in sorted(local_path.rglob('*')):
+                relative = child.relative_to(local_path).as_posix()
+                remote_child = _join_remote_path(remote_base, relative)
+                if child.is_dir():
+                    empty_dirs_seen.add(remote_child)
+                    continue
+                if not child.is_file():
+                    continue
+                size_bytes = child.stat().st_size
+                total_bytes += size_bytes
+                file_entries.append(
+                    {
+                        'local_path': str(child),
+                        'remote_path': remote_child,
+                        'root_local_path': str(local_path),
+                        'root_remote_path': remote_base,
+                        'relative_path': relative,
+                        'size_bytes': size_bytes,
+                    }
+                )
+        else:
+            size_bytes = local_path.stat().st_size
+            total_bytes += size_bytes
+            file_entries.append(
+                {
+                    'local_path': str(local_path),
+                    'remote_path': remote_base,
+                    'root_local_path': str(local_path),
+                    'root_remote_path': remote_base,
+                    'relative_path': local_path.name,
+                    'size_bytes': size_bytes,
+                }
+            )
+
+    for remote_dir in sorted(empty_dirs_seen):
+        await _remote_mkdir_async(ssh_args, ssh_target, remote_dir)
+
+    transferred_bytes = 0
+    skipped_bytes = 0
+    verified_file_count = 0
+    skipped_file_count = 0
+    chunked_file_count = 0
+    scp_file_count = 0
+    file_results: list[dict[str, Any]] = []
+
+    for entry in file_entries:
+        local_path = Path(entry['local_path'])
+        remote_path = str(entry['remote_path'])
+        size_bytes = int(entry['size_bytes'])
+        remote_parent = str(PurePosixPath(remote_path).parent)
+        if remote_parent:
+            await _remote_mkdir_async(ssh_args, ssh_target, remote_parent)
+
+        hash_sidecar_path = f'{remote_path}.{algorithm}'
+        local_hash: str | None = None
+        use_chunked = size_bytes > 0 and (threshold_bytes == 0 or size_bytes >= threshold_bytes)
+        skip_reason = ''
+
+        existing_size = await _remote_file_size_async(ssh_args, ssh_target, remote_path)
+        if existing_size == size_bytes:
+            if verify_hash:
+                local_hash = _compute_local_hash(local_path, algorithm)
+                existing_hash = (await _remote_read_text_async(ssh_args, ssh_target, hash_sidecar_path)).strip()
+                if not existing_hash:
+                    existing_hash = await _remote_hash_async(ssh_args, ssh_target, remote_path, algorithm)
+                if existing_hash == local_hash:
+                    skipped_file_count += 1
+                    skipped_bytes += size_bytes
+                    skip_reason = 'remote_same_hash'
+            else:
+                skipped_file_count += 1
+                skipped_bytes += size_bytes
+                skip_reason = 'remote_same_size'
+
+        if skip_reason:
+            _emit_progress(
+                label=local_path.name,
+                total_bytes=total_bytes,
+                transferred_bytes=transferred_bytes,
+                skipped_bytes=skipped_bytes,
+                show_progress=show_progress,
+            )
+            file_results.append(
+                {
+                    'local_path': str(local_path),
+                    'remote_path': remote_path,
+                    'relative_path': entry['relative_path'],
+                    'size_bytes': size_bytes,
+                    'mode': 'skipped',
+                    'skipped': True,
+                    'verified': bool(verify_hash),
+                    'reason': skip_reason,
+                }
+            )
+            continue
+
+        if use_chunked:
+            chunked_file_count += 1
+            chunk_dir = f'{remote_path}.codex_parts'
+            await _remote_mkdir_async(ssh_args, ssh_target, chunk_dir)
+            with local_path.open('rb') as handle:
+                part_index = 0
+                while True:
+                    payload = handle.read(chunk_size_bytes)
+                    if not payload:
+                        break
+                    part_name = f'part_{part_index:06d}'
+                    part_remote_path = _join_remote_path(chunk_dir, part_name)
+                    part_hash_path = f'{part_remote_path}.{algorithm}'
+                    part_size = len(payload)
+                    part_hash: str | None = None
+                    should_upload = True
+                    if resume:
+                        remote_part_size = await _remote_file_size_async(ssh_args, ssh_target, part_remote_path)
+                        if remote_part_size == part_size:
+                            if verify_hash:
+                                part_hash = hashlib.new(algorithm, payload).hexdigest()
+                                remote_part_hash = (await _remote_read_text_async(ssh_args, ssh_target, part_hash_path)).strip()
+                                should_upload = remote_part_hash != part_hash
+                            else:
+                                should_upload = False
+                    if should_upload:
+                        await _stream_bytes_to_remote_async(ssh_args, ssh_target, part_remote_path, payload)
+                        transferred_bytes += part_size
+                        if verify_hash or resume:
+                            if part_hash is None:
+                                part_hash = hashlib.new(algorithm, payload).hexdigest()
+                            await _write_text_to_remote_async(ssh_args, ssh_target, part_hash_path, part_hash)
+                    else:
+                        skipped_bytes += part_size
+                    _emit_progress(
+                        label=local_path.name,
+                        total_bytes=total_bytes,
+                        transferred_bytes=transferred_bytes,
+                        skipped_bytes=skipped_bytes,
+                        show_progress=show_progress,
+                    )
+                    part_index += 1
+            await _assemble_remote_chunks_async(ssh_args, ssh_target, chunk_dir, remote_path)
+            await _remote_remove_async(ssh_args, ssh_target, chunk_dir)
+            mode = 'chunked'
+        else:
+            scp_file_count += 1
+            await _upload_file_via_scp_async(scp_args, ssh_target, str(local_path), remote_path)
+            transferred_bytes += size_bytes
+            _emit_progress(
+                label=local_path.name,
+                total_bytes=total_bytes,
+                transferred_bytes=transferred_bytes,
+                skipped_bytes=skipped_bytes,
+                show_progress=show_progress,
+            )
+            mode = 'scp'
+
+        verified = False
+        if verify_hash:
+            if local_hash is None:
+                local_hash = _compute_local_hash(local_path, algorithm)
+            remote_uploaded_hash = await _remote_hash_async(ssh_args, ssh_target, remote_path, algorithm)
+            if remote_uploaded_hash != local_hash:
+                raise RemoteTransferError(
+                    f'远端哈希校验失败: {local_path} -> {remote_path} (local={local_hash}, remote={remote_uploaded_hash})'
+                )
+            await _write_text_to_remote_async(ssh_args, ssh_target, hash_sidecar_path, local_hash)
+            verified = True
+            verified_file_count += 1
+
+        file_results.append(
+            {
+                'local_path': str(local_path),
+                'remote_path': remote_path,
+                'relative_path': entry['relative_path'],
+                'size_bytes': size_bytes,
+                'mode': mode,
+                'skipped': False,
+                'verified': verified,
+            }
+        )
+
+    file_count = len(file_entries)
+    strategy_bits: list[str] = []
+    if chunked_file_count:
+        strategy_bits.append(f'大文件分块 {chunked_file_count} 个')
+    if scp_file_count:
+        strategy_bits.append(f'SCP 直传 {scp_file_count} 个')
+    if skipped_file_count:
+        strategy_bits.append(f'复用已存在文件 {skipped_file_count} 个')
+    if resume:
+        strategy_bits.append('启用断点续传')
+    strategy_bits.append(_summarize_hash_settings(verify_hash, algorithm))
+    transfer_strategy_summary = '，'.join(strategy_bits)
+
+    summary = (
+        f'远端上传完成：顶层 {len(top_level_items)} 项 / 文件 {file_count} 个，'
+        f'目标 {resolved["target_label"]}:{resolved_remote_root}；'
+        f'实际传输 {_format_bytes(transferred_bytes)}，复用 {_format_bytes(skipped_bytes)}；'
+        f'{transfer_strategy_summary}。'
+    )
+    next_actions = []
+    if resolved_remote_root:
+        next_actions.append(f'可继续在远端目录复用这些产物: {resolved_remote_root}')
+    if skipped_file_count:
+        next_actions.append('后续重复上传时可继续复用已存在文件')
+
+    return {
+        'ok': True,
+        'summary': summary,
+        'transfer_overview': {
+            'target_label': resolved['target_label'],
+            'profile_name': resolved['profile_name'],
+            'remote_root': resolved_remote_root,
+            'uploaded_count': len(top_level_items),
+            'file_count': file_count,
+            'verified_file_count': verified_file_count,
+            'skipped_file_count': skipped_file_count,
+            'chunked_file_count': chunked_file_count,
+            'scp_file_count': scp_file_count,
+            'transferred_bytes': transferred_bytes,
+            'skipped_bytes': skipped_bytes,
+            'total_bytes': total_bytes,
+        },
+        'target_label': resolved['target_label'],
+        'profile_name': resolved['profile_name'],
+        'profiles_path': resolved['config_path'],
+        'remote_root': resolved_remote_root,
+        'uploaded_items': top_level_items,
+        'uploaded_count': len(top_level_items),
+        'file_count': file_count,
+        'verified_file_count': verified_file_count,
+        'skipped_file_count': skipped_file_count,
+        'chunked_file_count': chunked_file_count,
+        'scp_file_count': scp_file_count,
+        'transferred_bytes': transferred_bytes,
+        'skipped_bytes': skipped_bytes,
+        'total_bytes': total_bytes,
+        'resume_enabled': bool(resume),
+        'verify_hash': bool(verify_hash),
+        'hash_algorithm': algorithm,
+        'large_file_threshold_mb': int(large_file_threshold_mb),
+        'chunk_size_mb': int(chunk_size_mb),
+        'transfer_strategy_summary': transfer_strategy_summary,
+        'file_results_preview': file_results[:8],
+        'next_actions': next_actions,
+        'action_candidates': _action_candidates_from_next_actions(next_actions),
+    }
 
 
-async def _download_assets_from_remote_async(**kwargs: Any) -> dict[str, Any]:
-    return await asyncio.to_thread(download_assets_from_remote, **kwargs)
+async def _download_assets_from_remote_async(
+    *,
+    remote_paths: list[str] | None = None,
+    paths_text: str = '',
+    server: str = '',
+    profile: str = '',
+    host: str = '',
+    username: str = '',
+    port: int = 0,
+    recursive: bool = True,
+    local_root: str = '',
+    profiles_path: str = '',
+) -> dict[str, Any]:
+    normalized_paths = _normalize_remote_path_tokens(remote_paths, paths_text)
+    if not normalized_paths:
+        raise RemoteTransferError('缺少远端路径；请至少提供一个远端文件或目录。')
+
+    resolved = _resolve_remote_target(
+        server=server,
+        profile=profile,
+        remote_root='/',
+        host=host,
+        username=username,
+        port=port,
+        profiles_path=profiles_path,
+    )
+
+    scp_exe = _discover_executable('scp')
+    ssh_target = str(resolved['ssh_target'])
+    scp_args = [scp_exe]
+    if resolved['port']:
+        scp_args.extend(['-P', str(resolved['port'])])
+    scp_args.extend(['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10'])
+
+    if local_root:
+        destination_root = Path(local_root).expanduser()
+    else:
+        destination_root = _repo_root() / 'output' / 'remote_downloads'
+    destination_root.mkdir(parents=True, exist_ok=True)
+
+    downloaded_items: list[dict[str, Any]] = []
+    for remote_path in normalized_paths:
+        normalized_remote_path = _join_remote_path('/', remote_path)
+        local_name = PurePosixPath(normalized_remote_path).name or 'download'
+        destination_path = _ensure_unique_local_path(destination_root / local_name)
+        await _download_path_via_scp_async(
+            scp_args,
+            ssh_target,
+            normalized_remote_path,
+            str(destination_path),
+            recursive=recursive,
+        )
+        item_type = 'directory' if destination_path.is_dir() else 'file'
+        size_bytes = destination_path.stat().st_size if destination_path.is_file() else 0
+        downloaded_items.append(
+            {
+                'remote_path': normalized_remote_path,
+                'local_path': str(destination_path),
+                'item_type': item_type,
+                'size_bytes': size_bytes,
+            }
+        )
+
+    summary = (
+        f'远端下载完成：{len(downloaded_items)} 项，'
+        f'来源 {resolved["target_label"]}，本地目录 {destination_root}。'
+    )
+    next_actions = [f'可继续在本地目录查看或复用下载结果: {destination_root}']
+    return {
+        'ok': True,
+        'summary': summary,
+        'download_overview': {
+            'target_label': resolved['target_label'],
+            'profile_name': resolved['profile_name'],
+            'local_root': str(destination_root),
+            'downloaded_count': len(downloaded_items),
+        },
+        'target_label': resolved['target_label'],
+        'profile_name': resolved['profile_name'],
+        'profiles_path': resolved['config_path'],
+        'local_root': str(destination_root),
+        'downloaded_count': len(downloaded_items),
+        'downloaded_items': downloaded_items,
+        'next_actions': next_actions,
+        'action_candidates': _action_candidates_from_next_actions(next_actions),
+    }
 
 
 def build_local_transfer_tools() -> list[BaseTool]:
-    return [
+    tools = [
         StructuredTool.from_function(
             func=list_remote_profiles,
             coroutine=_list_remote_profiles_async,
@@ -937,3 +1573,41 @@ def build_local_transfer_tools() -> list[BaseTool]:
             return_direct=False,
         ),
     ]
+    tool_metadata = {
+        'list_remote_profiles': {
+            'read_only': True,
+            'destructive': False,
+            'confirmation_required': False,
+            'open_world': True,
+        },
+        'upload_assets_to_remote': {
+            'read_only': False,
+            'destructive': False,
+            'confirmation_required': True,
+            'open_world': True,
+        },
+        'download_assets_from_remote': {
+            'read_only': False,
+            'destructive': False,
+            'confirmation_required': False,
+            'open_world': True,
+        },
+    }
+    tool_tags = {
+        'list_remote_profiles': ['remote-transfer', 'read-only'],
+        'upload_assets_to_remote': ['remote-transfer', 'side-effect'],
+        'download_assets_from_remote': ['remote-transfer', 'side-effect'],
+    }
+    for tool in tools:
+        metadata = dict(getattr(tool, 'metadata', None) or {})
+        metadata.update(tool_metadata.get(tool.name, {}))
+        _set_tool_surface_attr(tool, 'metadata', metadata)
+        _set_tool_surface_attr(tool, 'tool_metadata', metadata)
+        tags = list(getattr(tool, 'tags', None) or [])
+        for tag in tool_tags.get(tool.name, []):
+            if tag not in tags:
+                tags.append(tag)
+        if tags:
+            _set_tool_surface_attr(tool, 'tags', tags)
+            _set_tool_surface_attr(tool, 'tool_tags', tags)
+    return tools

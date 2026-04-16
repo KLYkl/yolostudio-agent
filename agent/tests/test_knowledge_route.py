@@ -327,14 +327,14 @@ async def _run() -> None:
         assert routed is not None
         assert routed['status'] == 'completed'
         assert '数据可训练' in routed['message']
-        assert '优先动作' in routed['message']
+        assert '建议动作' in routed['message']
         assert calls[0][0] == 'dataset_training_readiness'
         assert calls[1][0] == 'recommend_next_training_step'
 
         routed2 = await client._try_handle_mainline_intent('precision 高 recall 低说明什么？', 'thread-2')
         assert routed2 is not None
         assert routed2['status'] == 'completed'
-        assert '命中规则' in routed2['message']
+        assert '知识检索完成' in routed2['message']
         assert calls[-1][0] == 'retrieve_training_knowledge'
 
         routed3 = await client._try_handle_mainline_intent('这次训练效果怎么样？', 'thread-3')
@@ -349,7 +349,7 @@ async def _run() -> None:
         assert routed4 is not None
         assert routed4['status'] == 'completed'
         assert '训练结果汇总' in routed4['message']
-        assert '优先动作' in routed4['message']
+        assert '建议动作' in routed4['message']
         assert calls[-3][0] == 'training_readiness'
         assert calls[-2][0] == 'summarize_training_run'
         assert calls[-1][0] == 'recommend_next_training_step'
@@ -357,15 +357,15 @@ async def _run() -> None:
         routed5 = await client._try_handle_mainline_intent('对比最近两次训练后下一步怎么做？', 'thread-5')
         assert routed5 is not None
         assert routed5['status'] == 'completed'
-        assert '对比对象: train_log_200 vs train_log_100' in routed5['message']
-        assert '优先动作' in routed5['message']
+        assert '训练对比完成' in routed5['message']
+        assert '建议动作' in routed5['message']
         assert calls[-2][0] == 'compare_training_runs'
         assert calls[-1][0] == 'recommend_next_training_step'
 
         routed6 = await client._try_handle_mainline_intent('对比最近两次训练效果怎么看？', 'thread-6')
         assert routed6 is not None
         assert routed6['status'] == 'completed'
-        assert '对比对象: train_log_200 vs train_log_100' in routed6['message']
+        assert '训练对比完成' in routed6['message']
         assert '训练结果分析' in routed6['message']
         assert calls[-2][0] == 'compare_training_runs'
         assert calls[-1][0] == 'analyze_training_outcome'

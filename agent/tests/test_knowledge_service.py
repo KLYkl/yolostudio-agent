@@ -41,16 +41,26 @@ def main() -> None:
                 }
             }
         },
+        comparison={
+            'ok': True,
+            'highlights': ['mAP50提升 +0.1200'],
+            'metric_deltas': {
+                'map50': {'left': 0.45, 'right': 0.33, 'delta': 0.12},
+                'precision': {'left': 0.82, 'right': 0.74, 'delta': 0.08},
+            },
+        },
         model_family='yolo',
         task_type='detection',
     )
     assert analyzed['ok'] is True
     assert 'high_precision_low_recall' in analyzed['signals']
+    assert 'comparison_map_improved' in analyzed['signals']
     assert 'generic_post_high_precision_low_recall' in analyzed['matched_rule_ids']
     assert 'generic_post_metrics_missing' not in analyzed['matched_rule_ids']
     assert analyzed['matched_rule_ids']
     assert analyzed['interpretation']
     assert analyzed['source_summary']
+    assert analyzed['analysis_overview']['comparison_attached'] is True
 
     insufficient = service.analyze_training_outcome(
         metrics={
@@ -71,6 +81,13 @@ def main() -> None:
             'ready': False,
             'blockers': ['missing labels'],
         },
+        comparison={
+            'ok': True,
+            'highlights': ['recall下降 -0.0600'],
+            'metric_deltas': {
+                'recall': {'left': 0.36, 'right': 0.42, 'delta': -0.06},
+            },
+        },
         model_family='yolo',
         task_type='detection',
     )
@@ -78,6 +95,7 @@ def main() -> None:
     assert recommended['recommended_action'] == 'fix_data_quality'
     assert recommended['matched_rule_ids']
     assert recommended['source_summary']
+    assert recommended['recommendation_overview']['comparison_attached'] is True
 
     short_window = service.recommend_next_training_step(
         status={

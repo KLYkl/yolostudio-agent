@@ -192,7 +192,7 @@ def main() -> None:
         })
         assert '准备执行：数据准备' in prepare_prompt
         assert '数据集: /data/dataset' in prepare_prompt
-        assert '主要阻塞: missing_yaml' in prepare_prompt
+        assert '当前状态: 还没有可用的 data.yaml，本次会自动补齐训练产物' in prepare_prompt
         assert '附加安排: 按默认比例划分数据' in prepare_prompt
 
         client.session_state.active_training.last_preflight = {
@@ -383,17 +383,17 @@ def main() -> None:
             'name': 'start_training',
             'args': {'model': 'yolov8n.pt', 'data_yaml': '/data/dataset/data.yaml'},
         })
-        assert '已取消操作：start_training' in cancel_prompt
+        assert '先不执行这一步' in cancel_prompt
         assert '当前计划已保留' in cancel_prompt
-        assert '调整参数后重新确认' in cancel_prompt
+        assert '重新确认' in cancel_prompt
 
         prepare_cancel_prompt = client._build_cancel_message({
             'name': 'prepare_dataset_for_training',
             'args': {'dataset_path': '/data/raw-dataset'},
         })
-        assert '已取消操作：prepare_dataset_for_training' in prepare_cancel_prompt
+        assert '先不执行这一步' in prepare_cancel_prompt
         assert '当前计划已保留' in prepare_cancel_prompt
-        assert '调整参数后重新确认' in prepare_cancel_prompt
+        assert '重新确认' in prepare_cancel_prompt
         print('confirmation prompt smoke ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)

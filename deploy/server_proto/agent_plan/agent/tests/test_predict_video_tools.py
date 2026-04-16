@@ -18,7 +18,7 @@ if __package__ in {None, ""}:
 from yolostudio_agent.agent.server.tools import predict_tools
 
 
-TMP_ROOT = Path('D:/yolodo2.0/agent_plan/.tmp_predict_video_tools')
+TMP_ROOT = Path('C:/workspace/yolodo2.0/agent_plan/.tmp_predict_video_tools')
 
 
 def _make_video(path: Path) -> None:

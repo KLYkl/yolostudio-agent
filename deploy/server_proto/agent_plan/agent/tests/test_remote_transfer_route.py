@@ -210,6 +210,12 @@ async def _scenario_list_remote_profiles_route() -> None:
     assert client.session_state.active_remote_transfer.profile_name == 'lab'
     assert client.session_state.active_remote_transfer.remote_root == '/srv/agent_stage'
 
+    before_cached = len(calls)
+    turn2 = await client.chat('再列一下可用服务器配置')
+    assert turn2['status'] == 'completed', turn2
+    assert 'lab' in turn2['message'], turn2
+    assert len(calls) == before_cached, calls
+
 
 async def _scenario_upload_route_requires_confirmation_and_then_executes() -> None:
     client = _make_client('upload')
@@ -253,6 +259,18 @@ async def _scenario_upload_route_requires_confirmation_and_then_executes() -> No
     assert '/tmp/agent_stage' in done['message'], done
     assert client.session_state.active_remote_transfer.remote_root == '/tmp/agent_stage'
     assert client.session_state.active_remote_transfer.last_upload['uploaded_count'] == 2
+
+
+async def _scenario_remote_upload_does_not_silently_reuse_old_paths() -> None:
+    client = _make_client('upload-no-reuse')
+    client.session_state.active_training.model = str((WORK / 'stale' / 'best.pt').resolve())
+    client.session_state.active_dataset.dataset_root = str((WORK / 'stale' / 'dataset').resolve())
+    client.session_state.active_remote_transfer.target_label = 'yolostudio'
+    client.session_state.active_remote_transfer.remote_root = '/tmp/stale_stage'
+
+    turn = await client.chat('把数据上传到服务器')
+    assert turn['status'] == 'completed', turn
+    assert '请明确给我要上传的本地路径' in turn['message'], turn
 
 
 async def _scenario_remote_prediction_pipeline_route() -> None:
@@ -670,6 +688,7 @@ def main() -> None:
     try:
         run(_scenario_list_remote_profiles_route())
         run(_scenario_upload_route_requires_confirmation_and_then_executes())
+        run(_scenario_remote_upload_does_not_silently_reuse_old_paths())
         run(_scenario_remote_prediction_pipeline_route())
         run(_scenario_remote_training_pipeline_route())
         run(_scenario_remote_training_pipeline_waits_and_downloads())

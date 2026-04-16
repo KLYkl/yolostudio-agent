@@ -52,8 +52,13 @@ class _DummyService:
         epochs: int = 100,
         device: str = 'auto',
         training_environment: str = '',
+        project: str = '',
+        name: str = '',
         batch: int | None = None,
         imgsz: int | None = None,
+        fraction: float | None = None,
+        classes: list[int] | str | None = None,
+        single_cls: bool | None = None,
         optimizer: str = '',
         freeze: int | None = None,
         resume: bool | None = None,
@@ -71,10 +76,21 @@ class _DummyService:
             f'epochs={epochs}',
             'device=1',
         ]
+        if project:
+            command_preview.append(f'project={project}')
+        if name:
+            command_preview.append(f'name={name}')
         if batch is not None:
             command_preview.append(f'batch={batch}')
         if imgsz is not None:
             command_preview.append(f'imgsz={imgsz}')
+        if fraction is not None:
+            command_preview.append(f'fraction={fraction}')
+        if classes is not None:
+            joined = ','.join(str(item) for item in classes) if isinstance(classes, list) else str(classes)
+            command_preview.append(f'classes={joined}')
+        if single_cls is not None:
+            command_preview.append(f'single_cls={single_cls}')
         if optimizer:
             command_preview.append(f'optimizer={optimizer}')
         if freeze is not None:
@@ -105,8 +121,13 @@ class _DummyService:
                 'epochs': epochs,
                 'device': '1',
                 'training_environment': selected_env,
+                'project': project or None,
+                'name': name or None,
                 'batch': batch,
                 'imgsz': imgsz,
+                'fraction': fraction,
+                'classes': classes,
+                'single_cls': single_cls,
                 'optimizer': optimizer or None,
                 'freeze': freeze,
                 'resume': resume,
@@ -131,6 +152,8 @@ def main() -> None:
         assert len(envs['environments']) == 2
         assert envs['default_environment']['name'] == 'yolodo'
         assert envs['next_actions']
+        assert envs['environment_overview']['environment_count'] == 2
+        assert envs['action_candidates'][0]['tool'] == 'training_preflight'
 
         preflight = train_tools.training_preflight(
             model='yolov8n.pt',
@@ -138,8 +161,13 @@ def main() -> None:
             epochs=5,
             device='auto',
             training_environment='yolo',
+            project='/runs/ablation',
+            name='exp-blue',
             batch=8,
             imgsz=960,
+            fraction=0.5,
+            classes=[1, 3],
+            single_cls=True,
             optimizer='AdamW',
             freeze=6,
             resume=True,
@@ -153,8 +181,13 @@ def main() -> None:
         assert preflight['training_environment']['name'] == 'yolo'
         assert preflight['resolved_args']['training_environment'] == 'yolo'
         assert preflight['command_preview'][0].endswith('/bin/yolo')
+        assert 'project=/runs/ablation' in preflight['command_preview']
+        assert 'name=exp-blue' in preflight['command_preview']
         assert 'batch=8' in preflight['command_preview']
         assert 'imgsz=960' in preflight['command_preview']
+        assert 'fraction=0.5' in preflight['command_preview']
+        assert 'classes=1,3' in preflight['command_preview']
+        assert 'single_cls=True' in preflight['command_preview']
         assert 'optimizer=AdamW' in preflight['command_preview']
         assert 'freeze=6' in preflight['command_preview']
         assert 'resume=True' in preflight['command_preview']
@@ -163,6 +196,8 @@ def main() -> None:
         assert 'workers=2' in preflight['command_preview']
         assert 'amp=False' in preflight['command_preview']
         assert preflight['next_actions'][0].startswith('当前参数和训练环境已可启动')
+        assert preflight['preflight_overview']['ready_to_start'] is True
+        assert preflight['action_candidates'][0]['tool'] == 'start_training'
         print('train environment tools ok')
     finally:
         train_tools.service = original_service

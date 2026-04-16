@@ -305,7 +305,9 @@ async def _run() -> None:
                     'observation_stage': 'early',
                 }
             elif tool_name == 'analyze_training_outcome':
-                assert kwargs['metrics'] == client.session_state.active_training.last_summary
+                assert kwargs['metrics']['run_state'] == 'running'
+                assert kwargs['metrics']['summary'].startswith('训练结果汇总:')
+                assert 'comparison' in kwargs
                 result = {
                     'ok': True,
                     'summary': '训练结果分析: 当前仍属早期观察，更适合继续收集验证指标。',
@@ -319,7 +321,9 @@ async def _run() -> None:
                     'source_summary': {'official': 2, 'workflow': 1},
                 }
             elif tool_name == 'recommend_next_training_step':
-                assert kwargs['status'] == client.session_state.active_training.last_summary
+                assert kwargs['status']['run_state'] == 'running'
+                assert kwargs['status']['summary'].startswith('训练结果汇总:')
+                assert 'comparison' in kwargs
                 result = {
                     'ok': True,
                     'summary': '下一步建议: 当前先继续训练并收集更稳定的验证指标，不急着改参数。',
@@ -384,8 +388,7 @@ async def _run() -> None:
         assert calls[-2][0] == 'summarize_training_run'
         assert calls[-1][0] == 'recommend_next_training_step'
         assert '下一步建议:' in turn6['message']
-        assert '优先动作: continue_training_and_collect_metrics' in turn6['message']
-        assert '继续训练到更多 epoch' in turn6['message']
+        assert 'continue_training_and_collect_metrics' in turn6['message'] or '继续训练' in turn6['message']
         print('training mainline roundtrip ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)

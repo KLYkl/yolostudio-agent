@@ -48,7 +48,7 @@ class _FakeDataHandler:
 
 
 def main() -> None:
-    root = Path('D:/yolodo2.0/agent_plan/.tmp_data_quality_risk')
+    root = Path('C:/workspace/yolodo2.0/agent_plan/.tmp_data_quality_risk')
     if root.exists():
         shutil.rmtree(root)
     img_dir = root / 'dataset' / 'images'
@@ -85,6 +85,9 @@ def main() -> None:
             assert scan['missing_label_images'] == 3
             assert abs(scan['missing_label_ratio'] - 0.6) < 1e-6
             assert scan['risk_level'] == 'critical'
+            assert scan['scan_overview']['class_count'] == 2
+            assert scan['scan_overview']['has_detected_yaml'] is True
+            assert scan['action_candidates'][0]['tool'] == 'validate_dataset'
 
             validate = data_tools.validate_dataset(str(root / 'dataset'))
             assert validate['ok'] is True
@@ -93,6 +96,8 @@ def main() -> None:
             assert validate['missing_label_images'] == 3
             assert validate['risk_level'] == 'critical'
             assert '缺少标签' in validate['summary']
+            assert validate['validation_overview']['has_risks'] is True
+            assert validate['action_candidates'][0]['tool'] == 'dataset_training_readiness'
 
             readiness = data_tools.training_readiness(str(root / 'dataset'))
             assert readiness['ok'] is True

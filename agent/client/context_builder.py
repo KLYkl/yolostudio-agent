@@ -16,6 +16,17 @@ def _non_empty(value: object) -> bool:
     return value not in (None, '', [], {}, ())
 
 
+def _join_values(values: object, *, limit: int = 4) -> str:
+    if not isinstance(values, (list, tuple, set)):
+        return ''
+    items = [str(item).strip() for item in values if str(item).strip()]
+    if not items:
+        return ''
+    if len(items) > limit:
+        return ', '.join(items[:limit]) + f' 等 {len(items)} 项'
+    return ', '.join(items)
+
+
 def _append_section(lines: list[str], title: str, entries: list[tuple[str, object]]) -> None:
     filtered = [(key, value) for key, value in entries if _non_empty(value)]
     if not filtered:
@@ -51,6 +62,7 @@ class ContextBuilder:
         rt = state.active_remote_transfer
         pref = state.preferences
         digest_text = digest.to_text() if digest else '无历史摘要'
+        active_loop_request = dict(tr.active_loop_request or {})
 
         lines: list[str] = ['当前结构化上下文:']
         lines.append(f'- session_id: {state.session_id}')
@@ -63,6 +75,12 @@ class ContextBuilder:
                 ('img_dir', ds.img_dir),
                 ('label_dir', ds.label_dir),
                 ('data_yaml', ds.data_yaml),
+                ('last_scan_summary', str((ds.last_scan or {}).get('summary') or '')),
+                ('last_validate_summary', str((ds.last_validate or {}).get('summary') or '')),
+                ('last_health_summary', str((ds.last_health_check or {}).get('summary') or '')),
+                ('last_health_duplicate_groups', (ds.last_health_check or {}).get('duplicate_groups')),
+                ('last_duplicate_summary', str((ds.last_duplicate_check or {}).get('summary') or '')),
+                ('last_duplicate_groups', (ds.last_duplicate_check or {}).get('duplicate_groups')),
                 ('readiness_cache', _cache_state(ds.last_readiness) if ds.last_readiness else ''),
                 ('health_cache', _cache_state(ds.last_health_check or ds.last_validate) if (ds.last_health_check or ds.last_validate) else ''),
                 ('split_cache', _cache_state(ds.last_split) if ds.last_split else ''),
@@ -75,6 +93,8 @@ class ContextBuilder:
             lines,
             '训练',
             [
+                ('workflow_state', tr.workflow_state),
+                ('loop_workflow_state', tr.loop_workflow_state),
                 ('running', tr.running if tr.running else ''),
                 ('model', tr.model),
                 ('data_yaml', tr.data_yaml),
@@ -84,8 +104,15 @@ class ContextBuilder:
                 ('run_name', tr.run_name),
                 ('active_loop_id', tr.active_loop_id),
                 ('active_loop_status', tr.active_loop_status),
+                ('active_loop_model', str(active_loop_request.get('model') or '')),
+                ('active_loop_data_yaml', str(active_loop_request.get('data_yaml') or '')),
+                ('active_loop_managed_level', str(active_loop_request.get('managed_level') or '')),
+                ('preflight_cache', _cache_state(tr.last_preflight) if tr.last_preflight else ''),
+                ('start_cache', _cache_state(tr.last_start_result) if tr.last_start_result else ''),
                 ('status_cache', _cache_state(tr.last_status or tr.last_summary or tr.training_run_summary)
                  if (tr.last_status or tr.last_summary or tr.training_run_summary) else ''),
+                ('loop_cache', _cache_state(tr.last_loop_status or tr.last_loop_detail)
+                 if (tr.last_loop_status or tr.last_loop_detail) else ''),
                 ('comparison_cache', _cache_state(tr.last_run_comparison) if tr.last_run_comparison else ''),
                 ('training_plan_draft', '待确认' if tr.training_plan_draft else ''),
             ],
@@ -99,6 +126,14 @@ class ContextBuilder:
                 ('model', pred.model),
                 ('output_dir', pred.output_dir),
                 ('report_path', pred.report_path),
+                ('last_result_summary', str((pred.last_result or {}).get('summary') or '')),
+                ('last_summary_text', str((pred.last_summary or {}).get('summary') or '')),
+                ('last_inspection_summary', str((pred.last_inspection or {}).get('summary') or '')),
+                ('last_export_path', str((pred.last_export or {}).get('export_path') or '')),
+                ('last_export_format', str((pred.last_export or {}).get('export_format') or '')),
+                ('last_path_lists_dir', str((pred.last_path_lists or {}).get('export_dir') or '')),
+                ('last_organized_destination', str((pred.last_organized_result or {}).get('destination_dir') or '')),
+                ('last_organized_mode', str((pred.last_organized_result or {}).get('organize_by') or '')),
                 ('result_cache', _cache_state(pred.last_result or pred.last_summary or pred.last_inspection)
                  if (pred.last_result or pred.last_summary or pred.last_inspection) else ''),
                 ('realtime_session_id', pred.realtime_session_id),
@@ -113,6 +148,14 @@ class ContextBuilder:
             lines,
             '知识',
             [
+                ('retrieval_topic', str((kn.last_retrieval or {}).get('topic') or '')),
+                ('retrieval_stage', str((kn.last_retrieval or {}).get('stage') or '')),
+                ('retrieval_signals', _join_values((kn.last_retrieval or {}).get('signals'))),
+                ('retrieval_summary', str((kn.last_retrieval or {}).get('summary') or '')),
+                ('analysis_signals', _join_values((kn.last_analysis or {}).get('signals'))),
+                ('analysis_summary', str((kn.last_analysis or {}).get('summary') or '')),
+                ('recommended_action', str((kn.last_recommendation or {}).get('recommended_action') or '')),
+                ('recommendation_summary', str((kn.last_recommendation or {}).get('summary') or '')),
                 ('retrieval_cache', _cache_state(kn.last_retrieval) if kn.last_retrieval else ''),
                 ('analysis_cache', _cache_state(kn.last_analysis) if kn.last_analysis else ''),
                 ('recommendation_cache', _cache_state(kn.last_recommendation) if kn.last_recommendation else ''),

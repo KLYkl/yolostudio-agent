@@ -89,6 +89,9 @@ def main() -> None:
         assert result['detected_samples'], result
         assert result['empty_samples'], result
         assert result['next_actions'], result
+        assert result['prediction_overview']['mode'] == 'images', result
+        assert result['prediction_overview']['processed_images'] == 3, result
+        assert result['action_candidates'], result
 
         summary = predict_tools.summarize_prediction_results(report_path=result['report_path'])
         assert summary['ok'] is True, summary
@@ -101,6 +104,8 @@ def main() -> None:
         assert summary['report_path'] == result['report_path'], summary
         assert summary['detected_samples'], summary
         assert summary['next_actions'], summary
+        assert summary['prediction_summary_overview']['mode'] == 'images', summary
+        assert summary['action_candidates'], summary
 
         summary_by_dir = predict_tools.summarize_prediction_results(output_dir=str(output_dir))
         assert summary_by_dir['ok'] is True, summary_by_dir
@@ -110,6 +115,8 @@ def main() -> None:
         assert inspection['ok'] is True, inspection
         assert inspection['output_dir'] == result['output_dir'], inspection
         assert inspection['artifact_root_count'] >= 2, inspection
+        assert inspection['prediction_output_overview']['artifact_root_count'] >= 2, inspection
+        assert inspection['action_candidates'], inspection
 
         exported_report = predict_tools.export_prediction_report(
             output_dir=str(output_dir),
@@ -118,6 +125,8 @@ def main() -> None:
         assert exported_report['ok'] is True, exported_report
         assert Path(exported_report['export_path']).exists(), exported_report
         assert exported_report['export_path'].endswith('.md'), exported_report
+        assert exported_report['export_overview']['export_format'] == 'markdown', exported_report
+        assert exported_report['action_candidates'], exported_report
 
         path_lists = predict_tools.export_prediction_path_lists(output_dir=str(output_dir))
         assert path_lists['ok'] is True, path_lists
@@ -125,6 +134,8 @@ def main() -> None:
         assert path_lists['empty_count'] == 1, path_lists
         assert Path(path_lists['detected_items_path']).exists(), path_lists
         assert Path(path_lists['empty_items_path']).exists(), path_lists
+        assert path_lists['path_list_overview']['detected_count'] == 2, path_lists
+        assert path_lists['action_candidates'], path_lists
 
         inspection_after_lists = predict_tools.inspect_prediction_outputs(output_dir=str(output_dir))
         assert inspection_after_lists['ok'] is True, inspection_after_lists
@@ -139,14 +150,20 @@ def main() -> None:
         assert organized['bucket_stats']['Excavator'] == 1, organized
         assert organized['bucket_stats']['bulldozer'] == 1, organized
         assert Path(organized['destination_dir']).exists(), organized
+        assert organized['organization_overview']['bucket_count'] >= 2, organized
+        assert organized['action_candidates'], organized
 
         missing_model = predict_tools.predict_images(source_path=str(source_dir), model='')
         assert missing_model['ok'] is False, missing_model
         assert '缺少模型参数' in missing_model['summary'], missing_model
+        assert missing_model['prediction_overview']['mode'] == 'images', missing_model
+        assert missing_model['action_candidates'], missing_model
 
         missing_report = predict_tools.summarize_prediction_results(output_dir=str(TMP_ROOT / 'missing'))
         assert missing_report['ok'] is False, missing_report
         assert '找不到报告文件' in missing_report['summary'], missing_report
+        assert missing_report['prediction_summary_overview']['mode'] == 'summary', missing_report
+        assert missing_report['action_candidates'], missing_report
 
         print('predict tools ok')
     finally:
