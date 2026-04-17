@@ -184,17 +184,17 @@ def build_dataset_fact_followup_reply_from_snapshot(
 
     if any(token in text or token in lowered for token in ('哪个类别最少', '哪类最少', '最少的是哪', '标注最少', '最少类别')):
         if least_class:
-            return f"当前最近一次扫描里，标注最少的类别是 {least_class['name']}，共有 {least_class['count']} 条标注。"
+            return f"标注最少的类别是 {least_class['name']}，共有 {least_class['count']} 条标注。"
         return None
 
     if any(token in text or token in lowered for token in ('哪个类别最多', '哪类最多', '最多的是哪', '标注最多', '最多类别')):
         if most_class:
-            return f"当前最近一次扫描里，标注最多的类别是 {most_class['name']}，共有 {most_class['count']} 条标注。"
+            return f"标注最多的类别是 {most_class['name']}，共有 {most_class['count']} 条标注。"
         return None
 
     if any(token in text or token in lowered for token in ('有哪些类别', '类别有哪些', '都有什么类别')):
         if classes:
-            return f"当前最近一次扫描识别到 {len(classes)} 个类别：{', '.join(classes)}。"
+            return f"识别到 {len(classes)} 个类别：{', '.join(classes)}。"
         return None
 
     if any(token in text or token in lowered for token in ('缺失标签有多少', '缺少标签有多少', '多少张没标签', '缺失标签比例', '缺标签比例')):
@@ -203,18 +203,18 @@ def build_dataset_fact_followup_reply_from_snapshot(
         if missing_count is None:
             return None
         if ratio_text:
-            return f'当前最近一次扫描记录里缺失标签图片 {missing_count} 张，占比 {ratio_text}。'
-        return f'当前最近一次扫描记录里缺失标签图片 {missing_count} 张。'
+            return f'缺失标签图片 {missing_count} 张，占比 {ratio_text}。'
+        return f'缺失标签图片 {missing_count} 张。'
 
     if any(token in text or token in lowered for token in ('总共几张', '多少张图', '总图片数')):
         total_images = scan.get('total_images')
         if total_images is None:
             return None
-        return f'当前最近一次扫描记录里的总图片数是 {total_images} 张。'
+        return f'总图片数是 {total_images} 张。'
 
     class_query = _extract_class_count_query(text, list(class_stats))
     if class_query:
-        return f'当前最近一次扫描里，类别 {class_query} 共有 {class_stats[class_query]} 条标注。'
+        return f'类别 {class_query} 共有 {class_stats[class_query]} 条标注。'
     return None
 
 
