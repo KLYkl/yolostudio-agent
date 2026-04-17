@@ -115,6 +115,12 @@ async def _scenario_c16_classes_and_single_cls_do_not_cross_contaminate() -> Non
 
 async def _scenario_c17_explain_then_follow_latest_intent() -> None:
     client = _fresh_client('chaos-p1-c17')
+    dataset_root = (P0_WORK / 'chaos-p1-c17-dataset').resolve()
+    shutil.rmtree(dataset_root, ignore_errors=True)
+    (dataset_root / 'images').mkdir(parents=True, exist_ok=True)
+    (dataset_root / 'labels').mkdir(parents=True, exist_ok=True)
+    dataset_root_text = str(dataset_root)
+    yaml_path = str(dataset_root / 'data.yaml')
 
     calls: list[tuple[str, dict[str, Any]]] = []
 
@@ -124,9 +130,9 @@ async def _scenario_c17_explain_then_follow_latest_intent() -> None:
             result = {
                 'ok': True,
                 'summary': '当前还不能直接训练：缺少可用的 data_yaml；但当前数据集可以先进入 prepare_dataset_for_training',
-                'dataset_root': '/data/preparable',
-                'resolved_img_dir': '/data/preparable/images',
-                'resolved_label_dir': '/data/preparable/labels',
+                'dataset_root': dataset_root_text,
+                'resolved_img_dir': str(dataset_root / 'images'),
+                'resolved_label_dir': str(dataset_root / 'labels'),
                 'resolved_data_yaml': '',
                 'ready': False,
                 'preparable': True,
@@ -145,10 +151,10 @@ async def _scenario_c17_explain_then_follow_latest_intent() -> None:
             result = {
                 'ok': True,
                 'summary': '数据准备完成：当前数据集已具备训练条件。',
-                'dataset_root': '/data/preparable',
-                'img_dir': '/data/preparable/images',
-                'label_dir': '/data/preparable/labels',
-                'data_yaml': '/data/preparable/data.yaml',
+                'dataset_root': dataset_root_text,
+                'img_dir': str(dataset_root / 'images'),
+                'label_dir': str(dataset_root / 'labels'),
+                'data_yaml': yaml_path,
                 'ready': True,
                 'steps_completed': [],
             }
@@ -169,18 +175,20 @@ async def _scenario_c17_explain_then_follow_latest_intent() -> None:
         return result
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
-
-    first = await client.chat('数据在 /data/preparable，用 yolov8n.pt 训练，只做准备。')
-    assert first['status'] == 'needs_confirmation', first
-    assert first['tool_call']['name'] == 'prepare_dataset_for_training', first
-    second = await client.chat('为什么不能直接训练？')
-    assert second['status'] == 'needs_confirmation', second
-    assert '缺少可用的 data_yaml' in second['message']
-    third = await client.chat('那你直接训练。')
-    assert third['status'] == 'needs_confirmation', third
-    assert third['tool_call']['name'] == 'start_training', third
-    assert third['tool_call']['args'].get('data_yaml') == '/data/preparable/data.yaml', third
-    assert [name for name, _ in calls] == ['dataset_training_readiness', 'prepare_dataset_for_training', 'training_preflight']
+    try:
+        first = await client.chat(f'数据在 {dataset_root_text}，用 yolov8n.pt 训练，只做准备。')
+        assert first['status'] == 'needs_confirmation', first
+        assert first['tool_call']['name'] == 'prepare_dataset_for_training', first
+        second = await client.chat('为什么不能直接训练？')
+        assert second['status'] == 'needs_confirmation', second
+        assert '缺少可用的 data_yaml' in second['message']
+        third = await client.chat('那你直接训练。')
+        assert third['status'] == 'needs_confirmation', third
+        assert third['tool_call']['name'] == 'start_training', third
+        assert third['tool_call']['args'].get('data_yaml') == yaml_path, third
+        assert [name for name, _ in calls] == ['dataset_training_readiness', 'prepare_dataset_for_training', 'training_preflight']
+    finally:
+        shutil.rmtree(dataset_root, ignore_errors=True)
 
 
 async def _scenario_c18_same_turn_conflict_stays_conservative() -> None:
@@ -192,7 +200,7 @@ async def _scenario_c18_same_turn_conflict_stays_conservative() -> None:
 
 async def _scenario_c19_resume_but_analysis_only_does_not_restart() -> None:
     client = _fresh_client('chaos-p1-c19')
-    _install_ready_training_tools(client)
+    calls = _install_ready_training_tools(client)
     client.session_state.active_training.training_run_summary = {
         'summary': '最近训练已完成：precision=0.76 recall=0.54',
         'run_state': 'completed',
@@ -201,6 +209,7 @@ async def _scenario_c19_resume_but_analysis_only_does_not_restart() -> None:
     turn = await client.chat('resume 上次训练，但不要接着训，只分析就行。')
     assert turn['status'] == 'completed', turn
     assert '当前更适合先分析结果' in turn['message'] or '最近训练已完成' in turn['message']
+    assert [name for name, _ in calls] == ['analyze_training_outcome'], calls
 
 
 async def _scenario_c20_project_and_name_can_be_cleared() -> None:

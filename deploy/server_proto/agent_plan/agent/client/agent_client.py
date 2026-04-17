@@ -3483,7 +3483,14 @@ class YoloStudioAgentClient:
         }
 
     async def _complete_training_outcome_analysis_reply(self) -> dict[str, Any]:
-        training_summary = await self.direct_tool('summarize_training_run')
+        training_summary = dict(
+            self.session_state.active_training.training_run_summary
+            or self.session_state.active_training.last_summary
+            or self.session_state.active_training.last_status
+            or {}
+        )
+        if not training_summary:
+            training_summary = await self.direct_tool('summarize_training_run')
         result = await self.direct_tool(
             'analyze_training_outcome',
             metrics=training_summary,
