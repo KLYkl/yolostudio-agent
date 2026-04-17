@@ -164,7 +164,6 @@ except Exception:
     sys.modules['langgraph.checkpoint.memory'] = checkpoint_mod
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
-from yolostudio_agent.agent.client.dataset_fact_service import build_dataset_fact_followup_reply
 from langchain_core.messages import AIMessage, ToolMessage
 
 
@@ -216,12 +215,24 @@ class _DatasetGraph:
         summary = '\n'.join(str(getattr(message, 'content', message)) for message in payload['messages'][:2])
         user_text = str(getattr(payload['messages'][-1], 'content', ''))
         ds = self.client.session_state.active_dataset
-        fact_reply = build_dataset_fact_followup_reply(
-            self.client.session_state,
-            user_text=user_text,
-        )
-        if fact_reply:
-            messages = list(payload['messages']) + [AIMessage(content=fact_reply)]
+        if '哪个类别的标注最少' in user_text:
+            assert 'last_scan_least_class: subdural (24)' in summary.lower(), summary
+            messages = list(payload['messages']) + [AIMessage(content='标注最少的是 subdural，共 24 条标注。')]
+            self._last_state = _GraphState(messages)
+            return {'messages': messages}
+        if '缺失标签有多少' in user_text:
+            assert 'last_scan_missing_label_images: 3' in summary, summary
+            messages = list(payload['messages']) + [AIMessage(content='当前缺失标签图片 3 张。')]
+            self._last_state = _GraphState(messages)
+            return {'messages': messages}
+        if 'epidural 有多少' in user_text.lower():
+            assert 'last_scan_top_classes: epidural=66, subdural=24' in summary.lower(), summary
+            messages = list(payload['messages']) + [AIMessage(content='Epidural 共有 66 条标注。')]
+            self._last_state = _GraphState(messages)
+            return {'messages': messages}
+        if '有哪些类别' in user_text:
+            assert 'last_scan_classes: epidural, subdural' in summary.lower(), summary
+            messages = list(payload['messages']) + [AIMessage(content='当前识别到 2 个类别：epidural、subdural。')]
             self._last_state = _GraphState(messages)
             return {'messages': messages}
 

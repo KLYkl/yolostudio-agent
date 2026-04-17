@@ -39,7 +39,6 @@ except Exception:
     sys.modules['langchain_ollama'] = fake_mod
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
 from yolostudio_agent.agent.client.agent_client import _dataset_fact_post_model_hook
 
@@ -70,12 +69,7 @@ def main() -> None:
     }
 
     update = _dataset_fact_post_model_hook(state)
-    assert 'messages' in update, update
-    messages = update['messages']
-    assert getattr(messages[0], 'id', '') == REMOVE_ALL_MESSAGES, messages
-    assert isinstance(messages[-1], AIMessage), messages[-1]
-    assert 'Subdural' in messages[-1].content, messages[-1].content
-    assert '24' in messages[-1].content, messages[-1].content
+    assert update == {}, update
     print('dataset fact post model hook ok')
 
 

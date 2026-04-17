@@ -66,6 +66,44 @@ def _format_top_classes(value: object, *, limit: int = 4) -> str:
     return ', '.join(parts)
 
 
+def _summarize_runs(value: object, *, limit: int = 4) -> str:
+    if not isinstance(value, list):
+        return ''
+    parts: list[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        run_id = str(item.get('run_id') or item.get('log_file') or '').strip()
+        run_state = str(item.get('run_state') or '').strip()
+        if not run_id:
+            continue
+        parts.append(f'{run_id}({run_state})' if run_state else run_id)
+    if not parts:
+        return ''
+    if len(parts) > limit:
+        return ', '.join(parts[:limit]) + f' 等 {len(parts)} 条'
+    return ', '.join(parts)
+
+
+def _summarize_loops(value: object, *, limit: int = 4) -> str:
+    if not isinstance(value, list):
+        return ''
+    parts: list[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        loop_name = str(item.get('loop_name') or item.get('loop_id') or '').strip()
+        status = str(item.get('status') or '').strip()
+        if not loop_name:
+            continue
+        parts.append(f'{loop_name}({status})' if status else loop_name)
+    if not parts:
+        return ''
+    if len(parts) > limit:
+        return ', '.join(parts[:limit]) + f' 等 {len(parts)} 条'
+    return ', '.join(parts)
+
+
 def _append_section(lines: list[str], title: str, entries: list[tuple[str, object]]) -> None:
     filtered = [(key, value) for key, value in entries if _non_empty(value)]
     if not filtered:
@@ -103,6 +141,9 @@ class ContextBuilder:
         pref = state.preferences
         digest_text = digest.to_text() if digest else '无历史摘要'
         active_loop_request = dict(tr.active_loop_request or {})
+        last_extract = dict(ds.last_extract_result or ds.last_frame_extract or ds.last_video_scan or ds.last_extract_preview or {})
+        last_training_pipeline = dict(tr.last_remote_roundtrip or {})
+        last_prediction_pipeline = dict(pred.last_remote_roundtrip or {})
 
         lines: list[str] = ['当前结构化上下文:']
         lines.append(f'- session_id: {state.session_id}')
@@ -120,6 +161,8 @@ class ContextBuilder:
                 ('last_scan_top_classes', _format_top_classes((ds.last_scan or {}).get('top_classes'))),
                 ('last_scan_least_class', _format_extreme_class((ds.last_scan or {}).get('least_class'))),
                 ('last_scan_most_class', _format_extreme_class((ds.last_scan or {}).get('most_class'))),
+                ('last_scan_total_images', (ds.last_scan or {}).get('total_images')),
+                ('last_scan_missing_label_images', (ds.last_scan or {}).get('missing_label_images')),
                 ('last_scan_missing_label_ratio', _format_percent((ds.last_scan or {}).get('missing_label_ratio'))),
                 ('last_scan_class_name_source', str((ds.last_scan or {}).get('class_name_source') or '')),
                 ('last_validate_summary', str((ds.last_validate or {}).get('summary') or '')),
@@ -127,6 +170,8 @@ class ContextBuilder:
                 ('last_health_duplicate_groups', (ds.last_health_check or {}).get('duplicate_groups')),
                 ('last_duplicate_summary', str((ds.last_duplicate_check or {}).get('summary') or '')),
                 ('last_duplicate_groups', (ds.last_duplicate_check or {}).get('duplicate_groups')),
+                ('last_extract_summary', str(last_extract.get('summary') or '')),
+                ('last_extract_output_dir', str(last_extract.get('output_dir') or '')),
                 ('readiness_cache', _cache_state(ds.last_readiness) if ds.last_readiness else ''),
                 ('health_cache', _cache_state(ds.last_health_check or ds.last_validate) if (ds.last_health_check or ds.last_validate) else ''),
                 ('split_cache', _cache_state(ds.last_split) if ds.last_split else ''),
@@ -153,6 +198,22 @@ class ContextBuilder:
                 ('active_loop_model', str(active_loop_request.get('model') or '')),
                 ('active_loop_data_yaml', str(active_loop_request.get('data_yaml') or '')),
                 ('active_loop_managed_level', str(active_loop_request.get('managed_level') or '')),
+                ('last_status_summary', str((tr.last_status or {}).get('summary') or '')),
+                ('last_summary_text', str((tr.last_summary or {}).get('summary') or '')),
+                ('training_run_summary_text', str((tr.training_run_summary or {}).get('summary') or '')),
+                ('recent_runs', _summarize_runs(tr.recent_runs)),
+                ('best_run_id', str((tr.best_run_selection or {}).get('best_run_id') or '')),
+                ('best_run_summary', str((tr.best_run_selection or {}).get('summary') or '')),
+                ('last_inspected_run_id', str((tr.last_run_inspection or {}).get('selected_run_id') or (tr.last_run_inspection or {}).get('run_id') or '')),
+                ('last_inspection_summary', str((tr.last_run_inspection or {}).get('summary') or '')),
+                ('comparison_pair', ', '.join(item for item in [str((tr.last_run_comparison or {}).get('left_run_id') or '').strip(), str((tr.last_run_comparison or {}).get('right_run_id') or '').strip()] if item)),
+                ('comparison_summary', str((tr.last_run_comparison or {}).get('summary') or '')),
+                ('recent_loops', _summarize_loops(tr.recent_loops)),
+                ('last_loop_name', str((tr.last_loop_detail or tr.last_loop_status or {}).get('loop_name') or '')),
+                ('last_loop_summary', str((tr.last_loop_detail or tr.last_loop_status or {}).get('summary') or '')),
+                ('last_remote_pipeline_summary', str(last_training_pipeline.get('summary') or '')),
+                ('last_remote_pipeline_result_path', str(last_training_pipeline.get('remote_result_path') or '')),
+                ('last_remote_pipeline_local_root', str(last_training_pipeline.get('local_result_root') or '')),
                 ('preflight_cache', _cache_state(tr.last_preflight) if tr.last_preflight else ''),
                 ('start_cache', _cache_state(tr.last_start_result) if tr.last_start_result else ''),
                 ('status_cache', _cache_state(tr.last_status or tr.last_summary or tr.training_run_summary)
@@ -183,6 +244,9 @@ class ContextBuilder:
                 ('last_path_lists_dir', str((pred.last_path_lists or {}).get('export_dir') or '')),
                 ('last_organized_destination', str((pred.last_organized_result or {}).get('destination_dir') or '')),
                 ('last_organized_mode', str((pred.last_organized_result or {}).get('organize_by') or '')),
+                ('last_remote_pipeline_summary', str(last_prediction_pipeline.get('summary') or '')),
+                ('last_remote_pipeline_output_dir', str(last_prediction_pipeline.get('remote_output_dir') or last_prediction_pipeline.get('remote_result_path') or '')),
+                ('last_remote_pipeline_local_root', str(last_prediction_pipeline.get('local_result_root') or '')),
                 ('result_cache', _cache_state(pred.last_result or pred.last_summary or pred.last_inspection or pred.last_image_prediction_status)
                  if (pred.last_result or pred.last_summary or pred.last_inspection or pred.last_image_prediction_status) else ''),
                 ('realtime_session_id', pred.realtime_session_id),
@@ -218,6 +282,9 @@ class ContextBuilder:
                 ('target_label', rt.target_label),
                 ('profile_name', rt.profile_name),
                 ('remote_root', rt.remote_root),
+                ('last_profile_summary', str((rt.last_profile_listing or {}).get('summary') or '')),
+                ('last_upload_summary', str((rt.last_upload or {}).get('summary') or '')),
+                ('last_download_summary', str((rt.last_download or {}).get('summary') or '')),
                 ('profile_cache', _cache_state(rt.last_profile_listing) if rt.last_profile_listing else ''),
                 ('upload_cache', _cache_state(rt.last_upload) if rt.last_upload else ''),
                 ('download_cache', _cache_state(rt.last_download) if rt.last_download else ''),

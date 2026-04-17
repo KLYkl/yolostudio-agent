@@ -13,7 +13,6 @@ if __package__ in {None, ''}:
             sys.path.insert(0, path)
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
 from yolostudio_agent.agent.client.agent_client import _build_agent_post_model_hook
 from yolostudio_agent.agent.client.cached_tool_reply_service import build_cached_tool_context_payload
@@ -72,11 +71,7 @@ async def _run() -> None:
             'cached_tool_context': cached_tool_context,
         }
     )
-    assert 'messages' in update, update
-    messages = update['messages']
-    assert getattr(messages[0], 'id', '') == REMOVE_ALL_MESSAGES, messages
-    assert isinstance(messages[-1], AIMessage), messages[-1]
-    assert 'run-best' in messages[-1].content, messages[-1].content
+    assert update == {}, update
 
     remote_update = await hook(
         {
@@ -89,11 +84,7 @@ async def _run() -> None:
             'cached_tool_context': cached_tool_context,
         }
     )
-    assert 'messages' in remote_update, remote_update
-    remote_messages = remote_update['messages']
-    assert getattr(remote_messages[0], 'id', '') == REMOVE_ALL_MESSAGES, remote_messages
-    assert isinstance(remote_messages[-1], AIMessage), remote_messages[-1]
-    assert 'lab' in remote_messages[-1].content, remote_messages[-1].content
+    assert remote_update == {}, remote_update
 
     extract_update = await hook(
         {
@@ -106,11 +97,7 @@ async def _run() -> None:
             'cached_tool_context': cached_tool_context,
         }
     )
-    assert 'messages' in extract_update, extract_update
-    extract_messages = extract_update['messages']
-    assert getattr(extract_messages[0], 'id', '') == REMOVE_ALL_MESSAGES, extract_messages
-    assert isinstance(extract_messages[-1], AIMessage), extract_messages[-1]
-    assert '/tmp/extract_run' in extract_messages[-1].content, extract_messages[-1].content
+    assert extract_update == {}, extract_update
     print('agent post model hook cached reply ok')
 
 

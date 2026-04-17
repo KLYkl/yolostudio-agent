@@ -2,9 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from langchain_core.messages import AIMessage
-
-from yolostudio_agent.agent.client.agent_client import _build_agent_post_model_hook
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 
 ToolCallBuilder = Callable[[list[Any]], tuple[str, dict[str, object]]]
@@ -25,11 +23,35 @@ class HookedToolCallGraph:
         self._tool_args = dict(tool_args or {})
         self._tool_call_builder = tool_call_builder
         self._state_overrides = dict(state_overrides or {})
-        self._hook = _build_agent_post_model_hook(planner_llm)
 
     def get_state(self, config):
         del config
         return None
+
+    async def _render_reply(
+        self,
+        *,
+        tool_name: str,
+        tool_args: dict[str, object],
+        payload: dict[str, Any],
+        messages: list[Any],
+    ) -> str:
+        if self._planner_llm is None:
+            return ''
+        facts = {
+            'tool_name': tool_name,
+            'tool_args': dict(tool_args),
+            'state_overrides': dict(self._state_overrides),
+            'message_text': [str(getattr(message, 'content', message)) for message in messages if str(getattr(message, 'content', message)).strip()],
+            'graph_state_keys': sorted(str(key) for key in payload.keys()),
+        }
+        response = await self._planner_llm.ainvoke(
+            [
+                SystemMessage(content='结果说明器'),
+                HumanMessage(content=str(facts)),
+            ]
+        )
+        return str(getattr(response, 'content', response)).strip()
 
     async def ainvoke(self, payload, config=None):
         del config
@@ -45,12 +67,12 @@ class HookedToolCallGraph:
                 tool_calls=[{'id': 'tc-1', 'name': tool_name, 'args': dict(tool_args)}],
             )
         )
-        hook_state = dict(payload)
-        hook_state['messages'] = messages
-        if self._state_overrides:
-            hook_state.update(self._state_overrides)
-        update = await self._hook(hook_state)
-        updated_messages = list(update.get('messages') or [])
-        if updated_messages and getattr(updated_messages[0], 'id', '') == '__remove_all__':
-            updated_messages = updated_messages[1:]
-        return {'messages': updated_messages or messages}
+        reply = await self._render_reply(
+            tool_name=tool_name,
+            tool_args=tool_args,
+            payload=payload,
+            messages=messages,
+        )
+        if reply:
+            messages.append(AIMessage(content=reply))
+        return {'messages': messages}

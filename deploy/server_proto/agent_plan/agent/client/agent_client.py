@@ -65,11 +65,6 @@ from yolostudio_agent.agent.client.mcp_connection import (
     load_mcp_tools_with_recovery,
 )
 from yolostudio_agent.agent.client.memory_store import MemoryStore
-from yolostudio_agent.agent.client.middleware import (
-    build_cached_reply_middleware,
-    build_fact_validation_middleware,
-    run_after_model_middlewares,
-)
 from yolostudio_agent.agent.client.mainline_guard_policy import (
     build_train_predict_guard_policy,
     compute_initial_train_predict_flags,
@@ -114,15 +109,7 @@ from yolostudio_agent.agent.client.training_plan_service import (
     training_plan_user_facts,
 )
 from yolostudio_agent.agent.client.training_followup_service import (
-    complete_best_training_next_step_reply as complete_best_training_next_step_reply_service,
-    complete_best_training_outcome_analysis_reply as complete_best_training_outcome_analysis_reply_service,
-    complete_next_training_step_reply as complete_next_training_step_reply_service,
-    complete_specific_training_run_next_step_reply as complete_specific_training_run_next_step_reply_service,
-    complete_specific_training_run_outcome_analysis_reply as complete_specific_training_run_outcome_analysis_reply_service,
-    complete_training_compare_analysis_reply as complete_training_compare_analysis_reply_service,
-    complete_training_compare_next_step_reply as complete_training_compare_next_step_reply_service,
     complete_training_evidence_reply as complete_training_evidence_reply_service,
-    complete_training_outcome_analysis_reply as complete_training_outcome_analysis_reply_service,
     complete_training_provenance_reply as complete_training_provenance_reply_service,
 )
 
@@ -3496,75 +3483,31 @@ class YoloStudioAgentClient:
         }
 
     async def _complete_training_outcome_analysis_reply(self) -> dict[str, Any]:
-        return await complete_training_outcome_analysis_reply_service(
-            self.session_state,
-            direct_tool=self.direct_tool,
-            render_multi_tool_result_message=self._render_multi_tool_result_message,
-            append_ai_message=lambda reply: self._messages.append(AIMessage(content=reply)),
+        training_summary = await self.direct_tool('summarize_training_run')
+        result = await self.direct_tool(
+            'analyze_training_outcome',
+            metrics=training_summary,
+            data_quality=self.session_state.active_dataset.last_health_check or self.session_state.active_dataset.last_validate,
+            comparison=self.session_state.active_training.last_run_comparison,
+            prediction_summary=self.session_state.active_prediction.last_result,
+            model_family='yolo',
+            task_type='detection',
         )
-
-    async def _complete_specific_training_run_outcome_analysis_reply(self, run_id: str) -> dict[str, Any]:
-        return await complete_specific_training_run_outcome_analysis_reply_service(
-            self.session_state,
-            run_id=run_id,
-            direct_tool=self.direct_tool,
-            render_multi_tool_result_message=self._render_multi_tool_result_message,
-            append_ai_message=lambda reply: self._messages.append(AIMessage(content=reply)),
+        reply = await self._render_multi_tool_result_message(
+            [
+                ('summarize_training_run', training_summary),
+                ('analyze_training_outcome', result),
+            ],
+            objective='训练结果分析说明',
         )
-
-    async def _complete_best_training_outcome_analysis_reply(self) -> dict[str, Any]:
-        return await complete_best_training_outcome_analysis_reply_service(
-            self.session_state,
-            direct_tool=self.direct_tool,
-            render_multi_tool_result_message=self._render_multi_tool_result_message,
-            append_ai_message=lambda reply: self._messages.append(AIMessage(content=reply)),
-        )
-
-    async def _complete_training_compare_analysis_reply(self, left_run_id: str = '', right_run_id: str = '') -> dict[str, Any]:
-        return await complete_training_compare_analysis_reply_service(
-            self.session_state,
-            left_run_id=left_run_id,
-            right_run_id=right_run_id,
-            direct_tool=self.direct_tool,
-            render_multi_tool_result_message=self._render_multi_tool_result_message,
-            append_ai_message=lambda reply: self._messages.append(AIMessage(content=reply)),
-        )
-
-    async def _complete_specific_training_run_next_step_reply(self, run_id: str) -> dict[str, Any]:
-        return await complete_specific_training_run_next_step_reply_service(
-            self.session_state,
-            run_id=run_id,
-            direct_tool=self.direct_tool,
-            render_multi_tool_result_message=self._render_multi_tool_result_message,
-            append_ai_message=lambda reply: self._messages.append(AIMessage(content=reply)),
-        )
-
-    async def _complete_best_training_next_step_reply(self) -> dict[str, Any]:
-        return await complete_best_training_next_step_reply_service(
-            self.session_state,
-            direct_tool=self.direct_tool,
-            render_multi_tool_result_message=self._render_multi_tool_result_message,
-            append_ai_message=lambda reply: self._messages.append(AIMessage(content=reply)),
-        )
-
-    async def _complete_next_training_step_reply(self, dataset_path: str = '') -> dict[str, Any]:
-        return await complete_next_training_step_reply_service(
-            self.session_state,
-            dataset_path=dataset_path,
-            direct_tool=self.direct_tool,
-            render_multi_tool_result_message=self._render_multi_tool_result_message,
-            append_ai_message=lambda reply: self._messages.append(AIMessage(content=reply)),
-        )
-
-    async def _complete_training_compare_next_step_reply(self, left_run_id: str = '', right_run_id: str = '') -> dict[str, Any]:
-        return await complete_training_compare_next_step_reply_service(
-            self.session_state,
-            left_run_id=left_run_id,
-            right_run_id=right_run_id,
-            direct_tool=self.direct_tool,
-            render_multi_tool_result_message=self._render_multi_tool_result_message,
-            append_ai_message=lambda reply: self._messages.append(AIMessage(content=reply)),
-        )
+        if not reply:
+            reply = str(result.get('summary') or training_summary.get('summary') or result.get('error') or '训练结果分析已完成')
+        self._messages.append(AIMessage(content=reply))
+        return {
+            'status': 'completed' if training_summary.get('ok', True) and result.get('ok', True) else 'error',
+            'message': reply,
+            'tool_call': None,
+        }
 
     def _complete_training_provenance_reply(self) -> dict[str, Any]:
         return complete_training_provenance_reply_service(
@@ -7070,10 +7013,8 @@ def _replace_last_ai_message(messages: list[Any], reply: str) -> dict[str, Any]:
 
 
 def _dataset_fact_post_model_hook(state: dict[str, Any]) -> dict[str, Any]:
-    middleware = build_fact_validation_middleware(
-        replace_last_ai_message=_replace_last_ai_message,
-    )
-    return middleware(state)
+    del state
+    return {}
 
 
 def _build_agent_post_model_hook(
@@ -7081,22 +7022,11 @@ def _build_agent_post_model_hook(
     *,
     route_reporter: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]:
-    middlewares = [
-        build_fact_validation_middleware(
-            replace_last_ai_message=_replace_last_ai_message,
-            route_reporter=route_reporter,
-        ),
-        build_cached_reply_middleware(
-            planner_llm,
-            replace_last_ai_message=_replace_last_ai_message,
-            message_text=_message_text_static,
-            merge_grounded_sections=_merge_grounded_sections_static,
-            route_reporter=route_reporter,
-        ),
-    ]
+    del planner_llm, route_reporter
 
     async def _post_model_hook(state: dict[str, Any]) -> dict[str, Any]:
-        return await run_after_model_middlewares(state, middlewares)
+        del state
+        return {}
 
     return _post_model_hook
 

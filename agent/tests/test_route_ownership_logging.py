@@ -157,12 +157,9 @@ async def _run() -> None:
             'cached_tool_context': cached_tool_context,
         }
     )
-    assert 'messages' in hook_update, hook_update
+    assert hook_update == {}, hook_update
     hook_routes = hook_store.read_events_by_type('route-hook', 'route_ownership')
-    assert any(
-        item.get('route') == 'post-hook-override' and item.get('override_kind') == 'cached_reply'
-        for item in hook_routes
-    ), hook_routes
+    assert not any(item.get('route') == 'post-hook-override' for item in hook_routes), hook_routes
 
     print('route ownership logging ok')
 

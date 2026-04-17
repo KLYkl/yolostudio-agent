@@ -560,37 +560,14 @@ def fallback_tool_result_text(
     *,
     build_grounded_tool_reply: GroundedReplyBuilder,
 ) -> str:
-    grounded_preferred_tools = {
-        'check_training_status',
-        'check_training_loop_status',
-        'start_training',
-        'start_training_loop',
-        'pause_training_loop',
-        'resume_training_loop',
-        'stop_training_loop',
-        'scan_cameras',
-        'scan_screens',
-        'test_rtsp_stream',
-        'check_realtime_prediction_status',
-        'start_camera_prediction',
-        'start_rtsp_prediction',
-        'start_screen_prediction',
-        'stop_realtime_prediction',
-        'list_remote_profiles',
-    }
-    prefer_grounded = tool_name in grounded_preferred_tools and not (
-        structured_overview_payloads(parsed) or parsed.get('action_candidates')
-    )
-    if prefer_grounded:
-        grounded_text = build_grounded_tool_reply([(tool_name, parsed)])
-        if grounded_text:
-            return grounded_text
     structured_text = stringify_tool_result_facts(parsed).strip()
     if structured_text:
         return structured_text
+    grounded_text = build_grounded_tool_reply([(tool_name, parsed)])
+    if grounded_text:
+        return grounded_text
     return (
-        build_grounded_tool_reply([(tool_name, parsed)])
-        or str(parsed.get('summary') or parsed.get('message') or parsed.get('error') or '').strip()
+        str(parsed.get('summary') or parsed.get('message') or parsed.get('error') or '').strip()
         or ('操作执行成功' if parsed.get('ok') else '操作执行失败')
     )
 
@@ -734,20 +711,6 @@ async def render_tool_result_message(
             extra_notes=extra_notes or None,
         )
     if planner_llm is None:
-        return fallback_tool_result_text(
-            tool_name,
-            parsed,
-            build_grounded_tool_reply=build_grounded_tool_reply,
-        )
-
-    grounded_fast_tools = {
-        'predict_images',
-        'predict_videos',
-        'start_image_prediction',
-        'check_image_prediction_status',
-        'stop_image_prediction',
-    }
-    if canonical_tool_name(tool_name) in grounded_fast_tools:
         return fallback_tool_result_text(
             tool_name,
             parsed,

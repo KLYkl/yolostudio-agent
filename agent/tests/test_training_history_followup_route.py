@@ -144,8 +144,8 @@ def _install_fake_test_dependencies() -> None:
 
 _install_fake_test_dependencies()
 
-from langchain_core.messages import AIMessage
-from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient, _build_agent_post_model_hook
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
 
 
 class _NoLLMGraph:
@@ -164,25 +164,40 @@ class _HookedToolCallGraph:
         tool_name: str,
         tool_args: dict[str, object] | None = None,
     ) -> None:
+        self._planner_llm = planner_llm
         self._tool_name = tool_name
         self._tool_args = dict(tool_args or {})
-        self._hook = _build_agent_post_model_hook(planner_llm)
 
     def get_state(self, config):
         del config
         return None
 
+    async def _render_reply(self, messages: list[object], tool_args: dict[str, object]) -> str:
+        response = await self._planner_llm.ainvoke(
+            [
+                SystemMessage(content='结果说明器'),
+                HumanMessage(
+                    content=str(
+                        {
+                            'tool_name': self._tool_name,
+                            'tool_args': tool_args,
+                            'messages': [str(getattr(message, 'content', message)) for message in messages if str(getattr(message, 'content', message)).strip()],
+                        }
+                    )
+                ),
+            ]
+        )
+        return str(getattr(response, 'content', response)).strip()
+
     async def ainvoke(self, payload, config=None):
         del config
         messages = list(payload['messages'])
-        messages.append(AIMessage(content='', tool_calls=[{'id': 'tc-1', 'name': self._tool_name, 'args': dict(self._tool_args)}]))
-        hook_state = dict(payload)
-        hook_state['messages'] = messages
-        update = await self._hook(hook_state)
-        updated_messages = list(update.get('messages') or [])
-        if updated_messages and getattr(updated_messages[0], 'id', '') == '__remove_all__':
-            updated_messages = updated_messages[1:]
-        return {'messages': updated_messages or messages}
+        tool_args = dict(self._tool_args)
+        messages.append(AIMessage(content='', tool_calls=[{'id': 'tc-1', 'name': self._tool_name, 'args': tool_args}]))
+        reply = await self._render_reply(messages, tool_args)
+        if reply:
+            messages.append(AIMessage(content=reply))
+        return {'messages': messages}
 
 
 class _FakePlannerResponse:
