@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -15,6 +16,43 @@ if __package__ in {None, ''}:
 
 from yolostudio_agent.agent.tests._chaos_test_support import WORK, _ScriptedGraph, _make_client
 from yolostudio_agent.agent.tests._coroutine_runner import run
+from langchain_core.messages import AIMessage, ToolMessage
+
+
+class _PredictVideosGraph:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def get_state(self, config):
+        return None
+
+    async def ainvoke(self, payload, config=None):
+        del config
+        messages = list(payload['messages'])
+        args = {'source_path': '/data/videos', 'model': '/models/qcar.pt'}
+        result = {
+            'ok': True,
+            'summary': '视频预测完成: 已处理 2 个视频, 有检测帧 13, 总检测框 15，主要类别 two_wheeler=15',
+            'model': '/models/qcar.pt',
+            'source_path': '/data/videos',
+            'processed_videos': 2,
+            'total_frames': 24,
+            'detected_frames': 13,
+            'total_detections': 15,
+            'class_counts': {'two_wheeler': 15},
+            'output_dir': '/tmp/predict-chaos',
+            'report_path': '/tmp/predict-chaos/report.json',
+            'warnings': [],
+        }
+        self.calls.append(('predict_videos', dict(args)))
+        tool_call_id = f'call-{len(self.calls)}'
+        return {
+            'messages': messages + [
+                AIMessage(content='', tool_calls=[{'id': tool_call_id, 'name': 'predict_videos', 'args': args}]),
+                ToolMessage(content=json.dumps(result, ensure_ascii=False), name='predict_videos', tool_call_id=tool_call_id),
+                AIMessage(content='视频预测完成: 已处理 2 个视频, 有检测帧 13, 总检测框 15，主要类别 two_wheeler=15'),
+            ]
+        }
 
 
 async def _scenario_c01_missing_everything_blocks_without_graph() -> None:
@@ -354,6 +392,8 @@ async def _scenario_c51_missing_environment_blocks_start() -> None:
 
 async def _scenario_c61_prediction_interrupt_preserves_training_plan() -> None:
     client = _make_client('chaos-p0-c61')
+    predict_graph = _PredictVideosGraph()
+    client.graph = predict_graph  # type: ignore[assignment]
     calls: list[tuple[str, dict[str, Any]]] = []
 
     async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
@@ -420,14 +460,14 @@ async def _scenario_c61_prediction_interrupt_preserves_training_plan() -> None:
     assert turn1['status'] == 'completed', turn1
     draft_before = dict(client.session_state.active_training.training_plan_draft)
     phase_a = await client._try_handle_mainline_intent('先帮我预测这两个视频 /data/videos，用 /models/qcar.pt。', 'thread-chaos-p0-c61-predict')
-    assert phase_a is not None, phase_a
-    assert phase_a['status'] == 'completed', phase_a
-    assert calls[-1][0] == 'predict_videos', calls
+    assert phase_a is None, phase_a
+    assert all(name != 'predict_videos' for name, _ in calls), calls
     calls.clear()
     turn2 = await client.chat('先帮我预测这两个视频 /data/videos，用 /models/qcar.pt。')
     assert turn2['status'] == 'completed', turn2
     assert '视频预测完成' in turn2['message']
-    assert calls[-1][0] == 'predict_videos', calls
+    assert predict_graph.calls == [('predict_videos', {'source_path': '/data/videos', 'model': '/models/qcar.pt'})], predict_graph.calls
+    assert calls == [], calls
     assert client.session_state.active_training.training_plan_draft == draft_before
     turn3 = await client.chat('刚才训练计划继续，先给我计划。')
     assert turn3['status'] == 'completed', turn3

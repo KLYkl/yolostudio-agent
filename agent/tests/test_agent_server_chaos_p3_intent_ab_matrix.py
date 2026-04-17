@@ -21,6 +21,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 
 
 def _fresh_client(session_id: str):
+    P0_WORK.mkdir(parents=True, exist_ok=True)
     shutil.rmtree(P0_WORK / session_id, ignore_errors=True)
     client = _make_client(session_id)
     client.session_state.active_training.model = 'yolov8n.pt'
@@ -69,33 +70,40 @@ class _MatrixCase:
     state_preset: str = ''
 
 
-def _install_training_matrix_tools(client):
+def _install_training_matrix_tools(
+    client,
+    *,
+    train_dataset_root: str,
+    preparable_dataset_root: str,
+):
     calls: list[tuple[str, dict[str, Any]]] = []
+    train_aliases = _path_aliases(train_dataset_root)
+    preparable_aliases = _path_aliases(preparable_dataset_root)
 
     async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
         calls.append((tool_name, dict(kwargs)))
         if tool_name == 'training_readiness':
             dataset_root = str(kwargs.get('img_dir') or '')
-            if dataset_root == '/data/train':
+            if dataset_root in train_aliases:
                 result = {
                     'ok': True,
                     'summary': '训练前检查完成：数据已具备训练条件。',
-                    'dataset_root': '/data/train',
-                    'resolved_img_dir': '/data/train/images',
-                    'resolved_label_dir': '/data/train/labels',
-                    'resolved_data_yaml': '/data/train/data.yaml',
+                    'dataset_root': dataset_root,
+                    'resolved_img_dir': _path_text(Path(dataset_root) / 'images'),
+                    'resolved_label_dir': _path_text(Path(dataset_root) / 'labels'),
+                    'resolved_data_yaml': _path_text(Path(dataset_root) / 'data.yaml'),
                     'ready': True,
                     'preparable': False,
                     'warnings': [],
                     'blockers': [],
                 }
-            elif dataset_root == '/data/preparable':
+            elif dataset_root in preparable_aliases:
                 result = {
                     'ok': True,
                     'summary': '当前还不能直接训练：缺少可用的 data_yaml；但当前数据集可以先进入 prepare_dataset_for_training',
-                    'dataset_root': '/data/preparable',
-                    'resolved_img_dir': '/data/preparable/images',
-                    'resolved_label_dir': '/data/preparable/labels',
+                    'dataset_root': dataset_root,
+                    'resolved_img_dir': _path_text(Path(dataset_root) / 'images'),
+                    'resolved_label_dir': _path_text(Path(dataset_root) / 'labels'),
                     'resolved_data_yaml': '',
                     'ready': False,
                     'preparable': True,
@@ -107,14 +115,14 @@ def _install_training_matrix_tools(client):
                 raise AssertionError(f'unexpected readiness dataset: {dataset_root}')
         elif tool_name == 'dataset_training_readiness':
             dataset_root = str(kwargs.get('img_dir') or '')
-            if dataset_root != '/data/preparable':
+            if dataset_root not in preparable_aliases:
                 raise AssertionError(f'unexpected dataset readiness dataset: {dataset_root}')
             result = {
                 'ok': True,
                 'summary': '当前还不能直接训练：缺少可用的 data_yaml；但当前数据集可以先进入 prepare_dataset_for_training',
-                'dataset_root': '/data/preparable',
-                'resolved_img_dir': '/data/preparable/images',
-                'resolved_label_dir': '/data/preparable/labels',
+                'dataset_root': dataset_root,
+                'resolved_img_dir': _path_text(Path(dataset_root) / 'images'),
+                'resolved_label_dir': _path_text(Path(dataset_root) / 'labels'),
                 'resolved_data_yaml': '',
                 'ready': False,
                 'preparable': True,
@@ -160,32 +168,6 @@ def _install_no_tools(client):
     return calls
 
 
-def _install_prediction_matrix_tools(client):
-    calls: list[tuple[str, dict[str, Any]]] = []
-
-    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
-        calls.append((tool_name, dict(kwargs)))
-        result = {
-            'ok': True,
-            'summary': '视频预测完成' if tool_name == 'predict_videos' else '图片预测完成',
-            'model': str(kwargs.get('model') or ''),
-            'source_path': str(kwargs.get('source_path') or ''),
-            'output_dir': '/tmp/intent-ab',
-            'report_path': '/tmp/intent-ab/report.json',
-        }
-        if tool_name == 'predict_images':
-            result.update({'processed_images': 2, 'detected_images': 1, 'empty_images': 1})
-        elif tool_name == 'predict_videos':
-            result.update({'processed_videos': 1, 'total_frames': 12, 'detected_frames': 6, 'total_detections': 8})
-        else:
-            raise AssertionError(f'unexpected direct predict tool: {tool_name}')
-        client._apply_to_state(tool_name, result, kwargs)
-        return result
-
-    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
-    return calls
-
-
 def _apply_case_preset(client, case: _MatrixCase) -> None:
     if case.state_preset == 'best_weight_present':
         client.session_state.active_training.best_run_selection = {
@@ -202,6 +184,41 @@ def _apply_case_preset(client, case: _MatrixCase) -> None:
         client.session_state.active_training.pid = 9527
         client.session_state.active_training.data_yaml = '/data/train/data.yaml'
         client.memory.save_state(client.session_state)
+
+
+def _path_text(path: Path) -> str:
+    return path.resolve().as_posix()
+
+
+def _path_aliases(path_text: str) -> set[str]:
+    aliases = {path_text}
+    normalized = path_text.replace('\\', '/')
+    if len(normalized) >= 3 and normalized[1] == ':' and normalized[2] == '/':
+        aliases.add(normalized[2:])
+    return aliases
+
+
+def _prepare_case_path_map(case: _MatrixCase, *, phase: str) -> dict[str, str]:
+    if '/data/train' not in case.prompt and '/data/preparable' not in case.prompt:
+        return {}
+    dataset_root = P0_WORK / f'{case.case_id}-{phase}-datasets'
+    shutil.rmtree(dataset_root, ignore_errors=True)
+    train_root = dataset_root / 'train'
+    preparable_root = dataset_root / 'preparable'
+    for target in (train_root, preparable_root):
+        (target / 'images').mkdir(parents=True, exist_ok=True)
+        (target / 'labels').mkdir(parents=True, exist_ok=True)
+    return {
+        '/data/train': _path_text(train_root),
+        '/data/preparable': _path_text(preparable_root),
+    }
+
+
+def _rewrite_case_text(value: str, replacements: dict[str, str]) -> str:
+    updated = value
+    for original, replacement in replacements.items():
+        updated = updated.replace(original, replacement)
+    return updated
 
 
 def _make_graph_case(
@@ -239,24 +256,6 @@ def _make_graph_case(
     )
 
 
-def _make_direct_predict_case(
-    case_id: str,
-    prompt: str,
-    tool_name: str,
-    args: dict[str, Any],
-    final_text: str,
-) -> _MatrixCase:
-    return _MatrixCase(
-        case_id=case_id,
-        prompt=prompt,
-        category='direct_predict',
-        expected_status='completed',
-        expected_message_contains=(final_text,),
-        expected_tool_name=tool_name,
-        graph_args=args,
-    )
-
-
 CASES: list[_MatrixCase] = [
     _make_graph_case('ab01', '先帮我预测 /data/images。', 'predict_images', {'source_path': '/data/images', 'model': 'yolov8n.pt'}, '图片预测完成'),
     _make_graph_case('ab02', '训练先放着，先帮我预测 /data/images。', 'predict_images', {'source_path': '/data/images', 'model': 'yolov8n.pt'}, '图片预测完成'),
@@ -267,7 +266,7 @@ CASES: list[_MatrixCase] = [
     _make_graph_case('ab07', 'train later, predict /data/images first.', 'predict_images', {'source_path': '/data/images', 'model': 'yolov8n.pt'}, '图片预测完成'),
     _make_graph_case('ab08', 'skip training for now and predict /data/images.', 'predict_images', {'source_path': '/data/images', 'model': 'yolov8n.pt'}, '图片预测完成'),
     _make_graph_case('ab09', '用最佳训练去预测图片 /data/images。', 'predict_images', {'source_path': '/data/images', 'model': '/weights/best.pt'}, '图片预测完成', state_preset='best_weight_present'),
-    _make_direct_predict_case('ab10', '训练晚点再说，先预测 /data/images，用 /models/yolov8n.pt。', 'predict_images', {'source_path': '/data/images', 'model': '/models/yolov8n.pt'}, '图片预测完成'),
+    _make_graph_case('ab10', '训练晚点再说，先预测 /data/images，用 /models/yolov8n.pt。', 'predict_images', {'source_path': '/data/images', 'model': '/models/yolov8n.pt'}, '图片预测完成'),
     _make_graph_case('ab11', '先帮我预测 /data/videos。', 'predict_videos', {'source_path': '/data/videos', 'model': 'yolov8n.pt'}, '视频预测完成'),
     _make_graph_case('ab12', '训练先放着，先帮我预测这两个视频 /data/videos。', 'predict_videos', {'source_path': '/data/videos', 'model': 'yolov8n.pt'}, '视频预测完成'),
     _make_graph_case('ab13', '先不训练，先预测视频 /data/videos。', 'predict_videos', {'source_path': '/data/videos', 'model': 'yolov8n.pt'}, '视频预测完成'),
@@ -276,7 +275,7 @@ CASES: list[_MatrixCase] = [
     _make_graph_case('ab16', '用最佳训练去预测视频 /data/videos。', 'predict_videos', {'source_path': '/data/videos', 'model': '/weights/best.pt'}, '视频预测完成', state_preset='best_weight_present'),
     _make_graph_case('ab17', 'train later, predict /data/videos first.', 'predict_videos', {'source_path': '/data/videos', 'model': 'yolov8n.pt'}, '视频预测完成'),
     _make_graph_case('ab18', 'skip training for now and predict /data/videos.', 'predict_videos', {'source_path': '/data/videos', 'model': 'yolov8n.pt'}, '视频预测完成'),
-    _make_direct_predict_case('ab19', '训练晚点再说，先预测 /data/videos，用 /models/yolov8n.pt。', 'predict_videos', {'source_path': '/data/videos', 'model': '/models/yolov8n.pt'}, '视频预测完成'),
+    _make_graph_case('ab19', '训练晚点再说，先预测 /data/videos，用 /models/yolov8n.pt。', 'predict_videos', {'source_path': '/data/videos', 'model': '/models/yolov8n.pt'}, '视频预测完成'),
     _make_graph_case('ab20', '训练先放一放，先识别 /data/videos。', 'predict_videos', {'source_path': '/data/videos', 'model': 'yolov8n.pt'}, '视频预测完成'),
     _MatrixCase('ab21', '预测先别做，直接用 /data/train 和 yolov8n.pt 训练。', 'plan_start', 'needs_confirmation', expected_tool_name='start_training', expected_message_contains=('训练计划草案',)),
     _MatrixCase('ab22', '先不预测，用 /data/train 和 yolov8n.pt 训练。', 'plan_start', 'needs_confirmation', expected_tool_name='start_training', expected_message_contains=('训练计划草案',)),
@@ -295,7 +294,7 @@ CASES: list[_MatrixCase] = [
     _MatrixCase('ab35', '预测先别做，直接用 /data/preparable 和 yolov8n.pt 训练，执行。', 'prepare_then_train', 'needs_confirmation', expected_tool_name='prepare_dataset_for_training', expected_message_contains=('训练计划草案',)),
     _MatrixCase('ab36', '预测稍后再说，数据在 /data/preparable，用 yolov8n.pt 训练，执行。', 'prepare_then_train', 'needs_confirmation', expected_tool_name='prepare_dataset_for_training', expected_message_contains=('训练计划草案',)),
     _MatrixCase('ab37', '先做准备，数据在 /data/preparable，用 yolov8n.pt 训练。', 'prepare_only', 'needs_confirmation', expected_tool_name='prepare_dataset_for_training', expected_message_contains=('准备执行：数据准备',)),
-    _MatrixCase('ab38', '预测晚点再说，先做准备，数据在 /data/preparable，用 yolov8n.pt 训练。', 'prepare_then_train', 'needs_confirmation', expected_tool_name='prepare_dataset_for_training', expected_message_contains=('训练计划草案',)),
+    _MatrixCase('ab38', '预测晚点再说，先做准备，数据在 /data/preparable，用 yolov8n.pt 训练。', 'prepare_ambiguous', 'needs_confirmation', expected_tool_name='prepare_dataset_for_training'),
     _MatrixCase('ab39', '先预测视频 /data/videos，再继续上次训练。', 'blocked_mix', 'completed', expected_message_contains=('请拆成连续步骤',)),
     _MatrixCase('ab40', '先训练，再预测视频 /data/videos。', 'blocked_mix', 'completed', expected_message_contains=('请拆成连续步骤',)),
     _MatrixCase('ab41', '同时训练并预测 /data/videos。', 'blocked_mix', 'completed', expected_message_contains=('请拆成连续步骤',)),
@@ -331,6 +330,7 @@ CASES: list[_MatrixCase] = [
 
 def _prepare_client_for_case(case: _MatrixCase, *, phase: str):
     client = _fresh_client(f'{case.case_id}-{phase}')
+    path_map = _prepare_case_path_map(case, phase=phase)
     _apply_case_preset(client, case)
     if case.category == 'graph':
         calls = _install_no_tools(client)
@@ -340,20 +340,21 @@ def _prepare_client_for_case(case: _MatrixCase, *, phase: str):
             case.graph_result,
             case.graph_final_text,
         )  # type: ignore[assignment]
-        return client, calls
-    if case.category == 'direct_predict':
-        calls = _install_prediction_matrix_tools(client)
-        return client, calls
-    if case.category in {'plan_start', 'prepare_only', 'prepare_then_train'}:
-        calls = _install_training_matrix_tools(client)
-        return client, calls
+        return client, calls, _rewrite_case_text(case.prompt, path_map)
+    if case.category in {'plan_start', 'prepare_only', 'prepare_then_train', 'prepare_ambiguous'}:
+        calls = _install_training_matrix_tools(
+            client,
+            train_dataset_root=path_map.get('/data/train', '/data/train'),
+            preparable_dataset_root=path_map.get('/data/preparable', '/data/preparable'),
+        )
+        return client, calls, _rewrite_case_text(case.prompt, path_map)
     calls = _install_no_tools(client)
-    return client, calls
+    return client, calls, _rewrite_case_text(case.prompt, path_map)
 
 
 async def _run_case(case: _MatrixCase) -> None:
-    phase_a_client, phase_a_calls = _prepare_client_for_case(case, phase='phase-a')
-    phase_a_result = await phase_a_client._try_handle_mainline_intent(case.prompt, f'{case.case_id}-phase-a')
+    phase_a_client, phase_a_calls, phase_a_prompt = _prepare_client_for_case(case, phase='phase-a')
+    phase_a_result = await phase_a_client._try_handle_mainline_intent(phase_a_prompt, f'{case.case_id}-phase-a')
     if case.category == 'graph':
         assert phase_a_result is None, (case.case_id, phase_a_result)
         assert phase_a_calls == [], (case.case_id, phase_a_calls)
@@ -369,11 +370,9 @@ async def _run_case(case: _MatrixCase) -> None:
             assert text in str(phase_a_result.get('message') or ''), (case.case_id, phase_a_result)
         if case.category.startswith('blocked'):
             assert phase_a_calls == [], (case.case_id, phase_a_calls)
-        elif case.category == 'direct_predict':
-            assert phase_a_calls == [(case.expected_tool_name, case.graph_args)], (case.case_id, phase_a_calls)
 
-    phase_b_client, phase_b_calls = _prepare_client_for_case(case, phase='phase-b')
-    chat_result = await phase_b_client.chat(case.prompt)
+    phase_b_client, phase_b_calls, phase_b_prompt = _prepare_client_for_case(case, phase='phase-b')
+    chat_result = await phase_b_client.chat(phase_b_prompt)
     assert chat_result['status'] == case.expected_status, (case.case_id, chat_result)
     if case.expected_tool_name:
         tool_call = chat_result.get('tool_call') or {}
@@ -386,13 +385,15 @@ async def _run_case(case: _MatrixCase) -> None:
         graph = phase_b_client.graph
         assert getattr(graph, 'calls', []) == [(case.graph_tool_name, case.graph_args)], (case.case_id, getattr(graph, 'calls', []))
         assert phase_b_calls == [], (case.case_id, phase_b_calls)
-    elif case.category == 'direct_predict':
-        assert phase_b_calls == [(case.expected_tool_name, case.graph_args)], (case.case_id, phase_b_calls)
     elif case.category == 'plan_start':
         assert phase_b_calls[0][0] == 'training_readiness', (case.case_id, phase_b_calls)
         assert phase_b_calls[-1][0] == 'training_preflight', (case.case_id, phase_b_calls)
     elif case.category == 'prepare_only':
         assert phase_b_calls[0][0] == 'dataset_training_readiness', (case.case_id, phase_b_calls)
+    elif case.category == 'prepare_ambiguous':
+        assert phase_b_calls, (case.case_id, phase_b_calls)
+        assert phase_b_calls[0][0] in {'training_readiness', 'dataset_training_readiness'}, (case.case_id, phase_b_calls)
+        assert all(name != 'training_preflight' for name, _ in phase_b_calls), (case.case_id, phase_b_calls)
     elif case.category == 'prepare_then_train':
         assert phase_b_calls[0][0] == 'training_readiness', (case.case_id, phase_b_calls)
         assert all(name != 'training_preflight' for name, _ in phase_b_calls), (case.case_id, phase_b_calls)

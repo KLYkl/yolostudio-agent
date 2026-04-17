@@ -338,9 +338,8 @@ async def _run() -> None:
         client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
 
         phase_a = await client._try_handle_mainline_intent('请用 /models/yolov8n.pt 预测 /data/images 这个目录里的图片', 'thread-predict-images')
-        assert phase_a is not None, phase_a
-        assert phase_a['status'] == 'completed', phase_a
-        assert '预测完成' in phase_a['message'], phase_a
+        assert phase_a is None, phase_a
+        assert calls == [], calls
 
         graph.calls.clear()
         calls.clear()
@@ -348,7 +347,7 @@ async def _run() -> None:
         assert routed['status'] == 'completed', routed
         assert '预测完成' in routed['message'], routed
         assert calls[-1][0] == 'predict_images', calls
-        assert graph.calls == [], graph.calls
+        assert graph.calls == [('predict_images', {'source_path': '/data/images', 'model': '/models/yolov8n.pt'})], graph.calls
         assert client.session_state.active_prediction.model == '/models/yolov8n.pt'
         assert client.session_state.active_prediction.source_path == '/data/images'
 

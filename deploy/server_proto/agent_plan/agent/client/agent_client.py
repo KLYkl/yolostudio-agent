@@ -1479,32 +1479,23 @@ class YoloStudioAgentClient:
         has_prediction_management_followup_context: bool,
         has_explicit_prediction_target: bool,
     ) -> dict[str, Any] | None:
-        del normalized_text, prediction_path, has_prediction_followup_context, has_prediction_management_followup_context, has_explicit_prediction_target
-        explicit_source_path = intent_parsing.extract_dataset_path_from_text(user_text)
-        explicit_model = intent_parsing.extract_model_from_text(user_text)
-        can_fastpath_explicit_prediction = (
-            wants_predict
-            and bool(explicit_source_path)
-            and bool(explicit_model)
-            and not wants_train
-            and not training_command_like
-            and not wants_remote_upload
-            and not wants_prediction_summary
-            and not wants_prediction_output_inspection
-            and not wants_prediction_report_export
-            and not wants_prediction_path_lists
-            and not wants_prediction_result_organize
+        del (
+            user_text,
+            normalized_text,
+            prediction_path,
+            wants_predict,
+            wants_train,
+            training_command_like,
+            wants_remote_upload,
+            wants_prediction_summary,
+            wants_prediction_output_inspection,
+            wants_prediction_report_export,
+            wants_prediction_path_lists,
+            wants_prediction_result_organize,
+            has_prediction_followup_context,
+            has_prediction_management_followup_context,
+            has_explicit_prediction_target,
         )
-        if can_fastpath_explicit_prediction:
-            tool_name = 'predict_videos' if self._should_use_video_prediction(user_text, explicit_source_path) else 'predict_images'
-            tool_args: dict[str, Any] = {
-                'source_path': explicit_source_path,
-                'model': explicit_model,
-            }
-            output_dir = intent_parsing.extract_output_path_from_text(user_text, explicit_source_path)
-            if output_dir:
-                tool_args['output_dir'] = output_dir
-            return await self._complete_direct_tool_reply(tool_name, **tool_args)
         return None
 
     async def _try_handle_dataset_and_extract_requests(
@@ -1565,11 +1556,6 @@ class YoloStudioAgentClient:
         if dataset_followup:
             return dataset_followup
 
-        if dataset_path and wants_quality and not wants_train:
-            return await self._complete_dataset_quality_reply(dataset_path)
-
-        if dataset_path and wants_readiness and readiness_only_query and not wants_predict and not training_command_like:
-            return await self._complete_readiness_knowledge_reply(dataset_path)
         return None
 
     async def _try_handle_training_history_followup(

@@ -150,6 +150,27 @@ async def _llm_reply_path_smoke() -> None:
         shutil.rmtree(scenario_root, ignore_errors=True)
 
 
+async def _dataset_quality_llm_reply_path_smoke() -> None:
+    scenario_root = WORK / 'dataset_quality_llm_reply_path'
+    shutil.rmtree(scenario_root, ignore_errors=True)
+    scenario_root.mkdir(parents=True, exist_ok=True)
+    try:
+        graph = _ReplyGraph('我看了一下，这份数据集目前主要风险是缺少完整校验事实；如果要更稳妥，先继续做质量校验和健康检查。')
+        settings = AgentSettings(session_id='dataset-quality-llm', memory_root=str(scenario_root))
+        client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
+
+        async def _unexpected_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+            raise AssertionError(f'dataset quality query should not shortcut direct tool anymore: {tool_name} {kwargs}')
+
+        client.direct_tool = _unexpected_direct_tool  # type: ignore[assignment]
+        turn = await client.chat('这个数据集 /home/kly/ct_loop/data_ct 质量怎么样？请先校验再回答。')
+        assert turn['status'] == 'completed', turn
+        assert '质量' in turn['message'] or '校验' in turn['message'], turn
+        assert len(graph.invocations) == 1, graph.invocations
+    finally:
+        shutil.rmtree(scenario_root, ignore_errors=True)
+
+
 def _compose_reply_fallback_smoke() -> None:
     shutil.rmtree(WORK, ignore_errors=True)
     WORK.mkdir(parents=True, exist_ok=True)
@@ -273,6 +294,7 @@ async def _tool_result_compaction_smoke() -> None:
 def main() -> None:
     _server_tool_contract()
     asyncio.run(_llm_reply_path_smoke())
+    asyncio.run(_dataset_quality_llm_reply_path_smoke())
     asyncio.run(_stream_tools_suppression_smoke())
     asyncio.run(_tool_none_sanitization_smoke())
     asyncio.run(_tool_result_compaction_smoke())
