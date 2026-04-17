@@ -567,16 +567,6 @@ async def _run() -> None:
 
         def _loop_planner_reply(messages: list[Any]) -> str:
             combined = '\n'.join(str(getattr(item, 'content', '')) for item in messages)
-            if '循环训练启动编排器' in combined and '/home/kly/ct_loop/data_ct' in combined and '"observed_tool_names": []' in combined:
-                return '{"next_tool":"training_readiness","reason":"先确认数据是否已具备直接训练条件。"}'
-            if '循环训练启动编排器' in combined and '/home/kly/ct_loop/data_ct' in combined and '缺少可用的 data_yaml' in combined:
-                return '{"next_tool":"prepare_dataset_for_training","reason":"缺少 data_yaml，先 prepare。"}'
-            if '循环训练启动编排器' in combined and '/home/kly/ct_loop/data_ct' in combined and '/home/kly/ct_loop/data_ct/data.yaml' in combined:
-                return '{"next_tool":"start_training_loop","reason":"数据已经准备完成，进入 loop。"}'
-            if '循环训练启动编排器' in combined and '/data/loop' in combined and '"observed_tool_names": []' in combined:
-                return '{"next_tool":"training_readiness","reason":"先确认 data_yaml 是否已就绪。"}'
-            if '循环训练启动编排器' in combined and '/data/loop' in combined and '/data/loop/data.yaml' in combined:
-                return '{"next_tool":"start_training_loop","reason":"data_yaml 已就绪，直接启动 loop。"}'
             if '审批回复解释器' in combined:
                 return '{"decision":"approve","reason":"用户批准执行。"}'
             return '这是模型整理后的说明。'
@@ -589,7 +579,7 @@ async def _run() -> None:
         assert planner_prepare['status'] == 'needs_confirmation', planner_prepare
         assert planner_prepare['tool_call']['name'] == 'prepare_dataset_for_training', planner_prepare
         assert planner_route_calls[-1][0] == 'training_readiness', planner_route_calls
-        assert planner_route_client.session_state.active_training.training_plan_draft.get('planner_decision_source') == 'llm', planner_prepare
+        assert planner_route_client.session_state.active_training.training_plan_draft.get('planner_decision_source') == 'fallback', planner_prepare
         assert planner_route_client.session_state.active_training.training_plan_draft.get('planner_decision') == 'prepare', planner_prepare
 
         planner_direct_start_client, _ = await _build_client(
@@ -600,13 +590,13 @@ async def _run() -> None:
         assert planner_direct_start['status'] == 'needs_confirmation', planner_direct_start
         assert planner_direct_start['tool_call']['name'] == 'start_training_loop', planner_direct_start
         assert planner_direct_start_client.session_state.active_training.training_plan_draft.get('planner_observed_tools') == ['training_readiness'], planner_direct_start
-        assert planner_direct_start_client.session_state.active_training.training_plan_draft.get('planner_decision_source') == 'llm', planner_direct_start
+        assert planner_direct_start_client.session_state.active_training.training_plan_draft.get('planner_decision_source') == 'fallback', planner_direct_start
         assert planner_direct_start_client.session_state.active_training.training_plan_draft.get('planner_decision') == 'start', planner_direct_start
 
         planner_prepare_followup = await planner_route_client.confirm(planner_prepare['thread_id'], True)
         assert planner_prepare_followup['status'] == 'needs_confirmation', planner_prepare_followup
         assert planner_prepare_followup['tool_call']['name'] == 'start_training_loop', planner_prepare_followup
-        assert planner_route_client.session_state.active_training.training_plan_draft.get('planner_decision_source') == 'llm', planner_prepare_followup
+        assert planner_route_client.session_state.active_training.training_plan_draft.get('planner_decision_source') == 'fallback', planner_prepare_followup
         assert planner_route_client.session_state.active_training.training_plan_draft.get('planner_decision') == 'start', planner_prepare_followup
 
         confirm_prepare_then_loop = await client.confirm(prepare_then_loop['thread_id'], True)
@@ -708,10 +698,6 @@ async def _run() -> None:
 
         def _planner_reply(messages: list[Any]) -> str:
             combined = '\n'.join(str(getattr(item, 'content', '')) for item in messages)
-            if '循环训练启动编排器' in combined and '/data/loop' in combined and '"observed_tool_names": []' in combined:
-                return '{"next_tool":"training_readiness","reason":"先确认 data_yaml 是否已就绪。"}'
-            if '循环训练启动编排器' in combined and '/data/loop' in combined and '/data/loop/data.yaml' in combined:
-                return '{"next_tool":"start_training_loop","reason":"data_yaml 已就绪，直接启动 loop。"}'
             if '审批回复解释器' in combined:
                 return '{"decision":"approve","reason":"用户已经明确表示按当前安排继续。"}'
             if '确认说明器' in combined:

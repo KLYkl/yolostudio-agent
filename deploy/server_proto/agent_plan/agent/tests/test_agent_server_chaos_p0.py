@@ -667,13 +667,12 @@ async def _scenario_c91_reloaded_session_keeps_status_context() -> None:
 
     client2.direct_tool = _fake_direct_tool_client2  # type: ignore[assignment]
 
-    assert await client2._try_handle_mainline_intent('刚才训练还在吗？', 'thread-chaos-p0-c91-status') is None
     turn3 = await client2.chat('刚才训练还在吗？')
     assert turn3['status'] == 'completed', turn3
     assert '训练仍在运行' in turn3['message']
     assert client2.session_state.active_training.pid == 9090
     assert calls2 == [('check_training_status', {})]
-    assert graph.calls == [('check_training_status', {})]
+    assert graph.calls == []
 
 
 async def _scenario_c22_stop_then_replan_restart() -> None:

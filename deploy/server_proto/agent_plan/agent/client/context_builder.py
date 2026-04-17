@@ -191,6 +191,15 @@ class ContextBuilder:
         last_training_pipeline = dict(tr.last_remote_roundtrip or {})
         last_prediction_pipeline = dict(pred.last_remote_roundtrip or {})
         training_plan_draft = dict(tr.training_plan_draft or {})
+        best_run_selection = dict(tr.best_run_selection or {})
+        best_run = dict(best_run_selection.get('best_run') or {})
+        best_run_id = str(best_run.get('run_id') or best_run_selection.get('best_run_id') or '').strip()
+        best_run_weight_path = str(
+            best_run.get('best_weight_path')
+            or best_run.get('weights_path')
+            or best_run_selection.get('best_weight_path')
+            or ''
+        ).strip()
 
         lines: list[str] = ['当前结构化上下文:']
         lines.append(f'- session_id: {state.session_id}')
@@ -249,8 +258,9 @@ class ContextBuilder:
                 ('last_summary_text', str((tr.last_summary or {}).get('summary') or '')),
                 ('training_run_summary_text', str((tr.training_run_summary or {}).get('summary') or '')),
                 ('recent_runs', _summarize_runs(tr.recent_runs)),
-                ('best_run_id', str((tr.best_run_selection or {}).get('best_run_id') or '')),
-                ('best_run_summary', str((tr.best_run_selection or {}).get('summary') or '')),
+                ('best_run_id', best_run_id),
+                ('best_run_weight_path', best_run_weight_path),
+                ('best_run_summary', str(best_run_selection.get('summary') or '')),
                 ('last_inspected_run_id', str((tr.last_run_inspection or {}).get('selected_run_id') or (tr.last_run_inspection or {}).get('run_id') or '')),
                 ('last_inspection_summary', str((tr.last_run_inspection or {}).get('summary') or '')),
                 ('comparison_pair', ', '.join(item for item in [str((tr.last_run_comparison or {}).get('left_run_id') or '').strip(), str((tr.last_run_comparison or {}).get('right_run_id') or '').strip()] if item)),

@@ -74,6 +74,13 @@ def _scenario_compact_populated_summary() -> None:
     state.active_training.active_loop_id = 'loop-1'
     state.active_training.last_status = {'run_state': 'running'}
     state.active_training.recent_runs = [{'run_id': 'run-a', 'run_state': 'completed'}]
+    state.active_training.best_run_selection = {
+        'summary': '最近最佳训练为 best-run。',
+        'best_run': {
+            'run_id': 'best-run',
+            'best_weight_path': '/runs/train/best-run/weights/best.pt',
+        },
+    }
     state.active_training.training_plan_draft = {
         'status': 'ready_for_confirmation',
         'execution_mode': 'direct_train',
@@ -120,6 +127,8 @@ def _scenario_compact_populated_summary() -> None:
     assert '训练:' in summary
     assert 'running: True' in summary
     assert 'active_loop_id: loop-1' in summary
+    assert 'best_run_id: best-run' in summary
+    assert 'best_run_weight_path: /runs/train/best-run/weights/best.pt' in summary
     assert 'training_plan_draft: 待确认' in summary
     assert 'training_plan_next_step_tool: start_training' in summary
     assert 'training_plan_model: yolov8n.pt' in summary

@@ -5,13 +5,12 @@ from typing import Any, Awaitable, Callable
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from yolostudio_agent.agent.client import intent_parsing
 from yolostudio_agent.agent.client.session_state import SessionState
 
 
 LoopDataYamlResolver = Callable[..., str]
 LoopPrepareArgsBuilder = Callable[[str, str], dict[str, Any]]
-StructuredPayloadInvoker = Callable[..., Awaitable[dict[str, Any]]]
-LoopPlanNormalizer = Callable[..., dict[str, Any] | None]
 LoopFactCompactor = Callable[[str, dict[str, Any]], dict[str, Any]]
 EventAppender = Callable[[str, dict[str, Any]], None]
 RendererTextInvoker = Callable[..., Awaitable[str]]
@@ -20,6 +19,437 @@ DirectToolInvoker = Callable[..., Awaitable[dict[str, Any]]]
 DraftSaver = Callable[[dict[str, Any]], None]
 AssistantMessageAppender = Callable[[str], None]
 GraphHandoffInvoker = Callable[[str, str], Awaitable[dict[str, Any]]]
+TrainingPlanDraftBuilder = Callable[..., dict[str, Any]]
+TrainingPlanMessageRenderer = Callable[[dict[str, Any], bool], Awaitable[str]]
+TrainingArgsCollector = Callable[..., dict[str, Any]]
+TrainingDiscussionChecker = Callable[[str], bool]
+TrainingExecutionBackendExtractor = Callable[[str], str]
+
+TRAINING_PREFLIGHT_STRING_FIELDS = (
+    'training_environment',
+    'project',
+    'name',
+    'optimizer',
+)
+TRAINING_PREFLIGHT_OPTIONAL_FIELDS = (
+    'batch',
+    'imgsz',
+    'fraction',
+    'classes',
+    'single_cls',
+    'freeze',
+    'resume',
+    'lr0',
+    'patience',
+    'workers',
+    'amp',
+)
+
+
+async def _render_orchestration_result(
+    draft: dict[str, Any],
+    *,
+    pending: bool,
+    render_training_plan_message: TrainingPlanMessageRenderer,
+) -> dict[str, Any]:
+    return {
+        'draft': draft,
+        'reply': await render_training_plan_message(draft, pending=pending),
+        'defer_to_graph': pending,
+    }
+
+
+def build_training_preflight_tool_args(
+    planned_args: dict[str, Any] | None,
+    *,
+    fallback_model: str = '',
+    fallback_data_yaml: str = '',
+) -> dict[str, Any]:
+    planned_args = dict(planned_args or {})
+    payload = {
+        'model': str(planned_args.get('model') or fallback_model or ''),
+        'data_yaml': str(planned_args.get('data_yaml') or fallback_data_yaml or ''),
+        'epochs': int(planned_args.get('epochs', 100)),
+        'device': str(planned_args.get('device', 'auto') or 'auto'),
+    }
+    for field in TRAINING_PREFLIGHT_STRING_FIELDS:
+        payload[field] = str(planned_args.get(field) or '')
+    for field in TRAINING_PREFLIGHT_OPTIONAL_FIELDS:
+        payload[field] = planned_args.get(field)
+    return payload
+
+
+def resolve_training_start_args(
+    planned_args: dict[str, Any] | None,
+    preflight: dict[str, Any] | None,
+    *,
+    fallback_model: str = '',
+    fallback_data_yaml: str = '',
+) -> dict[str, Any]:
+    planned_args = dict(planned_args or {})
+    resolved_args = dict((preflight or {}).get('resolved_args') or {})
+    payload = {
+        'model': str(resolved_args.get('model') or planned_args.get('model') or fallback_model or ''),
+        'data_yaml': str(resolved_args.get('data_yaml') or planned_args.get('data_yaml') or fallback_data_yaml or ''),
+        'epochs': int(resolved_args.get('epochs') or planned_args.get('epochs', 100)),
+        'device': str(resolved_args.get('device') or planned_args.get('device') or 'auto'),
+    }
+    for field in TRAINING_PREFLIGHT_STRING_FIELDS:
+        payload[field] = str(resolved_args.get(field) or planned_args.get(field) or '')
+    for field in TRAINING_PREFLIGHT_OPTIONAL_FIELDS:
+        payload[field] = resolved_args.get(field, planned_args.get(field))
+    return payload
+
+
+async def run_training_request_orchestration(
+    *,
+    user_text: str,
+    dataset_path: str,
+    readiness: dict[str, Any] | None,
+    requested_args: dict[str, Any] | None,
+    wants_split: bool,
+    discussion_only: bool,
+    execution_backend: str,
+    direct_tool: DirectToolInvoker,
+    build_training_plan_draft_fn: TrainingPlanDraftBuilder,
+    render_training_plan_message: TrainingPlanMessageRenderer,
+) -> dict[str, Any]:
+    readiness = dict(readiness or {})
+    requested_args = dict(requested_args or {})
+    requested_model = str(requested_args.get('model') or '').strip()
+
+    if not requested_model:
+        draft = build_training_plan_draft_fn(
+            user_text=user_text,
+            dataset_path=dataset_path,
+            readiness=readiness,
+            next_tool_name='',
+            next_tool_args={},
+            planned_training_args=requested_args,
+        )
+        blockers = list(draft.get('blockers') or [])
+        blockers.insert(0, '当前缺少预训练权重/模型，先补模型后再确认训练')
+        draft['blockers'] = blockers
+        return await _render_orchestration_result(
+            draft,
+            pending=False,
+            render_training_plan_message=render_training_plan_message,
+        )
+
+    if execution_backend != 'standard_yolo':
+        draft = build_training_plan_draft_fn(
+            user_text=user_text,
+            dataset_path=dataset_path,
+            readiness=readiness,
+            next_tool_name='',
+            next_tool_args={},
+            planned_training_args=requested_args,
+        )
+        return await _render_orchestration_result(
+            draft,
+            pending=False,
+            render_training_plan_message=render_training_plan_message,
+        )
+
+    can_direct_train = bool(readiness.get('ready')) and bool(readiness.get('resolved_data_yaml'))
+    if can_direct_train:
+        resolved_data_yaml = str(readiness.get('resolved_data_yaml') or '')
+        preflight_args = build_training_preflight_tool_args(
+            requested_args,
+            fallback_model=requested_model,
+            fallback_data_yaml=resolved_data_yaml,
+        )
+        preflight = await direct_tool('training_preflight', **preflight_args)
+        next_args = resolve_training_start_args(
+            requested_args,
+            preflight,
+            fallback_model=requested_model,
+            fallback_data_yaml=resolved_data_yaml,
+        )
+        ready_to_start = bool(preflight.get('ready_to_start'))
+        draft = build_training_plan_draft_fn(
+            user_text=user_text,
+            dataset_path=dataset_path,
+            readiness=readiness,
+            preflight=preflight,
+            next_tool_name='start_training' if ready_to_start else '',
+            next_tool_args=next_args if ready_to_start else {},
+            planned_training_args=next_args,
+        )
+        return await _render_orchestration_result(
+            draft,
+            pending=bool(ready_to_start and not discussion_only),
+            render_training_plan_message=render_training_plan_message,
+        )
+
+    if readiness.get('preparable'):
+        next_args: dict[str, Any] = {'dataset_path': dataset_path}
+        if wants_split:
+            next_args['force_split'] = True
+        explicit_classes_txt = str(requested_args.get('classes_txt') or '').strip()
+        if explicit_classes_txt:
+            next_args['classes_txt'] = explicit_classes_txt
+        draft = build_training_plan_draft_fn(
+            user_text=user_text,
+            dataset_path=dataset_path,
+            readiness=readiness,
+            preflight={},
+            next_tool_name='prepare_dataset_for_training',
+            next_tool_args=next_args,
+            planned_training_args=requested_args,
+        )
+        return await _render_orchestration_result(
+            draft,
+            pending=not discussion_only,
+            render_training_plan_message=render_training_plan_message,
+        )
+
+    draft = build_training_plan_draft_fn(
+        user_text=user_text,
+        dataset_path=dataset_path,
+        readiness=readiness,
+        preflight={},
+        next_tool_name='',
+        next_tool_args={},
+        planned_training_args=requested_args,
+    )
+    return await _render_orchestration_result(
+        draft,
+        pending=False,
+        render_training_plan_message=render_training_plan_message,
+    )
+
+
+async def run_training_request_entrypoint(
+    *,
+    session_state: SessionState,
+    user_text: str,
+    normalized_text: str,
+    dataset_path: str,
+    frame_followup_path: str,
+    wants_train: bool,
+    wants_predict: bool,
+    no_train: bool,
+    readiness_only_query: bool,
+    wants_training_outcome_analysis: bool,
+    wants_next_step_guidance: bool,
+    wants_training_knowledge: bool,
+    wants_training_revision: bool,
+    wants_stop_training: bool,
+    blocks_training_start: bool,
+    explicit_run_ids: list[str] | None,
+    wants_split: bool,
+    direct_tool: DirectToolInvoker,
+    collect_requested_training_args: TrainingArgsCollector,
+    is_training_discussion_only: TrainingDiscussionChecker,
+    extract_training_execution_backend: TrainingExecutionBackendExtractor,
+    build_training_plan_draft_fn: TrainingPlanDraftBuilder,
+    render_training_plan_message: TrainingPlanMessageRenderer,
+) -> dict[str, Any] | None:
+    explicit_run_ids = list(explicit_run_ids or [])
+    active_training = session_state.active_training
+    if (
+        active_training.running
+        and wants_train
+        and wants_training_revision
+        and not wants_stop_training
+        and not any(token in user_text for token in ('新数据', '新数据集', '另一个数据集', '换数据集', '改数据集'))
+        and not wants_predict
+        and not explicit_run_ids
+        and not any(token in user_text for token in ('数据', '数据集', 'dataset', 'img_dir', 'label_dir', '换成', '改成', '改用', '现在用'))
+        and 'resume' not in normalized_text
+    ):
+        return {
+            'reply': (
+                '当前训练还在运行，不能直接热更新 batch、轮数、优化器或设备等核心参数。'
+                '如果要改参数，请先停止当前训练，再生成新的训练计划。'
+            ),
+            'draft': None,
+            'defer_to_graph': False,
+        }
+
+    if (
+        wants_train
+        and not dataset_path
+        and not no_train
+        and not readiness_only_query
+        and not wants_training_outcome_analysis
+        and not wants_next_step_guidance
+        and not wants_training_knowledge
+        and not blocks_training_start
+    ):
+        requested_model = intent_parsing.extract_model_from_text(user_text)
+        missing_fields = ['数据集路径']
+        if not requested_model:
+            missing_fields.append('预训练权重/模型')
+        lines = ['当前还不能开始训练：']
+        for field in missing_fields:
+            lines.append(f'- 缺少{field}')
+        lines.append('请先补充最少必要信息；我至少需要数据集目录，训练时还需要可用的预训练权重/模型。')
+        return {
+            'reply': '\n'.join(lines),
+            'draft': None,
+            'defer_to_graph': False,
+        }
+
+    if not (
+        dataset_path
+        and wants_train
+        and not no_train
+        and not readiness_only_query
+        and not wants_training_outcome_analysis
+        and not wants_next_step_guidance
+        and not wants_training_knowledge
+        and not blocks_training_start
+    ):
+        return None
+
+    readiness = await direct_tool('training_readiness', img_dir=dataset_path)
+    await direct_tool('list_training_environments')
+    requested_args = collect_requested_training_args(
+        user_text,
+        data_yaml=str(readiness.get('resolved_data_yaml') or session_state.active_dataset.data_yaml or ''),
+    )
+    if not str(requested_args.get('model') or '').strip():
+        draft_model = str((((active_training.training_plan_draft or {}).get('planned_training_args') or {}).get('model')) or '').strip()
+        preserved_model = ''
+        if frame_followup_path:
+            preserved_model = draft_model or str(active_training.model or '').strip()
+        elif any(token in user_text for token in ('继续', '刚才', '上次', '恢复')):
+            preserved_model = draft_model or str(active_training.model or '').strip()
+        if preserved_model:
+            requested_args['model'] = preserved_model
+    plan_result = await run_training_request_orchestration(
+        user_text=user_text,
+        dataset_path=dataset_path,
+        readiness=readiness,
+        requested_args=requested_args,
+        wants_split=wants_split,
+        discussion_only=is_training_discussion_only(user_text),
+        execution_backend=extract_training_execution_backend(user_text),
+        direct_tool=direct_tool,
+        build_training_plan_draft_fn=build_training_plan_draft_fn,
+        render_training_plan_message=render_training_plan_message,
+    )
+    return {
+        'reply': str(plan_result.get('reply') or '').strip(),
+        'draft': dict(plan_result.get('draft') or {}),
+        'defer_to_graph': bool(plan_result.get('defer_to_graph')),
+    }
+
+
+async def run_training_recovery_orchestration(
+    *,
+    user_text: str,
+    dataset_path: str,
+    readiness: dict[str, Any] | None,
+    base_args: dict[str, Any] | None,
+    direct_tool: DirectToolInvoker,
+    build_training_plan_draft_fn: TrainingPlanDraftBuilder,
+    render_training_plan_message: TrainingPlanMessageRenderer,
+) -> dict[str, Any]:
+    readiness = dict(readiness or {})
+    base_args = dict(base_args or {})
+    preflight_args = build_training_preflight_tool_args(base_args)
+    preflight = await direct_tool('training_preflight', **preflight_args)
+    next_args = resolve_training_start_args(base_args, preflight)
+    ready_to_start = bool(preflight.get('ready_to_start'))
+    draft = build_training_plan_draft_fn(
+        user_text=user_text,
+        dataset_path=dataset_path,
+        readiness=readiness,
+        preflight=preflight,
+        next_tool_name='start_training' if ready_to_start else '',
+        next_tool_args=next_args if ready_to_start else {},
+        planned_training_args=next_args,
+    )
+    return await _render_orchestration_result(
+        draft,
+        pending=ready_to_start,
+        render_training_plan_message=render_training_plan_message,
+    )
+
+
+async def build_training_revision_draft(
+    *,
+    user_text: str,
+    dataset_path: str,
+    readiness: dict[str, Any] | None,
+    planned_args: dict[str, Any] | None,
+    next_tool_name: str,
+    next_tool_args: dict[str, Any] | None,
+    execution_mode: str,
+    execution_backend: str,
+    advanced_requested: bool,
+    direct_tool: DirectToolInvoker,
+    build_training_plan_draft_fn: TrainingPlanDraftBuilder,
+) -> dict[str, Any]:
+    readiness = dict(readiness or {})
+    planned_args = dict(planned_args or {})
+    next_tool_args = dict(next_tool_args or {})
+    execution_mode = str(execution_mode or '').strip().lower()
+    next_tool_name = str(next_tool_name or '').strip()
+
+    if execution_backend != 'standard_yolo':
+        draft = build_training_plan_draft_fn(
+            user_text=user_text,
+            dataset_path=dataset_path,
+            readiness=readiness,
+            preflight={},
+            next_tool_name='',
+            next_tool_args={},
+            planned_training_args=planned_args,
+        )
+        draft['advanced_details_requested'] = advanced_requested
+        return draft
+
+    if (
+        (next_tool_name == 'start_training' or execution_mode in {'direct_train', 'discussion_only', 'blocked'})
+        and readiness.get('ready')
+        and planned_args.get('model')
+    ):
+        preflight_args = build_training_preflight_tool_args(planned_args)
+        preflight = await direct_tool('training_preflight', **preflight_args)
+        resolved_training_args = resolve_training_start_args(planned_args, preflight)
+        draft = build_training_plan_draft_fn(
+            user_text=user_text,
+            dataset_path=dataset_path,
+            readiness=readiness,
+            preflight=preflight,
+            next_tool_name='start_training' if preflight.get('ready_to_start') else '',
+            next_tool_args=resolved_training_args if preflight.get('ready_to_start') else {},
+            planned_training_args=resolved_training_args,
+        )
+        draft['advanced_details_requested'] = advanced_requested
+        return draft
+
+    if readiness.get('preparable'):
+        prepare_args: dict[str, Any] = {'dataset_path': dataset_path}
+        if next_tool_args.get('force_split'):
+            prepare_args['force_split'] = next_tool_args.get('force_split')
+        draft = build_training_plan_draft_fn(
+            user_text=user_text,
+            dataset_path=dataset_path,
+            readiness=readiness,
+            preflight={},
+            next_tool_name='prepare_dataset_for_training',
+            next_tool_args=prepare_args,
+            planned_training_args=planned_args,
+        )
+        draft['advanced_details_requested'] = advanced_requested
+        return draft
+
+    draft = build_training_plan_draft_fn(
+        user_text=user_text,
+        dataset_path=dataset_path,
+        readiness=readiness,
+        preflight={},
+        next_tool_name='',
+        next_tool_args={},
+        planned_training_args=planned_args,
+    )
+    draft['advanced_details_requested'] = advanced_requested
+    return draft
 
 
 def build_training_loop_start_fallback_plan(
@@ -109,151 +539,6 @@ def build_training_loop_start_fallback_plan(
         'reason': f'当前还不能开启环训练：{blocker_detail or "缺少可训练的 data_yaml。"}',
         'planner_source': 'fallback',
     }
-
-
-async def plan_training_loop_start(
-    *,
-    planner_llm: Any,
-    session_id: str,
-    user_text: str,
-    dataset_path: str,
-    loop_args: dict[str, Any],
-    observed_tools: dict[str, dict[str, Any]] | None = None,
-    step_index: int = 1,
-    build_training_loop_start_fallback_plan_fn: Callable[..., dict[str, Any]],
-    known_training_loop_data_yaml: LoopDataYamlResolver,
-    compact_training_loop_start_fact: LoopFactCompactor,
-    invoke_structured_payload: StructuredPayloadInvoker,
-    normalize_training_loop_start_plan: LoopPlanNormalizer,
-    append_event: EventAppender,
-) -> dict[str, Any]:
-    observed_tools = dict(observed_tools or {})
-    fallback = build_training_loop_start_fallback_plan_fn(
-        user_text=user_text,
-        dataset_path=dataset_path,
-        loop_args=loop_args,
-        observed_tools=observed_tools,
-    )
-    if planner_llm is None:
-        return fallback
-
-    current_data_yaml = known_training_loop_data_yaml(loop_args, observed_tools, dataset_path=dataset_path)
-    facts = {
-        'user_request': user_text,
-        'dataset_path': dataset_path,
-        'step_index': step_index,
-        'requested_loop_args': dict(loop_args),
-        'current_data_yaml': current_data_yaml,
-        'observed_tool_names': list(observed_tools.keys()),
-        'observed_tools': {
-            name: compact_training_loop_start_fact(name, result)
-            for name, result in observed_tools.items()
-        },
-        'available_tools': [
-            {
-                'tool': 'training_readiness',
-                'when': '需要先确认数据是否已具备直接训练条件',
-                'kind': 'read_only',
-                'args_rule': {'img_dir': dataset_path or '<dataset_path>'},
-            },
-            {
-                'tool': 'list_training_environments',
-                'when': '只有在确实需要补充训练环境事实时才调用',
-                'kind': 'read_only',
-                'args_rule': {},
-            },
-            {
-                'tool': 'prepare_dataset_for_training',
-                'when': '需要生成 data_yaml / 划分数据 / 准备训练产物时调用',
-                'kind': 'high_risk',
-                'args_rule': {'dataset_path': dataset_path or '<dataset_path>'},
-            },
-            {
-                'tool': 'start_training_loop',
-                'when': '模型已明确且 data_yaml 已就绪时调用',
-                'kind': 'high_risk',
-                'args_rule': {'model': loop_args.get('model') or '<model>', 'data_yaml': current_data_yaml or '<data_yaml>'},
-            },
-        ],
-    }
-    messages = [
-        SystemMessage(
-            content=(
-                '你是 YoloStudio Agent 的循环训练启动编排器。'
-                '你要根据当前事实决定“下一步只调用一个什么工具”，而不是写解释性散文。'
-                '请优先选择最小必要的下一步：如果事实不足，优先选只读工具；如果事实已经足够，直接选真正要执行的高风险工具。'
-                '不要默认先收集所有事实；只选择你当前真正需要的下一步。'
-                '输出必须是 JSON，对象格式固定为 '
-                '{"next_tool":"training_readiness|list_training_environments|prepare_dataset_for_training|start_training_loop|block",'
-                '"reason":"..."}。'
-                '如果模型缺失，返回 block。'
-                '如果 data_yaml 已就绪且模型明确，优先 start_training_loop。'
-                '如果 data_yaml 缺失但数据可能可准备，优先 training_readiness 或 prepare_dataset_for_training。'
-                '不要输出 Markdown，不要输出额外文字。'
-            )
-        ),
-        HumanMessage(
-            content=(
-                '当前事实：\n'
-                f'{json.dumps(facts, ensure_ascii=False, indent=2)}'
-            )
-        ),
-    ]
-    try:
-        parsed = await invoke_structured_payload(
-            messages=messages,
-            schema={
-                'title': 'yolostudio_training_loop_start_plan',
-                'type': 'object',
-                'properties': {
-                    'next_tool': {
-                        'type': 'string',
-                        'enum': [
-                            'training_readiness',
-                            'list_training_environments',
-                            'prepare_dataset_for_training',
-                            'start_training_loop',
-                            'block',
-                        ],
-                    },
-                    'reason': {'type': 'string'},
-                },
-                'required': ['next_tool', 'reason'],
-                'additionalProperties': False,
-            },
-        )
-        plan = normalize_training_loop_start_plan(
-            parsed=parsed,
-            user_text=user_text,
-            dataset_path=dataset_path,
-            loop_args=loop_args,
-            observed_tools=observed_tools,
-        )
-        if plan is not None:
-            plan['planner_source'] = 'llm'
-            plan['planner_payload'] = parsed
-            append_event(
-                'loop_start_planned',
-                {
-                    'source': 'llm',
-                    'decision': plan.get('decision'),
-                    'next_tool': plan.get('next_tool'),
-                    'step_index': step_index,
-                },
-            )
-            return plan
-    except Exception as exc:
-        append_event('loop_start_plan_failed', {'error': str(exc)})
-    append_event(
-        'loop_start_planned',
-        {
-            'source': 'fallback',
-            'decision': fallback.get('decision'),
-            'next_tool': fallback.get('next_tool'),
-            'step_index': step_index,
-        },
-    )
-    return fallback
 
 
 def build_training_loop_start_draft(
@@ -434,7 +719,7 @@ async def run_training_loop_start_orchestration(
     loop_args: dict[str, Any],
     observed_tools: dict[str, dict[str, Any]] | None = None,
     direct_tool: DirectToolInvoker,
-    plan_training_loop_start_fn: Callable[..., Awaitable[dict[str, Any]]],
+    build_training_loop_start_fallback_plan_fn: Callable[..., dict[str, Any]],
     known_training_loop_data_yaml: LoopDataYamlResolver,
     append_event: EventAppender,
     compact_training_loop_start_fact: LoopFactCompactor,
@@ -449,58 +734,67 @@ async def run_training_loop_start_orchestration(
         append_ai_message(reply)
         return {'status': 'completed', 'message': reply, 'tool_call': None}
 
-    seen_observe_calls: set[tuple[str, str]] = set()
-    for step_index in range(1, 5):
+    async def _plan_once(step_index: int) -> dict[str, Any]:
         known_data_yaml = known_training_loop_data_yaml(loop_args, observed, dataset_path=dataset_path)
         if known_data_yaml:
             loop_args['data_yaml'] = known_data_yaml
-        plan = await plan_training_loop_start_fn(
+        plan = build_training_loop_start_fallback_plan_fn(
             user_text=user_text,
             dataset_path=dataset_path,
             loop_args=loop_args,
             observed_tools=observed,
-            step_index=step_index,
         )
+        append_event(
+            'loop_start_planned',
+            {
+                'source': 'fallback',
+                'decision': plan.get('decision'),
+                'next_tool': plan.get('next_tool'),
+                'step_index': step_index,
+            },
+        )
+        return plan
+
+    plan = await _plan_once(1)
+    if plan.get('decision') == 'block':
+        reply = str(plan.get('reason') or '当前还不能开启环训练。').strip()
+        append_ai_message(reply)
+        return {'status': 'completed', 'message': reply, 'tool_call': None}
+
+    next_tool_name = str(plan.get('next_tool') or '').strip()
+    next_tool_args = dict(plan.get('next_args') or {})
+    if next_tool_name in {'training_readiness', 'list_training_environments'}:
+        observed_result = await direct_tool(next_tool_name, _state_mode='observe', **next_tool_args)
+        observed[next_tool_name] = observed_result
+        append_event(
+            'loop_start_observed_tool',
+            {
+                'tool': next_tool_name,
+                'args': next_tool_args,
+                'result': compact_training_loop_start_fact(next_tool_name, observed_result),
+                'step_index': 1,
+            },
+        )
+        plan = await _plan_once(2)
         if plan.get('decision') == 'block':
             reply = str(plan.get('reason') or '当前还不能开启环训练。').strip()
             append_ai_message(reply)
             return {'status': 'completed', 'message': reply, 'tool_call': None}
-
         next_tool_name = str(plan.get('next_tool') or '').strip()
-        next_tool_args = dict(plan.get('next_args') or {})
         if next_tool_name in {'training_readiness', 'list_training_environments'}:
-            observe_key = (next_tool_name, json.dumps(next_tool_args, ensure_ascii=False, sort_keys=True))
-            if observe_key in seen_observe_calls:
-                reply = '当前还不能稳定规划下一步；读到的事实没有继续收敛。请换一种方式说明需求，或直接明确 data.yaml / 模型。'
-                append_ai_message(reply)
-                return {'status': 'completed', 'message': reply, 'tool_call': None}
-            seen_observe_calls.add(observe_key)
-            observed_result = await direct_tool(next_tool_name, _state_mode='observe', **next_tool_args)
-            observed[next_tool_name] = observed_result
-            append_event(
-                'loop_start_observed_tool',
-                {
-                    'tool': next_tool_name,
-                    'args': next_tool_args,
-                    'result': compact_training_loop_start_fact(next_tool_name, observed_result),
-                    'step_index': step_index,
-                },
-            )
-            continue
+            reply = '当前还不能稳定规划下一步；读到的事实没有继续收敛。请换一种方式说明需求，或直接明确 data.yaml / 模型。'
+            append_ai_message(reply)
+            return {'status': 'completed', 'message': reply, 'tool_call': None}
 
-        draft = build_training_loop_start_draft_fn(
-            user_text=user_text,
-            dataset_path=dataset_path,
-            loop_args=loop_args,
-            observed_tools=observed,
-            plan=plan,
-        )
-        save_training_plan_draft(draft)
-        return await handoff_to_graph(thread_id, user_text)
-
-    reply = '当前还不能稳定规划循环训练启动步骤：内部编排步数已达到上限。请换一种方式说明需求，或直接给出可训练的 data.yaml。'
-    append_ai_message(reply)
-    return {'status': 'completed', 'message': reply, 'tool_call': None}
+    draft = build_training_loop_start_draft_fn(
+        user_text=user_text,
+        dataset_path=dataset_path,
+        loop_args=loop_args,
+        observed_tools=observed,
+        plan=plan,
+    )
+    save_training_plan_draft(draft)
+    return await handoff_to_graph(thread_id, user_text)
 
 
 def _human_training_step_name(tool_name: str) -> str:

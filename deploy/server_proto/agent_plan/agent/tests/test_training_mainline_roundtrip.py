@@ -445,10 +445,11 @@ async def _run() -> None:
         assert client.session_state.active_training.model == 'yolov8n.pt'
         assert client.session_state.active_training.data_yaml == '/data/mainline/data.yaml'
 
+        graph_call_count_before_status = len(graph.calls)
         turn4 = await client.chat('现在训练到第几轮了？')
         assert turn4['status'] == 'completed', turn4
         assert calls[-1][0] == 'check_training_status'
-        assert graph.calls[-1:] == [('check_training_status', {})], graph.calls
+        assert len(graph.calls) == graph_call_count_before_status, graph.calls
         assert '当前训练正在进行中，最近一次观察停在第 2/30 轮。' in turn4['message']
         assert '建议动作: 可继续轮询 check_training_status' in turn4['message']
         assert client.session_state.active_training.last_status.get('run_state') == 'running'

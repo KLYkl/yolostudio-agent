@@ -222,12 +222,66 @@ async def _scenario_generic_payload_uses_native_structured_output_for_ollama() -
     assert planner.schemas, 'expected with_structured_output to be used'
 
 
+async def _scenario_training_loop_followup_classifier_supports_control_actions() -> None:
+    client = _make_client('training-loop-followup-control')
+    planner = _FakeStructuredPlanner({'action': 'pause', 'reason': '用户要求下一轮先别跑'})
+    client.planner_llm = planner  # type: ignore[assignment]
+    client.session_state.active_training.active_loop_id = 'loop-123'
+    action = await client._classify_training_loop_followup_action(
+        user_text='这一轮结束后停住，下一轮先别跑。',
+        normalized_text='这一轮结束后停住，下一轮先别跑。'.lower(),
+        loop_id='loop-123',
+    )
+    assert action == 'pause', action
+    assert planner.schemas, 'expected with_structured_output to be used'
+    schema = planner.schemas[0]
+    props = dict(schema.get('properties') or {})
+    action_schema = dict(props.get('action') or {})
+    assert action_schema.get('enum') == ['inspect', 'pause', 'resume', 'status', 'stop'], schema
+
+
+async def _scenario_training_loop_route_prefers_classifier_for_control_actions() -> None:
+    client = _make_client('training-loop-route-classifier')
+    planner = _FakeStructuredPlanner({'action': 'resume', 'reason': '用户要求从下一轮开始继续'})
+    client.planner_llm = planner  # type: ignore[assignment]
+    client.session_state.active_training.active_loop_id = 'loop-456'
+    route = await client._resolve_training_loop_route(
+        user_text='从下一轮开始继续。',
+        normalized_text='从下一轮开始继续。'.lower(),
+        wants_predict=False,
+        wants_train=False,
+        wants_stop_training=False,
+        explicit_run_ids=[],
+    )
+    assert route['action'] == 'resume', route
+    assert route['has_context'] is True, route
+    assert planner.schemas, 'expected structured classifier to be used'
+
+
+async def _scenario_training_loop_route_falls_back_without_llm() -> None:
+    client = _make_client('training-loop-route-fallback')
+    client.session_state.active_training.active_loop_id = 'loop-789'
+    client.session_state.active_training.last_loop_status = {'summary': '环训练还在运行'}
+    route = await client._resolve_training_loop_route(
+        user_text='现在环训练怎么样了？',
+        normalized_text='现在环训练怎么样了？'.lower(),
+        wants_predict=False,
+        wants_train=False,
+        wants_stop_training=False,
+        explicit_run_ids=[],
+    )
+    assert route == {'action': 'status', 'loop_id': 'loop-789', 'has_context': True}, route
+
+
 async def _run() -> None:
     shutil.rmtree(WORK, ignore_errors=True)
     WORK.mkdir(parents=True, exist_ok=True)
     try:
         await _scenario_uses_native_structured_output_for_ollama()
         await _scenario_generic_payload_uses_native_structured_output_for_ollama()
+        await _scenario_training_loop_followup_classifier_supports_control_actions()
+        await _scenario_training_loop_route_prefers_classifier_for_control_actions()
+        await _scenario_training_loop_route_falls_back_without_llm()
         print('structured action router ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)

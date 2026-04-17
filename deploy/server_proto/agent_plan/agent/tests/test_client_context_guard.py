@@ -160,6 +160,19 @@ class _NoGraph:
         return None
 
 
+class _CaptureGraph:
+    def __init__(self) -> None:
+        self.payload = None
+
+    def get_state(self, config):
+        return None
+
+    async def ainvoke(self, payload, config=None):
+        del config
+        self.payload = payload
+        return {'messages': list(payload.get('messages') or [])}
+
+
 class _FakeStatusTool:
     name = 'check_training_status'
     description = 'fake status'
@@ -205,12 +218,40 @@ async def _scenario_stale_training_plan_draft_is_cleared_on_startup() -> None:
     assert client.session_state.active_training.training_plan_draft == {}
 
 
+async def _scenario_best_weight_path_is_visible_to_graph_handoff() -> None:
+    root = WORK / 'best-weight-handoff'
+    capture_graph = _CaptureGraph()
+    settings = AgentSettings(session_id='best-weight-handoff', memory_root=str(root))
+    client = YoloStudioAgentClient(graph=capture_graph, settings=settings, tool_registry={})
+    client.session_state.active_training.best_run_selection = {
+        'summary': '最近最佳训练为 train_log_best。',
+        'best_run': {
+            'run_id': 'train_log_best',
+            'best_weight_path': '/weights/best.pt',
+        },
+    }
+    client.memory.save_state(client.session_state)
+    await client._invoke_graph_from_current_runtime(
+        thread_id='best-weight-handoff-turn-1',
+        user_text_hint='用最佳训练去预测图片 /data/images。',
+    )
+    payload = capture_graph.payload or {}
+    messages = list(payload.get('messages') or [])
+    summary = '\n'.join(
+        str(getattr(message, 'content', '') or '')
+        for message in messages
+    )
+    assert 'best_run_id: train_log_best' in summary
+    assert 'best_run_weight_path: /weights/best.pt' in summary
+
+
 async def _run() -> None:
     shutil.rmtree(WORK, ignore_errors=True)
     WORK.mkdir(parents=True, exist_ok=True)
     try:
         await _scenario_observe_mode_does_not_pollute_state()
         await _scenario_stale_training_plan_draft_is_cleared_on_startup()
+        await _scenario_best_weight_path_is_visible_to_graph_handoff()
         print('client context guard ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)
