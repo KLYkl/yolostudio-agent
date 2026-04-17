@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import sys
 import types
@@ -163,11 +164,42 @@ except Exception:
     sys.modules['langgraph.checkpoint.memory'] = checkpoint_mod
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from langchain_core.messages import AIMessage, ToolMessage
 
 
 class _DummyGraph:
     def get_state(self, config):
         return None
+
+
+class _ObservedStatusGraph:
+    def __init__(self) -> None:
+        self.client: YoloStudioAgentClient | None = None
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def bind(self, client: YoloStudioAgentClient) -> None:
+        self.client = client
+
+    def get_state(self, config):
+        return None
+
+    async def ainvoke(self, payload, config=None):
+        del config
+        assert self.client is not None
+        messages = list(payload['messages'])
+        self.calls.append(('check_training_status', {}))
+        result = await self.client.direct_tool('check_training_status')
+        reply = await self.client._render_tool_result_message('check_training_status', result)
+        if not reply:
+            reply = str(result.get('summary') or result.get('error') or '操作已完成')
+        tool_call_id = f'call-{len(self.calls)}'
+        return {
+            'messages': messages + [
+                AIMessage(content='', tool_calls=[{'id': tool_call_id, 'name': 'check_training_status', 'args': {}}]),
+                ToolMessage(content=json.dumps(result, ensure_ascii=False), name='check_training_status', tool_call_id=tool_call_id),
+                AIMessage(content=reply),
+            ]
+        }
 
 
 WORK = Path(__file__).resolve().parent / '_tmp_training_plan_dialogue'
@@ -299,7 +331,9 @@ async def _scenario_discussion_then_execute() -> None:
 async def _scenario_status_query_without_session_context() -> None:
     scenario_root = WORK / 'status_query_without_session_context'
     settings = AgentSettings(session_id='training-plan-dialogue-status-query', memory_root=str(scenario_root))
-    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+    graph = _ObservedStatusGraph()
+    client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
+    graph.bind(client)
     calls: list[tuple[str, dict[str, Any]]] = []
 
     async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
@@ -323,9 +357,11 @@ async def _scenario_status_query_without_session_context() -> None:
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
 
+    assert await client._try_handle_mainline_intent('查看训练情况', 'thread-training-plan-dialogue-status') is None
     turn = await client.chat('查看训练情况')
     assert turn['status'] == 'completed', turn
     assert calls == [('check_training_status', {})], calls
+    assert graph.calls == [('check_training_status', {})], graph.calls
     assert '第 3 轮' in turn['message'], turn
 
 

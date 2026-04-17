@@ -176,6 +176,10 @@ class _FakeGraph:
         self.analysis_payload = dict(analysis_payload)
         self.recommendation_payload = dict(recommendation_payload)
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.client = None
+
+    def bind(self, client) -> None:
+        self.client = client
 
     def get_state(self, config):
         return None
@@ -183,6 +187,7 @@ class _FakeGraph:
     async def ainvoke(self, payload, config=None):
         del config
         messages = list(payload['messages'])
+        client = getattr(self, 'client', None)
         user_text = ''
         for message in reversed(messages):
             content = getattr(message, 'content', '')
@@ -190,6 +195,21 @@ class _FakeGraph:
                 user_text = content
                 break
 
+        if any(token in user_text for token in ('训练停了吗', '训练结束了吗', '训练完成了吗', '训练跑完了吗', '训练状态', '当前状态', '第几轮')):
+            assert client is not None
+            self.calls.append(('check_training_status', {}))
+            result = await client.direct_tool('check_training_status')
+            reply = await client._render_tool_result_message('check_training_status', result)
+            if not reply:
+                reply = str(result.get('summary') or result.get('error') or '操作已完成')
+            tool_call_id = f'call-{len(self.calls)}'
+            return {
+                'messages': messages + [
+                    AIMessage(content='', tool_calls=[{'id': tool_call_id, 'name': 'check_training_status', 'args': {}}]),
+                    ToolMessage(content=json.dumps(result, ensure_ascii=False), name='check_training_status', tool_call_id=tool_call_id),
+                    AIMessage(content=reply),
+                ]
+            }
         if '这次训练效果怎么样' in user_text:
             tool_plan = [
                 ('summarize_training_run', self.summary_payload),
@@ -293,6 +313,7 @@ async def _run_final_state_scenario(*, session_id: str, status_query: str, final
         recommendation_payload=recommendation_payload,
     )
     client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
+    graph.bind(client)
     calls: list[tuple[str, dict[str, Any]]] = []
 
     async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
@@ -376,9 +397,10 @@ async def _run_final_state_scenario(*, session_id: str, status_query: str, final
     turn4 = await client.chat(status_query)
     assert turn4['status'] == 'completed', turn4
     assert calls[-1][0] == 'check_training_status'
-    assert f'运行状态: {final_run_state}' in turn4['message']
-    assert '观察阶段: 最终状态' in turn4['message']
-    assert '最近指标:' in turn4['message']
+    assert graph.calls[-1:] == [('check_training_status', {})], graph.calls
+    assert status_summary in turn4['message']
+    assert '建议动作: 可继续调用 summarize_training_run 查看最终训练事实' in turn4['message']
+    assert client.session_state.active_training.last_status.get('run_state') == final_run_state
 
     turn5 = await client.chat('这次训练效果怎么样？')
     assert turn5['status'] == 'completed', turn5

@@ -177,6 +177,7 @@ class _ObservedToolGraph:
     def __init__(self, tool_name: str) -> None:
         self._tool_name = tool_name
         self.client: YoloStudioAgentClient | None = None
+        self.calls: list[tuple[str, dict[str, Any]]] = []
 
     def bind(self, client: YoloStudioAgentClient) -> None:
         self.client = client
@@ -189,6 +190,7 @@ class _ObservedToolGraph:
         del config
         assert self.client is not None
         messages = list(payload['messages'])
+        self.calls.append((self._tool_name, {}))
         result = await self.client.direct_tool(self._tool_name)
         reply = await self.client._render_tool_result_message(self._tool_name, result)
         if not reply:
@@ -541,6 +543,9 @@ async def _scenario_cached_training_summary_request_reuses_state() -> None:
 
 async def _scenario_generic_approval_after_training_summary_routes_to_analysis() -> None:
     client = _make_client('training-summary-approval')
+    graph = _ObservedToolGraph('analyze_training_outcome')
+    client.graph = graph  # type: ignore[assignment]
+    graph.bind(client)
     client.session_state.active_training.running = False
     client.session_state.active_training.training_run_summary = {
         'ok': True,
@@ -565,9 +570,11 @@ async def _scenario_generic_approval_after_training_summary_routes_to_analysis()
         return result
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+    assert await client._try_handle_mainline_intent('可以', 'thread-training-summary-approval') is None
     turn = await client.chat('可以')
     assert turn['status'] == 'completed', turn
     assert calls and calls[0][0] == 'analyze_training_outcome', calls
+    assert graph.calls == [('analyze_training_outcome', {})], graph.calls
     assert '训练结果分析' in turn['message'], turn
 
 

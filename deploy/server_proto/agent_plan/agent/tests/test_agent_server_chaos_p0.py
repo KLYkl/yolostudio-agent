@@ -55,6 +55,36 @@ class _PredictVideosGraph:
         }
 
 
+class _ObservedStatusGraph:
+    def __init__(self) -> None:
+        self.client = None
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def bind(self, client) -> None:
+        self.client = client
+
+    def get_state(self, config):
+        return None
+
+    async def ainvoke(self, payload, config=None):
+        del config
+        assert self.client is not None
+        messages = list(payload['messages'])
+        self.calls.append(('check_training_status', {}))
+        result = await self.client.direct_tool('check_training_status')
+        reply = await self.client._render_tool_result_message('check_training_status', result)
+        if not reply:
+            reply = str(result.get('summary') or result.get('error') or '操作已完成')
+        tool_call_id = f'call-{len(self.calls)}'
+        return {
+            'messages': messages + [
+                AIMessage(content='', tool_calls=[{'id': tool_call_id, 'name': 'check_training_status', 'args': {}}]),
+                ToolMessage(content=json.dumps(result, ensure_ascii=False), name='check_training_status', tool_call_id=tool_call_id),
+                AIMessage(content=reply),
+            ]
+        }
+
+
 async def _scenario_c01_missing_everything_blocks_without_graph() -> None:
     client = _make_client('chaos-p0-c01')
     calls: list[tuple[str, dict[str, Any]]] = []
@@ -307,6 +337,9 @@ async def _scenario_c31_prepare_cancel_keeps_plan_and_explains() -> None:
 
 async def _scenario_c41_no_active_training_status_query_routes_status() -> None:
     client = _make_client('chaos-p0-c41')
+    graph = _ObservedStatusGraph()
+    graph.bind(client)
+    client.graph = graph  # type: ignore[assignment]
     calls: list[tuple[str, dict[str, Any]]] = []
 
     async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
@@ -328,10 +361,12 @@ async def _scenario_c41_no_active_training_status_query_routes_status() -> None:
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
 
+    assert await client._try_handle_mainline_intent('训练到第几轮了？', 'thread-chaos-p0-c41-status') is None
     turn = await client.chat('训练到第几轮了？')
     assert turn['status'] == 'completed', turn
     assert '当前没有正在运行的训练任务' in turn['message']
     assert calls == [('check_training_status', {})]
+    assert graph.calls == [('check_training_status', {})]
 
 
 async def _scenario_c51_missing_environment_blocks_start() -> None:
@@ -605,6 +640,9 @@ async def _scenario_c91_reloaded_session_keeps_status_context() -> None:
     client1.memory.save_state(client1.session_state)
 
     client2 = _make_client(session_id)
+    graph = _ObservedStatusGraph()
+    graph.bind(client2)
+    client2.graph = graph  # type: ignore[assignment]
     calls2: list[tuple[str, dict[str, Any]]] = []
 
     async def _fake_direct_tool_client2(tool_name: str, **kwargs: Any) -> dict[str, Any]:
@@ -629,11 +667,13 @@ async def _scenario_c91_reloaded_session_keeps_status_context() -> None:
 
     client2.direct_tool = _fake_direct_tool_client2  # type: ignore[assignment]
 
+    assert await client2._try_handle_mainline_intent('刚才训练还在吗？', 'thread-chaos-p0-c91-status') is None
     turn3 = await client2.chat('刚才训练还在吗？')
     assert turn3['status'] == 'completed', turn3
     assert '训练仍在运行' in turn3['message']
     assert client2.session_state.active_training.pid == 9090
     assert calls2 == [('check_training_status', {})]
+    assert graph.calls == [('check_training_status', {})]
 
 
 async def _scenario_c22_stop_then_replan_restart() -> None:
@@ -715,6 +755,9 @@ async def _scenario_c22_stop_then_replan_restart() -> None:
 
 async def _scenario_c42_stopped_status_is_not_completed() -> None:
     client = _make_client('chaos-p0-c42')
+    graph = _ObservedStatusGraph()
+    graph.bind(client)
+    client.graph = graph  # type: ignore[assignment]
     calls: list[tuple[str, dict[str, Any]]] = []
 
     async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
@@ -737,11 +780,13 @@ async def _scenario_c42_stopped_status_is_not_completed() -> None:
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
 
+    assert await client._try_handle_mainline_intent('训练跑完了吗？', 'thread-chaos-p0-c42-status') is None
     turn = await client.chat('训练跑完了吗？')
     assert turn['status'] == 'completed', turn
     assert '训练已停止' in turn['message']
     assert 'completed' not in turn['message']
     assert calls == [('check_training_status', {})]
+    assert graph.calls == [('check_training_status', {})]
 
 
 async def _scenario_c43_failed_outcome_analysis_stays_grounded() -> None:

@@ -1388,6 +1388,15 @@ class YoloStudioAgentClient:
                 return cached_reply
         return await self._complete_direct_tool_reply(tool_name, **kwargs)
 
+    async def _complete_cached_tool_reply_if_available(
+        self,
+        cached_result: tuple[str, dict[str, Any]] | None,
+    ) -> dict[str, Any] | None:
+        if not cached_result:
+            return None
+        cached_tool_name, payload = cached_result
+        return await self._complete_cached_tool_result_reply(cached_tool_name, payload)
+
     async def _try_handle_prediction_management_followup(
         self,
         *,
@@ -1954,10 +1963,12 @@ class YoloStudioAgentClient:
             return training_followup
 
         if not wants_predict and not training_command_like and wants_training_summary:
-            return await self._complete_cached_or_direct_tool_reply(
-                'summarize_training_run',
-                cached_result=self._training_summary_request_cached_result(),
+            cached_reply = await self._complete_cached_tool_reply_if_available(
+                self._training_summary_request_cached_result(),
             )
+            if cached_reply is not None:
+                return cached_reply
+            return None
 
         if not wants_predict and not training_command_like:
             suggested_tool = self._suggested_training_followup_tool(user_text)
@@ -1967,10 +1978,10 @@ class YoloStudioAgentClient:
                     if suggested_tool == 'summarize_training_run'
                     else self._knowledge_tool_cached_result(suggested_tool)
                 )
-                return await self._complete_cached_or_direct_tool_reply(
-                    suggested_tool,
-                    cached_result=cached_result,
-                )
+                cached_reply = await self._complete_cached_tool_reply_if_available(cached_result)
+                if cached_reply is not None:
+                    return cached_reply
+                return None
 
         if (
             wants_training_status
@@ -1984,10 +1995,12 @@ class YoloStudioAgentClient:
             and not wants_stop_training_loop
             and not wants_training_loop_start
         ):
-            return await self._complete_cached_or_direct_tool_reply(
-                'check_training_status',
-                cached_result=self._training_status_request_cached_result(),
+            cached_reply = await self._complete_cached_tool_reply_if_available(
+                self._training_status_request_cached_result(),
             )
+            if cached_reply is not None:
+                return cached_reply
+            return None
 
         if not wants_predict and not training_command_like and wants_training_provenance:
             return self._complete_training_provenance_reply()
@@ -4194,20 +4207,22 @@ class YoloStudioAgentClient:
         )
 
     def _needs_confirmation_result(self, thread_id: str, pending: dict[str, Any], message: str) -> dict[str, Any]:
+        merged_pending = self._merge_pending_review_context(pending, self._pending_review_shadow)
         return {
             'status': 'needs_confirmation',
             'message': message,
-            'tool_call': {'name': pending['name'], 'args': pending.get('args', {})},
+            'tool_call': {'name': merged_pending['name'], 'args': merged_pending.get('args', {})},
             'thread_id': thread_id,
-            'pending_action': self._build_pending_action_payload(pending, thread_id=thread_id),
+            'pending_action': self._build_pending_action_payload(merged_pending, thread_id=thread_id),
         }
 
     def _cancelled_result(self, pending: dict[str, Any], message: str) -> dict[str, Any]:
-        payload = self._build_pending_action_payload(pending, decision_state='rejected')
+        merged_pending = self._merge_pending_review_context(pending, self._pending_review_shadow)
+        payload = self._build_pending_action_payload(merged_pending, decision_state='rejected')
         return {
             'status': 'cancelled',
             'message': message,
-            'tool_call': {'name': pending['name'], 'args': pending.get('args', {})},
+            'tool_call': {'name': merged_pending['name'], 'args': merged_pending.get('args', {})},
             'pending_action': payload,
         }
 
@@ -4248,16 +4263,17 @@ class YoloStudioAgentClient:
         self._sync_training_workflow_state(reason='pending_set')
 
     def _set_pending_confirmation(self, thread_id: str, pending: dict[str, Any]) -> None:
-        payload = self._build_pending_action_payload(pending, thread_id=thread_id)
+        merged_pending = self._merge_pending_review_context(pending, self._pending_review_shadow)
+        payload = self._build_pending_action_payload(merged_pending, thread_id=thread_id)
         source = str(
-            pending.get('source')
-            or ('synthetic' if pending.get('synthetic') else 'graph')
+            merged_pending.get('source')
+            or ('synthetic' if merged_pending.get('synthetic') else 'graph')
         ).strip().lower()
         if source not in {'graph', 'synthetic'}:
             source = 'synthetic'
         normalized = {
-            'id': pending.get('id'),
-            'tool_call_id': str(pending.get('tool_call_id') or pending.get('id') or '').strip(),
+            'id': merged_pending.get('id'),
+            'tool_call_id': str(merged_pending.get('tool_call_id') or merged_pending.get('id') or '').strip(),
             'name': payload['tool_name'],
             'tool_name': payload['tool_name'],
             'args': dict(payload['tool_args']),

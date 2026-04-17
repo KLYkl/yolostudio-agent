@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,37 @@ if __package__ in {None, ''}:
 
 from yolostudio_agent.agent.tests._chaos_test_support import _ScriptedGraph, _make_client
 from yolostudio_agent.agent.tests._coroutine_runner import run
+from langchain_core.messages import AIMessage, ToolMessage
+
+
+class _ObservedStatusGraph:
+    def __init__(self) -> None:
+        self.client = None
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def bind(self, client) -> None:
+        self.client = client
+
+    def get_state(self, config):
+        return None
+
+    async def ainvoke(self, payload, config=None):
+        del config
+        assert self.client is not None
+        messages = list(payload['messages'])
+        self.calls.append(('check_training_status', {}))
+        result = await self.client.direct_tool('check_training_status')
+        reply = await self.client._render_tool_result_message('check_training_status', result)
+        if not reply:
+            reply = str(result.get('summary') or result.get('error') or '操作已完成')
+        tool_call_id = f'call-{len(self.calls)}'
+        return {
+            'messages': messages + [
+                AIMessage(content='', tool_calls=[{'id': tool_call_id, 'name': 'check_training_status', 'args': {}}]),
+                ToolMessage(content=json.dumps(result, ensure_ascii=False), name='check_training_status', tool_call_id=tool_call_id),
+                AIMessage(content=reply),
+            ]
+        }
 
 
 async def _scenario_c44_completed_next_step_guidance_routes_cleanly() -> None:
@@ -108,6 +140,11 @@ async def _scenario_c45_stopped_convergence_question_stays_conservative() -> Non
 
 async def _scenario_c46_status_phrase_now_routes_status() -> None:
     client = _make_client('chaos-p1-c46')
+    client.session_state.active_training.last_status = {}
+    client.memory.save_state(client.session_state)
+    graph = _ObservedStatusGraph()
+    graph.bind(client)
+    client.graph = graph  # type: ignore[assignment]
     calls: list[tuple[str, dict[str, Any]]] = []
 
     async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
@@ -129,10 +166,12 @@ async def _scenario_c46_status_phrase_now_routes_status() -> None:
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
 
+    assert await client._try_handle_mainline_intent('现在状态呢？', 'thread-chaos-p1-c46-status') is None
     turn = await client.chat('现在状态呢？')
     assert turn['status'] == 'completed', turn
     assert '训练已完成' in turn['message']
     assert calls == [('check_training_status', {})]
+    assert graph.calls == [('check_training_status', {})]
 
 
 async def _scenario_c47_provenance_question_uses_last_comparison() -> None:
