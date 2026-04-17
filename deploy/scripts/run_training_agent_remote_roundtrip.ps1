@@ -51,7 +51,7 @@ Sync-RemoteTextFileNormalized -Server $Server `
     -RemotePath "$RemoteAppRoot/deploy/scripts/run_training_agent_remote_validation.sh"
 
 Write-Host "==> ensure remote mcp"
-Invoke-RemoteSsh -Server $Server -Command "$RemoteAppRoot/manage_mcp_server.sh status || $RemoteAppRoot/manage_mcp_server.sh restart"
+Invoke-RemoteSsh -Server $Server -Command "$RemoteAppRoot/manage_mcp_server.sh restart"
 
 Write-Host "==> run remote training agent validation"
 $remoteCommand = "bash $RemoteAppRoot/deploy/scripts/run_training_agent_remote_validation.sh $EnvName $RemoteOutputRoot $DatasetRoot $ModelPath $Epochs $TargetEpoch $StatusDelays $ExtraPollInterval $ExtraPollLimit"

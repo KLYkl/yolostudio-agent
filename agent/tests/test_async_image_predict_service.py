@@ -51,7 +51,11 @@ def main() -> None:
     original_run = service._run_batch_inference
     original_draw = service._draw_detections
     try:
-        service._load_model = lambda model: {'model': model}
+        def _slow_load(model):
+            time.sleep(0.35)
+            return {'model': model}
+
+        service._load_model = _slow_load
 
         def _fake_run(_model, frames, *, conf: float, iou: float):
             del conf, iou
@@ -70,13 +74,17 @@ def main() -> None:
         service._run_batch_inference = _fake_run
         service._draw_detections = lambda frame, detections: frame
 
+        started_at = time.time()
         started = service.predict_images(
             source_path=str(source_dir),
             model='fake-model.pt',
             output_dir=str(output_root / 'auto-background'),
         )
+        elapsed = time.time() - started_at
         assert started['ok'] is True, started
         assert started['started_in_background'] is True, started
+        assert elapsed < 0.18, elapsed
+        assert started['status'] == 'starting', started
         session_id = started['session_id']
 
         completed = _wait_for_status(

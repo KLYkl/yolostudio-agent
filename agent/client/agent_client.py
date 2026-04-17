@@ -19,24 +19,14 @@ from langgraph.prebuilt import create_react_agent
 from langgraph.types import Command
 
 from yolostudio_agent.agent.client.context_builder import ContextBuilder
+from yolostudio_agent.agent.client.cached_tool_reply_service import resolve_cached_tool_reply
+from yolostudio_agent.agent.client.context_retention_policy import build_context_retention_decision
 from yolostudio_agent.agent.client.dataset_fact_service import (
-    build_dataset_fact_followup_reply,
-    looks_like_dataset_fact_question,
+    build_dataset_fact_followup_reply_from_messages,
 )
 from yolostudio_agent.agent.client.event_retriever import EventRetriever
 from yolostudio_agent.agent.client.followup_router import (
-    classify_dataset_followup_action,
-    classify_extract_followup_action,
-    classify_knowledge_followup_action,
-    classify_prediction_followup_action,
-    classify_prediction_management_followup_action,
-    classify_realtime_followup_action,
-    classify_remote_roundtrip_followup_action,
-    classify_remote_transfer_followup_action,
-    classify_training_followup_action,
-    classify_training_history_followup_action,
     classify_training_loop_followup_action,
-    classify_training_loop_history_followup_action,
 )
 from yolostudio_agent.agent.client.grounded_reply_builder import build_grounded_tool_reply
 from yolostudio_agent.agent.client.hitl_manager import (
@@ -55,7 +45,9 @@ from yolostudio_agent.agent.client.llm_factory import (
     provider_summary,
     resolve_llm_settings,
 )
-from yolostudio_agent.agent.client.mcp_connection import build_mcp_connection_config
+from yolostudio_agent.agent.client.mcp_connection import (
+    load_mcp_tools_with_recovery,
+)
 from yolostudio_agent.agent.client.memory_store import MemoryStore
 from yolostudio_agent.agent.client.mainline_guard_policy import (
     build_train_predict_guard_policy,
@@ -456,58 +448,12 @@ class YoloStudioAgentClient:
         return state
 
     def _should_reuse_history_context(self, user_text: str) -> bool:
-        if self._explicitly_references_previous_context(user_text):
-            return True
-        if str(self.session_state.pending_confirmation.tool_name or '').strip():
-            return True
-        if self.session_state.active_training.training_plan_draft:
-            return True
-        if self.session_state.active_dataset.last_scan and looks_like_dataset_fact_question(user_text):
-            return True
-        lowered = str(user_text or '').lower()
-        low_risk_cache_context = bool(
-            self.session_state.active_dataset.last_scan
-            or self.session_state.active_dataset.last_validate
-            or self.session_state.active_dataset.last_health_check
-            or self.session_state.active_dataset.last_duplicate_check
-            or self.session_state.active_prediction.last_result
-            or self.session_state.active_prediction.last_summary
-            or self.session_state.active_prediction.last_inspection
-            or self.session_state.active_prediction.last_export
-            or self.session_state.active_prediction.last_path_lists
-            or self.session_state.active_prediction.last_organized_result
-            or self.session_state.active_knowledge.last_retrieval
-            or self.session_state.active_knowledge.last_analysis
-            or self.session_state.active_knowledge.last_recommendation
+        decision = build_context_retention_decision(
+            state=self.session_state,
+            user_text=user_text,
+            explicitly_references_previous_context=self._explicitly_references_previous_context(user_text),
         )
-        if low_risk_cache_context and any(
-            token in user_text or token in lowered
-            for token in (
-                '详细一点',
-                '再详细',
-                '再展开',
-                '总结',
-                '摘要',
-                '输出',
-                '报告',
-                '清单',
-                '整理后',
-                '健康检查',
-                '重复',
-                '规则',
-                '解释',
-                '怎么落地',
-                '现在是什么情况',
-                'summary',
-                'report',
-                'output',
-                'details',
-                'duplicate',
-                'knowledge',
-            )
-        ):
-            return True
-        return False
+        return decision.reuse_history
 
     def _state_for_model(self, user_text: str) -> tuple[SessionState, bool]:
         reuse_history = self._should_reuse_history_context(user_text)
@@ -613,7 +559,7 @@ class YoloStudioAgentClient:
             progressed = await self._maybe_auto_progress(routed, stream_handler=stream_handler)
             return progressed or routed
 
-        unresolved_pending = self._pending_from_state()
+        unresolved_pending = self._resolve_pending_confirmation(thread_id=self._pending_confirmation_thread_id())
         if unresolved_pending is not None:
             pending_thread_id = self._pending_confirmation_thread_id()
             last_decision = str((unresolved_pending.get('decision_context') or {}).get('decision') or '').strip()
@@ -675,7 +621,8 @@ class YoloStudioAgentClient:
         *,
         stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
     ) -> dict[str, Any]:
-        pending = self._pending_from_state()
+        pending_thread_id = self._pending_confirmation_thread_id()
+        pending = self._resolve_pending_confirmation(thread_id=pending_thread_id)
         if not pending:
             return {"status": "error", "message": "当前没有待确认的高风险操作。"}
 
@@ -685,7 +632,6 @@ class YoloStudioAgentClient:
         if normalized_decision not in {'approve', 'reject', 'edit', 'clarify', 'unclear', 'restate'}:
             normalized_decision = 'unclear'
 
-        pending_thread_id = self._pending_confirmation_thread_id()
         self._record_pending_action_review(
             pending,
             decision=normalized_decision,
@@ -733,8 +679,7 @@ class YoloStudioAgentClient:
 
     async def confirm(self, thread_id: str, approved: bool, stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None) -> dict[str, Any]:
         config = {"configurable": {"thread_id": thread_id}}
-        graph_pending = self._get_pending_tool_call(config)
-        pending = graph_pending or self._pending_from_state()
+        pending = self._resolve_pending_confirmation(thread_id=thread_id, config=config)
         if not pending:
             return {"status": "error", "message": "当前没有待确认的高风险操作。"}
         pending = dict(pending)
@@ -759,7 +704,7 @@ class YoloStudioAgentClient:
         if pending.get('name') == 'remote_training_pipeline':
             return await self._execute_remote_training_pipeline(pending.get('args') or {})
 
-        if graph_pending is None or graph_pending.get('adapted'):
+        if pending.get('source') != 'graph' or pending.get('adapted'):
             return await self._execute_adapted_pending_tool(
                 thread_id=thread_id,
                 pending=pending,
@@ -811,7 +756,7 @@ class YoloStudioAgentClient:
         return str(self.session_state.pending_confirmation.thread_id or '').strip() or f"{self.session_state.session_id}-pending"
 
     def get_pending_action(self) -> dict[str, Any] | None:
-        pending = self._pending_from_state()
+        pending = self._resolve_pending_confirmation(thread_id=self._pending_confirmation_thread_id())
         if not pending:
             return None
         return self._build_pending_action_payload(pending, thread_id=self._pending_confirmation_thread_id())
@@ -888,7 +833,7 @@ class YoloStudioAgentClient:
         *,
         stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
     ) -> dict[str, Any] | None:
-        pending = self._pending_from_state()
+        pending = self._resolve_pending_confirmation(thread_id=self._pending_confirmation_thread_id())
         if not pending:
             return None
         passthrough_decision = self._pending_passthrough_decision(user_text, pending)
@@ -1319,17 +1264,8 @@ class YoloStudioAgentClient:
         user_text: str,
         normalized_text: str,
     ) -> dict[str, Any] | None:
-        if not enabled:
-            return None
-        action = await self._classify_extract_followup_action(
-            user_text=user_text,
-            normalized_text=normalized_text,
-        )
-        result = self._extract_followup_result(action)
-        if not result:
-            return None
-        tool_name, payload = result
-        return await self._complete_cached_tool_result_reply(tool_name, payload)
+        del enabled, user_text, normalized_text
+        return None
 
     async def _try_handle_dataset_followup(
         self,
@@ -1339,18 +1275,7 @@ class YoloStudioAgentClient:
         normalized_text: str,
         dataset_path: str,
     ) -> dict[str, Any] | None:
-        del normalized_text
-        if not enabled:
-            return None
-        reply = build_dataset_fact_followup_reply(
-            self.session_state,
-            user_text=user_text,
-            requested_dataset_path=dataset_path,
-        )
-        if not reply:
-            return None
-        self._messages.append(AIMessage(content=reply))
-        return {'status': 'completed', 'message': reply, 'tool_call': None}
+        del enabled, user_text, normalized_text, dataset_path
         return None
 
     async def _try_handle_realtime_followup(
@@ -1370,22 +1295,7 @@ class YoloStudioAgentClient:
         user_text: str,
         normalized_text: str,
     ) -> dict[str, Any] | None:
-        if not enabled:
-            return None
-        action = await self._classify_remote_roundtrip_followup_action(
-            user_text=user_text,
-            normalized_text=normalized_text,
-        )
-        if action == 'training_pipeline':
-            return await self._complete_cached_tool_result_reply(
-                'remote_training_pipeline',
-                self.session_state.active_training.last_remote_roundtrip,
-            )
-        if action == 'prediction_pipeline':
-            return await self._complete_cached_tool_result_reply(
-                'remote_prediction_pipeline',
-                self.session_state.active_prediction.last_remote_roundtrip,
-            )
+        del enabled, user_text, normalized_text
         return None
 
     async def _try_handle_remote_transfer_followup(
@@ -1395,27 +1305,7 @@ class YoloStudioAgentClient:
         user_text: str,
         normalized_text: str,
     ) -> dict[str, Any] | None:
-        if not enabled:
-            return None
-        action = await self._classify_remote_transfer_followup_action(
-            user_text=user_text,
-            normalized_text=normalized_text,
-        )
-        if action == 'profiles':
-            return await self._complete_cached_tool_result_reply(
-                'list_remote_profiles',
-                self.session_state.active_remote_transfer.last_profile_listing,
-            )
-        if action == 'upload':
-            return await self._complete_cached_tool_result_reply(
-                'upload_assets_to_remote',
-                self.session_state.active_remote_transfer.last_upload,
-            )
-        if action == 'download':
-            return await self._complete_cached_tool_result_reply(
-                'download_assets_from_remote',
-                self.session_state.active_remote_transfer.last_download,
-            )
+        del enabled, user_text, normalized_text
         return None
 
     async def _try_handle_prediction_requests(
@@ -1424,6 +1314,7 @@ class YoloStudioAgentClient:
         user_text: str,
         normalized_text: str,
         prediction_path: str,
+        wants_predict: bool,
         wants_train: bool,
         training_command_like: bool,
         wants_remote_upload: bool,
@@ -1436,22 +1327,32 @@ class YoloStudioAgentClient:
         has_prediction_management_followup_context: bool,
         has_explicit_prediction_target: bool,
     ) -> dict[str, Any] | None:
-        del (
-            user_text,
-            normalized_text,
-            prediction_path,
-            wants_train,
-            training_command_like,
-            wants_remote_upload,
-            wants_prediction_summary,
-            wants_prediction_output_inspection,
-            wants_prediction_report_export,
-            wants_prediction_path_lists,
-            wants_prediction_result_organize,
-            has_prediction_followup_context,
-            has_prediction_management_followup_context,
-            has_explicit_prediction_target,
+        del normalized_text, prediction_path, has_prediction_followup_context, has_prediction_management_followup_context, has_explicit_prediction_target
+        explicit_source_path = intent_parsing.extract_dataset_path_from_text(user_text)
+        explicit_model = intent_parsing.extract_model_from_text(user_text)
+        can_fastpath_explicit_prediction = (
+            wants_predict
+            and bool(explicit_source_path)
+            and bool(explicit_model)
+            and not wants_train
+            and not training_command_like
+            and not wants_remote_upload
+            and not wants_prediction_summary
+            and not wants_prediction_output_inspection
+            and not wants_prediction_report_export
+            and not wants_prediction_path_lists
+            and not wants_prediction_result_organize
         )
+        if can_fastpath_explicit_prediction:
+            tool_name = 'predict_videos' if self._should_use_video_prediction(user_text, explicit_source_path) else 'predict_images'
+            tool_args: dict[str, Any] = {
+                'source_path': explicit_source_path,
+                'model': explicit_model,
+            }
+            output_dir = intent_parsing.extract_output_path_from_text(user_text, explicit_source_path)
+            if output_dir:
+                tool_args['output_dir'] = output_dir
+            return await self._complete_direct_tool_reply(tool_name, **tool_args)
         return None
 
     async def _try_handle_dataset_and_extract_requests(
@@ -1526,36 +1427,7 @@ class YoloStudioAgentClient:
         user_text: str,
         normalized_text: str,
     ) -> dict[str, Any] | None:
-        if not enabled:
-            return None
-        action = await self._classify_training_history_followup_action(
-            user_text=user_text,
-            normalized_text=normalized_text,
-        )
-        if action == 'runs' and self.session_state.active_training.recent_runs:
-            return await self._complete_cached_tool_result_reply(
-                'list_training_runs',
-                {
-                    'ok': True,
-                    'summary': '训练历史查询完成',
-                    'runs': list(self.session_state.active_training.recent_runs),
-                },
-            )
-        if action == 'inspect':
-            return await self._complete_cached_tool_result_reply(
-                'inspect_training_run',
-                self.session_state.active_training.last_run_inspection,
-            )
-        if action == 'compare':
-            return await self._complete_cached_tool_result_reply(
-                'compare_training_runs',
-                self.session_state.active_training.last_run_comparison,
-            )
-        if action == 'best':
-            return await self._complete_cached_tool_result_reply(
-                'select_best_training_run',
-                self.session_state.active_training.best_run_selection,
-            )
+        del enabled, user_text, normalized_text
         return None
 
     async def _try_handle_training_loop_history_followup(
@@ -1565,29 +1437,7 @@ class YoloStudioAgentClient:
         user_text: str,
         normalized_text: str,
     ) -> dict[str, Any] | None:
-        if not enabled:
-            return None
-        action = await self._classify_training_loop_history_followup_action(
-            user_text=user_text,
-            normalized_text=normalized_text,
-        )
-        if action == 'list' and self.session_state.active_training.recent_loops:
-            return await self._complete_cached_tool_result_reply(
-                'list_training_loops',
-                {
-                    'ok': True,
-                    'summary': '环训练列表已就绪',
-                    'loops': list(self.session_state.active_training.recent_loops),
-                },
-            )
-        if action == 'status':
-            return await self._complete_cached_tool_result_reply(
-                'check_training_loop_status',
-                self.session_state.active_training.last_loop_status,
-            )
-        if action == 'inspect':
-            payload = self.session_state.active_training.last_loop_detail or self.session_state.active_training.last_loop_status
-            return await self._complete_cached_tool_result_reply('inspect_training_loop', payload)
+        del enabled, user_text, normalized_text
         return None
 
     async def _try_handle_knowledge_followup(
@@ -1611,32 +1461,7 @@ class YoloStudioAgentClient:
         metric_signals: list[str],
         asks_metric_terms: bool,
     ) -> dict[str, Any] | None:
-        if not enabled:
-            return None
-        action = await self._classify_training_followup_action(
-            user_text=user_text,
-            normalized_text=normalized_text,
-            metric_signals=metric_signals,
-        )
-        cached_result = self._training_followup_cached_result(action)
-        if cached_result:
-            tool_name, payload = cached_result
-            return await self._complete_cached_tool_result_reply(tool_name, payload)
-        if action == 'status':
-            return await self._complete_cached_or_direct_tool_reply(
-                'check_training_status',
-                cached_result=self._training_status_request_cached_result(),
-            )
-        if action == 'analysis':
-            return await self._complete_training_outcome_analysis_reply()
-        if action == 'next_step':
-            return await self._complete_next_training_step_reply('')
-        if action == 'knowledge':
-            return await self._complete_knowledge_retrieval_reply(
-                topic='training_metrics' if asks_metric_terms else 'workflow',
-                stage='post_training',
-                signals=metric_signals,
-            )
+        del enabled, user_text, normalized_text, metric_signals, asks_metric_terms
         return None
 
     async def _try_handle_realtime_requests(
@@ -1893,6 +1718,7 @@ class YoloStudioAgentClient:
         wants_stop_training: bool,
         wants_training_provenance: bool,
         wants_training_evidence: bool,
+        wants_training_summary: bool,
         wants_next_step_guidance: bool,
         wants_training_knowledge: bool,
         wants_training_outcome_analysis: bool,
@@ -1988,6 +1814,25 @@ class YoloStudioAgentClient:
         )
         if training_followup:
             return training_followup
+
+        if not wants_predict and not training_command_like and wants_training_summary:
+            return await self._complete_cached_or_direct_tool_reply(
+                'summarize_training_run',
+                cached_result=self._training_summary_request_cached_result(),
+            )
+
+        if not wants_predict and not training_command_like:
+            suggested_tool = self._suggested_training_followup_tool(user_text)
+            if suggested_tool:
+                cached_result = (
+                    self._training_summary_request_cached_result()
+                    if suggested_tool == 'summarize_training_run'
+                    else self._knowledge_tool_cached_result(suggested_tool)
+                )
+                return await self._complete_cached_or_direct_tool_reply(
+                    suggested_tool,
+                    cached_result=cached_result,
+                )
 
         if (
             wants_training_status
@@ -2337,6 +2182,13 @@ class YoloStudioAgentClient:
             or self.session_state.active_prediction.last_path_lists
             or self.session_state.active_prediction.last_organized_result
         )
+        has_training_summary_context = bool(
+            self.session_state.active_training.training_run_summary
+            or self.session_state.active_training.last_summary
+            or self.session_state.active_training.last_status
+            or self.session_state.active_training.last_start_result
+            or self.session_state.active_training.running
+        )
         wants_remote_profile_list = any(
             token in user_text
             for token in (
@@ -2417,6 +2269,35 @@ class YoloStudioAgentClient:
             or rtsp_url
         )
         asks_metric_terms = any(token in normalized_text for token in ('precision', 'recall', 'map', 'loss', 'epoch', 'epochs', 'batch', 'imgsz', 'patience', 'lr')) or any(token in user_text for token in ('精确率', '召回', '损失', '学习率', '轮数', '批大小'))
+        wants_training_summary = (
+            any(
+                token in user_text
+                for token in (
+                    '训练总结',
+                    '训练摘要',
+                    '训练汇总',
+                    '训练结果汇总',
+                    '训练结果总结',
+                    '结果总结',
+                )
+            )
+            or (
+                has_training_summary_context
+                and '数据总结' in user_text
+                and not any(
+                    token in user_text
+                    for token in (
+                        '数据集质量',
+                        '数据质量',
+                        '类别分布',
+                        '有哪些类别',
+                        '缺失标签',
+                        '最少类别',
+                        '最多类别',
+                    )
+                )
+            )
+        )
         wants_training_outcome_analysis = (
             any(token in user_text for token in ('训练效果怎么样', '这次训练效果怎么样', '训练结果怎么样', '训练效果如何', '结果更像', '训练效果'))
             or any(token in user_text for token in ('是不是已经收敛了', '已经收敛了吗', '收敛了吗'))
@@ -2648,6 +2529,7 @@ class YoloStudioAgentClient:
             user_text=user_text,
             normalized_text=normalized_text,
             prediction_path=prediction_path,
+            wants_predict=wants_predict,
             wants_train=wants_train,
             training_command_like=training_command_like,
             wants_remote_upload=wants_remote_upload,
@@ -2724,6 +2606,7 @@ class YoloStudioAgentClient:
             wants_stop_training=wants_stop_training,
             wants_training_provenance=wants_training_provenance,
             wants_training_evidence=wants_training_evidence,
+            wants_training_summary=wants_training_summary,
             wants_next_step_guidance=wants_next_step_guidance,
             wants_training_knowledge=wants_training_knowledge,
             wants_training_outcome_analysis=wants_training_outcome_analysis,
@@ -4057,9 +3940,16 @@ class YoloStudioAgentClient:
     def _set_pending_confirmation(self, thread_id: str, pending: dict[str, Any]) -> None:
         payload = self._build_pending_action_payload(pending, thread_id=thread_id)
         pc = self.session_state.pending_confirmation
+        source = str(
+            pending.get('source')
+            or ('synthetic' if pending.get('synthetic') else 'graph')
+        ).strip().lower()
+        if source not in {'graph', 'synthetic'}:
+            source = 'synthetic'
         pc.thread_id = thread_id
         pc.tool_name = payload['tool_name']
         pc.tool_args = payload['tool_args']
+        pc.source = source
         pc.interrupt_kind = payload['interrupt_kind']
         pc.objective = payload['objective']
         pc.summary = payload['summary']
@@ -4077,6 +3967,7 @@ class YoloStudioAgentClient:
                 'summary': pc.summary,
                 'objective': pc.objective,
                 'allowed_decisions': pc.allowed_decisions,
+                'pending_source': pc.source,
             },
         )
         self._sync_training_workflow_state(reason='pending_set')
@@ -4086,6 +3977,7 @@ class YoloStudioAgentClient:
         pc.thread_id = ""
         pc.tool_name = ""
         pc.tool_args = {}
+        pc.source = 'synthetic'
         pc.interrupt_kind = 'tool_approval'
         pc.objective = ''
         pc.summary = ''
@@ -4109,7 +4001,37 @@ class YoloStudioAgentClient:
             'review_config': dict(pc.review_config),
             'decision_context': dict(pc.decision_context),
             'thread_id': pc.thread_id,
+            'source': str(pc.source or 'synthetic').strip().lower() or 'synthetic',
         }
+
+    def _resolve_pending_confirmation(
+        self,
+        *,
+        thread_id: str = '',
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        pending = self._pending_from_state()
+        if not pending:
+            return None
+        source = str(pending.get('source') or 'synthetic').strip().lower()
+        if source != 'graph':
+            return pending
+        pending_thread_id = str(thread_id or pending.get('thread_id') or self._pending_confirmation_thread_id()).strip()
+        pending_config = config or {"configurable": {"thread_id": pending_thread_id}}
+        graph_pending = self._get_pending_tool_call(pending_config)
+        if not graph_pending:
+            self._clear_pending_confirmation()
+            self.memory.save_state(self.session_state)
+            return None
+        merged_pending = dict(graph_pending)
+        merged_pending['thread_id'] = pending_thread_id
+        merged_pending['source'] = 'graph'
+        merged_pending['summary'] = str(pending.get('summary') or '')
+        merged_pending['objective'] = str(pending.get('objective') or '')
+        merged_pending['allowed_decisions'] = list(pending.get('allowed_decisions') or [])
+        merged_pending['review_config'] = dict(pending.get('review_config') or {})
+        merged_pending['decision_context'] = dict(pending.get('decision_context') or {})
+        return merged_pending
 
     def _apply_tool_results(self, messages: list[BaseMessage], built_messages_len: int) -> list[tuple[str, dict[str, Any]]]:
         delta_messages = messages[built_messages_len:] if built_messages_len <= len(messages) else messages
@@ -4240,6 +4162,7 @@ class YoloStudioAgentClient:
             "raw_name": raw_name,
             "raw_args": raw_args,
             "adapted": raw_name != tool_name or raw_args != tool_args,
+            "source": "graph",
         }
 
     @staticmethod
@@ -4276,6 +4199,12 @@ class YoloStudioAgentClient:
         for message in reversed(self._messages):
             if isinstance(message, HumanMessage) and isinstance(message.content, str):
                 return message.content
+        return ""
+
+    def _recent_ai_text(self) -> str:
+        for message in reversed(self._messages):
+            if isinstance(message, AIMessage):
+                return self._message_text(getattr(message, 'content', ''))
         return ""
 
     async def _continue_followup_training_after_prepare(
@@ -5246,386 +5175,6 @@ class YoloStudioAgentClient:
             loop_id=loop_id,
             classify_structured_action=self._classify_structured_action,
         )
-
-    async def _classify_training_followup_action(
-        self,
-        *,
-        user_text: str,
-        normalized_text: str,
-        metric_signals: list[str],
-    ) -> str:
-        return await classify_training_followup_action(
-            planner_llm=self.planner_llm,
-            session_state=self.session_state,
-            user_text=user_text,
-            normalized_text=normalized_text,
-            metric_signals=metric_signals,
-            classify_structured_action=self._classify_structured_action,
-        )
-
-    async def _classify_training_history_followup_action(
-        self,
-        *,
-        user_text: str,
-        normalized_text: str,
-    ) -> str:
-        return await classify_training_history_followup_action(
-            planner_llm=self.planner_llm,
-            session_state=self.session_state,
-            user_text=user_text,
-            normalized_text=normalized_text,
-            classify_structured_action=self._classify_structured_action,
-        )
-
-    async def _classify_training_loop_history_followup_action(
-        self,
-        *,
-        user_text: str,
-        normalized_text: str,
-    ) -> str:
-        return await classify_training_loop_history_followup_action(
-            planner_llm=self.planner_llm,
-            session_state=self.session_state,
-            user_text=user_text,
-            normalized_text=normalized_text,
-            classify_structured_action=self._classify_structured_action,
-        )
-
-    async def _classify_knowledge_followup_action(
-        self,
-        *,
-        user_text: str,
-        normalized_text: str,
-        metric_signals: list[str],
-    ) -> str:
-        return await classify_knowledge_followup_action(
-            planner_llm=self.planner_llm,
-            session_state=self.session_state,
-            user_text=user_text,
-            normalized_text=normalized_text,
-            metric_signals=metric_signals,
-            has_training_state_context=self._has_training_state_context,
-            classify_structured_action=self._classify_structured_action,
-        )
-
-    async def _classify_prediction_followup_action(
-        self,
-        *,
-        user_text: str,
-        normalized_text: str,
-        fallback_path: str,
-    ) -> str:
-        return await classify_prediction_followup_action(
-            planner_llm=self.planner_llm,
-            session_state=self.session_state,
-            user_text=user_text,
-            normalized_text=normalized_text,
-            fallback_path=fallback_path,
-            classify_structured_action=self._classify_structured_action,
-        )
-
-    async def _classify_realtime_followup_action(
-        self,
-        *,
-        user_text: str,
-        normalized_text: str,
-    ) -> str:
-        return await classify_realtime_followup_action(
-            planner_llm=self.planner_llm,
-            session_state=self.session_state,
-            user_text=user_text,
-            normalized_text=normalized_text,
-            classify_structured_action=self._classify_structured_action,
-        )
-
-    async def _classify_prediction_management_followup_action(
-        self,
-        *,
-        user_text: str,
-        normalized_text: str,
-    ) -> str:
-        return await classify_prediction_management_followup_action(
-            planner_llm=self.planner_llm,
-            session_state=self.session_state,
-            user_text=user_text,
-            normalized_text=normalized_text,
-            classify_structured_action=self._classify_structured_action,
-        )
-
-    async def _classify_dataset_followup_action(
-        self,
-        *,
-        user_text: str,
-        normalized_text: str,
-        fallback_path: str,
-    ) -> str:
-        return await classify_dataset_followup_action(
-            planner_llm=self.planner_llm,
-            session_state=self.session_state,
-            user_text=user_text,
-            normalized_text=normalized_text,
-            fallback_path=fallback_path,
-            classify_structured_action=self._classify_structured_action,
-        )
-
-    async def _classify_extract_followup_action(
-        self,
-        *,
-        user_text: str,
-        normalized_text: str,
-    ) -> str:
-        return await classify_extract_followup_action(
-            planner_llm=self.planner_llm,
-            session_state=self.session_state,
-            user_text=user_text,
-            normalized_text=normalized_text,
-            classify_structured_action=self._classify_structured_action,
-        )
-
-    def _extract_followup_result(self, action: str) -> tuple[str, dict[str, Any]] | None:
-        ds = self.session_state.active_dataset
-        mapping: dict[str, tuple[str, dict[str, Any]]] = {
-            'preview': ('preview_extract_images', dict(ds.last_extract_preview or {})),
-            'extract': ('extract_images', dict(ds.last_extract_result or {})),
-            'video_scan': ('scan_videos', dict(ds.last_video_scan or {})),
-            'frame_extract': ('extract_video_frames', dict(ds.last_frame_extract or {})),
-        }
-        result = mapping.get(action)
-        if result and result[1]:
-            return result
-        return None
-
-    def _prediction_followup_result(self, action: str) -> tuple[str, dict[str, Any]] | None:
-        pred = self.session_state.active_prediction
-        summary_payload = dict(pred.last_summary or {})
-        if not summary_payload:
-            last_result = dict(pred.last_result or {})
-            if any(
-                key in last_result
-                for key in ('summary_overview', 'action_candidates', 'total_detections')
-            ):
-                summary_payload = last_result
-        mapping: dict[str, tuple[str, dict[str, Any]]] = {
-            'inspect': ('inspect_prediction_outputs', dict(pred.last_inspection or {})),
-            'summary': ('summarize_prediction_results', summary_payload),
-        }
-        result = mapping.get(action)
-        if result and result[1]:
-            return result
-        return None
-
-    def _prediction_management_followup_result(self, action: str) -> tuple[str, dict[str, Any]] | None:
-        pred = self.session_state.active_prediction
-        mapping: dict[str, tuple[str, dict[str, Any]]] = {
-            'inspect': ('inspect_prediction_outputs', dict(pred.last_inspection or {})),
-            'export': ('export_prediction_report', dict(pred.last_export or {})),
-            'path_lists': ('export_prediction_path_lists', dict(pred.last_path_lists or {})),
-            'organize': ('organize_prediction_results', dict(pred.last_organized_result or {})),
-        }
-        result = mapping.get(action)
-        if result and result[1]:
-            return result
-        return None
-
-    @staticmethod
-    def _cached_request_matches_targets(
-        payload: dict[str, Any],
-        request_kwargs: dict[str, Any],
-        *,
-        target_keys: tuple[str, ...],
-    ) -> bool:
-        for key in target_keys:
-            expected = str(request_kwargs.get(key) or '').strip()
-            if not expected:
-                continue
-            actual = str(payload.get(key) or '').strip()
-            if not actual or actual != expected:
-                return False
-        return True
-
-    def _prediction_request_cached_result(
-        self,
-        request: str,
-        request_kwargs: dict[str, Any],
-    ) -> tuple[str, dict[str, Any]] | None:
-        if request == 'inspect':
-            cached = self._prediction_management_followup_result('inspect')
-        elif request == 'summary':
-            cached = self._prediction_followup_result('summary')
-        else:
-            cached = None
-        if not cached:
-            return None
-        tool_name, payload = cached
-        if self._cached_request_matches_targets(payload, request_kwargs, target_keys=('report_path', 'output_dir')):
-            return tool_name, payload
-        return None
-
-    def _prediction_management_request_cached_result(
-        self,
-        request: str,
-        request_kwargs: dict[str, Any],
-    ) -> tuple[str, dict[str, Any]] | None:
-        if request == 'export':
-            cached = self._prediction_management_followup_result('export')
-            target_keys = ('report_path', 'output_dir', 'export_path')
-        elif request == 'path_lists':
-            cached = self._prediction_management_followup_result('path_lists')
-            target_keys = ('report_path', 'output_dir', 'export_dir')
-        else:
-            return None
-        if not cached:
-            return None
-        tool_name, payload = cached
-        if self._cached_request_matches_targets(payload, request_kwargs, target_keys=target_keys):
-            return tool_name, payload
-        return None
-
-    def _knowledge_followup_result(self, action: str) -> tuple[str, dict[str, Any]] | None:
-        knowledge = self.session_state.active_knowledge
-        mapping: dict[str, tuple[str, dict[str, Any]]] = {
-            'knowledge': ('retrieve_training_knowledge', dict(knowledge.last_retrieval or {})),
-            'analysis': ('analyze_training_outcome', dict(knowledge.last_analysis or {})),
-            'next_step': ('recommend_next_training_step', dict(knowledge.last_recommendation or {})),
-        }
-        result = mapping.get(action)
-        if result and result[1]:
-            payload = result[1]
-            if any(
-                key in payload
-                for key in ('retrieval_overview', 'analysis_overview', 'recommendation_overview', 'action_candidates')
-            ):
-                return result
-            return None
-        return None
-
-    def _training_followup_cached_result(self, action: str) -> tuple[str, dict[str, Any]] | None:
-        if action == 'status':
-            return None
-        return self._knowledge_followup_result(action)
-
-    def _dataset_followup_result(self, action: str) -> tuple[str, dict[str, Any]] | None:
-        ds = self.session_state.active_dataset
-        mapping: dict[str, tuple[str, dict[str, Any]]] = {
-            'health': ('run_dataset_health_check', dict(ds.last_health_check or {})),
-            'duplicates': ('detect_duplicate_images', dict(ds.last_duplicate_check or {})),
-        }
-        result = mapping.get(action)
-        if result and result[1]:
-            return result
-        return None
-
-    def _realtime_request_cached_result(
-        self,
-        request: str,
-        request_kwargs: dict[str, Any] | None = None,
-    ) -> tuple[str, dict[str, Any]] | None:
-        pred = self.session_state.active_prediction
-        payload = dict(pred.last_realtime_status or {})
-        if not payload:
-            return None
-        request_kwargs = dict(request_kwargs or {})
-        if request == 'camera_scan':
-            if payload.get('camera_overview') or payload.get('camera_count') or payload.get('cameras'):
-                return ('scan_cameras', payload)
-            return None
-        if request == 'screen_scan':
-            if payload.get('screen_overview') or payload.get('screen_count') or payload.get('screens'):
-                return ('scan_screens', payload)
-            return None
-        if request == 'rtsp_test':
-            if not (payload.get('stream_test_overview') or str(payload.get('rtsp_url') or '').strip()):
-                return None
-            if self._cached_request_matches_targets(payload, request_kwargs, target_keys=('rtsp_url',)):
-                return ('test_rtsp_stream', payload)
-            return None
-        if request == 'status':
-            if str(pred.realtime_status or '').strip().lower() == 'running':
-                return None
-            if not (payload.get('realtime_status_overview') or str(payload.get('session_id') or '').strip()):
-                return None
-            if self._cached_request_matches_targets(payload, request_kwargs, target_keys=('session_id',)):
-                return ('check_realtime_prediction_status', payload)
-        return None
-
-    def _training_history_request_cached_result(
-        self,
-        *,
-        request: str,
-        run_state: str | None = None,
-        analysis_ready: bool = False,
-        run_id: str | None = None,
-        left_run_id: str | None = None,
-        right_run_id: str | None = None,
-    ) -> tuple[str, dict[str, Any]] | None:
-        training = self.session_state.active_training
-        if request == 'runs':
-            runs = list(training.recent_runs or [])
-            if analysis_ready:
-                runs = [item for item in runs if bool(item.get('analysis_ready'))]
-            elif run_state:
-                runs = [item for item in runs if str(item.get('run_state') or '').strip().lower() == run_state]
-            if runs:
-                return (
-                    'list_training_runs',
-                    {
-                        'ok': True,
-                        'summary': '训练历史查询完成',
-                        'runs': runs,
-                    },
-                )
-            return None
-        if request == 'compare':
-            payload = dict(training.last_run_comparison or {})
-            cached_left = str(payload.get('left_run_id') or '').strip()
-            cached_right = str(payload.get('right_run_id') or '').strip()
-            expected_left = str(left_run_id or '').strip()
-            expected_right = str(right_run_id or '').strip()
-            if payload and (
-                (not expected_left and not expected_right)
-                or (
-                    (not expected_left or cached_left == expected_left)
-                    and (not expected_right or cached_right == expected_right)
-                )
-            ):
-                return ('compare_training_runs', payload)
-            return None
-        if request == 'best':
-            payload = dict(training.best_run_selection or {})
-            return ('select_best_training_run', payload) if payload else None
-        if request == 'inspect':
-            payload = dict(training.last_run_inspection or {})
-            cached_run_id = str(payload.get('selected_run_id') or payload.get('run_id') or '').strip()
-            if payload and (not run_id or not cached_run_id or cached_run_id == str(run_id).strip()):
-                return ('inspect_training_run', payload)
-        return None
-
-    def _training_loop_request_cached_result(
-        self,
-        request: str,
-        *,
-        loop_id: str | None = None,
-    ) -> tuple[str, dict[str, Any]] | None:
-        training = self.session_state.active_training
-        if request == 'list':
-            loops = list(training.recent_loops or [])
-            if loops:
-                return (
-                    'list_training_loops',
-                    {
-                        'ok': True,
-                        'summary': '环训练列表已就绪',
-                        'loops': loops,
-                    },
-                )
-            return None
-        if request == 'inspect':
-            payload = dict(training.last_loop_detail or {})
-            cached_loop_id = str(payload.get('loop_id') or '').strip()
-            if payload and (not loop_id or not cached_loop_id or cached_loop_id == str(loop_id).strip()):
-                return ('inspect_training_loop', payload)
-        return None
-
     def _training_status_request_cached_result(self) -> tuple[str, dict[str, Any]] | None:
         training = self.session_state.active_training
         payload = dict(training.last_status or {})
@@ -5640,53 +5189,58 @@ class YoloStudioAgentClient:
             return None
         return ('check_training_status', payload)
 
-    def _training_loop_status_request_cached_result(
-        self,
-        *,
-        loop_id: str | None = None,
-    ) -> tuple[str, dict[str, Any]] | None:
-        training = self.session_state.active_training
-        if str(training.active_loop_id or '').strip():
-            return None
-        payload = dict(training.last_loop_status or training.last_loop_detail or {})
+    def _training_summary_request_cached_result(self) -> tuple[str, dict[str, Any]] | None:
+        payload = dict(
+            self.session_state.active_training.training_run_summary
+            or self.session_state.active_training.last_summary
+            or {}
+        )
         if not payload:
             return None
-        cached_loop_id = str(payload.get('loop_id') or '').strip()
-        if loop_id and cached_loop_id and cached_loop_id != str(loop_id).strip():
-            return None
-        status = str(payload.get('status') or '').strip().lower()
-        if status == 'running':
-            return None
-        return ('check_training_loop_status', payload)
+        return ('summarize_training_run', payload)
 
-    async def _classify_remote_transfer_followup_action(
-        self,
-        *,
-        user_text: str,
-        normalized_text: str,
-    ) -> str:
-        return await classify_remote_transfer_followup_action(
-            planner_llm=self.planner_llm,
-            session_state=self.session_state,
-            user_text=user_text,
-            normalized_text=normalized_text,
-            classify_structured_action=self._classify_structured_action,
-        )
+    def _knowledge_tool_cached_result(self, tool_name: str) -> tuple[str, dict[str, Any]] | None:
+        canonical_name = canonical_tool_name(tool_name)
+        knowledge = self.session_state.active_knowledge
+        if canonical_name == 'analyze_training_outcome' and knowledge.last_analysis:
+            return ('analyze_training_outcome', dict(knowledge.last_analysis))
+        if canonical_name == 'recommend_next_training_step' and knowledge.last_recommendation:
+            return ('recommend_next_training_step', dict(knowledge.last_recommendation))
+        return None
 
-    async def _classify_remote_roundtrip_followup_action(
-        self,
-        *,
-        user_text: str,
-        normalized_text: str,
-    ) -> str:
-        return await classify_remote_roundtrip_followup_action(
-            planner_llm=self.planner_llm,
-            session_state=self.session_state,
-            user_text=user_text,
-            normalized_text=normalized_text,
-            has_training_state_context=self._has_training_state_context,
-            classify_structured_action=self._classify_structured_action,
-        )
+    def _suggested_training_followup_tool(self, user_text: str) -> str:
+        if self._classify_confirmation_reply_fallback(user_text) != 'approve':
+            return ''
+        recent_ai_text = self._recent_ai_text()
+        if not recent_ai_text or not any(
+            token in recent_ai_text
+            for token in (
+                '训练结果汇总',
+                '训练总结',
+                '训练摘要',
+                '训练结果分析',
+                '下一步建议',
+                '可继续调用',
+                '是否同意',
+                '可以继续分析训练结果',
+            )
+        ):
+            return ''
+        training = self.session_state.active_training
+        for payload in (
+            training.training_run_summary,
+            training.last_summary,
+            training.last_status,
+        ):
+            if not isinstance(payload, dict) or not payload:
+                continue
+            for item in list(payload.get('action_candidates') or []):
+                if not isinstance(item, dict):
+                    continue
+                tool_name = canonical_tool_name(item.get('tool') or '')
+                if tool_name in {'summarize_training_run', 'analyze_training_outcome', 'recommend_next_training_step'}:
+                    return tool_name
+        return ''
 
     @staticmethod
     def _extract_training_loop_max_rounds(text: str) -> int | None:
@@ -6813,12 +6367,10 @@ def _checkpoint_path(settings: AgentSettings) -> Path:
 
 async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudioAgentClient:
     settings = settings or AgentSettings()
-    client = MultiServerMCPClient(
-        {
-            "yolostudio": build_mcp_connection_config(settings.mcp_url)
-        }
+    raw_tools = await load_mcp_tools_with_recovery(
+        settings.mcp_url,
+        client_factory=MultiServerMCPClient,
     )
-    raw_tools = list(await client.get_tools())
     raw_tools.extend(build_local_transfer_tools())
     include_tool_aliases = os.getenv("YOLOSTUDIO_MODEL_VISIBLE_TOOL_ALIASES", "").strip().lower() in {"1", "true", "yes", "on"}
     tools = adapt_tools_for_chat_model(raw_tools, include_aliases=include_tool_aliases)
@@ -6835,14 +6387,16 @@ async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudi
     react_kwargs: dict[str, Any] = {
         'prompt': SYSTEM_PROMPT,
         'checkpointer': FileCheckpointSaver(_checkpoint_path(settings)),
+        'post_model_hook': _build_agent_post_model_hook(helper_llm),
     }
     if str(settings.confirmation_mode or 'manual').strip().lower() == 'manual':
         interrupt_nodes = build_manual_interrupt_nodes(raw_tools)
         if interrupt_nodes:
             react_kwargs['interrupt_before'] = interrupt_nodes
+    graph_tools = _build_graph_tool_surface(tools)
     graph = create_react_agent(
         llm,
-        tools,
+        graph_tools,
         **react_kwargs,
     )
     tool_registry = {tool.name: tool for tool in raw_tools}
@@ -6854,6 +6408,139 @@ async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudi
         primary_llm_settings=primary_llm_settings,
         helper_llm_settings=helper_llm_settings,
     )
+
+
+def _build_graph_tool_surface(tools: list[Any]) -> Any:
+    try:
+        from langgraph.prebuilt.tool_node import ToolNode
+    except Exception:
+        return tools
+    return ToolNode(tools, handle_tool_errors=True)
+
+
+def _message_text_static(content: Any) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                text = item.strip()
+                if text:
+                    parts.append(text)
+                continue
+            if isinstance(item, dict):
+                text = str(item.get('text') or item.get('content') or '').strip()
+                if text:
+                    parts.append(text)
+        return '\n'.join(parts).strip()
+    return str(content or '').strip()
+
+
+def _merge_grounded_sections_static(sections: list[str]) -> str:
+    cleaned: list[str] = []
+    for section in sections:
+        text = str(section or '').strip()
+        if text and text not in cleaned:
+            cleaned.append(text)
+    return '\n\n'.join(cleaned)
+
+
+def _replace_last_ai_message(messages: list[Any], reply: str) -> dict[str, Any]:
+    replacement = AIMessage(content=reply)
+    try:
+        from langchain_core.messages import RemoveMessage
+        from langgraph.graph.message import REMOVE_ALL_MESSAGES
+    except Exception:
+        return {'messages': [*messages[:-1], replacement]}
+    return {'messages': [RemoveMessage(id=REMOVE_ALL_MESSAGES), *messages[:-1], replacement]}
+
+
+def _dataset_fact_post_model_hook(state: dict[str, Any]) -> dict[str, Any]:
+    messages = list(state.get('messages') or [])
+    if not messages:
+        return {}
+    if not isinstance(messages[-1], AIMessage) or not getattr(messages[-1], 'tool_calls', None):
+        return {}
+    user_text = ''
+    for message in reversed(messages):
+        if isinstance(message, HumanMessage) and isinstance(message.content, str):
+            user_text = message.content
+            break
+    if not user_text:
+        return {}
+    requested_dataset_path = intent_parsing.extract_dataset_path_from_text(user_text)
+    reply = build_dataset_fact_followup_reply_from_messages(
+        messages,
+        user_text=user_text,
+        requested_dataset_path=requested_dataset_path,
+    )
+    if not reply:
+        return {}
+    return _replace_last_ai_message(messages, reply)
+
+
+def _build_agent_post_model_hook(planner_llm: Any) -> Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]:
+    async def _invoke_renderer_text(
+        *,
+        messages: list[Any],
+        failure_event: str = '',
+        failure_payload: dict[str, Any] | None = None,
+    ) -> str:
+        del failure_event, failure_payload
+        if planner_llm is None:
+            return ''
+        try:
+            response = await planner_llm.ainvoke(messages)
+        except Exception:
+            return ''
+        return _message_text_static(getattr(response, 'content', response)).strip()
+
+    async def _render_tool_result_message(tool_name: str, parsed: dict[str, Any]) -> str:
+        async def _render_multi_tool_result_message(
+            applied_results: list[tuple[str, dict[str, Any]]],
+            *,
+            objective: str = '',
+            extra_notes: list[str] | None = None,
+        ) -> str:
+            return await render_multi_tool_result_message_reply(
+                planner_llm=planner_llm,
+                applied_results=applied_results,
+                objective=objective,
+                extra_notes=extra_notes,
+                invoke_renderer_text=_invoke_renderer_text,
+                render_tool_result_message=_render_tool_result_message,
+                build_grounded_tool_reply=build_grounded_tool_reply,
+                merge_grounded_sections=_merge_grounded_sections_static,
+            )
+
+        return await render_tool_result_message_reply(
+            planner_llm=planner_llm,
+            tool_name=tool_name,
+            parsed=parsed,
+            render_multi_tool_result_message=_render_multi_tool_result_message,
+            invoke_renderer_text=_invoke_renderer_text,
+            build_grounded_tool_reply=build_grounded_tool_reply,
+            merge_grounded_sections=_merge_grounded_sections_static,
+        )
+
+    async def _post_model_hook(state: dict[str, Any]) -> dict[str, Any]:
+        messages = list(state.get('messages') or [])
+        if not messages or not isinstance(messages[-1], AIMessage) or not getattr(messages[-1], 'tool_calls', None):
+            return {}
+        dataset_update = _dataset_fact_post_model_hook({'messages': messages})
+        if dataset_update:
+            return dataset_update
+        cached_tool_result = resolve_cached_tool_reply(messages)
+        if not cached_tool_result:
+            return {}
+        tool_name, payload = cached_tool_result
+        reply = await _render_tool_result_message(tool_name, payload)
+        if not reply:
+            return {}
+        return _replace_last_ai_message(messages, reply)
+
+    return _post_model_hook
 
 
 async def build_agent():

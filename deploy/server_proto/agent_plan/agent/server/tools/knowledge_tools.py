@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import re
 from typing import Any, Callable
 
 from yolostudio_agent.agent.server.services.knowledge_service import KnowledgeService
@@ -30,12 +32,53 @@ def _wrap(action: str, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> dic
         }
 
 
+def _coerce_dict(value: dict[str, Any] | str | None) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return dict(value)
+    text = str(value or '').strip()
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        parsed = None
+    if isinstance(parsed, dict):
+        return dict(parsed)
+    return {'description': text}
+
+
+def _coerce_str_list(value: list[str] | str | None) -> list[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, list):
+        items = [str(item).strip() for item in value if str(item).strip()]
+        return items or None
+    text = str(value or '').strip()
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        parsed = None
+    if isinstance(parsed, list):
+        items = [str(item).strip() for item in parsed if str(item).strip()]
+        return items or None
+    tokens = [
+        token.strip()
+        for token in re.split(r'[,，;；\n]+', text)
+        if token.strip()
+    ]
+    return tokens or [text]
+
+
 def retrieve_training_knowledge(
     topic: str = '',
     stage: str = '',
     model_family: str = 'yolo',
     task_type: str = 'detection',
-    signals: list[str] | None = None,
+    signals: list[str] | str | None = None,
     max_rules: int = 5,
     include_case_sources: bool = False,
     include_test_sources: bool = False,
@@ -52,7 +95,7 @@ def retrieve_training_knowledge(
         stage=stage,
         model_family=model_family,
         task_type=task_type,
-        signals=signals,
+        signals=_coerce_str_list(signals),
         max_rules=max_rules,
         include_case_sources=include_case_sources,
         include_test_sources=include_test_sources,
@@ -79,10 +122,10 @@ def retrieve_training_knowledge(
 
 
 def analyze_training_outcome(
-    metrics: dict[str, Any] | None = None,
-    data_quality: dict[str, Any] | None = None,
-    comparison: dict[str, Any] | None = None,
-    prediction_summary: dict[str, Any] | None = None,
+    metrics: dict[str, Any] | str | None = None,
+    data_quality: dict[str, Any] | str | None = None,
+    comparison: dict[str, Any] | str | None = None,
+    prediction_summary: dict[str, Any] | str | None = None,
     model_family: str = 'yolo',
     task_type: str = 'detection',
     include_case_sources: bool = False,
@@ -96,10 +139,10 @@ def analyze_training_outcome(
     result = _wrap(
         '分析训练结果',
         service.analyze_training_outcome,
-        metrics=metrics,
-        data_quality=data_quality,
-        comparison=comparison,
-        prediction_summary=prediction_summary,
+        metrics=_coerce_dict(metrics),
+        data_quality=_coerce_dict(data_quality),
+        comparison=_coerce_dict(comparison),
+        prediction_summary=_coerce_dict(prediction_summary),
         model_family=model_family,
         task_type=task_type,
         include_case_sources=include_case_sources,
@@ -116,11 +159,11 @@ def analyze_training_outcome(
 
 
 def recommend_next_training_step(
-    readiness: dict[str, Any] | None = None,
-    health: dict[str, Any] | None = None,
-    status: dict[str, Any] | None = None,
-    comparison: dict[str, Any] | None = None,
-    prediction_summary: dict[str, Any] | None = None,
+    readiness: dict[str, Any] | str | None = None,
+    health: dict[str, Any] | str | None = None,
+    status: dict[str, Any] | str | None = None,
+    comparison: dict[str, Any] | str | None = None,
+    prediction_summary: dict[str, Any] | str | None = None,
     model_family: str = 'yolo',
     task_type: str = 'detection',
     include_case_sources: bool = False,
@@ -134,11 +177,11 @@ def recommend_next_training_step(
     result = _wrap(
         '生成下一步训练建议',
         service.recommend_next_training_step,
-        readiness=readiness,
-        health=health,
-        status=status,
-        comparison=comparison,
-        prediction_summary=prediction_summary,
+        readiness=_coerce_dict(readiness),
+        health=_coerce_dict(health),
+        status=_coerce_dict(status),
+        comparison=_coerce_dict(comparison),
+        prediction_summary=_coerce_dict(prediction_summary),
         model_family=model_family,
         task_type=task_type,
         include_case_sources=include_case_sources,

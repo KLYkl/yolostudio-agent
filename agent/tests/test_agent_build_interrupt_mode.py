@@ -117,11 +117,17 @@ def _install_fake_test_dependencies() -> None:
     sys.modules['pydantic'] = pyd_mod
 
     prebuilt_mod = types.ModuleType('langgraph.prebuilt')
+    tool_node_mod = types.ModuleType('langgraph.prebuilt.tool_node')
     types_mod = types.ModuleType('langgraph.types')
     checkpoint_mod = types.ModuleType('langgraph.checkpoint.memory')
 
     def _fake_create_react_agent(*args, **kwargs):
         return {'args': args, 'kwargs': kwargs}
+
+    class _ToolNode:
+        def __init__(self, tools, handle_tool_errors=False):
+            self.tools = list(tools)
+            self.handle_tool_errors = handle_tool_errors
 
     class _Command:
         def __init__(self, resume=None):
@@ -134,9 +140,11 @@ def _install_fake_test_dependencies() -> None:
             self.blobs = {}
 
     prebuilt_mod.create_react_agent = _fake_create_react_agent
+    tool_node_mod.ToolNode = _ToolNode
     types_mod.Command = _Command
     checkpoint_mod.InMemorySaver = _InMemorySaver
     sys.modules['langgraph.prebuilt'] = prebuilt_mod
+    sys.modules['langgraph.prebuilt.tool_node'] = tool_node_mod
     sys.modules['langgraph.types'] = types_mod
     sys.modules['langgraph.checkpoint.memory'] = checkpoint_mod
 
@@ -187,14 +195,18 @@ async def _run() -> None:
         agent_client.AgentSettings(session_id='interrupt-manual', memory_root='agent/tests/_tmp_interrupt_manual', confirmation_mode='manual')
     )
     assert manual is not None
+    manual_tools = captured[-1]['args'][1]  # type: ignore[index]
     manual_kwargs = captured[-1]['kwargs']  # type: ignore[index]
+    assert getattr(manual_tools, 'handle_tool_errors', False) is True
     assert manual_kwargs.get('interrupt_before') == ['tools'], manual_kwargs
 
     auto = await agent_client.build_agent_client(
         agent_client.AgentSettings(session_id='interrupt-auto', memory_root='agent/tests/_tmp_interrupt_auto', confirmation_mode='auto')
     )
     assert auto is not None
+    auto_tools = captured[-1]['args'][1]  # type: ignore[index]
     auto_kwargs = captured[-1]['kwargs']  # type: ignore[index]
+    assert getattr(auto_tools, 'handle_tool_errors', False) is True
     assert 'interrupt_before' not in auto_kwargs, auto_kwargs
 
     print('agent build interrupt mode ok')

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
 from yolostudio_agent.agent.client.session_state import SessionState
+
+DATASET_FACT_SNAPSHOT_PREFIX = 'DATASET_FACT_SNAPSHOT='
 
 
 def looks_like_dataset_fact_question(user_text: str) -> bool:
@@ -47,18 +50,28 @@ def _normalize_path_key(value: str) -> str:
     return str(value or '').strip().replace('\\', '/').rstrip('/').lower()
 
 
-def _same_dataset_target(session_state: SessionState, requested_dataset_path: str) -> bool:
+def _same_dataset_target_from_context(dataset_context: dict[str, Any], requested_dataset_path: str) -> bool:
     requested = _normalize_path_key(requested_dataset_path)
     if not requested:
         return True
-    ds = session_state.active_dataset
     candidates = {
-        _normalize_path_key(ds.dataset_root),
-        _normalize_path_key(ds.img_dir),
-        _normalize_path_key(ds.label_dir),
+        _normalize_path_key(dataset_context.get('dataset_root')),
+        _normalize_path_key(dataset_context.get('img_dir')),
+        _normalize_path_key(dataset_context.get('label_dir')),
     }
     candidates.discard('')
     return requested in candidates
+
+
+def _same_dataset_target(session_state: SessionState, requested_dataset_path: str) -> bool:
+    return _same_dataset_target_from_context(
+        {
+            'dataset_root': session_state.active_dataset.dataset_root,
+            'img_dir': session_state.active_dataset.img_dir,
+            'label_dir': session_state.active_dataset.label_dir,
+        },
+        requested_dataset_path,
+    )
 
 
 def _format_percent(value: Any) -> str:
@@ -87,18 +100,74 @@ def _extract_class_count_query(user_text: str, class_names: list[str]) -> str:
     return matches[0]
 
 
-def build_dataset_fact_followup_reply(
-    session_state: SessionState,
+def build_dataset_fact_snapshot_payload(session_state: SessionState) -> dict[str, Any] | None:
+    ds = session_state.active_dataset
+    scan = dict(ds.last_scan or {})
+    if not scan:
+        return None
+    return {
+        'dataset_root': str(ds.dataset_root or ''),
+        'img_dir': str(ds.img_dir or ''),
+        'label_dir': str(ds.label_dir or ''),
+        'scan': {
+            'summary': str(scan.get('summary') or ''),
+            'total_images': scan.get('total_images'),
+            'missing_labels': scan.get('missing_labels'),
+            'missing_label_images': scan.get('missing_label_images'),
+            'missing_label_ratio': scan.get('missing_label_ratio'),
+            'classes': list(scan.get('classes') or []),
+            'class_stats': dict(scan.get('class_stats') or {}),
+            'top_classes': list(scan.get('top_classes') or []),
+            'least_class': dict(scan.get('least_class') or {}),
+            'most_class': dict(scan.get('most_class') or {}),
+            'class_name_source': str(scan.get('class_name_source') or ''),
+            'detected_classes_txt': str(scan.get('detected_classes_txt') or ''),
+        },
+    }
+
+
+def build_dataset_fact_snapshot_message(session_state: SessionState) -> str | None:
+    payload = build_dataset_fact_snapshot_payload(session_state)
+    if not payload:
+        return None
+    return f'{DATASET_FACT_SNAPSHOT_PREFIX}{json.dumps(payload, ensure_ascii=False, separators=(",", ":"))}'
+
+
+def extract_dataset_fact_snapshot(messages: list[Any]) -> dict[str, Any] | None:
+    for message in reversed(messages):
+        content = getattr(message, 'content', '')
+        if not isinstance(content, str) or not content.startswith(DATASET_FACT_SNAPSHOT_PREFIX):
+            continue
+        raw = content[len(DATASET_FACT_SNAPSHOT_PREFIX):].strip()
+        if not raw:
+            return None
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            return None
+        if isinstance(payload, dict):
+            return payload
+        return None
+    return None
+
+
+def build_dataset_fact_followup_reply_from_snapshot(
+    snapshot: dict[str, Any],
     *,
     user_text: str,
     requested_dataset_path: str = '',
 ) -> str | None:
     if not looks_like_dataset_fact_question(user_text):
         return None
-    if not _same_dataset_target(session_state, requested_dataset_path):
+    dataset_context = {
+        'dataset_root': str(snapshot.get('dataset_root') or ''),
+        'img_dir': str(snapshot.get('img_dir') or ''),
+        'label_dir': str(snapshot.get('label_dir') or ''),
+    }
+    if not _same_dataset_target_from_context(dataset_context, requested_dataset_path):
         return None
 
-    scan = dict(session_state.active_dataset.last_scan or {})
+    scan = dict(snapshot.get('scan') or {})
     if not scan:
         return None
 
@@ -147,3 +216,39 @@ def build_dataset_fact_followup_reply(
     if class_query:
         return f'当前最近一次扫描里，类别 {class_query} 共有 {class_stats[class_query]} 条标注。'
     return None
+
+
+def build_dataset_fact_followup_reply_from_messages(
+    messages: list[Any],
+    *,
+    user_text: str,
+    requested_dataset_path: str = '',
+) -> str | None:
+    snapshot = extract_dataset_fact_snapshot(messages)
+    if not snapshot:
+        return None
+    return build_dataset_fact_followup_reply_from_snapshot(
+        snapshot,
+        user_text=user_text,
+        requested_dataset_path=requested_dataset_path,
+    )
+
+
+def build_dataset_fact_followup_reply(
+    session_state: SessionState,
+    *,
+    user_text: str,
+    requested_dataset_path: str = '',
+) -> str | None:
+    if not looks_like_dataset_fact_question(user_text):
+        return None
+    if not _same_dataset_target(session_state, requested_dataset_path):
+        return None
+    payload = build_dataset_fact_snapshot_payload(session_state)
+    if not payload:
+        return None
+    return build_dataset_fact_followup_reply_from_snapshot(
+        payload,
+        user_text=user_text,
+        requested_dataset_path=requested_dataset_path,
+    )

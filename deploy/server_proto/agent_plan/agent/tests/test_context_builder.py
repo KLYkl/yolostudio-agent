@@ -32,6 +32,8 @@ except Exception:
     sys.modules['langchain_core.messages'] = messages_mod
 
 from yolostudio_agent.agent.client.context_builder import ContextBuilder
+from yolostudio_agent.agent.client.cached_tool_reply_service import CACHED_TOOL_SNAPSHOT_PREFIX
+from yolostudio_agent.agent.client.dataset_fact_service import DATASET_FACT_SNAPSHOT_PREFIX
 from yolostudio_agent.agent.client.event_retriever import MemoryDigest
 from yolostudio_agent.agent.client.session_state import SessionState
 
@@ -73,6 +75,7 @@ def _scenario_compact_populated_summary() -> None:
     state.active_training.model = 'yolov8n.pt'
     state.active_training.active_loop_id = 'loop-1'
     state.active_training.last_status = {'run_state': 'running'}
+    state.active_training.recent_runs = [{'run_id': 'run-a', 'run_state': 'completed'}]
     state.active_prediction.realtime_session_id = 'rt-1'
     state.active_prediction.last_realtime_status = {'status': 'running'}
     state.active_knowledge.last_analysis = {'summary': 'ok'}
@@ -105,6 +108,22 @@ def _scenario_compact_populated_summary() -> None:
     assert 'default_model: demo-model' in summary
     assert '历史摘要:' in summary
     assert '- 最近调用过的工具: check_training_status' in summary
+
+    messages = builder.build_messages(state, [])
+    assert len(messages) >= 3
+    snapshot_message = next(
+        (message for message in messages if getattr(message, 'content', '').startswith(DATASET_FACT_SNAPSHOT_PREFIX)),
+        None,
+    )
+    assert snapshot_message is not None, messages
+    assert 'epidural' in snapshot_message.content
+    assert 'subdural' in snapshot_message.content
+    cached_snapshot_message = next(
+        (message for message in messages if getattr(message, 'content', '').startswith(CACHED_TOOL_SNAPSHOT_PREFIX)),
+        None,
+    )
+    assert cached_snapshot_message is not None, messages
+    assert 'list_training_runs' in cached_snapshot_message.content
 
 
 def main() -> None:

@@ -96,3 +96,51 @@ def test_readiness_only_query_does_not_capture_explicit_train_command() -> None:
     )
     assert knowledge_policy.readiness_only_query is True
     assert command_policy.readiness_only_query is False
+
+
+def test_training_history_reference_does_not_force_new_training() -> None:
+    policy = build_train_predict_guard_policy(
+        user_text='那个最佳训练详细一点呢？',
+        normalized_text='那个最佳训练详细一点呢？'.lower(),
+        wants_train=True,
+        wants_predict=False,
+        no_train=False,
+        wants_readiness=False,
+        training_command_like=False,
+        wants_training_run_compare=False,
+        wants_best_training_run=False,
+        blocks_training_start_signals=(),
+    )
+    assert policy.wants_train is False
+
+
+def test_training_status_reference_does_not_force_new_training() -> None:
+    policy = build_train_predict_guard_policy(
+        user_text='现在是什么情况了？我需要详细一点的训练信息',
+        normalized_text='现在是什么情况了？我需要详细一点的训练信息'.lower(),
+        wants_train=True,
+        wants_predict=False,
+        no_train=False,
+        wants_readiness=False,
+        training_command_like=False,
+        wants_training_run_compare=False,
+        wants_best_training_run=False,
+        blocks_training_start_signals=(),
+    )
+    assert policy.wants_train is False
+
+
+def test_training_loop_reference_does_not_force_new_training() -> None:
+    policy = build_train_predict_guard_policy(
+        user_text='把刚才那些环训练再概括一下',
+        normalized_text='把刚才那些环训练再概括一下'.lower(),
+        wants_train=True,
+        wants_predict=False,
+        no_train=False,
+        wants_readiness=False,
+        training_command_like=False,
+        wants_training_run_compare=False,
+        wants_best_training_run=False,
+        blocks_training_start_signals=(),
+    )
+    assert policy.wants_train is False

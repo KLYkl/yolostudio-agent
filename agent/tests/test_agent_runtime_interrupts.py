@@ -162,12 +162,37 @@ except Exception:
     sys.modules['langgraph.types'] = types_mod
     sys.modules['langgraph.checkpoint.memory'] = checkpoint_mod
 
+from langchain_core.messages import AIMessage
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
 
 
 class _DummyGraph:
     def get_state(self, config):
         return None
+
+
+class _GraphState:
+    def __init__(self, *, tool_name: str, tool_args: dict[str, Any]) -> None:
+        self.next = ('tools',)
+        self.values = {
+            'messages': [
+                AIMessage(content='', tool_calls=[{'id': 'call-1', 'name': tool_name, 'args': dict(tool_args)}])
+            ]
+        }
+
+
+class _GraphWithPendingTool:
+    def __init__(self, *, tool_name: str, tool_args: dict[str, Any]) -> None:
+        self._state = _GraphState(tool_name=tool_name, tool_args=tool_args)
+        self.resume_calls: list[Any] = []
+
+    def get_state(self, config):
+        del config
+        return self._state
+
+    async def ainvoke(self, *args, **kwargs):
+        self.resume_calls.append((args, kwargs))
+        raise AssertionError('synthetic pending should not resume graph state')
 
 
 WORK = Path(__file__).resolve().parent / '_tmp_runtime_interrupts'
@@ -339,6 +364,64 @@ async def _scenario_review_approve() -> None:
     assert client.session_state.active_training.model == 'yolov8n.pt'
 
 
+async def _scenario_stale_graph_pending_is_cleared() -> None:
+    scenario_root = WORK / 'stale_graph_pending'
+    settings = AgentSettings(session_id='runtime-interrupt-stale-graph', memory_root=str(scenario_root))
+    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+    client._set_pending_confirmation(
+        'runtime-interrupt-stale-graph-turn-1',
+        {
+            'name': 'start_training',
+            'args': {'model': 'yolov8n.pt', 'data_yaml': '/data/demo/data.yaml', 'epochs': 10},
+            'id': 'call-1',
+            'source': 'graph',
+        },
+    )
+
+    result = await client.confirm('runtime-interrupt-stale-graph-turn-1', approved=True)
+    assert result['status'] == 'error', result
+    assert client.session_state.pending_confirmation.tool_name == ''
+    assert client.get_pending_action() is None
+
+
+async def _scenario_synthetic_pending_ignores_graph_pending() -> None:
+    scenario_root = WORK / 'synthetic_ignores_graph'
+    settings = AgentSettings(session_id='runtime-interrupt-synthetic-graph', memory_root=str(scenario_root))
+    graph = _GraphWithPendingTool(
+        tool_name='split_dataset',
+        tool_args={'dataset_root': '/data/demo', 'train_ratio': 0.8},
+    )
+    client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((tool_name, dict(kwargs)))
+        result = {
+            'ok': True,
+            'summary': '环训练已启动',
+            'loop_id': 'loop-123',
+            'status': 'queued',
+        }
+        client._apply_to_state(tool_name, result, kwargs)
+        return result
+
+    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+    client._set_pending_confirmation(
+        'runtime-interrupt-synthetic-graph-turn-1',
+        {
+            'name': 'start_training_loop',
+            'args': {'model': 'yolov8n.pt', 'data_yaml': '/data/loop/data.yaml', 'max_rounds': 2},
+            'id': None,
+            'synthetic': True,
+        },
+    )
+
+    result = await client.confirm('runtime-interrupt-synthetic-graph-turn-1', approved=True)
+    assert result['status'] == 'completed', result
+    assert calls == [('start_training_loop', {'model': 'yolov8n.pt', 'data_yaml': '/data/loop/data.yaml', 'max_rounds': 2})], calls
+    assert graph.resume_calls == [], graph.resume_calls
+
+
 async def _run() -> None:
     shutil.rmtree(WORK, ignore_errors=True)
     WORK.mkdir(parents=True, exist_ok=True)
@@ -348,6 +431,8 @@ async def _run() -> None:
         await _scenario_review_clarify_keeps_pending()
         await _scenario_review_edit_keeps_pending()
         await _scenario_review_approve()
+        await _scenario_stale_graph_pending_is_cleared()
+        await _scenario_synthetic_pending_ignores_graph_pending()
         print('agent runtime interrupts ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)

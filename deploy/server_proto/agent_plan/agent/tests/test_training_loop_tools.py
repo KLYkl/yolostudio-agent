@@ -42,6 +42,13 @@ def main() -> None:
         assert started['ok'] is True
         assert started['loop_id'] == 'loop-123'
         assert started['received']['epochs'] == training_loop_tools._DEFAULT_LOOP_EPOCHS
+        coerced = training_loop_tools.start_training_loop(
+            model='yolov8n.pt',
+            data_yaml='data.yaml',
+            allowed_tuning_params='先只允许 batch 和 imgsz，其他别动',
+        )
+        assert coerced['ok'] is True
+        assert coerced['received']['allowed_tuning_params'] == ['batch', 'imgsz'], coerced
         checked = training_loop_tools.check_training_loop_status('loop-123')
         assert checked['ok'] is True
         assert checked['status'] == 'running_round'

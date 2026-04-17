@@ -174,6 +174,8 @@ class PredictService:
         total = int(snapshot.get('total_images') or 0)
         detected = int(snapshot.get('detected_images') or 0)
         empty = int(snapshot.get('empty_images') or 0)
+        if status in {'queued', 'starting'}:
+            return f'后台图片预测正在启动: 已排队处理 {total} 张图片, 当前已完成 {processed} 张'
         if status == 'running':
             return f'后台图片预测运行中: 已处理 {processed}/{total} 张图片, 有检测 {detected}, 无检测 {empty}'
         if status == 'stopping':
@@ -328,17 +330,6 @@ class PredictService:
                     'next_actions': ['先执行 check_image_prediction_status / stop_image_prediction，再启动新的后台图片预测'],
                 }
 
-        try:
-            predictor = self._load_model(model)
-        except Exception as exc:
-            return {
-                'ok': False,
-                'error': f'加载预测模型失败: {exc}',
-                'error_type': exc.__class__.__name__,
-                'summary': '后台图片预测未启动：模型加载失败',
-                'next_actions': ['请确认模型路径是否正确，且当前环境已安装 ultralytics'],
-            }
-
         source = prepared['source']
         image_paths = list(prepared['image_paths'])
         session_id = f'image-predict-{uuid.uuid4().hex[:8]}'
@@ -348,8 +339,8 @@ class PredictService:
             'source_path': str(source.resolve()),
             'model': model,
             'running': True,
-            'status': 'running',
-            'run_state': 'running',
+            'status': 'starting',
+            'run_state': 'starting',
             'started_at': time.time(),
             'ended_at': None,
             'total_images': len(image_paths),
@@ -365,7 +356,6 @@ class PredictService:
             'error': '',
             'stop_event': threading.Event(),
             'thread': None,
-            'predictor': predictor,
             'image_paths': image_paths,
             'source': source,
             'conf': conf,
@@ -394,7 +384,7 @@ class PredictService:
             'summary': f'图片目录较大，已转为后台预测会话：共 {snapshot["total_images"]} 张图片（session_id={session_id}）',
             'prediction_session_overview': {
                 'session_id': session_id,
-                'status': 'running',
+                'status': 'starting',
                 'total_images': snapshot['total_images'],
                 'processed_images': 0,
             },
@@ -471,6 +461,9 @@ class PredictService:
             session['last_image_path'] = str(payload.get('last_image_path') or '')
 
         try:
+            session['predictor'] = self._load_model(str(session.get('model') or ''))
+            session['status'] = 'running'
+            session['run_state'] = 'running'
             result = predict_images_batch(
                 session['predictor'],
                 image_paths=list(session['image_paths']),

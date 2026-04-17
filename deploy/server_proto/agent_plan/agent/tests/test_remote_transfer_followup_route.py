@@ -162,6 +162,8 @@ except Exception:
     sys.modules['langgraph.checkpoint.memory'] = checkpoint_mod
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from yolostudio_agent.agent.client.cached_tool_reply_service import build_cached_tool_snapshot_message
+from yolostudio_agent.agent.tests._post_model_hook_support import HookedToolCallGraph
 
 
 class _DummyGraph:
@@ -223,16 +225,16 @@ async def _run() -> None:
         }
         client._apply_to_state('upload_assets_to_remote', upload_result, {'server': 'yolostudio', 'remote_root': '/tmp/agent_stage'})
 
-        def _planner_reply(messages):
-            text = '\n'.join(str(getattr(message, 'content', message)) for message in messages)
-            if '远端传输跟进路由器' in text:
-                return '{"action":"upload","reason":"用户在追问远端传输详情"}'
-            return '远端上传完成，当前远端目录是 /tmp/agent_stage，本次共上传 2 个本地项。'
-
-        client.planner_llm = _FakePlannerLlm(_planner_reply)  # type: ignore[assignment]
-
-        routed = await client._try_handle_mainline_intent('现在远端传输情况怎么样？我需要详细一点的信息', 'thread-1')
-        assert routed is not None, routed
+        snapshot = build_cached_tool_snapshot_message(client.session_state)
+        assert snapshot is not None
+        client.planner_llm = _FakePlannerLlm('远端上传完成，当前远端目录是 /tmp/agent_stage，本次共上传 2 个本地项。')  # type: ignore[assignment]
+        client.graph = HookedToolCallGraph(
+            planner_llm=client.planner_llm,
+            tool_name='upload_assets_to_remote',
+            snapshot_messages=[snapshot],
+        )
+        assert await client._try_handle_mainline_intent('现在远端传输情况怎么样？我需要详细一点的信息', 'thread-1') is None
+        routed = await client.chat('现在远端传输情况怎么样？我需要详细一点的信息')
         assert routed['status'] == 'completed', routed
         assert '/tmp/agent_stage' in routed['message'], routed
         assert '2' in routed['message'], routed

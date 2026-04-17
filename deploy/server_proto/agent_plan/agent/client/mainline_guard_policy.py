@@ -147,6 +147,60 @@ def has_explicit_extract_or_scan_intent(user_text: str, normalized_text: str) ->
     )
 
 
+def has_training_reference_only(user_text: str, normalized_text: str) -> bool:
+    text = str(user_text or '')
+    normalized = str(normalized_text or '')
+    return any(
+        token in text or token in normalized
+        for token in (
+            '最佳训练',
+            '最好的训练',
+            '训练记录',
+            '训练历史',
+            '训练对比',
+            '环训练',
+            '训练状态',
+            '训练进度',
+            '训练情况',
+            '训练详情',
+            '训练信息',
+            '训练结果',
+            '当前训练',
+            '刚才训练',
+            '上次训练',
+            'best run',
+            'training history',
+            'training status',
+            'training details',
+            'training result',
+            'loop training',
+        )
+    )
+
+
+def has_explicit_training_start_intent(user_text: str, normalized_text: str) -> bool:
+    text = str(user_text or '')
+    normalized = str(normalized_text or '')
+    return any(
+        token in text or token in normalized
+        for token in (
+            '开始训练',
+            '启动训练',
+            '直接训练',
+            '直接开训',
+            '训练这个数据',
+            '用这个数据训练',
+            '继续训练',
+            '恢复训练',
+            '重新训练',
+            '开训',
+            'start training',
+            'resume training',
+            'retrain',
+        )
+    )
+
+
 def build_train_predict_guard_policy(
     *,
     user_text: str,
@@ -207,6 +261,16 @@ def build_train_predict_guard_policy(
         )
     )
     if suppress_contextual_train_for_extract:
+        wants_train = False
+
+    suppress_contextual_train_for_followup = (
+        wants_train
+        and not wants_predict
+        and not training_command_like
+        and has_training_reference_only(text, normalized)
+        and not has_explicit_training_start_intent(text, normalized)
+    )
+    if suppress_contextual_train_for_followup:
         wants_train = False
 
     wants_segmentation_training = wants_train and any(

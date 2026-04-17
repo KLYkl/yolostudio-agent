@@ -162,6 +162,8 @@ except Exception:
     sys.modules['langgraph.checkpoint.memory'] = checkpoint_mod
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from yolostudio_agent.agent.client.cached_tool_reply_service import build_cached_tool_snapshot_message
+from yolostudio_agent.agent.tests._post_model_hook_support import HookedToolCallGraph
 
 
 class _DummyGraph:
@@ -239,18 +241,19 @@ async def _run() -> None:
             'final_run_state': 'completed',
         }
 
-        def _planner_reply(messages):
-            text = '\n'.join(str(getattr(message, 'content', message)) for message in messages)
-            if '远端闭环跟进路由器' in text:
-                return '{"action":"training_pipeline","reason":"用户在追问远端训练闭环结果"}'
-            if '组合结果说明器' in text:
-                return '远端训练闭环已经完成，训练结果目录在 /tmp/remote_train/runs/data-yolov8n，结果也已回传到 /local/results。'
-            return '远端训练闭环已经完成。'
+        snapshot = build_cached_tool_snapshot_message(client.session_state)
+        assert snapshot is not None
+        client.planner_llm = _FakePlannerLlm(
+            '远端训练闭环已经完成，训练结果目录在 /tmp/remote_train/runs/data-yolov8n，结果也已回传到 /local/results。'
+        )  # type: ignore[assignment]
+        client.graph = HookedToolCallGraph(
+            planner_llm=client.planner_llm,
+            tool_name='remote_training_pipeline',
+            snapshot_messages=[snapshot],
+        )
 
-        client.planner_llm = _FakePlannerLlm(_planner_reply)  # type: ignore[assignment]
-
-        routed = await client._try_handle_mainline_intent('远端那边现在是什么情况了？我需要详细一点的结果', 'thread-1')
-        assert routed is not None, routed
+        assert await client._try_handle_mainline_intent('远端那边现在是什么情况了？我需要详细一点的结果', 'thread-1') is None
+        routed = await client.chat('远端那边现在是什么情况了？我需要详细一点的结果')
         assert routed['status'] == 'completed', routed
         assert '/tmp/remote_train/runs/data-yolov8n' in routed['message'], routed
         assert '/local/results' in routed['message'], routed

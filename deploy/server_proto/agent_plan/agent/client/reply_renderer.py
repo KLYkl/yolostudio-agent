@@ -740,6 +740,20 @@ async def render_tool_result_message(
             build_grounded_tool_reply=build_grounded_tool_reply,
         )
 
+    grounded_fast_tools = {
+        'predict_images',
+        'predict_videos',
+        'start_image_prediction',
+        'check_image_prediction_status',
+        'stop_image_prediction',
+    }
+    if canonical_tool_name(tool_name) in grounded_fast_tools:
+        return fallback_tool_result_text(
+            tool_name,
+            parsed,
+            build_grounded_tool_reply=build_grounded_tool_reply,
+        )
+
     facts = tool_result_user_facts(tool_name, parsed)
     messages = [
         SystemMessage(

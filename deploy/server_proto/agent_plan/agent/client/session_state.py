@@ -120,6 +120,7 @@ class PendingConfirmation:
     thread_id: str = ""
     tool_name: str = ""
     tool_args: dict[str, Any] = field(default_factory=dict)
+    source: str = "synthetic"
     interrupt_kind: str = "tool_approval"
     objective: str = ""
     summary: str = ""

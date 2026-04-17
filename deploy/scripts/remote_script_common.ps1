@@ -120,7 +120,8 @@ function Invoke-RemoteSsh {
         [string]$BashExe = ""
     )
 
-    Invoke-NativeChecked -Exe $SshExe -Args @("-n", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", $Server, $Command) -BashExe $BashExe
+    $NormalizedCommand = $Command -replace "`r", ""
+    Invoke-NativeChecked -Exe $SshExe -Args @("-n", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", $Server, $NormalizedCommand) -BashExe $BashExe
 }
 
 
@@ -136,7 +137,8 @@ function Invoke-RemoteSshCapture {
         [string]$BashExe = ""
     )
 
-    return Invoke-NativeCapture -Exe $SshExe -Args @("-n", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", $Server, $Command) -BashExe $BashExe
+    $NormalizedCommand = $Command -replace "`r", ""
+    return Invoke-NativeCapture -Exe $SshExe -Args @("-n", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", $Server, $NormalizedCommand) -BashExe $BashExe
 }
 
 

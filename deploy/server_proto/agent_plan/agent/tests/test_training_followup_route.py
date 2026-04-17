@@ -145,8 +145,12 @@ def _install_fake_test_dependencies() -> None:
 
 _install_fake_test_dependencies()
 
-from langchain_core.messages import AIMessage
+import json
+
+from langchain_core.messages import AIMessage, ToolMessage
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from yolostudio_agent.agent.client.cached_tool_reply_service import build_cached_tool_snapshot_message
+from yolostudio_agent.agent.tests._post_model_hook_support import HookedToolCallGraph
 
 
 class _NoLLMGraph:
@@ -168,6 +172,93 @@ class _StaticReplyGraph:
         del config
         messages = list(payload['messages'])
         return {'messages': messages + [AIMessage(content=self.reply)]}
+
+
+class _ObservedToolGraph:
+    def __init__(self, tool_name: str) -> None:
+        self._tool_name = tool_name
+        self.client: YoloStudioAgentClient | None = None
+
+    def bind(self, client: YoloStudioAgentClient) -> None:
+        self.client = client
+
+    def get_state(self, config):
+        del config
+        return None
+
+    async def ainvoke(self, payload, config=None):
+        del config
+        assert self.client is not None
+        messages = list(payload['messages'])
+        result = await self.client.direct_tool(self._tool_name)
+        reply = await self.client._render_tool_result_message(self._tool_name, result)
+        if not reply:
+            reply = str(result.get('summary') or result.get('error') or '操作已完成')
+        tool_call = {'id': 'tc-1', 'name': self._tool_name, 'args': {}}
+        return {
+            'messages': messages + [
+                AIMessage(content='', tool_calls=[tool_call]),
+                ToolMessage(content=json.dumps(result, ensure_ascii=False), name=self._tool_name, tool_call_id='tc-1'),
+                AIMessage(content=reply),
+            ]
+        }
+
+
+class _TrainingNextStepGraph:
+    def __init__(self) -> None:
+        self.client: YoloStudioAgentClient | None = None
+
+    def bind(self, client: YoloStudioAgentClient) -> None:
+        self.client = client
+
+    def get_state(self, config):
+        del config
+        return None
+
+    async def ainvoke(self, payload, config=None):
+        del config
+        assert self.client is not None
+        messages = list(payload['messages'])
+        summary_result = await self.client.direct_tool('summarize_training_run')
+        recommendation_result = await self.client.direct_tool(
+            'recommend_next_training_step',
+            readiness=self.client.session_state.active_dataset.last_readiness,
+            health=self.client.session_state.active_dataset.last_health_check,
+            status=summary_result,
+            comparison=self.client.session_state.active_training.last_run_comparison,
+            prediction_summary=self.client.session_state.active_prediction.last_result,
+            model_family='yolo',
+            task_type='detection',
+        )
+        reply = await self.client._render_multi_tool_result_message(
+            [
+                ('summarize_training_run', summary_result),
+                ('recommend_next_training_step', recommendation_result),
+            ],
+            objective='下一步训练建议说明',
+        )
+        if not reply:
+            reply = str(recommendation_result.get('summary') or summary_result.get('summary') or '下一步建议已生成')
+        first_call = {'id': 'tc-1', 'name': 'summarize_training_run', 'args': {}}
+        second_args = {
+            'readiness': self.client.session_state.active_dataset.last_readiness,
+            'health': self.client.session_state.active_dataset.last_health_check,
+            'status': summary_result,
+            'comparison': self.client.session_state.active_training.last_run_comparison,
+            'prediction_summary': self.client.session_state.active_prediction.last_result,
+            'model_family': 'yolo',
+            'task_type': 'detection',
+        }
+        second_call = {'id': 'tc-2', 'name': 'recommend_next_training_step', 'args': second_args}
+        return {
+            'messages': messages + [
+                AIMessage(content='', tool_calls=[first_call]),
+                ToolMessage(content=json.dumps(summary_result, ensure_ascii=False), name='summarize_training_run', tool_call_id='tc-1'),
+                AIMessage(content='', tool_calls=[second_call]),
+                ToolMessage(content=json.dumps(recommendation_result, ensure_ascii=False), name='recommend_next_training_step', tool_call_id='tc-2'),
+                AIMessage(content=reply),
+            ]
+        }
 
 
 class _FakePlannerResponse:
@@ -233,6 +324,9 @@ async def _scenario_status_followup_routes() -> None:
 
     client.planner_llm = _FakePlannerLlm(_planner_reply)  # type: ignore[assignment]
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+    graph = _ObservedToolGraph('check_training_status')
+    graph.bind(client)
+    client.graph = graph
     turn = await client.chat('现在是什么情况了？我需要详细一点的训练信息')
     assert turn['status'] == 'completed', turn
     assert calls == [('check_training_status', {})], calls
@@ -281,6 +375,9 @@ async def _scenario_generic_followup_after_start_uses_training_context() -> None
 
     client.planner_llm = _FakePlannerLlm(_planner_reply)  # type: ignore[assignment]
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+    graph = _ObservedToolGraph('check_training_status')
+    graph.bind(client)
+    client.graph = graph
     turn = await client.chat('现在什么情况了？详细一点。')
     assert turn['status'] == 'completed', turn
     assert calls == [('check_training_status', {})], calls
@@ -330,6 +427,9 @@ async def _scenario_next_step_followup_routes() -> None:
 
     client.planner_llm = _FakePlannerLlm(_planner_reply)  # type: ignore[assignment]
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+    graph = _TrainingNextStepGraph()
+    graph.bind(client)
+    client.graph = graph
     turn = await client.chat('那下一步怎么优化？')
     assert turn['status'] == 'completed', turn
     assert [name for name, _ in calls] == ['summarize_training_run', 'recommend_next_training_step'], calls
@@ -362,6 +462,11 @@ async def _scenario_cached_next_step_followup_reuses_state() -> None:
         raise AssertionError(f'cached training followup should not call direct tool: {tool_name}')
 
     client.planner_llm = _FakePlannerLlm(_planner_reply)  # type: ignore[assignment]
+    client.graph = HookedToolCallGraph(
+        planner_llm=client.planner_llm,
+        tool_name='recommend_next_training_step',
+        snapshot_messages=[build_cached_tool_snapshot_message(client.session_state) or ''],
+    )
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
     turn = await client.chat('那下一步怎么优化得更具体一点？')
     assert turn['status'] == 'completed', turn
@@ -415,6 +520,59 @@ async def _scenario_cached_explicit_status_request_reuses_state() -> None:
     assert '继续查看训练总结' in turn['message'], turn
 
 
+async def _scenario_cached_training_summary_request_reuses_state() -> None:
+    client = _make_client('training-summary-request-cached')
+    client.session_state.active_training.running = False
+    client.session_state.active_training.training_run_summary = {
+        'ok': True,
+        'summary': '训练结果汇总: 最近一次训练已完成，并且已有可分析指标。',
+        'run_state': 'completed',
+        'summary_overview': {'run_state': 'completed'},
+        'action_candidates': [{'tool': 'analyze_training_outcome', 'description': '继续分析训练结果'}],
+    }
+
+    async def _unexpected_direct_tool(*args, **kwargs):
+        raise AssertionError('training summary request should reuse cached state, not call direct_tool')
+
+    client.direct_tool = _unexpected_direct_tool  # type: ignore[assignment]
+    turn = await client.chat('数据总结')
+    assert turn['status'] == 'completed', turn
+    assert '训练结果汇总' in turn['message'], turn
+    assert 'run_state=completed' in turn['message'], turn
+
+
+async def _scenario_generic_approval_after_training_summary_routes_to_analysis() -> None:
+    client = _make_client('training-summary-approval')
+    client.session_state.active_training.running = False
+    client.session_state.active_training.training_run_summary = {
+        'ok': True,
+        'summary': '训练结果汇总: 最近一次训练已完成，并且已有可分析指标。',
+        'run_state': 'completed',
+        'summary_overview': {'run_state': 'completed'},
+        'action_candidates': [{'tool': 'analyze_training_outcome', 'description': '继续分析训练结果'}],
+    }
+    client._messages.append(AIMessage(content='训练结果汇总: 最近一次训练已完成，并且已有可分析指标。\n\n是否同意我继续分析训练结果？'))
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((tool_name, dict(kwargs)))
+        assert tool_name == 'analyze_training_outcome'
+        result = {
+            'ok': True,
+            'summary': '训练结果分析: 当前更像漏检问题。',
+            'analysis_overview': {'assessment': 'under_recall'},
+            'matched_rule_ids': ['generic_detect_under_recall'],
+        }
+        client._apply_to_state(tool_name, result, kwargs)
+        return result
+
+    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+    turn = await client.chat('可以')
+    assert turn['status'] == 'completed', turn
+    assert calls and calls[0][0] == 'analyze_training_outcome', calls
+    assert '训练结果分析' in turn['message'], turn
+
+
 async def _run() -> None:
     shutil.rmtree(WORK, ignore_errors=True)
     WORK.mkdir(parents=True, exist_ok=True)
@@ -425,6 +583,8 @@ async def _run() -> None:
         await _scenario_cached_next_step_followup_reuses_state()
         await _scenario_cached_explicit_next_step_request_reuses_state()
         await _scenario_cached_explicit_status_request_reuses_state()
+        await _scenario_cached_training_summary_request_reuses_state()
+        await _scenario_generic_approval_after_training_summary_routes_to_analysis()
         print('training followup route ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)

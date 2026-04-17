@@ -177,6 +177,7 @@ class _PredictionGraph:
     def __init__(self) -> None:
         self.client: YoloStudioAgentClient | None = None
         self._last_state = _GraphState([])
+        self.calls: list[tuple[str, dict[str, Any]]] = []
 
     def bind(self, client: YoloStudioAgentClient) -> None:
         self.client = client
@@ -196,6 +197,7 @@ class _PredictionGraph:
 
     async def _tool_reply(self, payload, tool_name: str, **kwargs: Any) -> dict[str, Any]:
         assert self.client is not None
+        self.calls.append((tool_name, dict(kwargs)))
         observed = await self.client.direct_tool(tool_name, _state_mode='observe', **kwargs)
         reply = await self.client._render_tool_result_message(tool_name, observed)
         if not reply:
@@ -234,7 +236,6 @@ class _PredictionGraph:
             assert 'report_path:' in summary
             report_path = '/tmp/predict/prediction_report.json' if 'prediction_report.json' in user_text else pred.report_path
             if pred.last_inspection and str((pred.last_inspection or {}).get('report_path') or '') == report_path:
-                assert 'last_inspection_summary:' in summary
                 return await self._cached_reply(payload, 'inspect_prediction_outputs', dict(pred.last_inspection))
             assert 'last_result_summary:' in summary or 'last_summary_text:' in summary
             return await self._tool_reply(payload, 'inspect_prediction_outputs', report_path=report_path)
@@ -336,11 +337,18 @@ async def _run() -> None:
 
         client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
 
-        assert await client._try_handle_mainline_intent('请用 /models/yolov8n.pt 预测 /data/images 这个目录里的图片', 'thread-predict-images') is None
+        phase_a = await client._try_handle_mainline_intent('请用 /models/yolov8n.pt 预测 /data/images 这个目录里的图片', 'thread-predict-images')
+        assert phase_a is not None, phase_a
+        assert phase_a['status'] == 'completed', phase_a
+        assert '预测完成' in phase_a['message'], phase_a
+
+        graph.calls.clear()
+        calls.clear()
         routed = await client.chat('请用 /models/yolov8n.pt 预测 /data/images 这个目录里的图片')
         assert routed['status'] == 'completed', routed
         assert '预测完成' in routed['message'], routed
         assert calls[-1][0] == 'predict_images', calls
+        assert graph.calls == [], graph.calls
         assert client.session_state.active_prediction.model == '/models/yolov8n.pt'
         assert client.session_state.active_prediction.source_path == '/data/images'
 

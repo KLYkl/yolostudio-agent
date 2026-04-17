@@ -169,6 +169,7 @@ except Exception:
     sys.modules['langgraph.types'] = types_mod
     sys.modules['langgraph.checkpoint.memory'] = checkpoint_mod
 
+from langchain_core.messages import AIMessage, ToolMessage
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
 
 DEFAULT_OUT = str(Path(__file__).with_name('test_zyb_training_mainline_agent_roundtrip_output.json'))
@@ -184,13 +185,127 @@ DEFAULT_EXTRA_POLL_LIMIT = 8
 
 
 class _DummyGraph:
-    async def ainvoke(self, payload, config=None):
-        del payload, config
-        raise AssertionError('graph should not run in zyb agent roundtrip direct-tools mode')
+    def __init__(self) -> None:
+        self.client: YoloStudioAgentClient | None = None
+
+    def bind(self, client: YoloStudioAgentClient) -> None:
+        self.client = client
 
     def get_state(self, config):
         del config
         return None
+
+    async def _single_tool_reply(self, messages: list[Any], tool_name: str, tool_args: dict[str, Any]) -> dict[str, Any]:
+        assert self.client is not None
+        result = await self.client.direct_tool(tool_name, **tool_args)
+        reply = await self.client._render_tool_result_message(tool_name, result)
+        if not reply:
+            reply = str(result.get('summary') or result.get('error') or '操作已完成')
+        tool_call = {'id': f'tc-{tool_name}', 'name': tool_name, 'args': tool_args}
+        return {
+            'messages': messages + [
+                AIMessage(content='', tool_calls=[tool_call]),
+                ToolMessage(content=json.dumps(result, ensure_ascii=False), name=tool_name, tool_call_id=tool_call['id']),
+                AIMessage(content=reply),
+            ]
+        }
+
+    async def _training_analysis_reply(self, messages: list[Any]) -> dict[str, Any]:
+        assert self.client is not None
+        summary_result = await self.client.direct_tool('summarize_training_run')
+        analysis_result = await self.client.direct_tool(
+            'analyze_training_outcome',
+            metrics=summary_result,
+            data_quality=self.client.session_state.active_dataset.last_health_check,
+            comparison=self.client.session_state.active_training.last_run_comparison,
+            prediction_summary=self.client.session_state.active_prediction.last_result,
+            model_family='yolo',
+            task_type='detection',
+        )
+        reply = await self.client._render_multi_tool_result_message(
+            [
+                ('summarize_training_run', summary_result),
+                ('analyze_training_outcome', analysis_result),
+            ],
+            objective='训练结果分析说明',
+        )
+        if not reply:
+            reply = str(analysis_result.get('summary') or summary_result.get('summary') or '训练结果分析已完成')
+        first_call = {'id': 'tc-summarize', 'name': 'summarize_training_run', 'args': {}}
+        second_args = {
+            'metrics': summary_result,
+            'data_quality': self.client.session_state.active_dataset.last_health_check,
+            'comparison': self.client.session_state.active_training.last_run_comparison,
+            'prediction_summary': self.client.session_state.active_prediction.last_result,
+            'model_family': 'yolo',
+            'task_type': 'detection',
+        }
+        second_call = {'id': 'tc-analyze', 'name': 'analyze_training_outcome', 'args': second_args}
+        return {
+            'messages': messages + [
+                AIMessage(content='', tool_calls=[first_call]),
+                ToolMessage(content=json.dumps(summary_result, ensure_ascii=False), name='summarize_training_run', tool_call_id='tc-summarize'),
+                AIMessage(content='', tool_calls=[second_call]),
+                ToolMessage(content=json.dumps(analysis_result, ensure_ascii=False), name='analyze_training_outcome', tool_call_id='tc-analyze'),
+                AIMessage(content=reply),
+            ]
+        }
+
+    async def _training_next_step_reply(self, messages: list[Any]) -> dict[str, Any]:
+        assert self.client is not None
+        summary_result = await self.client.direct_tool('summarize_training_run')
+        recommendation_result = await self.client.direct_tool(
+            'recommend_next_training_step',
+            readiness=self.client.session_state.active_dataset.last_readiness,
+            health=self.client.session_state.active_dataset.last_health_check,
+            status=summary_result,
+            comparison=self.client.session_state.active_training.last_run_comparison,
+            prediction_summary=self.client.session_state.active_prediction.last_result,
+            model_family='yolo',
+            task_type='detection',
+        )
+        reply = await self.client._render_multi_tool_result_message(
+            [
+                ('summarize_training_run', summary_result),
+                ('recommend_next_training_step', recommendation_result),
+            ],
+            objective='训练下一步建议说明',
+        )
+        if not reply:
+            reply = str(recommendation_result.get('summary') or summary_result.get('summary') or '下一步建议已生成')
+        first_call = {'id': 'tc-summarize', 'name': 'summarize_training_run', 'args': {}}
+        second_args = {
+            'readiness': self.client.session_state.active_dataset.last_readiness,
+            'health': self.client.session_state.active_dataset.last_health_check,
+            'status': summary_result,
+            'comparison': self.client.session_state.active_training.last_run_comparison,
+            'prediction_summary': self.client.session_state.active_prediction.last_result,
+            'model_family': 'yolo',
+            'task_type': 'detection',
+        }
+        second_call = {'id': 'tc-next-step', 'name': 'recommend_next_training_step', 'args': second_args}
+        return {
+            'messages': messages + [
+                AIMessage(content='', tool_calls=[first_call]),
+                ToolMessage(content=json.dumps(summary_result, ensure_ascii=False), name='summarize_training_run', tool_call_id='tc-summarize'),
+                AIMessage(content='', tool_calls=[second_call]),
+                ToolMessage(content=json.dumps(recommendation_result, ensure_ascii=False), name='recommend_next_training_step', tool_call_id='tc-next-step'),
+                AIMessage(content=reply),
+            ]
+        }
+
+    async def ainvoke(self, payload, config=None):
+        del config
+        assert self.client is not None
+        messages = list(payload['messages'])
+        user_text = str(getattr(messages[-1], 'content', ''))
+        if '这次训练效果怎么样' in user_text or '训练效果怎么样' in user_text:
+            return await self._training_analysis_reply(messages)
+        if '下一步先补数据还是调参数' in user_text or user_text.strip() in {'下一步', '下一步？'}:
+            return await self._training_next_step_reply(messages)
+        if any(token in user_text for token in ('训练停了吗', '第几轮', '现在训练到第几轮', '训练状态', '当前状态')):
+            return await self._single_tool_reply(messages, 'check_training_status', {})
+        raise AssertionError(f'unexpected graph request in zyb agent roundtrip: {user_text}')
 
 
 class _PlannerResponse:
@@ -303,8 +418,10 @@ async def main() -> None:
     else:
         tool_map = await _build_mcp_tool_map(mcp_url)
 
+    graph = _DummyGraph()
     settings = AgentSettings(session_id=f'zyb-agent-roundtrip-{int(time.time())}', memory_root=str(work_root))
-    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={}, planner_llm=_PlannerStub())
+    client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={}, planner_llm=_PlannerStub())
+    graph.bind(client)
     calls: list[dict[str, Any]] = []
 
     async def _direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:

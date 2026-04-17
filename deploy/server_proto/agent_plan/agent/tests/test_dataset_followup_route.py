@@ -164,6 +164,7 @@ except Exception:
     sys.modules['langgraph.checkpoint.memory'] = checkpoint_mod
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from yolostudio_agent.agent.client.dataset_fact_service import build_dataset_fact_followup_reply
 from langchain_core.messages import AIMessage, ToolMessage
 
 
@@ -215,6 +216,14 @@ class _DatasetGraph:
         summary = '\n'.join(str(getattr(message, 'content', message)) for message in payload['messages'][:2])
         user_text = str(getattr(payload['messages'][-1], 'content', ''))
         ds = self.client.session_state.active_dataset
+        fact_reply = build_dataset_fact_followup_reply(
+            self.client.session_state,
+            user_text=user_text,
+        )
+        if fact_reply:
+            messages = list(payload['messages']) + [AIMessage(content=fact_reply)]
+            self._last_state = _GraphState(messages)
+            return {'messages': messages}
 
         if '详细一点的数据集信息' in user_text:
             assert 'last_scan_summary:' in summary

@@ -285,6 +285,8 @@ def _training_status_snapshot(result: dict[str, Any]) -> dict[str, Any]:
         'signals',
         'facts',
         'next_actions',
+        'action_candidates',
+        'status_overview',
         'error',
     )
     snapshot['resolved_args'] = _resolved_training_args_snapshot(result.get('resolved_args') or {})
@@ -306,6 +308,9 @@ def _training_run_summary_snapshot(result: dict[str, Any]) -> dict[str, Any]:
         'minimum_facts_ready',
         'signals',
         'facts',
+        'next_actions',
+        'action_candidates',
+        'summary_overview',
     )
 
 

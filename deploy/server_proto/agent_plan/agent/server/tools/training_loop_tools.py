@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Any, Callable
 
 import yolostudio_agent.agent.server.tools.knowledge_tools as knowledge_tools
@@ -37,6 +38,29 @@ def _wrap(action: str, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> dic
         }
 
 
+def _coerce_allowed_tuning_params(value: list[str] | str | None) -> list[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, list):
+        items = [str(item).strip() for item in value if str(item).strip()]
+    else:
+        text = str(value or '').strip()
+        if not text:
+            return None
+        items = [
+            token.strip().lower()
+            for token in re.split(r'[^a-zA-Z0-9_]+', text)
+            if token.strip()
+        ]
+    supported = {'lr0', 'batch', 'imgsz', 'epochs', 'optimizer'}
+    normalized: list[str] = []
+    for item in items:
+        token = str(item or '').strip().lower()
+        if token in supported and token not in normalized:
+            normalized.append(token)
+    return normalized
+
+
 def start_training_loop(
     model: str,
     data_yaml: str = '',
@@ -65,7 +89,7 @@ def start_training_loop(
     min_improvement: float = 0.005,
     no_improvement_rounds: int = 2,
     max_failures: int = 2,
-    allowed_tuning_params: list[str] | None = None,
+    allowed_tuning_params: list[str] | str | None = None,
     auto_handle_oom: bool = True,
 ) -> dict[str, Any]:
     """启动一个服务端持久化的 Agent 环训练任务。"""
@@ -99,7 +123,7 @@ def start_training_loop(
         min_improvement=min_improvement,
         no_improvement_rounds=no_improvement_rounds,
         max_failures=max_failures,
-        allowed_tuning_params=allowed_tuning_params,
+        allowed_tuning_params=_coerce_allowed_tuning_params(allowed_tuning_params),
         auto_handle_oom=auto_handle_oom,
     )
     if result.get('ok'):

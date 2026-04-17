@@ -144,8 +144,9 @@ def _install_fake_test_dependencies() -> None:
 
 _install_fake_test_dependencies()
 
-from langchain_core.messages import AIMessage
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from yolostudio_agent.agent.client.cached_tool_reply_service import build_cached_tool_snapshot_message
+from yolostudio_agent.agent.tests._post_model_hook_support import HookedToolCallGraph
 
 
 class _NoLLMGraph:
@@ -154,20 +155,6 @@ class _NoLLMGraph:
 
     async def ainvoke(self, *args, **kwargs):
         raise AssertionError('training loop history followup should stay on routed flows, not fallback to graph')
-
-
-class _StaticReplyGraph:
-    def __init__(self, reply: str) -> None:
-        self.reply = reply
-
-    def get_state(self, config):
-        return None
-
-    async def ainvoke(self, payload, config=None):
-        del config
-        messages = list(payload['messages'])
-        messages.append(AIMessage(content=self.reply))
-        return {'messages': messages}
 
 
 class _FakePlannerResponse:
@@ -203,16 +190,17 @@ async def _scenario_loop_list_followup_routes() -> None:
 
     def _planner_reply(messages) -> str:
         text = '\n'.join(str(getattr(message, 'content', message)) for message in messages)
-        if '环训练历史跟进路由器' in text:
-            return '{"action":"list","reason":"用户在追问刚才那些环训练"}'
-        if '结果说明器' in text:
-            return '最近环训练包括 helmet-loop 和 vest-loop，其中 vest-loop 还在等待审阅。'
-        return '环训练列表已就绪。'
+        return '最近环训练包括 helmet-loop 和 vest-loop，其中 vest-loop 还在等待审阅。'
 
     async def _unexpected_direct_tool(*args, **kwargs):
         raise AssertionError('training loop history followup should render from state, not call direct_tool')
 
     client.planner_llm = _FakePlannerLlm(_planner_reply)  # type: ignore[assignment]
+    client.graph = HookedToolCallGraph(
+        planner_llm=client.planner_llm,
+        tool_name='list_training_loops',
+        snapshot_messages=[build_cached_tool_snapshot_message(client.session_state) or ''],
+    )
     client.direct_tool = _unexpected_direct_tool  # type: ignore[assignment]
     turn = await client.chat('把刚才那些环训练再概括一下')
     assert turn['status'] == 'completed', turn
@@ -247,16 +235,17 @@ async def _scenario_loop_inspect_followup_routes() -> None:
 
     def _planner_reply(messages) -> str:
         text = '\n'.join(str(getattr(message, 'content', message)) for message in messages)
-        if '环训练历史跟进路由器' in text:
-            return '{"action":"inspect","reason":"用户在追问刚才那个环训练详情"}'
-        if '结果说明器' in text:
-            return '刚才那个环训练是 vest-loop，现在停在等待审阅，建议先做误差分析。'
-        return '环训练详情已就绪。'
+        return '刚才那个环训练是 vest-loop，现在停在等待审阅，建议先做误差分析。'
 
     async def _unexpected_direct_tool(*args, **kwargs):
         raise AssertionError('training loop history followup should render from state, not call direct_tool')
 
     client.planner_llm = _FakePlannerLlm(_planner_reply)  # type: ignore[assignment]
+    client.graph = HookedToolCallGraph(
+        planner_llm=client.planner_llm,
+        tool_name='inspect_training_loop',
+        snapshot_messages=[build_cached_tool_snapshot_message(client.session_state) or ''],
+    )
     client.direct_tool = _unexpected_direct_tool  # type: ignore[assignment]
     turn = await client.chat('那个环训练详细一点呢')
     assert turn['status'] == 'completed', turn
@@ -266,22 +255,20 @@ async def _scenario_loop_inspect_followup_routes() -> None:
 
 async def _scenario_cached_loop_list_request_reuses_state() -> None:
     client = _make_client('loop-list-request-cached')
-    client.graph = _StaticReplyGraph('最近环训练包括 helmet-loop 和 vest-loop，其中 vest-loop 还在等待审阅。')
     client.session_state.active_training.recent_loops = [
         {'loop_id': 'loop-a', 'loop_name': 'helmet-loop', 'status': 'completed', 'active': False},
         {'loop_id': 'loop-b', 'loop_name': 'vest-loop', 'status': 'awaiting_review', 'active': False},
     ]
 
-    def _planner_reply(messages) -> str:
-        text = '\n'.join(str(getattr(message, 'content', message)) for message in messages)
-        if '结果说明器' in text:
-            return '最近环训练包括 helmet-loop 和 vest-loop，其中 vest-loop 还在等待审阅。'
-        return '环训练列表已就绪。'
+    client.graph = HookedToolCallGraph(
+        planner_llm=_FakePlannerLlm('最近环训练包括 helmet-loop 和 vest-loop，其中 vest-loop 还在等待审阅。'),
+        tool_name='list_training_loops',
+        snapshot_messages=[build_cached_tool_snapshot_message(client.session_state) or ''],
+    )
 
     async def _unexpected_direct_tool(*args, **kwargs):
         raise AssertionError('cached loop list request should render from state, not call direct_tool')
 
-    client.planner_llm = _FakePlannerLlm(_planner_reply)  # type: ignore[assignment]
     client.direct_tool = _unexpected_direct_tool  # type: ignore[assignment]
     assert await client._try_handle_mainline_intent('列一下环训练列表', 'thread-loop-list-request') is None
     turn = await client.chat('列一下环训练列表')
@@ -291,7 +278,6 @@ async def _scenario_cached_loop_list_request_reuses_state() -> None:
 
 async def _scenario_cached_loop_inspect_request_reuses_state() -> None:
     client = _make_client('loop-inspect-request-cached')
-    client.graph = _StaticReplyGraph('当前环训练 loop-b 正在等待审阅，建议先做误差分析。')
     client.session_state.active_training.active_loop_id = 'loop-b'
     client.session_state.active_training.last_loop_detail = {
         'ok': True,
@@ -308,16 +294,15 @@ async def _scenario_cached_loop_inspect_request_reuses_state() -> None:
         },
     }
 
-    def _planner_reply(messages) -> str:
-        text = '\n'.join(str(getattr(message, 'content', message)) for message in messages)
-        if '结果说明器' in text:
-            return '当前环训练 loop-b 正在等待审阅，建议先做误差分析。'
-        return '环训练详情已就绪。'
+    client.graph = HookedToolCallGraph(
+        planner_llm=_FakePlannerLlm('当前环训练 loop-b 正在等待审阅，建议先做误差分析。'),
+        tool_name='inspect_training_loop',
+        snapshot_messages=[build_cached_tool_snapshot_message(client.session_state) or ''],
+    )
 
     async def _unexpected_direct_tool(*args, **kwargs):
         raise AssertionError('cached inspect loop request should render from state, not call direct_tool')
 
-    client.planner_llm = _FakePlannerLlm(_planner_reply)  # type: ignore[assignment]
     client.direct_tool = _unexpected_direct_tool  # type: ignore[assignment]
     assert await client._try_handle_mainline_intent('查看当前环训练详情', 'thread-loop-inspect-request') is None
     turn = await client.chat('查看当前环训练详情')
@@ -328,7 +313,6 @@ async def _scenario_cached_loop_inspect_request_reuses_state() -> None:
 
 async def _scenario_cached_loop_status_request_reuses_state() -> None:
     client = _make_client('loop-status-request-cached')
-    client.graph = _StaticReplyGraph('第 2 轮训练已完成，准备下一轮\n继续查看当前环训练详情')
     client.session_state.active_training.last_loop_status = {
         'ok': True,
         'summary': '第 2 轮训练已完成，准备下一轮',
@@ -344,6 +328,11 @@ async def _scenario_cached_loop_status_request_reuses_state() -> None:
         },
         'action_candidates': [{'tool': 'inspect_training_loop', 'description': '继续查看当前环训练详情'}],
     }
+    client.graph = HookedToolCallGraph(
+        planner_llm=_FakePlannerLlm('第 2 轮训练已完成，准备下一轮\n继续查看当前环训练详情'),
+        tool_name='check_training_loop_status',
+        snapshot_messages=[build_cached_tool_snapshot_message(client.session_state) or ''],
+    )
 
     async def _unexpected_direct_tool(*args, **kwargs):
         raise AssertionError('cached loop status request should render from state, not call direct_tool')
