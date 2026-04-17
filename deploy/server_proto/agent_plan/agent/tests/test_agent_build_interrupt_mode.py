@@ -198,7 +198,8 @@ async def _run() -> None:
     manual_tools = captured[-1]['args'][1]  # type: ignore[index]
     manual_kwargs = captured[-1]['kwargs']  # type: ignore[index]
     assert getattr(manual_tools, 'handle_tool_errors', False) is True
-    assert manual_kwargs.get('interrupt_before') == ['tools'], manual_kwargs
+    assert 'interrupt_before' not in manual_kwargs, manual_kwargs
+    assert manual_kwargs.get('state_schema') is not None, manual_kwargs
 
     auto = await agent_client.build_agent_client(
         agent_client.AgentSettings(session_id='interrupt-auto', memory_root='agent/tests/_tmp_interrupt_auto', confirmation_mode='auto')
@@ -208,6 +209,7 @@ async def _run() -> None:
     auto_kwargs = captured[-1]['kwargs']  # type: ignore[index]
     assert getattr(auto_tools, 'handle_tool_errors', False) is True
     assert 'interrupt_before' not in auto_kwargs, auto_kwargs
+    assert auto_kwargs.get('state_schema') is not None, auto_kwargs
 
     print('agent build interrupt mode ok')
 

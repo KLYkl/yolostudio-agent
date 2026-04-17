@@ -10,20 +10,34 @@ from dataclasses import dataclass
 import inspect
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, TypedDict
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.tools import StructuredTool
+try:
+    from langchain_core.runnables.config import set_config_context
+except Exception:
+    @contextlib.contextmanager
+    def set_config_context(config: Any):
+        del config
+        yield
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from yolostudio_agent.agent.client.file_checkpointer import FileCheckpointSaver
 from langgraph.prebuilt import create_react_agent
-from langgraph.types import Command
+try:
+    from langgraph.types import Command, interrupt
+except Exception:
+    from langgraph.types import Command
+
+    def interrupt(value: Any) -> Any:
+        return value
+try:
+    from langgraph.prebuilt.tool_node import ToolRuntime as InjectedToolRuntime
+except Exception:
+    InjectedToolRuntime = Any  # type: ignore[misc,assignment]
 
 from yolostudio_agent.agent.client.context_builder import ContextBuilder
-from yolostudio_agent.agent.client.cached_tool_reply_service import resolve_cached_tool_reply
 from yolostudio_agent.agent.client.context_retention_policy import build_context_retention_decision
-from yolostudio_agent.agent.client.dataset_fact_service import (
-    build_dataset_fact_followup_reply_from_messages,
-)
 from yolostudio_agent.agent.client.event_retriever import EventRetriever
 from yolostudio_agent.agent.client.followup_router import (
     classify_training_loop_followup_action,
@@ -49,6 +63,11 @@ from yolostudio_agent.agent.client.mcp_connection import (
     load_mcp_tools_with_recovery,
 )
 from yolostudio_agent.agent.client.memory_store import MemoryStore
+from yolostudio_agent.agent.client.middleware import (
+    build_cached_reply_middleware,
+    build_fact_validation_middleware,
+    run_after_model_middlewares,
+)
 from yolostudio_agent.agent.client.mainline_guard_policy import (
     build_train_predict_guard_policy,
     compute_initial_train_predict_flags,
@@ -78,7 +97,6 @@ from yolostudio_agent.agent.client.tool_adapter import (
     stringify_tool_result_facts,
 )
 from yolostudio_agent.agent.client.tool_policy import (
-    build_manual_interrupt_nodes,
     pending_allowed_decisions,
     resolve_tool_execution_policy,
 )
@@ -191,10 +209,15 @@ class YoloStudioAgentClient:
         self._messages: list[BaseMessage] = []
         self._turn_index = 0
         self._applied_tool_call_ids: set[str] = set()
+        self._recorded_route_tool_call_ids: set[str] = set()
+        self._recorded_tool_error_signatures: set[str] = set()
+        self._pending_confirmation_shadow: dict[str, Any] | None = None
+        self._pending_review_shadow: dict[str, Any] = {}
         self.memory = MemoryStore(settings.memory_root)
         self.context_builder = ContextBuilder(SYSTEM_PROMPT)
         self.event_retriever = EventRetriever(self.memory)
         self.session_state: SessionState = self.memory.load_state(settings.session_id)
+        self._bootstrap_pending_confirmation_state()
         self._clear_stale_startup_state()
         self._sync_training_workflow_state(reason='startup_sync')
         self._sync_preferences()
@@ -245,6 +268,125 @@ class YoloStudioAgentClient:
             ),
         }
         self.memory.append_event(self.session_state.session_id, 'llm_runtime_config', payload)
+
+    def _record_route_ownership(
+        self,
+        route: str,
+        *,
+        thread_id: str = '',
+        tool_name: str = '',
+        tool_names: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        payload: dict[str, Any] = {
+            'route': str(route or '').strip(),
+            'turn_index': self._turn_index,
+        }
+        if thread_id:
+            payload['thread_id'] = thread_id
+        normalized_tool_name = canonical_tool_name(tool_name) if tool_name else ''
+        if normalized_tool_name:
+            payload['tool'] = normalized_tool_name
+        normalized_tool_names = [canonical_tool_name(name) for name in list(tool_names or []) if str(name).strip()]
+        normalized_tool_names = [name for name in normalized_tool_names if name]
+        if normalized_tool_names:
+            payload['tools'] = normalized_tool_names
+        if metadata:
+            payload.update({key: value for key, value in metadata.items() if value not in (None, '', [], {}, ())})
+        self.memory.append_event(self.session_state.session_id, 'route_ownership', payload)
+
+    def route_ownership_report(self, limit: int | None = None) -> list[dict[str, Any]]:
+        return self.memory.read_events_by_type(self.session_state.session_id, 'route_ownership', limit=limit)
+
+    def _record_bypass_route(self, thread_id: str, result: dict[str, Any]) -> None:
+        tool_call = dict(result.get('tool_call') or {})
+        self._record_route_ownership(
+            'graph-external-bypass',
+            thread_id=thread_id,
+            tool_name=str(tool_call.get('name') or ''),
+            metadata={
+                'status': str(result.get('status') or '').strip(),
+            },
+        )
+
+    def _record_graph_selected_tools(
+        self,
+        messages: list[BaseMessage],
+        *,
+        thread_id: str,
+        built_messages_len: int,
+    ) -> None:
+        delta_messages = messages[built_messages_len:] if built_messages_len <= len(messages) else messages
+        for message in delta_messages:
+            if not isinstance(message, AIMessage):
+                continue
+            for tool_call in getattr(message, 'tool_calls', []) or []:
+                tool_name = canonical_tool_name(tool_call.get('name') or '')
+                if not tool_name:
+                    continue
+                tool_call_id = str(tool_call.get('id') or '').strip()
+                signature = tool_call_id or json.dumps(
+                    {
+                        'tool': tool_name,
+                        'args': normalize_tool_args(tool_name, tool_call.get('args', {})),
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+                if signature in self._recorded_route_tool_call_ids:
+                    continue
+                self._recorded_route_tool_call_ids.add(signature)
+                self._record_route_ownership(
+                    'graph-selected-tool',
+                    thread_id=thread_id,
+                    tool_name=tool_name,
+                    metadata={'tool_call_id': tool_call_id},
+                )
+
+    def _record_tool_error_recovery(
+        self,
+        messages: list[BaseMessage],
+        *,
+        thread_id: str,
+        built_messages_len: int,
+    ) -> None:
+        delta_messages = messages[built_messages_len:] if built_messages_len <= len(messages) else messages
+        errors: list[dict[str, Any]] = []
+        for message in delta_messages:
+            if not isinstance(message, ToolMessage):
+                continue
+            parsed = parse_tool_message(message)
+            if parsed.get('ok', True):
+                continue
+            tool_name = canonical_tool_name(message.name or 'unknown_tool')
+            error_text = str(parsed.get('error') or parsed.get('summary') or '未知错误').strip() or '未知错误'
+            signature = json.dumps(
+                {
+                    'tool_call_id': str(message.tool_call_id or ''),
+                    'tool': tool_name,
+                    'error': error_text,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            if signature in self._recorded_tool_error_signatures:
+                continue
+            self._recorded_tool_error_signatures.add(signature)
+            errors.append(
+                {
+                    'tool': tool_name,
+                    'tool_call_id': str(message.tool_call_id or ''),
+                    'error': error_text,
+                }
+            )
+        if not errors:
+            return
+        self._record_route_ownership(
+            'tool-error-recovery',
+            thread_id=thread_id,
+            tool_names=[str(item.get('tool') or '') for item in errors],
+            metadata={'errors': errors},
+        )
 
     @staticmethod
     def _parse_gpu_compute_processes(output: str) -> list[dict[str, str]]:
@@ -554,6 +696,7 @@ class YoloStudioAgentClient:
 
         routed = await self._try_handle_mainline_intent(user_text, thread_id)
         if routed is not None:
+            self._record_bypass_route(thread_id, routed)
             self._trim_history()
             self.memory.save_state(self.session_state)
             progressed = await self._maybe_auto_progress(routed, stream_handler=stream_handler)
@@ -586,23 +729,14 @@ class YoloStudioAgentClient:
         )
         built_messages = self.context_builder.build_messages(state_for_model, self._messages, digest=digest)
         result = await self._graph_invoke({"messages": built_messages}, config=config, stream_handler=stream_handler)
-
-        while True:
-            pending = self._get_pending_tool_call(config)
-            if not pending:
-                break
-            if self._tool_requires_confirmation(pending["name"]) and not (auto_approve or self._auto_confirmation_enabled()):
-                self._set_pending_confirmation(thread_id, pending)
-                self.memory.save_state(self.session_state)
-                return self._needs_confirmation_result(thread_id, pending, await self._build_confirmation_message(pending))
-            if pending.get('adapted'):
-                return await self._execute_adapted_pending_tool(
-                    thread_id=thread_id,
-                    pending=pending,
-                    auto_progress_followups=bool(auto_approve or self._auto_confirmation_enabled()),
-                    stream_handler=stream_handler,
-                )
-            result = await self._graph_invoke(Command(resume="approved"), config=config, stream_handler=stream_handler)
+        self._record_graph_selected_tools(result["messages"], thread_id=thread_id, built_messages_len=len(built_messages))
+        self._record_tool_error_recovery(result["messages"], thread_id=thread_id, built_messages_len=len(built_messages))
+        pending = self._resolve_pending_confirmation(thread_id=thread_id, config=config)
+        if pending is not None:
+            if auto_approve or self._auto_confirmation_enabled():
+                return await self.confirm(thread_id, approved=True, stream_handler=stream_handler)
+            self.memory.save_state(self.session_state)
+            return self._needs_confirmation_result(thread_id, pending, await self._build_confirmation_message(pending))
 
         applied_results = self._apply_tool_results(result["messages"], built_messages_len=len(built_messages))
         final_text = self._compose_final_reply(result["messages"], applied_results)
@@ -678,26 +812,34 @@ class YoloStudioAgentClient:
         )
 
     async def confirm(self, thread_id: str, approved: bool, stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None) -> dict[str, Any]:
-        config = {"configurable": {"thread_id": thread_id}}
+        config = self._pending_config(thread_id)
         pending = self._resolve_pending_confirmation(thread_id=thread_id, config=config)
         if not pending:
             return {"status": "error", "message": "当前没有待确认的高风险操作。"}
         pending = dict(pending)
-        decision_context = dict(self.session_state.pending_confirmation.decision_context or {})
+        decision_context = dict((self._pending_from_state() or pending).get('decision_context') or {})
         if decision_context:
             pending['decision_context'] = decision_context
 
         if not approved:
             cancel_message = self._build_cancel_message(pending)
             self._messages.append(AIMessage(content=cancel_message))
-            self._clear_pending_confirmation()
+            if str(pending.get('source') or '').strip().lower() == 'graph':
+                self._clear_pending_confirmation(thread_id=thread_id, persist_graph=False)
+                with contextlib.suppress(Exception):
+                    await self._graph_invoke(Command(resume={'decision': 'reject'}), config=config, stream_handler=stream_handler)
+            else:
+                self._clear_pending_confirmation(thread_id=thread_id)
             self._trim_history()
             self.memory.append_event(self.session_state.session_id, "confirmation_cancelled", {"tool": pending["name"], "args": pending.get("args", {})})
             self.memory.save_state(self.session_state)
             return self._cancelled_result(pending, cancel_message)
 
         self.memory.append_event(self.session_state.session_id, "confirmation_approved", {"tool": pending["name"], "args": pending.get("args", {})})
-        self._clear_pending_confirmation()
+        self._clear_pending_confirmation(
+            thread_id=thread_id,
+            persist_graph=str(pending.get('source') or '').strip().lower() != 'graph',
+        )
 
         if pending.get('name') == 'remote_prediction_pipeline':
             return await self._execute_remote_prediction_pipeline(pending.get('args') or {})
@@ -713,19 +855,14 @@ class YoloStudioAgentClient:
                 stream_handler=stream_handler,
             )
 
-        result = await self._graph_invoke(Command(resume="approved"), config=config, stream_handler=stream_handler)
+        result = await self._graph_invoke(Command(resume={'decision': 'approve'}), config=config, stream_handler=stream_handler)
+        self._record_graph_selected_tools(result["messages"], thread_id=thread_id, built_messages_len=0)
+        self._record_tool_error_recovery(result["messages"], thread_id=thread_id, built_messages_len=0)
+        next_pending = self._resolve_pending_confirmation(thread_id=thread_id, config=config)
+        if next_pending is not None:
+            self.memory.save_state(self.session_state)
+            return self._needs_confirmation_result(thread_id, next_pending, await self._build_confirmation_message(next_pending))
         applied_results = self._apply_tool_results(result["messages"], built_messages_len=0)
-
-        while True:
-            next_pending = self._get_pending_tool_call(config)
-            if not next_pending:
-                break
-            if self._tool_requires_confirmation(next_pending["name"]):
-                self._set_pending_confirmation(thread_id, next_pending)
-                self.memory.save_state(self.session_state)
-                return self._needs_confirmation_result(thread_id, next_pending, await self._build_confirmation_message(next_pending))
-            result = await self._graph_invoke(Command(resume="approved"), config=config, stream_handler=stream_handler)
-            applied_results = self._apply_tool_results(result["messages"], built_messages_len=0)
 
         if pending.get("name") == "prepare_dataset_for_training":
             prepare_parsed = self._find_applied_tool_result(applied_results, 'prepare_dataset_for_training') or {
@@ -753,7 +890,8 @@ class YoloStudioAgentClient:
 
 
     def _pending_confirmation_thread_id(self) -> str:
-        return str(self.session_state.pending_confirmation.thread_id or '').strip() or f"{self.session_state.session_id}-pending"
+        pending = self._pending_confirmation_shadow or self._compat_pending_from_session() or {}
+        return str(pending.get('thread_id') or '').strip() or f"{self.session_state.session_id}-pending"
 
     def get_pending_action(self) -> dict[str, Any] | None:
         pending = self._resolve_pending_confirmation(thread_id=self._pending_confirmation_thread_id())
@@ -812,7 +950,24 @@ class YoloStudioAgentClient:
             'source': str(source or 'runtime_review').strip(),
             'edits': dict(edits or {}),
         }
-        self.session_state.pending_confirmation.decision_context = decision_context
+        self._pending_review_shadow = dict(decision_context)
+        current_pending = self._pending_from_state()
+        if current_pending is not None:
+            current_pending['decision_context'] = dict(decision_context)
+            self._pending_confirmation_shadow = dict(current_pending)
+            self._mirror_pending_confirmation(current_pending)
+            if str(current_pending.get('source') or '').strip().lower() != 'graph':
+                self._update_graph_pending_state(
+                    thread_id=pending_thread_id,
+                    pending=current_pending,
+                    review=decision_context,
+                )
+            else:
+                self._update_graph_pending_state(
+                    thread_id=pending_thread_id,
+                    pending=None,
+                    review=decision_context,
+                )
         self.memory.append_event(
             self.session_state.session_id,
             'pending_action_reviewed',
@@ -1026,11 +1181,11 @@ class YoloStudioAgentClient:
         facts = {
             'tool_name': str(pending.get('name') or ''),
             'tool_args': dict(pending.get('args') or {}),
-            'objective': str(pending.get('objective') or self.session_state.pending_confirmation.objective or ''),
-            'summary': str(pending.get('summary') or self.session_state.pending_confirmation.summary or ''),
-            'allowed_decisions': list(pending.get('allowed_decisions') or self.session_state.pending_confirmation.allowed_decisions or []),
-            'review_config': dict(pending.get('review_config') or self.session_state.pending_confirmation.review_config or {}),
-            'decision_context': dict(pending.get('decision_context') or self.session_state.pending_confirmation.decision_context or {}),
+            'objective': str(pending.get('objective') or ''),
+            'summary': str(pending.get('summary') or ''),
+            'allowed_decisions': list(pending.get('allowed_decisions') or []),
+            'review_config': dict(pending.get('review_config') or {}),
+            'decision_context': dict(pending.get('decision_context') or {}),
             'user_text': user_text,
         }
         messages = [
@@ -3890,6 +4045,179 @@ class YoloStudioAgentClient:
             'dataset_path': str(dataset_items[-1].get('remote_path') or ''),
         }
 
+    @staticmethod
+    def _pending_signature(pending: dict[str, Any] | None) -> str:
+        if not pending:
+            return ''
+        return json.dumps(
+            {
+                'thread_id': str(pending.get('thread_id') or '').strip(),
+                'tool': str(pending.get('name') or pending.get('tool_name') or '').strip(),
+                'args': dict(pending.get('args') or pending.get('tool_args') or {}),
+                'source': str(pending.get('source') or '').strip(),
+                'tool_call_id': str(pending.get('tool_call_id') or pending.get('id') or '').strip(),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+
+    def _compat_pending_from_session(self) -> dict[str, Any] | None:
+        pc = self.session_state.pending_confirmation
+        if not pc.tool_name:
+            return None
+        return {
+            'name': pc.tool_name,
+            'args': dict(pc.tool_args),
+            'id': None,
+            'summary': pc.summary,
+            'objective': pc.objective,
+            'allowed_decisions': list(pc.allowed_decisions),
+            'review_config': dict(pc.review_config),
+            'decision_context': dict(pc.decision_context),
+            'thread_id': pc.thread_id,
+            'source': str(pc.source or 'synthetic').strip().lower() or 'synthetic',
+        }
+
+    def _mirror_pending_confirmation(self, pending: dict[str, Any] | None) -> None:
+        pc = self.session_state.pending_confirmation
+        if not pending:
+            pc.thread_id = ""
+            pc.tool_name = ""
+            pc.tool_args = {}
+            pc.source = 'synthetic'
+            pc.interrupt_kind = 'tool_approval'
+            pc.objective = ''
+            pc.summary = ''
+            pc.allowed_decisions = ['approve', 'reject', 'edit', 'clarify']
+            pc.review_config = {}
+            pc.decision_context = {}
+            pc.created_at = ""
+            return
+        pc.thread_id = str(pending.get('thread_id') or '').strip()
+        pc.tool_name = str(pending.get('name') or pending.get('tool_name') or '').strip()
+        pc.tool_args = dict(pending.get('args') or pending.get('tool_args') or {})
+        pc.source = str(pending.get('source') or 'synthetic').strip().lower() or 'synthetic'
+        pc.interrupt_kind = str(pending.get('interrupt_kind') or 'tool_approval').strip() or 'tool_approval'
+        pc.objective = str(pending.get('objective') or '').strip()
+        pc.summary = str(pending.get('summary') or '').strip()
+        pc.allowed_decisions = list(pending.get('allowed_decisions') or ['approve', 'reject', 'edit', 'clarify'])
+        pc.review_config = dict(pending.get('review_config') or {})
+        pc.decision_context = dict(pending.get('decision_context') or {})
+        pc.created_at = str(pending.get('created_at') or utc_now()).strip()
+
+    def _bootstrap_pending_confirmation_state(self) -> None:
+        legacy_pending = self._compat_pending_from_session()
+        if not legacy_pending:
+            self._mirror_pending_confirmation(None)
+            return
+        self._pending_confirmation_shadow = dict(legacy_pending)
+        self._pending_review_shadow = dict(legacy_pending.get('decision_context') or {})
+        self._mirror_pending_confirmation(legacy_pending)
+
+    @staticmethod
+    def _pending_config(thread_id: str) -> dict[str, Any]:
+        return {"configurable": {"thread_id": thread_id}}
+
+    def _graph_state_snapshot(self, config: dict[str, Any]) -> Any | None:
+        if not hasattr(self.graph, 'get_state'):
+            return None
+        try:
+            return self.graph.get_state(config)
+        except Exception:
+            return None
+
+    def _graph_pending_review(self, config: dict[str, Any]) -> dict[str, Any]:
+        state = self._graph_state_snapshot(config)
+        values = getattr(state, 'values', {}) if state else {}
+        if isinstance(values, dict):
+            review = values.get('pending_review')
+            if isinstance(review, dict):
+                return dict(review)
+        return {}
+
+    @staticmethod
+    def _merge_pending_review_context(pending: dict[str, Any], review: dict[str, Any] | None) -> dict[str, Any]:
+        merged = dict(pending)
+        review_context = dict(review or {})
+        if review_context:
+            merged['decision_context'] = review_context
+        else:
+            merged['decision_context'] = dict(merged.get('decision_context') or {})
+        return merged
+
+    def _graph_pending_from_values(self, config: dict[str, Any]) -> dict[str, Any] | None:
+        state = self._graph_state_snapshot(config)
+        values = getattr(state, 'values', {}) if state else {}
+        if not isinstance(values, dict):
+            return None
+        pending = values.get('pending_confirmation')
+        if not isinstance(pending, dict):
+            return None
+        merged = dict(pending)
+        tool_name = canonical_tool_name(str(merged.get('name') or merged.get('tool_name') or '').strip())
+        if not tool_name:
+            return None
+        merged['name'] = tool_name
+        merged['tool_name'] = tool_name
+        merged['args'] = normalize_tool_args(tool_name, dict(merged.get('args') or merged.get('tool_args') or {}))
+        merged['tool_args'] = dict(merged['args'])
+        merged['source'] = str(merged.get('source') or 'synthetic').strip().lower() or 'synthetic'
+        return self._merge_pending_review_context(merged, self._graph_pending_review(config))
+
+    def _graph_pending_from_interrupt(self, config: dict[str, Any]) -> dict[str, Any] | None:
+        state = self._graph_state_snapshot(config)
+        if state is None:
+            return None
+        interrupts = list(getattr(state, 'interrupts', ()) or ())
+        for task in getattr(state, 'tasks', ()) or ():
+            interrupts.extend(list(getattr(task, 'interrupts', ()) or ()))
+        for item in interrupts:
+            raw_value = getattr(item, 'value', None)
+            if not isinstance(raw_value, dict):
+                continue
+            tool_name = canonical_tool_name(str(raw_value.get('name') or raw_value.get('tool_name') or '').strip())
+            if not tool_name:
+                continue
+            raw_args = dict(raw_value.get('raw_args') or raw_value.get('args') or raw_value.get('tool_args') or {})
+            merged = {
+                'id': raw_value.get('id') or raw_value.get('tool_call_id'),
+                'tool_call_id': str(raw_value.get('tool_call_id') or raw_value.get('id') or '').strip(),
+                'name': tool_name,
+                'tool_name': tool_name,
+                'args': normalize_tool_args(tool_name, dict(raw_value.get('args') or raw_value.get('tool_args') or {})),
+                'tool_args': normalize_tool_args(tool_name, dict(raw_value.get('args') or raw_value.get('tool_args') or {})),
+                'raw_name': str(raw_value.get('raw_name') or raw_value.get('name') or raw_value.get('tool_name') or '').strip(),
+                'raw_args': raw_args,
+                'adapted': bool(raw_value.get('adapted')),
+                'summary': str(raw_value.get('summary') or '').strip(),
+                'objective': str(raw_value.get('objective') or '').strip(),
+                'allowed_decisions': list(raw_value.get('allowed_decisions') or []),
+                'review_config': dict(raw_value.get('review_config') or {}),
+                'decision_context': dict(raw_value.get('decision_context') or {}),
+                'thread_id': str(raw_value.get('thread_id') or '').strip(),
+                'source': 'graph',
+                'interrupt_kind': str(raw_value.get('interrupt_kind') or 'tool_approval').strip() or 'tool_approval',
+            }
+            return self._merge_pending_review_context(merged, self._graph_pending_review(config))
+        return None
+
+    def _update_graph_pending_state(
+        self,
+        *,
+        thread_id: str,
+        pending: dict[str, Any] | None,
+        review: dict[str, Any] | None = None,
+    ) -> None:
+        if not thread_id or not hasattr(self.graph, 'update_state'):
+            return
+        update = {
+            'pending_confirmation': dict(pending) if isinstance(pending, dict) else None,
+            'pending_review': dict(review or {}),
+        }
+        try:
+            self.graph.update_state(self._pending_config(thread_id), update)
+        except Exception:
+            return
 
     def _pending_allowed_decisions(self, tool_name: str) -> list[str]:
         return pending_allowed_decisions(self._tool_policy(tool_name))
@@ -3937,72 +4265,96 @@ class YoloStudioAgentClient:
             'pending_action': payload,
         }
 
+    def _remember_pending_confirmation(
+        self,
+        pending: dict[str, Any],
+        *,
+        emit_event: bool,
+        persist_graph: bool,
+    ) -> None:
+        normalized = dict(pending)
+        normalized['thread_id'] = str(normalized.get('thread_id') or '').strip()
+        normalized['source'] = str(normalized.get('source') or 'synthetic').strip().lower() or 'synthetic'
+        previous_signature = self._pending_signature(self._pending_confirmation_shadow)
+        self._pending_confirmation_shadow = normalized
+        self._pending_review_shadow = dict(normalized.get('decision_context') or {})
+        self._mirror_pending_confirmation(normalized)
+        if persist_graph and normalized['source'] != 'graph':
+            self._update_graph_pending_state(
+                thread_id=normalized['thread_id'],
+                pending=normalized,
+                review=self._pending_review_shadow,
+            )
+        if emit_event and self._pending_signature(normalized) != previous_signature:
+            self.memory.append_event(
+                self.session_state.session_id,
+                'confirmation_requested',
+                {
+                    'tool': str(normalized.get('name') or ''),
+                    'args': dict(normalized.get('args') or {}),
+                    'thread_id': normalized['thread_id'],
+                    'summary': str(normalized.get('summary') or ''),
+                    'objective': str(normalized.get('objective') or ''),
+                    'allowed_decisions': list(normalized.get('allowed_decisions') or []),
+                    'pending_source': normalized['source'],
+                },
+            )
+        self._sync_training_workflow_state(reason='pending_set')
+
     def _set_pending_confirmation(self, thread_id: str, pending: dict[str, Any]) -> None:
         payload = self._build_pending_action_payload(pending, thread_id=thread_id)
-        pc = self.session_state.pending_confirmation
         source = str(
             pending.get('source')
             or ('synthetic' if pending.get('synthetic') else 'graph')
         ).strip().lower()
         if source not in {'graph', 'synthetic'}:
             source = 'synthetic'
-        pc.thread_id = thread_id
-        pc.tool_name = payload['tool_name']
-        pc.tool_args = payload['tool_args']
-        pc.source = source
-        pc.interrupt_kind = payload['interrupt_kind']
-        pc.objective = payload['objective']
-        pc.summary = payload['summary']
-        pc.allowed_decisions = list(payload['allowed_decisions'])
-        pc.review_config = dict(payload['review_config'])
-        pc.decision_context = dict(payload.get('decision_context') or {})
-        pc.created_at = utc_now()
-        self.memory.append_event(
-            self.session_state.session_id,
-            'confirmation_requested',
-            {
-                'tool': pc.tool_name,
-                'args': pc.tool_args,
-                'thread_id': thread_id,
-                'summary': pc.summary,
-                'objective': pc.objective,
-                'allowed_decisions': pc.allowed_decisions,
-                'pending_source': pc.source,
-            },
+        normalized = {
+            'id': pending.get('id'),
+            'tool_call_id': str(pending.get('tool_call_id') or pending.get('id') or '').strip(),
+            'name': payload['tool_name'],
+            'tool_name': payload['tool_name'],
+            'args': dict(payload['tool_args']),
+            'tool_args': dict(payload['tool_args']),
+            'summary': payload['summary'],
+            'objective': payload['objective'],
+            'allowed_decisions': list(payload['allowed_decisions']),
+            'review_config': dict(payload['review_config']),
+            'decision_context': dict(payload.get('decision_context') or {}),
+            'thread_id': thread_id,
+            'source': source,
+            'interrupt_kind': payload['interrupt_kind'],
+            'created_at': utc_now(),
+        }
+        self._remember_pending_confirmation(
+            normalized,
+            emit_event=True,
+            persist_graph=True,
         )
-        self._sync_training_workflow_state(reason='pending_set')
 
-    def _clear_pending_confirmation(self) -> None:
-        pc = self.session_state.pending_confirmation
-        pc.thread_id = ""
-        pc.tool_name = ""
-        pc.tool_args = {}
-        pc.source = 'synthetic'
-        pc.interrupt_kind = 'tool_approval'
-        pc.objective = ''
-        pc.summary = ''
-        pc.allowed_decisions = ['approve', 'reject', 'edit', 'clarify']
-        pc.review_config = {}
-        pc.decision_context = {}
-        pc.created_at = ""
+    def _clear_pending_confirmation(self, *, thread_id: str = '', persist_graph: bool = True) -> None:
+        resolved_thread_id = str(
+            thread_id
+            or (self._pending_confirmation_shadow or {}).get('thread_id')
+            or (self._compat_pending_from_session() or {}).get('thread_id')
+            or ''
+        ).strip()
+        self._pending_confirmation_shadow = None
+        self._pending_review_shadow = {}
+        self._mirror_pending_confirmation(None)
+        if persist_graph and resolved_thread_id:
+            self._update_graph_pending_state(thread_id=resolved_thread_id, pending=None, review={})
         self._sync_training_workflow_state(reason='pending_cleared')
 
     def _pending_from_state(self) -> dict[str, Any] | None:
-        pc = self.session_state.pending_confirmation
-        if not pc.tool_name:
+        if self._pending_confirmation_shadow:
+            return self._merge_pending_review_context(self._pending_confirmation_shadow, self._pending_review_shadow)
+        legacy = self._compat_pending_from_session()
+        if not legacy:
             return None
-        return {
-            'name': pc.tool_name,
-            'args': dict(pc.tool_args),
-            'id': None,
-            'summary': pc.summary,
-            'objective': pc.objective,
-            'allowed_decisions': list(pc.allowed_decisions),
-            'review_config': dict(pc.review_config),
-            'decision_context': dict(pc.decision_context),
-            'thread_id': pc.thread_id,
-            'source': str(pc.source or 'synthetic').strip().lower() or 'synthetic',
-        }
+        self._pending_confirmation_shadow = dict(legacy)
+        self._pending_review_shadow = dict(legacy.get('decision_context') or {})
+        return self._merge_pending_review_context(legacy, self._pending_review_shadow)
 
     def _resolve_pending_confirmation(
         self,
@@ -4010,28 +4362,27 @@ class YoloStudioAgentClient:
         thread_id: str = '',
         config: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        pending = self._pending_from_state()
+        shadow_pending = self._pending_from_state()
+        pending_thread_id = str(thread_id or (shadow_pending or {}).get('thread_id') or self._pending_confirmation_thread_id()).strip()
+        pending_config = config or self._pending_config(pending_thread_id)
+        graph_pending = self._graph_pending_from_values(pending_config)
+        if graph_pending is not None:
+            self._remember_pending_confirmation(graph_pending, emit_event=False, persist_graph=False)
+            return graph_pending
+        interrupt_pending = self._graph_pending_from_interrupt(pending_config)
+        if interrupt_pending is not None:
+            if pending_thread_id and not str(interrupt_pending.get('thread_id') or '').strip():
+                interrupt_pending['thread_id'] = pending_thread_id
+            self._remember_pending_confirmation(interrupt_pending, emit_event=False, persist_graph=False)
+            return interrupt_pending
+        pending = shadow_pending or self._pending_from_state()
         if not pending:
             return None
-        source = str(pending.get('source') or 'synthetic').strip().lower()
-        if source != 'graph':
-            return pending
-        pending_thread_id = str(thread_id or pending.get('thread_id') or self._pending_confirmation_thread_id()).strip()
-        pending_config = config or {"configurable": {"thread_id": pending_thread_id}}
-        graph_pending = self._get_pending_tool_call(pending_config)
-        if not graph_pending:
-            self._clear_pending_confirmation()
+        if str(pending.get('source') or 'synthetic').strip().lower() == 'graph':
+            self._clear_pending_confirmation(thread_id=pending_thread_id, persist_graph=False)
             self.memory.save_state(self.session_state)
             return None
-        merged_pending = dict(graph_pending)
-        merged_pending['thread_id'] = pending_thread_id
-        merged_pending['source'] = 'graph'
-        merged_pending['summary'] = str(pending.get('summary') or '')
-        merged_pending['objective'] = str(pending.get('objective') or '')
-        merged_pending['allowed_decisions'] = list(pending.get('allowed_decisions') or [])
-        merged_pending['review_config'] = dict(pending.get('review_config') or {})
-        merged_pending['decision_context'] = dict(pending.get('decision_context') or {})
-        return merged_pending
+        return pending
 
     def _apply_tool_results(self, messages: list[BaseMessage], built_messages_len: int) -> list[tuple[str, dict[str, Any]]]:
         delta_messages = messages[built_messages_len:] if built_messages_len <= len(messages) else messages
@@ -6365,8 +6716,103 @@ def _checkpoint_path(settings: AgentSettings) -> Path:
     safe_session = re.sub(r'[^A-Za-z0-9_.-]+', '_', settings.session_id).strip('._') or 'default'
     return Path(settings.memory_root) / 'checkpoints' / f'{safe_session}.pkl'
 
+
+try:
+    from langgraph.prebuilt.chat_agent_executor import AgentState as _LangGraphAgentState
+
+    class _AgentRuntimeGraphState(_LangGraphAgentState, total=False):
+        pending_confirmation: dict[str, Any] | None
+        pending_review: dict[str, Any] | None
+
+except Exception:
+    class _AgentRuntimeGraphState(TypedDict, total=False):
+        messages: list[Any]
+        remaining_steps: int
+        pending_confirmation: dict[str, Any] | None
+        pending_review: dict[str, Any] | None
+
+
+def _normalize_confirmation_resume_value(value: Any) -> str:
+    candidate = value
+    if isinstance(value, dict):
+        candidate = (
+            value.get('decision')
+            or value.get('type')
+            or value.get('action')
+            or value.get('resume')
+        )
+    text = str(candidate or '').strip().lower()
+    if text in {'approve', 'approved', 'accept', 'accepted', 'true', '1'}:
+        return 'approve'
+    if text in {'reject', 'rejected', 'deny', 'denied', 'ignore', 'cancel', 'false', '0'}:
+        return 'reject'
+    return text
+
+
+def _tool_response_with_pending_clear(response: Any) -> Any:
+    clear_update = {'pending_confirmation': None, 'pending_review': {}}
+    if isinstance(response, Command):
+        update = response.update
+        if isinstance(update, dict):
+            merged_update = dict(update)
+            merged_update.update(clear_update)
+            return Command(
+                graph=response.graph,
+                update=merged_update,
+                resume=response.resume,
+                goto=response.goto,
+            )
+        if isinstance(update, list):
+            return Command(
+                graph=response.graph,
+                update={'messages': list(update), **clear_update},
+                resume=response.resume,
+                goto=response.goto,
+            )
+        if update is None:
+            return Command(
+                graph=response.graph,
+                update=dict(clear_update),
+                resume=response.resume,
+                goto=response.goto,
+            )
+        return response
+    if isinstance(response, ToolMessage):
+        return Command(update={'messages': [response], **clear_update})
+    return response
+
+
+def _tool_rejection_command(*, tool_name: str, tool_call_id: str, message: str) -> Command:
+    return Command(
+        update={
+            'messages': [
+                ToolMessage(
+                    content=message,
+                    name=tool_name,
+                    tool_call_id=tool_call_id,
+                )
+            ],
+            'pending_confirmation': None,
+            'pending_review': {},
+        }
+    )
+
+
 async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudioAgentClient:
     settings = settings or AgentSettings()
+    route_event_store = MemoryStore(settings.memory_root)
+    client_holder: dict[str, YoloStudioAgentClient] = {}
+
+    def _record_post_hook_route(route: str, payload: dict[str, Any]) -> None:
+        route_event_store.append_event(
+            settings.session_id,
+            'route_ownership',
+            {
+                'route': str(route or '').strip(),
+                **dict(payload or {}),
+            },
+        )
+
     raw_tools = await load_mcp_tools_with_recovery(
         settings.mcp_url,
         client_factory=MultiServerMCPClient,
@@ -6387,20 +6833,22 @@ async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudi
     react_kwargs: dict[str, Any] = {
         'prompt': SYSTEM_PROMPT,
         'checkpointer': FileCheckpointSaver(_checkpoint_path(settings)),
-        'post_model_hook': _build_agent_post_model_hook(helper_llm),
+        'post_model_hook': _build_agent_post_model_hook(helper_llm, route_reporter=_record_post_hook_route),
+        'state_schema': _AgentRuntimeGraphState,
     }
-    if str(settings.confirmation_mode or 'manual').strip().lower() == 'manual':
-        interrupt_nodes = build_manual_interrupt_nodes(raw_tools)
-        if interrupt_nodes:
-            react_kwargs['interrupt_before'] = interrupt_nodes
-    graph_tools = _build_graph_tool_surface(tools)
+    graph_tools = _build_graph_tool_surface(
+        tools,
+        confirmation_mode=settings.confirmation_mode,
+        tool_policy_resolver=lambda tool_name: resolve_tool_execution_policy(tool_name, tool_registry={tool.name: tool for tool in raw_tools}),
+        client_getter=lambda: client_holder.get('client'),
+    )
     graph = create_react_agent(
         llm,
         graph_tools,
         **react_kwargs,
     )
     tool_registry = {tool.name: tool for tool in raw_tools}
-    return YoloStudioAgentClient(
+    client = YoloStudioAgentClient(
         graph=graph,
         settings=settings,
         tool_registry=tool_registry,
@@ -6408,14 +6856,165 @@ async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudi
         primary_llm_settings=primary_llm_settings,
         helper_llm_settings=helper_llm_settings,
     )
+    client_holder['client'] = client
+    return client
 
 
-def _build_graph_tool_surface(tools: list[Any]) -> Any:
+def _build_graph_pending_interrupt_payload(
+    request: Any,
+    client: YoloStudioAgentClient | None,
+) -> dict[str, Any]:
+    tool_call = dict(getattr(request, 'tool_call', None) or {})
+    raw_name = str(tool_call.get('name') or '').strip()
+    canonical_name = canonical_tool_name(raw_name)
+    raw_args = dict(tool_call.get('args') or {})
+    tool_args = normalize_tool_args(canonical_name, raw_args)
+    runtime = getattr(request, 'runtime', None)
+    config = getattr(runtime, 'config', {}) if runtime is not None else {}
+    thread_id = str(((config or {}).get('configurable') or {}).get('thread_id') or '').strip()
+    tool_call_id = str(tool_call.get('id') or '').strip()
+    pending = {
+        'id': tool_call_id,
+        'tool_call_id': tool_call_id,
+        'name': canonical_name,
+        'tool_name': canonical_name,
+        'args': tool_args,
+        'tool_args': dict(tool_args),
+        'raw_name': raw_name,
+        'raw_args': raw_args,
+        'adapted': raw_name != canonical_name or raw_args != tool_args,
+        'thread_id': thread_id,
+        'source': 'graph',
+        'interrupt_kind': 'tool_approval',
+    }
+    if client is not None:
+        payload = client._build_pending_action_payload(pending, thread_id=thread_id)
+    else:
+        payload = {
+            'interrupt_kind': 'tool_approval',
+            'summary': '',
+            'objective': '',
+            'allowed_decisions': ['approve', 'reject', 'edit', 'clarify'],
+            'review_config': {},
+            'decision_context': {},
+        }
+    payload = {
+        **dict(payload or {}),
+        **pending,
+        'thread_id': thread_id,
+        'source': 'graph',
+    }
+    return payload
+
+
+def _build_graph_tool_surface(
+    tools: list[Any],
+    *,
+    confirmation_mode: str,
+    tool_policy_resolver: Callable[[str], Any],
+    client_getter: Callable[[], YoloStudioAgentClient | None],
+) -> Any:
     try:
         from langgraph.prebuilt.tool_node import ToolNode
     except Exception:
         return tools
-    return ToolNode(tools, handle_tool_errors=True)
+    try:
+        from langgraph.errors import GraphBubbleUp
+        from langgraph.prebuilt.tool_node import ToolCallRequest, _handle_tool_error
+    except Exception:
+        return ToolNode(tools, handle_tool_errors=True)
+    manual_confirmation = str(confirmation_mode or 'manual').strip().lower() == 'manual'
+
+    async def _awrap_tool_call(request: Any, execute: Callable[[Any], Awaitable[Any]]) -> Any:
+        tool_call = dict(getattr(request, 'tool_call', None) or {})
+        tool_name = canonical_tool_name(str(tool_call.get('name') or '').strip())
+        policy = tool_policy_resolver(tool_name)
+        if manual_confirmation and getattr(policy, 'confirmation_required', False):
+            pending_payload = _build_graph_pending_interrupt_payload(request, client_getter())
+            runtime = getattr(request, 'runtime', None)
+            runtime_config = getattr(runtime, 'config', {}) if runtime is not None else {}
+            with set_config_context(runtime_config) as runtime_context:
+                if hasattr(runtime_context, 'run'):
+                    resume_value = runtime_context.run(interrupt, pending_payload)
+                else:
+                    resume_value = interrupt(pending_payload)
+            if _normalize_confirmation_resume_value(resume_value) != 'approve':
+                return _tool_rejection_command(
+                    tool_name=tool_name,
+                    tool_call_id=str(tool_call.get('id') or ''),
+                    message=build_pending_cancel_message(pending_payload),
+                )
+            response = await execute(request)
+            return _tool_response_with_pending_clear(response)
+        return await execute(request)
+
+    class InterruptibleToolNode(ToolNode):
+        def _run_one(self, call: Any, input_type: str, tool_runtime: Any) -> Any:
+            tool = self.tools_by_name.get(call["name"])
+            tool_request = ToolCallRequest(
+                tool_call=call,
+                tool=tool,
+                state=tool_runtime.state,
+                runtime=tool_runtime,
+            )
+            config = tool_runtime.config
+            if self._wrap_tool_call is None:
+                return self._execute_tool_sync(tool_request, input_type, config)
+
+            def execute(req: Any) -> Any:
+                return self._execute_tool_sync(req, input_type, config)
+
+            try:
+                return self._wrap_tool_call(tool_request, execute)
+            except GraphBubbleUp:
+                raise
+            except Exception as exc:
+                if not self._handle_tool_errors:
+                    raise
+                content = _handle_tool_error(exc, flag=self._handle_tool_errors)
+                return ToolMessage(
+                    content=content,
+                    name=tool_request.tool_call["name"],
+                    tool_call_id=tool_request.tool_call["id"],
+                    status="error",
+                )
+
+        async def _arun_one(self, call: Any, input_type: str, tool_runtime: Any) -> Any:
+            tool = self.tools_by_name.get(call["name"])
+            tool_request = ToolCallRequest(
+                tool_call=call,
+                tool=tool,
+                state=tool_runtime.state,
+                runtime=tool_runtime,
+            )
+            config = tool_runtime.config
+            if self._awrap_tool_call is None and self._wrap_tool_call is None:
+                return await self._execute_tool_async(tool_request, input_type, config)
+
+            async def execute(req: Any) -> Any:
+                return await self._execute_tool_async(req, input_type, config)
+
+            def _sync_execute(req: Any) -> Any:
+                return self._execute_tool_sync(req, input_type, config)
+
+            try:
+                if self._awrap_tool_call is not None:
+                    return await self._awrap_tool_call(tool_request, execute)
+                return self._wrap_tool_call(tool_request, _sync_execute)
+            except GraphBubbleUp:
+                raise
+            except Exception as exc:
+                if not self._handle_tool_errors:
+                    raise
+                content = _handle_tool_error(exc, flag=self._handle_tool_errors)
+                return ToolMessage(
+                    content=content,
+                    name=tool_request.tool_call["name"],
+                    tool_call_id=tool_request.tool_call["id"],
+                    status="error",
+                )
+
+    return InterruptibleToolNode(tools, handle_tool_errors=True, awrap_tool_call=_awrap_tool_call)
 
 
 def _message_text_static(content: Any) -> str:
@@ -6457,88 +7056,33 @@ def _replace_last_ai_message(messages: list[Any], reply: str) -> dict[str, Any]:
 
 
 def _dataset_fact_post_model_hook(state: dict[str, Any]) -> dict[str, Any]:
-    messages = list(state.get('messages') or [])
-    if not messages:
-        return {}
-    if not isinstance(messages[-1], AIMessage) or not getattr(messages[-1], 'tool_calls', None):
-        return {}
-    user_text = ''
-    for message in reversed(messages):
-        if isinstance(message, HumanMessage) and isinstance(message.content, str):
-            user_text = message.content
-            break
-    if not user_text:
-        return {}
-    requested_dataset_path = intent_parsing.extract_dataset_path_from_text(user_text)
-    reply = build_dataset_fact_followup_reply_from_messages(
-        messages,
-        user_text=user_text,
-        requested_dataset_path=requested_dataset_path,
+    middleware = build_fact_validation_middleware(
+        replace_last_ai_message=_replace_last_ai_message,
     )
-    if not reply:
-        return {}
-    return _replace_last_ai_message(messages, reply)
+    return middleware(state)
 
 
-def _build_agent_post_model_hook(planner_llm: Any) -> Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]:
-    async def _invoke_renderer_text(
-        *,
-        messages: list[Any],
-        failure_event: str = '',
-        failure_payload: dict[str, Any] | None = None,
-    ) -> str:
-        del failure_event, failure_payload
-        if planner_llm is None:
-            return ''
-        try:
-            response = await planner_llm.ainvoke(messages)
-        except Exception:
-            return ''
-        return _message_text_static(getattr(response, 'content', response)).strip()
-
-    async def _render_tool_result_message(tool_name: str, parsed: dict[str, Any]) -> str:
-        async def _render_multi_tool_result_message(
-            applied_results: list[tuple[str, dict[str, Any]]],
-            *,
-            objective: str = '',
-            extra_notes: list[str] | None = None,
-        ) -> str:
-            return await render_multi_tool_result_message_reply(
-                planner_llm=planner_llm,
-                applied_results=applied_results,
-                objective=objective,
-                extra_notes=extra_notes,
-                invoke_renderer_text=_invoke_renderer_text,
-                render_tool_result_message=_render_tool_result_message,
-                build_grounded_tool_reply=build_grounded_tool_reply,
-                merge_grounded_sections=_merge_grounded_sections_static,
-            )
-
-        return await render_tool_result_message_reply(
-            planner_llm=planner_llm,
-            tool_name=tool_name,
-            parsed=parsed,
-            render_multi_tool_result_message=_render_multi_tool_result_message,
-            invoke_renderer_text=_invoke_renderer_text,
-            build_grounded_tool_reply=build_grounded_tool_reply,
+def _build_agent_post_model_hook(
+    planner_llm: Any,
+    *,
+    route_reporter: Callable[[str, dict[str, Any]], None] | None = None,
+) -> Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]:
+    middlewares = [
+        build_fact_validation_middleware(
+            replace_last_ai_message=_replace_last_ai_message,
+            route_reporter=route_reporter,
+        ),
+        build_cached_reply_middleware(
+            planner_llm,
+            replace_last_ai_message=_replace_last_ai_message,
+            message_text=_message_text_static,
             merge_grounded_sections=_merge_grounded_sections_static,
-        )
+            route_reporter=route_reporter,
+        ),
+    ]
 
     async def _post_model_hook(state: dict[str, Any]) -> dict[str, Any]:
-        messages = list(state.get('messages') or [])
-        if not messages or not isinstance(messages[-1], AIMessage) or not getattr(messages[-1], 'tool_calls', None):
-            return {}
-        dataset_update = _dataset_fact_post_model_hook({'messages': messages})
-        if dataset_update:
-            return dataset_update
-        cached_tool_result = resolve_cached_tool_reply(messages)
-        if not cached_tool_result:
-            return {}
-        tool_name, payload = cached_tool_result
-        reply = await _render_tool_result_message(tool_name, payload)
-        if not reply:
-            return {}
-        return _replace_last_ai_message(messages, reply)
+        return await run_after_model_middlewares(state, middlewares)
 
     return _post_model_hook
 

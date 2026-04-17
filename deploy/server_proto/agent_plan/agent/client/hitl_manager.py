@@ -80,14 +80,14 @@ def build_pending_action_payload(
     return {
         'interrupt_kind': 'tool_approval',
         'decision_state': decision_state,
-        'thread_id': str(thread_id or pending.get('thread_id') or state.pending_confirmation.thread_id or '').strip(),
+        'thread_id': str(thread_id or pending.get('thread_id') or '').strip(),
         'tool_name': tool_name,
         'tool_args': args,
         'summary': str(pending.get('summary') or pending_action_summary(state, tool_name, args)).strip(),
         'objective': str(pending.get('objective') or pending_action_objective(state, tool_name, args)).strip(),
         'allowed_decisions': list(pending.get('allowed_decisions') or pending_allowed_decisions(policy)),
         'review_config': dict(pending.get('review_config') or pending_review_config(tool_name, policy)),
-        'decision_context': dict(pending.get('decision_context') or state.pending_confirmation.decision_context or {}),
+        'decision_context': dict(pending.get('decision_context') or {}),
     }
 
 

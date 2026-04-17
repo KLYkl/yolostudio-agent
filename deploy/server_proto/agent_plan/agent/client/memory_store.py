@@ -42,6 +42,12 @@ class MemoryStore:
             return rows
         return rows[-limit:]
 
+    def read_events_by_type(self, session_id: str, event_type: str, limit: int | None = None) -> list[dict[str, Any]]:
+        rows = [row for row in self.read_events(session_id) if row.get('type') == event_type]
+        if limit is None or limit >= len(rows):
+            return rows
+        return rows[-limit:]
+
     def latest_event(self, session_id: str, event_type: str, *, tool_name: str | None = None) -> dict[str, Any] | None:
         for event in reversed(self.read_events(session_id)):
             if event.get('type') != event_type:
