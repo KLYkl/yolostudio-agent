@@ -189,10 +189,7 @@ class _DummyGraph:
         plan_context = dict(payload.get('training_plan_context') or {})
         next_tool = str(plan_context.get('next_step_tool') or '').strip()
         next_args = dict(plan_context.get('next_step_args') or {})
-        is_execute_turn = any(
-            token in user_text
-            for token in ('执行', '开始吧', '就这样', '确认', '可以开始', '开训', '启动吧', '直接训练', '直接开始训练')
-        ) or str(user_text).strip().lower() in {'y', 'yes'}
+        is_execute_turn = _looks_like_training_plan_execute_turn(user_text)
         if config and next_tool and is_execute_turn:
             thread_id = str(((config or {}).get('configurable') or {}).get('thread_id') or '').strip()
             self.client._set_pending_confirmation(
@@ -234,6 +231,36 @@ class _ObservedStatusGraph:
 
 
 WORK = Path(__file__).resolve().parent / '_tmp_training_plan_dialogue'
+
+
+def _looks_like_training_plan_execute_turn(text: str) -> bool:
+    normalized = str(text or '').strip().lower()
+    if not normalized:
+        return False
+    if normalized in {'y', 'yes'}:
+        return True
+    direct_tokens = ('执行', '开始吧', '就这样', '确认', '可以开始', '开训', '启动吧', '直接训练', '直接开始训练')
+    retry_tokens = (
+        '按原计划重试',
+        '重试刚才那次训练',
+        '重试上次训练',
+        '按刚才的计划再来一次',
+        '按原计划再来一次',
+        '从最近状态继续训练',
+        '从最近状态继续',
+        '从最近状态恢复训练',
+        '恢复刚才训练',
+        '接着上次训练',
+        '恢复上次训练',
+        'resume 上次训练',
+        'resume 刚才训练',
+        'resume 另一个 run',
+        'resume run',
+        '继续另一个 run',
+    )
+    return any(token in text for token in direct_tokens + retry_tokens) or (
+        'resume' in normalized and any(token in text for token in ('上次', '刚才', '最近', '继续', '恢复', '另一个', '历史', 'run'))
+    )
 
 
 def _make_dummy_client(*, session_id: str, memory_root: Path) -> YoloStudioAgentClient:

@@ -689,6 +689,8 @@ class YoloStudioAgentClient:
             return progressed or pending_dialogue
 
         routed = await self._try_handle_mainline_intent(user_text, thread_id)
+        if routed is _DEFER_TO_GRAPH:
+            routed = None
         if routed is not None:
             self._record_bypass_route(thread_id, routed)
             self._trim_history()
@@ -2204,9 +2206,7 @@ class YoloStudioAgentClient:
                 reply = await self._render_training_plan_message(draft, pending=bool(preflight.get('ready_to_start') and not discussion_only))
                 self._messages.append(AIMessage(content=reply))
                 if preflight.get('ready_to_start') and not discussion_only:
-                    pending = {'name': 'start_training', 'args': next_args, 'id': None, 'synthetic': True}
-                    self._set_pending_confirmation(thread_id, pending)
-                    return self._needs_confirmation_result(thread_id, pending, reply)
+                    return _DEFER_TO_GRAPH
                 return {'status': 'completed', 'message': reply, 'tool_call': None}
 
             if readiness.get('preparable'):
@@ -2230,9 +2230,7 @@ class YoloStudioAgentClient:
                 self._messages.append(AIMessage(content=reply))
                 if discussion_only:
                     return {'status': 'completed', 'message': reply, 'tool_call': None}
-                pending = {'name': 'prepare_dataset_for_training', 'args': args, 'id': None, 'synthetic': True}
-                self._set_pending_confirmation(thread_id, pending)
-                return self._needs_confirmation_result(thread_id, pending, reply)
+                return _DEFER_TO_GRAPH
 
             draft = self._build_training_plan_draft(
                 user_text=user_text,
@@ -2821,6 +2819,8 @@ class YoloStudioAgentClient:
             wants_split=wants_split,
             has_explicit_realtime_target=has_explicit_realtime_target,
         )
+        if training_or_prediction_request is _DEFER_TO_GRAPH:
+            return None
         if training_or_prediction_request:
             return training_or_prediction_request
 
@@ -6591,6 +6591,8 @@ class YoloStudioAgentClient:
         self._save_training_plan_draft(revised_draft)
         force_confirmation = wants_retry_last_plan or wants_resume_recent_training
         if revised_draft.get('next_step_tool') and (pending or force_confirmation or requested_execute):
+            if not pending and (requested_execute or force_confirmation):
+                return _DEFER_TO_GRAPH
             self._set_pending_confirmation(
                 thread_id,
                 {

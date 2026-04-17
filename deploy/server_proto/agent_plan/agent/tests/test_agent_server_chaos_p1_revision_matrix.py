@@ -223,6 +223,16 @@ async def _scenario_c20_project_and_name_can_be_cleared() -> None:
     assert args.get('name') in ('', None)
 
 
+async def _scenario_c22_retry_last_plan_still_confirms_through_graph() -> None:
+    client = _fresh_client('chaos-p1-c22')
+    _install_ready_training_tools(client)
+    await client.chat('用 /data/revision 和 yolov8n.pt 训练，batch 12，先给我计划。')
+    final = await client.chat('按原计划重试一次。')
+    assert final['status'] == 'needs_confirmation', final
+    assert final['tool_call']['name'] == 'start_training'
+    assert final['tool_call']['args'].get('batch') == 12
+
+
 async def _scenario_c21_deferred_prediction_does_not_block_training_plan() -> None:
     client = _fresh_client('chaos-p1-c21')
     _install_ready_training_tools(client)
@@ -240,6 +250,7 @@ async def _run() -> None:
     await _scenario_c18_same_turn_conflict_stays_conservative()
     await _scenario_c19_resume_but_analysis_only_does_not_restart()
     await _scenario_c20_project_and_name_can_be_cleared()
+    await _scenario_c22_retry_last_plan_still_confirms_through_graph()
     await _scenario_c21_deferred_prediction_does_not_block_training_plan()
     print('agent server chaos p1 revision matrix ok')
 
