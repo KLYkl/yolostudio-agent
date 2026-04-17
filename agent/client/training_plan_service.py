@@ -18,10 +18,8 @@ RendererTextInvoker = Callable[..., Awaitable[str]]
 TrainingPlanDraftRenderer = Callable[..., str]
 DirectToolInvoker = Callable[..., Awaitable[dict[str, Any]]]
 DraftSaver = Callable[[dict[str, Any]], None]
-PendingSetter = Callable[[str, dict[str, Any]], None]
-ConfirmationMessageBuilder = Callable[[dict[str, Any]], Awaitable[str]]
-ConfirmationResultBuilder = Callable[[str, dict[str, Any], str], dict[str, Any]]
 AssistantMessageAppender = Callable[[str], None]
+GraphHandoffInvoker = Callable[[str, str], Awaitable[dict[str, Any]]]
 
 
 def build_training_loop_start_fallback_plan(
@@ -442,10 +440,8 @@ async def run_training_loop_start_orchestration(
     compact_training_loop_start_fact: LoopFactCompactor,
     build_training_loop_start_draft_fn: Callable[..., dict[str, Any]],
     save_training_plan_draft: DraftSaver,
-    set_pending_confirmation: PendingSetter,
-    build_confirmation_message: ConfirmationMessageBuilder,
-    needs_confirmation_result: ConfirmationResultBuilder,
     append_ai_message: AssistantMessageAppender,
+    handoff_to_graph: GraphHandoffInvoker,
 ) -> dict[str, Any]:
     observed: dict[str, dict[str, Any]] = dict(observed_tools or {})
     if not str(loop_args.get('model') or '').strip():
@@ -500,16 +496,7 @@ async def run_training_loop_start_orchestration(
             plan=plan,
         )
         save_training_plan_draft(draft)
-        pending = {
-            'name': next_tool_name,
-            'args': next_tool_args,
-            'id': None,
-            'synthetic': True,
-        }
-        set_pending_confirmation(thread_id, pending)
-        reply = await build_confirmation_message(pending)
-        append_ai_message(reply)
-        return needs_confirmation_result(thread_id, pending, reply)
+        return await handoff_to_graph(thread_id, user_text)
 
     reply = '当前还不能稳定规划循环训练启动步骤：内部编排步数已达到上限。请换一种方式说明需求，或直接给出可训练的 data.yaml。'
     append_ai_message(reply)

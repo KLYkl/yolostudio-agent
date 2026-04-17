@@ -174,15 +174,48 @@ class _DummyGraph:
 
 class _ScriptedGraph:
     def __init__(self, script) -> None:
+        self.client: YoloStudioAgentClient | None = None
         self.script = script
         self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def bind(self, client: YoloStudioAgentClient) -> None:
+        self.client = client
 
     def get_state(self, config):
         return None
 
     async def ainvoke(self, payload, config=None):
-        del config
         messages = list(payload['messages'])
+        user_text = ''
+        for message in reversed(messages):
+            if 'HumanMessage' not in message.__class__.__name__:
+                continue
+            content = getattr(message, 'content', '')
+            if isinstance(content, str) and content:
+                user_text = content
+                break
+        plan_context = dict(payload.get('training_plan_context') or {})
+        next_tool = str(plan_context.get('next_step_tool') or '').strip()
+        next_args = dict(plan_context.get('next_step_args') or {})
+        execution_mode = str(plan_context.get('execution_mode') or '').strip().lower()
+        reasoning_summary = str(plan_context.get('reasoning_summary') or '').strip()
+        loop_request_tokens = ('环训练', '循环训练', '循环训', 'loop training', 'training loop', '自动复训', '自动续训')
+        is_loop_plan_handoff = (
+            next_tool in {'prepare_dataset_for_training', 'start_training_loop'}
+            and any(token in user_text or token in str(user_text).lower() for token in loop_request_tokens)
+        )
+        is_post_prepare_loop_handoff = (
+            next_tool == 'start_training_loop'
+            and execution_mode == 'prepare_then_loop'
+            and '下一步进入循环训练' in reasoning_summary
+        )
+        if self.client is not None and config and next_tool and (is_loop_plan_handoff or is_post_prepare_loop_handoff):
+            thread_id = str(((config or {}).get('configurable') or {}).get('thread_id') or '').strip()
+            self.client._set_pending_confirmation(
+                thread_id,
+                {'name': next_tool, 'args': next_args, 'id': None, 'synthetic': True},
+            )
+            return {'messages': messages + [AIMessage(content='按训练草案进入确认。')]}
         tool_name, args, result, final_text = self.script(messages)
         self.calls.append((tool_name, dict(args)))
         tool_call_id = f'call-{len(self.calls)}'
@@ -248,6 +281,7 @@ async def _run() -> None:
 
         graph = _ScriptedGraph(_graph_script)
         client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
+        graph.bind(client)
         calls: list[tuple[str, dict[str, Any]]] = []
 
         async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:

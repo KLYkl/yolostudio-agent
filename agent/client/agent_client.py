@@ -4634,12 +4634,12 @@ class YoloStudioAgentClient:
             return loop_followup_result
         loop_followup = self._build_followup_training_loop_request()
         if loop_followup:
-            self._set_pending_confirmation(thread_id, loop_followup)
-            self.memory.save_state(self.session_state)
-            return self._needs_confirmation_result(
-                thread_id,
-                loop_followup,
-                await self._build_confirmation_message(loop_followup),
+            followup_thread_id = f"{thread_id}-post-prepare-loop"
+            return await self._handoff_current_runtime_to_graph(
+                thread_id=followup_thread_id,
+                user_text_hint=self._recent_user_text(),
+                auto_approve=False,
+                stream_handler=stream_handler,
             )
         if not prepare_parsed or prepare_parsed.get('ok') is False:
             return None
@@ -5367,10 +5367,12 @@ class YoloStudioAgentClient:
             compact_training_loop_start_fact=self._compact_training_loop_start_fact,
             build_training_loop_start_draft_fn=self._build_training_loop_start_draft,
             save_training_plan_draft=self._save_training_plan_draft,
-            set_pending_confirmation=self._set_pending_confirmation,
-            build_confirmation_message=self._build_confirmation_message,
-            needs_confirmation_result=self._needs_confirmation_result,
             append_ai_message=lambda reply: self._messages.append(AIMessage(content=reply)),
+            handoff_to_graph=lambda handoff_thread_id, handoff_user_text: self._handoff_current_runtime_to_graph(
+                thread_id=handoff_thread_id,
+                user_text_hint=handoff_user_text,
+                auto_approve=False,
+            ),
         )
 
     async def _continue_training_loop_start_after_prepare(
@@ -5397,7 +5399,7 @@ class YoloStudioAgentClient:
             loop_args['data_yaml'] = prepared_yaml
         return await self._run_training_loop_start_orchestration(
             user_text=user_text,
-            thread_id=thread_id,
+            thread_id=f"{thread_id}-post-prepare-loop",
             dataset_path=dataset_path,
             loop_args=loop_args,
             observed_tools={'prepare_dataset_for_training': dict(prepare_result or {})},
@@ -6204,9 +6206,11 @@ class YoloStudioAgentClient:
         )
         self._save_training_plan_draft(rebuilt_draft)
         if preflight.get('ready_to_start'):
-            pending = {'name': 'start_training', 'args': next_args, 'id': None, 'synthetic': True}
-            self._set_pending_confirmation(thread_id, pending)
-            return self._needs_confirmation_result(thread_id, pending, await self._render_training_plan_message(rebuilt_draft, pending=True))
+            return await self._handoff_current_runtime_to_graph(
+                thread_id=thread_id,
+                user_text_hint=user_text,
+                auto_approve=False,
+            )
         reply = await self._render_training_plan_message(rebuilt_draft, pending=False)
         self._messages.append(AIMessage(content=reply))
         return {'status': 'completed', 'message': reply, 'tool_call': None}
@@ -6616,24 +6620,37 @@ class YoloStudioAgentClient:
         if revised_draft.get('next_step_tool') and (pending or force_confirmation or requested_execute):
             if not pending and (requested_execute or force_confirmation):
                 return _DEFER_TO_GRAPH
-            self._set_pending_confirmation(
-                thread_id,
-                {
-                    'name': str(revised_draft.get('next_step_tool')),
-                    'args': dict(revised_draft.get('next_step_args') or {}),
-                    'id': None,
-                    'synthetic': True,
-                },
+            prior_review_context = dict((pending or {}).get('decision_context') or self._pending_review_shadow)
+            pending_thread_id = str(
+                (pending or {}).get('thread_id')
+                or self._pending_confirmation_thread_id()
+                or thread_id
+            ).strip()
+            if pending_thread_id:
+                self._clear_pending_confirmation(thread_id=pending_thread_id)
+            handoff = await self._handoff_current_runtime_to_graph(
+                thread_id=thread_id,
+                user_text_hint='请按更新后的训练草案进入确认。',
+                auto_approve=False,
             )
-            self.memory.save_state(self.session_state)
+            if handoff.get('status') != 'needs_confirmation':
+                return handoff
+            refreshed_pending = self._pending_from_state() or {}
+            if prior_review_context:
+                refreshed_pending = self._merge_pending_review_context(refreshed_pending, prior_review_context)
+                self._remember_pending_confirmation(
+                    refreshed_pending,
+                    emit_event=False,
+                    persist_graph=True,
+                )
+            confirmation_thread_id = str(
+                refreshed_pending.get('thread_id')
+                or handoff.get('thread_id')
+                or thread_id
+            ).strip()
             return self._needs_confirmation_result(
-                thread_id,
-                {
-                    'name': str(revised_draft.get('next_step_tool')),
-                    'args': dict(revised_draft.get('next_step_args') or {}),
-                    'id': None,
-                    'synthetic': True,
-                },
+                confirmation_thread_id,
+                refreshed_pending,
                 await self._render_training_plan_message(revised_draft, pending=True),
             )
         self.memory.save_state(self.session_state)

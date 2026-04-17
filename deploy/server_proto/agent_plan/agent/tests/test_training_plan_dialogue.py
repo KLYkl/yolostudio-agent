@@ -187,6 +187,7 @@ class _DummyGraph:
                 user_text = content
                 break
         plan_context = dict(payload.get('training_plan_context') or {})
+        plan_status = str(plan_context.get('status') or '').strip().lower()
         next_tool = str(plan_context.get('next_step_tool') or '').strip()
         next_args = dict(plan_context.get('next_step_args') or {})
         execution_mode = str(plan_context.get('execution_mode') or '').strip().lower()
@@ -201,6 +202,7 @@ class _DummyGraph:
             _looks_like_training_plan_execute_turn(user_text)
             or execution_mode == 'prepare_only'
             or is_post_prepare_start_handoff
+            or (plan_status == 'ready_for_confirmation' and bool(next_tool))
         )
         if config and next_tool and is_execute_turn:
             thread_id = str(((config or {}).get('configurable') or {}).get('thread_id') or '').strip()
