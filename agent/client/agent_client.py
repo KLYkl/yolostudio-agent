@@ -496,6 +496,7 @@ class YoloStudioAgentClient:
             post_prepare_followup = await self._handle_post_prepare_confirmation_followup(
                 thread_id=thread_id,
                 prepare_parsed=parsed,
+                stream_handler=stream_handler,
             )
             if post_prepare_followup is not None:
                 if auto_progress_followups and post_prepare_followup.get('status') == 'needs_confirmation':
@@ -716,43 +717,12 @@ class YoloStudioAgentClient:
             self.memory.save_state(self.session_state)
             return self._needs_confirmation_result(pending_thread_id, unresolved_pending, reply)
 
-        self._trim_history()
-        state_for_model, include_history_context = self._state_for_model(user_text)
-        digest = self.event_retriever.build_digest(
-            self.session_state.session_id,
-            state_for_model,
-            include_history_context=include_history_context,
+        return await self._handoff_current_runtime_to_graph(
+            thread_id=thread_id,
+            user_text_hint=user_text,
+            auto_approve=auto_approve,
+            stream_handler=stream_handler,
         )
-        built_messages = self.context_builder.build_messages(state_for_model, self._messages, digest=digest)
-        # Keep the prompt summary lean when history should be trimmed, but always
-        # pass the full typed runtime context into the graph so post-model cached
-        # follow-up handling does not depend on synthetic message snapshots.
-        graph_input = {
-            "messages": built_messages,
-            "cached_tool_context": build_cached_tool_context_payload(self.session_state),
-            "dataset_fact_context": build_dataset_fact_context_payload(self.session_state),
-            "training_plan_context": build_training_plan_context_payload(self.session_state),
-        }
-        result = await self._graph_invoke(graph_input, config=config, stream_handler=stream_handler)
-        self._record_graph_selected_tools(result["messages"], thread_id=thread_id, built_messages_len=len(built_messages))
-        self._record_tool_error_recovery(result["messages"], thread_id=thread_id, built_messages_len=len(built_messages))
-        pending = self._resolve_pending_confirmation(thread_id=thread_id, config=config)
-        if pending is not None:
-            if auto_approve or self._auto_confirmation_enabled():
-                return await self.confirm(thread_id, approved=True, stream_handler=stream_handler)
-            self.memory.save_state(self.session_state)
-            return self._needs_confirmation_result(thread_id, pending, await self._build_confirmation_message(pending))
-
-        applied_results = self._apply_tool_results(result["messages"], built_messages_len=len(built_messages))
-        final_text = self._compose_final_reply(result["messages"], applied_results)
-        self._messages.append(AIMessage(content=final_text))
-        self._trim_history()
-        self.memory.save_state(self.session_state)
-        return {
-            "status": "completed",
-            "message": final_text,
-            "tool_call": None,
-        }
 
     async def review_pending_action(
         self,
@@ -878,6 +848,7 @@ class YoloStudioAgentClient:
             post_prepare_followup = await self._handle_post_prepare_confirmation_followup(
                 thread_id=thread_id,
                 prepare_parsed=prepare_parsed,
+                stream_handler=stream_handler,
             )
             if post_prepare_followup is not None:
                 return post_prepare_followup
@@ -3644,16 +3615,6 @@ class YoloStudioAgentClient:
         if any(token in user_text for token in ('按默认比例', '默认比例', '先划分', '划分训练集', '划分数据集', 'split')):
             prepare_args['force_split'] = True
 
-        pending = {
-            'name': 'prepare_dataset_for_training',
-            'args': prepare_args,
-            'id': None,
-            'synthetic': True,
-            'prepare_only': True,
-        }
-        self._set_pending_confirmation(thread_id, pending)
-        reply = await self._build_confirmation_message(pending)
-        self._messages.append(AIMessage(content=reply))
         planned_training_args = self._collect_requested_training_args(
             user_text,
             data_yaml=None,
@@ -3669,7 +3630,7 @@ class YoloStudioAgentClient:
         )
         draft['execution_mode'] = 'prepare_only'
         self._save_training_plan_draft(draft)
-        return self._needs_confirmation_result(thread_id, pending, reply)
+        return _DEFER_TO_GRAPH
 
     @staticmethod
     def _extract_training_run_ids_from_text(text: str) -> list[str]:
@@ -4455,6 +4416,65 @@ class YoloStudioAgentClient:
         messages = list(values.get('messages') or [])
         return {'messages': messages}
 
+    async def _invoke_graph_from_current_runtime(
+        self,
+        *,
+        thread_id: str,
+        user_text_hint: str,
+        stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any], int]:
+        config = {"configurable": {"thread_id": thread_id}}
+        self._trim_history()
+        state_for_model, include_history_context = self._state_for_model(user_text_hint)
+        digest = self.event_retriever.build_digest(
+            self.session_state.session_id,
+            state_for_model,
+            include_history_context=include_history_context,
+        )
+        built_messages = self.context_builder.build_messages(state_for_model, self._messages, digest=digest)
+        graph_input = {
+            "messages": built_messages,
+            "cached_tool_context": build_cached_tool_context_payload(self.session_state),
+            "dataset_fact_context": build_dataset_fact_context_payload(self.session_state),
+            "training_plan_context": build_training_plan_context_payload(self.session_state),
+        }
+        result = await self._graph_invoke(graph_input, config=config, stream_handler=stream_handler)
+        built_messages_len = len(built_messages)
+        self._record_graph_selected_tools(result["messages"], thread_id=thread_id, built_messages_len=built_messages_len)
+        self._record_tool_error_recovery(result["messages"], thread_id=thread_id, built_messages_len=built_messages_len)
+        return result, config, built_messages_len
+
+    async def _handoff_current_runtime_to_graph(
+        self,
+        *,
+        thread_id: str,
+        user_text_hint: str,
+        auto_approve: bool = False,
+        stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
+    ) -> dict[str, Any]:
+        graph_result, config, built_messages_len = await self._invoke_graph_from_current_runtime(
+            thread_id=thread_id,
+            user_text_hint=user_text_hint,
+            stream_handler=stream_handler,
+        )
+        pending = self._resolve_pending_confirmation(thread_id=thread_id, config=config)
+        if pending is not None:
+            if auto_approve or self._auto_confirmation_enabled():
+                return await self.confirm(thread_id, approved=True, stream_handler=stream_handler)
+            self.memory.save_state(self.session_state)
+            return self._needs_confirmation_result(thread_id, pending, await self._build_confirmation_message(pending))
+
+        applied_results = self._apply_tool_results(graph_result["messages"], built_messages_len=built_messages_len)
+        final_text = self._compose_final_reply(graph_result["messages"], applied_results)
+        self._messages.append(AIMessage(content=final_text))
+        self._trim_history()
+        self.memory.save_state(self.session_state)
+        return {
+            "status": "completed",
+            "message": final_text,
+            "tool_call": None,
+        }
+
     def _apply_to_state(self, tool_name: str, result: dict[str, Any], tool_args: dict[str, Any] | None = None) -> None:
         apply_tool_result_to_state(self.session_state, tool_name, result, tool_args)
         self._sync_training_workflow_state(reason=f'tool:{tool_name}')
@@ -4534,6 +4554,7 @@ class YoloStudioAgentClient:
         thread_id: str,
         synthetic_followup: dict[str, Any],
         prepare_parsed: dict[str, Any],
+        stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
     ) -> dict[str, Any]:
         followup_args = dict(synthetic_followup.get('args') or {})
         preflight = await self.direct_tool(
@@ -4579,12 +4600,12 @@ class YoloStudioAgentClient:
                 "tool_call": synthetic_followup,
                 "approved": True,
             }
-        self._set_pending_confirmation(thread_id, synthetic_followup)
-        self.memory.save_state(self.session_state)
-        return self._needs_confirmation_result(
-            thread_id,
-            synthetic_followup,
-            await self._build_confirmation_message(synthetic_followup),
+        followup_thread_id = f"{thread_id}-post-prepare-start"
+        return await self._handoff_current_runtime_to_graph(
+            thread_id=followup_thread_id,
+            user_text_hint=self._recent_user_text(),
+            auto_approve=False,
+            stream_handler=stream_handler,
         )
 
     @staticmethod
@@ -4603,6 +4624,7 @@ class YoloStudioAgentClient:
         *,
         thread_id: str,
         prepare_parsed: dict[str, Any],
+        stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
     ) -> dict[str, Any] | None:
         loop_followup_result = await self._continue_training_loop_start_after_prepare(
             thread_id=thread_id,
@@ -4629,6 +4651,7 @@ class YoloStudioAgentClient:
                 thread_id=thread_id,
                 synthetic_followup=synthetic_followup,
                 prepare_parsed=prepare_parsed,
+                stream_handler=stream_handler,
             )
         return None
 

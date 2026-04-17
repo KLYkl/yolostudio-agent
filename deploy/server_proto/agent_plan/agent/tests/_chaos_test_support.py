@@ -172,7 +172,19 @@ class _NoLLMGraph:
         plan_context = dict(payload.get('training_plan_context') or {})
         next_tool = str(plan_context.get('next_step_tool') or '').strip()
         next_args = dict(plan_context.get('next_step_args') or {})
-        is_execute_turn = _looks_like_training_plan_execute_turn(user_text)
+        execution_mode = str(plan_context.get('execution_mode') or '').strip().lower()
+        reasoning_summary = str(plan_context.get('reasoning_summary') or '').strip()
+        preflight_summary = str(plan_context.get('preflight_summary') or '').strip()
+        is_post_prepare_start_handoff = (
+            next_tool == 'start_training'
+            and bool(preflight_summary)
+            and '确认后即可启动' in reasoning_summary
+        )
+        is_execute_turn = (
+            _looks_like_training_plan_execute_turn(user_text)
+            or execution_mode == 'prepare_only'
+            or is_post_prepare_start_handoff
+        )
         if self.client is not None and config and next_tool and is_execute_turn:
             thread_id = str(((config or {}).get('configurable') or {}).get('thread_id') or '').strip()
             self.client._set_pending_confirmation(

@@ -33,8 +33,13 @@ def build_confirmation_prompt(
     ds = session_state.active_dataset
     tr = session_state.active_training
     plan_draft = tr.training_plan_draft or {}
+    execution_mode = str(plan_draft.get('execution_mode') or '').strip().lower()
 
-    if plan_draft and str(plan_draft.get('next_step_tool') or '').strip() == tool_name:
+    if (
+        plan_draft
+        and execution_mode != 'prepare_only'
+        and str(plan_draft.get('next_step_tool') or '').strip() == tool_name
+    ):
         return render_training_plan_draft(plan_draft, pending=True)
 
     if tool_name == 'prepare_dataset_for_training':
@@ -255,7 +260,12 @@ async def build_confirmation_message(
     args = tool_call.get('args', {})
     tool_name = str(tool_call.get('name') or '')
     plan_draft = session_state.active_training.training_plan_draft or {}
-    if plan_draft and str(plan_draft.get('next_step_tool') or '').strip() == tool_name:
+    execution_mode = str(plan_draft.get('execution_mode') or '').strip().lower()
+    if (
+        plan_draft
+        and execution_mode != 'prepare_only'
+        and str(plan_draft.get('next_step_tool') or '').strip() == tool_name
+    ):
         return await render_training_plan_message(plan_draft, pending=True)
     return await render_confirmation_message({'name': tool_name, 'args': args})
 
