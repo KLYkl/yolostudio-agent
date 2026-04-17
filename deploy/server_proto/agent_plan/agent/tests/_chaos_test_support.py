@@ -151,10 +151,38 @@ from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudio
 
 
 class _NoLLMGraph:
+    def __init__(self) -> None:
+        self.client = None
+
+    def bind(self, client) -> None:
+        self.client = client
+
     def get_state(self, config):
         return None
 
-    async def ainvoke(self, *args, **kwargs):
+    async def ainvoke(self, payload, config=None):
+        messages = list(payload['messages'])
+        user_text = ''
+        for message in reversed(messages):
+            content = getattr(message, 'content', '')
+            if isinstance(content, str) and content:
+                user_text = content
+                break
+
+        plan_context = dict(payload.get('training_plan_context') or {})
+        next_tool = str(plan_context.get('next_step_tool') or '').strip()
+        next_args = dict(plan_context.get('next_step_args') or {})
+        is_execute_turn = any(
+            token in user_text
+            for token in ('执行', '开始吧', '就这样', '确认', '可以开始', '开训', '启动吧', '直接训练', '直接开始训练')
+        ) or str(user_text).strip().lower() in {'y', 'yes'}
+        if self.client is not None and config and next_tool and is_execute_turn:
+            thread_id = str(((config or {}).get('configurable') or {}).get('thread_id') or '').strip()
+            self.client._set_pending_confirmation(
+                thread_id,
+                {'name': next_tool, 'args': next_args, 'id': None, 'synthetic': True},
+            )
+            return {'messages': messages + [AIMessage(content='按训练草案进入确认。')]}
         raise AssertionError('chaos routed cases should not fallback to graph')
 
 
@@ -197,4 +225,7 @@ WORK = Path(__file__).resolve().parent / '_tmp_agent_server_chaos_p0'
 def _make_client(session_id: str) -> YoloStudioAgentClient:
     root = WORK / session_id
     settings = AgentSettings(session_id=session_id, memory_root=str(root))
-    return YoloStudioAgentClient(graph=_NoLLMGraph(), settings=settings, tool_registry={})
+    graph = _NoLLMGraph()
+    client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
+    graph.bind(client)
+    return client

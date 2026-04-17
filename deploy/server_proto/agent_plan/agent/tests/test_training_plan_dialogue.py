@@ -168,8 +168,39 @@ from langchain_core.messages import AIMessage, ToolMessage
 
 
 class _DummyGraph:
+    def __init__(self) -> None:
+        self.client: YoloStudioAgentClient | None = None
+
+    def bind(self, client: YoloStudioAgentClient) -> None:
+        self.client = client
+
     def get_state(self, config):
         return None
+
+    async def ainvoke(self, payload, config=None):
+        assert self.client is not None
+        messages = list(payload['messages'])
+        user_text = ''
+        for message in reversed(messages):
+            content = getattr(message, 'content', '')
+            if isinstance(content, str) and content:
+                user_text = content
+                break
+        plan_context = dict(payload.get('training_plan_context') or {})
+        next_tool = str(plan_context.get('next_step_tool') or '').strip()
+        next_args = dict(plan_context.get('next_step_args') or {})
+        is_execute_turn = any(
+            token in user_text
+            for token in ('执行', '开始吧', '就这样', '确认', '可以开始', '开训', '启动吧', '直接训练', '直接开始训练')
+        ) or str(user_text).strip().lower() in {'y', 'yes'}
+        if config and next_tool and is_execute_turn:
+            thread_id = str(((config or {}).get('configurable') or {}).get('thread_id') or '').strip()
+            self.client._set_pending_confirmation(
+                thread_id,
+                {'name': next_tool, 'args': next_args, 'id': None, 'synthetic': True},
+            )
+            return {'messages': messages + [AIMessage(content='按训练草案进入确认。')]}
+        raise AssertionError(f'unexpected graph prompt: {user_text}')
 
 
 class _ObservedStatusGraph:
@@ -205,10 +236,20 @@ class _ObservedStatusGraph:
 WORK = Path(__file__).resolve().parent / '_tmp_training_plan_dialogue'
 
 
+def _make_dummy_client(*, session_id: str, memory_root: Path) -> YoloStudioAgentClient:
+    graph = _DummyGraph()
+    client = YoloStudioAgentClient(
+        graph=graph,
+        settings=AgentSettings(session_id=session_id, memory_root=str(memory_root)),
+        tool_registry={},
+    )
+    graph.bind(client)
+    return client
+
+
 async def _scenario_discussion_then_execute() -> None:
     scenario_root = WORK / 'discussion_then_execute'
-    settings = AgentSettings(session_id='training-plan-dialogue-1', memory_root=str(scenario_root))
-    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+    client = _make_dummy_client(session_id='training-plan-dialogue-1', memory_root=scenario_root)
     calls: list[tuple[str, dict[str, Any]]] = []
 
     async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
@@ -367,8 +408,7 @@ async def _scenario_status_query_without_session_context() -> None:
 
 async def _scenario_prepare_only_revision() -> None:
     scenario_root = WORK / 'prepare_only'
-    settings = AgentSettings(session_id='training-plan-dialogue-2', memory_root=str(scenario_root))
-    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+    client = _make_dummy_client(session_id='training-plan-dialogue-2', memory_root=scenario_root)
     calls: list[tuple[str, dict[str, Any]]] = []
 
     async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
@@ -445,8 +485,7 @@ async def _scenario_prepare_only_revision() -> None:
 
 async def _scenario_prepare_only_short_revision_without_dataset_path() -> None:
     scenario_root = WORK / 'prepare_only_short_revision_without_dataset_path'
-    settings = AgentSettings(session_id='training-plan-dialogue-prepare-short-revision', memory_root=str(scenario_root))
-    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+    client = _make_dummy_client(session_id='training-plan-dialogue-prepare-short-revision', memory_root=scenario_root)
     calls: list[tuple[str, dict[str, Any]]] = []
 
     async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
@@ -494,8 +533,7 @@ async def _scenario_prepare_only_short_revision_without_dataset_path() -> None:
 
 async def _scenario_prepare_then_replan_and_execute() -> None:
     scenario_root = WORK / 'prepare_then_replan_execute'
-    settings = AgentSettings(session_id='training-plan-dialogue-3', memory_root=str(scenario_root))
-    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+    client = _make_dummy_client(session_id='training-plan-dialogue-3', memory_root=scenario_root)
     calls: list[tuple[str, dict[str, Any]]] = []
     prepared = {'value': False}
 
@@ -686,8 +724,7 @@ async def _scenario_prepare_then_replan_and_execute() -> None:
 
 async def _scenario_cancel_then_replan() -> None:
     scenario_root = WORK / 'cancel_then_replan'
-    settings = AgentSettings(session_id='training-plan-dialogue-4', memory_root=str(scenario_root))
-    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+    client = _make_dummy_client(session_id='training-plan-dialogue-4', memory_root=scenario_root)
     calls: list[tuple[str, dict[str, Any]]] = []
 
     async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
@@ -829,8 +866,7 @@ async def _scenario_cancel_then_replan() -> None:
 
 async def _scenario_cancel_prepare_then_rebuild() -> None:
     scenario_root = WORK / 'cancel_prepare_then_rebuild'
-    settings = AgentSettings(session_id='training-plan-dialogue-5', memory_root=str(scenario_root))
-    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+    client = _make_dummy_client(session_id='training-plan-dialogue-5', memory_root=scenario_root)
     calls: list[tuple[str, dict[str, Any]]] = []
 
     async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
@@ -927,8 +963,7 @@ async def _scenario_cancel_prepare_then_rebuild() -> None:
 
 async def _scenario_preparable_backend_switch() -> None:
     scenario_root = WORK / 'preparable_backend_switch'
-    settings = AgentSettings(session_id='training-plan-dialogue-6', memory_root=str(scenario_root))
-    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+    client = _make_dummy_client(session_id='training-plan-dialogue-6', memory_root=scenario_root)
     calls: list[tuple[str, dict[str, Any]]] = []
 
     async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
@@ -1018,8 +1053,7 @@ async def _scenario_preparable_backend_switch() -> None:
 
 async def _scenario_prepare_approval_then_revise_start() -> None:
     scenario_root = WORK / 'prepare_approval_then_revise_start'
-    settings = AgentSettings(session_id='training-plan-dialogue-7', memory_root=str(scenario_root))
-    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+    client = _make_dummy_client(session_id='training-plan-dialogue-7', memory_root=scenario_root)
     calls: list[tuple[str, dict[str, Any]]] = []
 
     async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
@@ -1167,8 +1201,7 @@ async def _scenario_prepare_approval_then_revise_start() -> None:
 
 async def _scenario_prepare_only_natural_language_short_circuit() -> None:
     scenario_root = WORK / 'prepare_only_short_circuit'
-    settings = AgentSettings(session_id='training-plan-dialogue-prepare-only-short', memory_root=str(scenario_root))
-    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+    client = _make_dummy_client(session_id='training-plan-dialogue-prepare-only-short', memory_root=scenario_root)
     calls: list[tuple[str, dict[str, Any]]] = []
 
     async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
@@ -1230,8 +1263,7 @@ async def _scenario_prepare_only_natural_language_short_circuit() -> None:
 
 async def _scenario_empty_input_is_ignored() -> None:
     scenario_root = WORK / 'empty_input'
-    settings = AgentSettings(session_id='training-plan-dialogue-empty-input', memory_root=str(scenario_root))
-    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+    client = _make_dummy_client(session_id='training-plan-dialogue-empty-input', memory_root=scenario_root)
     turn = await client.chat('')
     assert turn['status'] == 'completed', turn
     assert turn['message'] == '请输入内容。', turn
@@ -1239,8 +1271,7 @@ async def _scenario_empty_input_is_ignored() -> None:
 
 async def _scenario_prepare_only_invalid_path_is_not_confirmed() -> None:
     scenario_root = WORK / 'prepare_only_invalid_path'
-    settings = AgentSettings(session_id='training-plan-dialogue-invalid-path', memory_root=str(scenario_root))
-    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+    client = _make_dummy_client(session_id='training-plan-dialogue-invalid-path', memory_root=scenario_root)
     calls: list[tuple[str, dict[str, Any]]] = []
 
     async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
@@ -1280,8 +1311,7 @@ async def _scenario_prepare_only_invalid_path_is_not_confirmed() -> None:
 
 async def _scenario_prepare_then_train_prompt_is_not_short_circuited() -> None:
     scenario_root = WORK / 'prepare_then_train_not_short_circuit'
-    settings = AgentSettings(session_id='training-plan-dialogue-prepare-then-train', memory_root=str(scenario_root))
-    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+    client = _make_dummy_client(session_id='training-plan-dialogue-prepare-then-train', memory_root=scenario_root)
     calls: list[tuple[str, dict[str, Any]]] = []
 
     async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
@@ -1327,8 +1357,7 @@ async def _scenario_prepare_then_train_prompt_is_not_short_circuited() -> None:
 
 async def _scenario_prepare_then_train_preserves_explicit_classes_txt() -> None:
     scenario_root = WORK / 'prepare_then_train_with_classes_txt'
-    settings = AgentSettings(session_id='training-plan-dialogue-prepare-classes-txt', memory_root=str(scenario_root))
-    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+    client = _make_dummy_client(session_id='training-plan-dialogue-prepare-classes-txt', memory_root=scenario_root)
     calls: list[tuple[str, dict[str, Any]]] = []
 
     async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:

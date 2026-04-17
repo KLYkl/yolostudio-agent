@@ -74,6 +74,32 @@ def _scenario_compact_populated_summary() -> None:
     state.active_training.active_loop_id = 'loop-1'
     state.active_training.last_status = {'run_state': 'running'}
     state.active_training.recent_runs = [{'run_id': 'run-a', 'run_state': 'completed'}]
+    state.active_training.training_plan_draft = {
+        'status': 'ready_for_confirmation',
+        'execution_mode': 'direct_train',
+        'execution_backend': 'standard_yolo',
+        'dataset_path': '/data/demo',
+        'training_environment': 'yolodo',
+        'reasoning_summary': '当前数据已具备训练条件，确认后即可启动。',
+        'preflight_summary': '训练预检通过',
+        'next_step_tool': 'start_training',
+        'next_step_args': {'model': 'yolov8n.pt', 'force_split': False},
+        'planned_training_args': {
+            'model': 'yolov8n.pt',
+            'data_yaml': '/data/demo/data.yaml',
+            'epochs': 100,
+            'device': '0',
+            'training_environment': 'yolodo',
+            'project': '/runs/train',
+            'name': 'demo-run',
+            'batch': 8,
+            'imgsz': 960,
+            'optimizer': 'AdamW',
+        },
+        'command_preview': ['yolo', 'train', 'model=yolov8n.pt', 'data=/data/demo/data.yaml'],
+        'warnings': ['样本量偏小，建议先小步验证'],
+        'risks': ['样本量偏小'],
+    }
     state.active_prediction.realtime_session_id = 'rt-1'
     state.active_prediction.last_realtime_status = {'status': 'running'}
     state.active_knowledge.last_analysis = {'summary': 'ok'}
@@ -94,6 +120,14 @@ def _scenario_compact_populated_summary() -> None:
     assert '训练:' in summary
     assert 'running: True' in summary
     assert 'active_loop_id: loop-1' in summary
+    assert 'training_plan_draft: 待确认' in summary
+    assert 'training_plan_next_step_tool: start_training' in summary
+    assert 'training_plan_model: yolov8n.pt' in summary
+    assert 'training_plan_data_yaml: /data/demo/data.yaml' in summary
+    assert 'training_plan_batch: 8' in summary
+    assert 'training_plan_imgsz: 960' in summary
+    assert 'training_plan_reasoning: 当前数据已具备训练条件，确认后即可启动。' in summary
+    assert 'training_plan_command_preview: yolo, train, model=yolov8n.pt, data=/data/demo/data.yaml' in summary
     assert '预测:' in summary
     assert 'realtime_session_id: rt-1' in summary
     assert '知识:' in summary
@@ -112,6 +146,7 @@ def _scenario_compact_populated_summary() -> None:
     assert getattr(messages[0], 'content', '') == 'system'
     assert 'epidural' in getattr(messages[1], 'content', '')
     assert 'subdural' in getattr(messages[1], 'content', '')
+    assert 'training_plan_next_step_tool: start_training' in getattr(messages[1], 'content', '')
     assert 'list_training_runs' not in getattr(messages[1], 'content', '')
 
 

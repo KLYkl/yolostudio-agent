@@ -27,6 +27,12 @@ def _join_values(values: object, *, limit: int = 4) -> str:
     return ', '.join(items)
 
 
+def _format_scalar(value: object) -> str:
+    if value in (None, '', [], {}, ()):
+        return ''
+    return str(value)
+
+
 def _format_percent(value: object) -> str:
     if value in (None, ''):
         return ''
@@ -113,6 +119,46 @@ def _append_section(lines: list[str], title: str, entries: list[tuple[str, objec
         lines.append(f'  {key}: {value}')
 
 
+def _build_training_plan_entries(draft: dict[str, object]) -> list[tuple[str, object]]:
+    if not isinstance(draft, dict) or not draft:
+        return []
+    planned_args = dict(draft.get('planned_training_args') or {})
+    next_args = dict(draft.get('next_step_args') or {})
+    command_preview = _join_values(draft.get('command_preview') or [], limit=6)
+    blockers = _join_values(draft.get('blockers') or [], limit=2)
+    warnings = _join_values(draft.get('warnings') or [], limit=2)
+    risks = _join_values(draft.get('risks') or [], limit=2)
+    class_scope = _join_values(planned_args.get('classes') or [], limit=6)
+    return [
+        ('training_plan_status', _format_scalar(draft.get('status'))),
+        ('training_plan_execution_mode', _format_scalar(draft.get('execution_mode'))),
+        ('training_plan_execution_backend', _format_scalar(draft.get('execution_backend'))),
+        ('training_plan_next_step_tool', _format_scalar(draft.get('next_step_tool'))),
+        ('training_plan_dataset_path', _format_scalar(draft.get('dataset_path'))),
+        ('training_plan_model', _format_scalar(planned_args.get('model'))),
+        ('training_plan_data_yaml', _format_scalar(planned_args.get('data_yaml'))),
+        ('training_plan_epochs', _format_scalar(planned_args.get('epochs'))),
+        ('training_plan_device', _format_scalar(planned_args.get('device'))),
+        ('training_plan_environment', _format_scalar(planned_args.get('training_environment') or draft.get('training_environment'))),
+        ('training_plan_project', _format_scalar(planned_args.get('project'))),
+        ('training_plan_run_name', _format_scalar(planned_args.get('name'))),
+        ('training_plan_batch', _format_scalar(planned_args.get('batch'))),
+        ('training_plan_imgsz', _format_scalar(planned_args.get('imgsz'))),
+        ('training_plan_optimizer', _format_scalar(planned_args.get('optimizer'))),
+        ('training_plan_resume', _format_scalar(planned_args.get('resume'))),
+        ('training_plan_fraction', _format_scalar(planned_args.get('fraction'))),
+        ('training_plan_classes', class_scope),
+        ('training_plan_single_cls', _format_scalar(planned_args.get('single_cls'))),
+        ('training_plan_force_split', _format_scalar(next_args.get('force_split'))),
+        ('training_plan_reasoning', _format_scalar(draft.get('reasoning_summary'))),
+        ('training_plan_preflight', _format_scalar(draft.get('preflight_summary'))),
+        ('training_plan_command_preview', command_preview),
+        ('training_plan_blockers', blockers),
+        ('training_plan_warnings', warnings),
+        ('training_plan_risks', risks),
+    ]
+
+
 class ContextBuilder:
     def __init__(self, system_prompt: str) -> None:
         self.system_prompt = system_prompt
@@ -144,6 +190,7 @@ class ContextBuilder:
         last_extract = dict(ds.last_extract_result or ds.last_frame_extract or ds.last_video_scan or ds.last_extract_preview or {})
         last_training_pipeline = dict(tr.last_remote_roundtrip or {})
         last_prediction_pipeline = dict(pred.last_remote_roundtrip or {})
+        training_plan_draft = dict(tr.training_plan_draft or {})
 
         lines: list[str] = ['当前结构化上下文:']
         lines.append(f'- session_id: {state.session_id}')
@@ -222,6 +269,7 @@ class ContextBuilder:
                  if (tr.last_loop_status or tr.last_loop_detail) else ''),
                 ('comparison_cache', _cache_state(tr.last_run_comparison) if tr.last_run_comparison else ''),
                 ('training_plan_draft', '待确认' if tr.training_plan_draft else ''),
+                *_build_training_plan_entries(training_plan_draft),
             ],
         )
 

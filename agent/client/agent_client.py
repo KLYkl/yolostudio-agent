@@ -112,6 +112,9 @@ from yolostudio_agent.agent.client.training_followup_service import (
     complete_training_evidence_reply as complete_training_evidence_reply_service,
     complete_training_provenance_reply as complete_training_provenance_reply_service,
 )
+from yolostudio_agent.agent.client.training_plan_context_service import (
+    build_training_plan_context_payload,
+)
 
 SYSTEM_PROMPT = """你是 YoloStudio Agent，负责帮助用户解决数据准备、训练、预测和远端传输问题。
 
@@ -135,6 +138,8 @@ SYSTEM_PROMPT = """你是 YoloStudio Agent，负责帮助用户解决数据准�
 - 先给结论，再给原因，再给下一步建议。
 - 只有用户明确要求时，才展开参数细节、工具名或 JSON。
 - 如果问题本身不需要工具，直接回答。"""
+
+_DEFER_TO_GRAPH = object()
 
 GPU_SENSITIVE_TOOLS = {
     "check_gpu_status",
@@ -724,6 +729,7 @@ class YoloStudioAgentClient:
             "messages": built_messages,
             "cached_tool_context": build_cached_tool_context_payload(self.session_state),
             "dataset_fact_context": build_dataset_fact_context_payload(self.session_state),
+            "training_plan_context": build_training_plan_context_payload(self.session_state),
         }
         result = await self._graph_invoke(graph_input, config=config, stream_handler=stream_handler)
         self._record_graph_selected_tools(result["messages"], thread_id=thread_id, built_messages_len=len(built_messages))
@@ -2249,6 +2255,8 @@ class YoloStudioAgentClient:
         if guardrail is not None:
             return guardrail
         plan_dialogue = await self._try_handle_training_plan_dialogue(user_text, thread_id)
+        if plan_dialogue is _DEFER_TO_GRAPH:
+            return None
         if plan_dialogue is not None:
             return plan_dialogue
         extracted_dataset_path = intent_parsing.extract_dataset_path_from_text(user_text)
@@ -6416,16 +6424,9 @@ class YoloStudioAgentClient:
             if pending:
                 return await self.confirm(thread_id, approved=True)
             next_tool_name = str(draft.get('next_step_tool') or '').strip()
-            next_tool_args = dict(draft.get('next_step_args') or {})
             if not next_tool_name:
                 return {'status': 'completed', 'message': await self._render_training_plan_message(draft, pending=False), 'tool_call': None}
-            self._set_pending_confirmation(thread_id, {'name': next_tool_name, 'args': next_tool_args, 'id': None, 'synthetic': True})
-            self.memory.save_state(self.session_state)
-            return self._needs_confirmation_result(
-                thread_id,
-                {'name': next_tool_name, 'args': next_tool_args, 'id': None, 'synthetic': True},
-                await self._render_training_plan_message(draft, pending=True),
-            )
+            return _DEFER_TO_GRAPH
 
         if not has_revision:
             return None
@@ -6685,6 +6686,7 @@ try:
     class _AgentRuntimeGraphState(_LangGraphAgentState, total=False):
         cached_tool_context: dict[str, Any] | None
         dataset_fact_context: dict[str, Any] | None
+        training_plan_context: dict[str, Any] | None
         pending_confirmation: dict[str, Any] | None
         pending_review: dict[str, Any] | None
 
@@ -6694,6 +6696,7 @@ except Exception:
         remaining_steps: int
         cached_tool_context: dict[str, Any] | None
         dataset_fact_context: dict[str, Any] | None
+        training_plan_context: dict[str, Any] | None
         pending_confirmation: dict[str, Any] | None
         pending_review: dict[str, Any] | None
 
