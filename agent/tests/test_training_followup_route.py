@@ -149,7 +149,6 @@ import json
 
 from langchain_core.messages import AIMessage, ToolMessage
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
-from yolostudio_agent.agent.client.cached_tool_reply_service import build_cached_tool_snapshot_message
 from yolostudio_agent.agent.tests._post_model_hook_support import HookedToolCallGraph
 
 
@@ -465,7 +464,6 @@ async def _scenario_cached_next_step_followup_reuses_state() -> None:
     client.graph = HookedToolCallGraph(
         planner_llm=client.planner_llm,
         tool_name='recommend_next_training_step',
-        snapshot_messages=[build_cached_tool_snapshot_message(client.session_state) or ''],
     )
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
     turn = await client.chat('那下一步怎么优化得更具体一点？')

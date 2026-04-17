@@ -162,7 +162,6 @@ except Exception:
     sys.modules['langgraph.checkpoint.memory'] = checkpoint_mod
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
-from yolostudio_agent.agent.client.cached_tool_reply_service import build_cached_tool_snapshot_message
 from yolostudio_agent.agent.tests._post_model_hook_support import HookedToolCallGraph
 
 
@@ -241,15 +240,12 @@ async def _run() -> None:
             'final_run_state': 'completed',
         }
 
-        snapshot = build_cached_tool_snapshot_message(client.session_state)
-        assert snapshot is not None
         client.planner_llm = _FakePlannerLlm(
             '远端训练闭环已经完成，训练结果目录在 /tmp/remote_train/runs/data-yolov8n，结果也已回传到 /local/results。'
         )  # type: ignore[assignment]
         client.graph = HookedToolCallGraph(
             planner_llm=client.planner_llm,
             tool_name='remote_training_pipeline',
-            snapshot_messages=[snapshot],
         )
 
         assert await client._try_handle_mainline_intent('远端那边现在是什么情况了？我需要详细一点的结果', 'thread-1') is None

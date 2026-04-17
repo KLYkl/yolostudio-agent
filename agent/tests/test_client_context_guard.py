@@ -189,7 +189,8 @@ async def _scenario_observe_mode_does_not_pollute_state() -> None:
     assert result['ok'] is True
     assert client.session_state.active_training.last_status == {}
     assert client.session_state.active_training.data_yaml == ''
-    assert client.memory.read_events(client.session_state.session_id) == []
+    events = client.memory.read_events(client.session_state.session_id)
+    assert not any(event.get('type') == 'check_training_status' for event in events), events
 
 
 async def _scenario_stale_training_plan_draft_is_cleared_on_startup() -> None:

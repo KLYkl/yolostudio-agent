@@ -16,7 +16,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
 from yolostudio_agent.agent.client.agent_client import _build_agent_post_model_hook
-from yolostudio_agent.agent.client.cached_tool_reply_service import build_cached_tool_snapshot_message
+from yolostudio_agent.agent.client.cached_tool_reply_service import build_cached_tool_context_payload
 from yolostudio_agent.agent.client.session_state import SessionState
 
 
@@ -57,8 +57,8 @@ async def _run() -> None:
         'output_dir': '/tmp/extract_run',
         'action_candidates': [{'tool': 'scan_dataset', 'description': '可继续对输出目录做数据集质量检查'}],
     }
-    snapshot_message = build_cached_tool_snapshot_message(state)
-    assert snapshot_message is not None
+    cached_tool_context = build_cached_tool_context_payload(state)
+    assert cached_tool_context is not None
 
     hook = _build_agent_post_model_hook(_FakePlannerLlm())
     update = await hook(
@@ -66,10 +66,10 @@ async def _run() -> None:
             'messages': [
                 SystemMessage(content='system'),
                 SystemMessage(content='summary'),
-                SystemMessage(content=snapshot_message),
                 HumanMessage(content='哪次训练最好？'),
                 AIMessage(content='', tool_calls=[{'id': 'tc-1', 'name': 'select_best_training_run', 'args': {}}]),
-            ]
+            ],
+            'cached_tool_context': cached_tool_context,
         }
     )
     assert 'messages' in update, update
@@ -83,10 +83,10 @@ async def _run() -> None:
             'messages': [
                 SystemMessage(content='system'),
                 SystemMessage(content='summary'),
-                SystemMessage(content=snapshot_message),
                 HumanMessage(content='再列一下可用服务器配置'),
                 AIMessage(content='', tool_calls=[{'id': 'tc-2', 'name': 'list_remote_profiles', 'args': {}}]),
-            ]
+            ],
+            'cached_tool_context': cached_tool_context,
         }
     )
     assert 'messages' in remote_update, remote_update
@@ -100,10 +100,10 @@ async def _run() -> None:
             'messages': [
                 SystemMessage(content='system'),
                 SystemMessage(content='summary'),
-                SystemMessage(content=snapshot_message),
                 HumanMessage(content='再说一下刚才抽图结果'),
                 AIMessage(content='', tool_calls=[{'id': 'tc-3', 'name': 'extract_images', 'args': {'output_dir': '/tmp/extract_run'}}]),
-            ]
+            ],
+            'cached_tool_context': cached_tool_context,
         }
     )
     assert 'messages' in extract_update, extract_update

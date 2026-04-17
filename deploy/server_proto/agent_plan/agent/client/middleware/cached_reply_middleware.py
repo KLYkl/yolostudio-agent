@@ -4,7 +4,10 @@ from typing import Any, Awaitable, Callable
 
 from langchain_core.messages import AIMessage
 
-from yolostudio_agent.agent.client.cached_tool_reply_service import resolve_cached_tool_reply
+from yolostudio_agent.agent.client.cached_tool_reply_service import (
+    extract_cached_tool_context_from_state,
+    resolve_cached_tool_reply,
+)
 from yolostudio_agent.agent.client.grounded_reply_builder import build_grounded_tool_reply
 from yolostudio_agent.agent.client.reply_renderer import (
     render_multi_tool_result_message as render_multi_tool_result_message_reply,
@@ -73,7 +76,10 @@ def build_cached_reply_middleware(
         messages = list(state.get('messages') or [])
         if not messages or not isinstance(messages[-1], AIMessage) or not getattr(messages[-1], 'tool_calls', None):
             return {}
-        cached_tool_result = resolve_cached_tool_reply(messages)
+        cached_tool_result = resolve_cached_tool_reply(
+            messages,
+            cached_tool_context=extract_cached_tool_context_from_state(state),
+        )
         if not cached_tool_result:
             return {}
         tool_name, payload = cached_tool_result

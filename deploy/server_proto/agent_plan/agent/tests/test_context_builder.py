@@ -32,8 +32,6 @@ except Exception:
     sys.modules['langchain_core.messages'] = messages_mod
 
 from yolostudio_agent.agent.client.context_builder import ContextBuilder
-from yolostudio_agent.agent.client.cached_tool_reply_service import CACHED_TOOL_SNAPSHOT_PREFIX
-from yolostudio_agent.agent.client.dataset_fact_service import DATASET_FACT_SNAPSHOT_PREFIX
 from yolostudio_agent.agent.client.event_retriever import MemoryDigest
 from yolostudio_agent.agent.client.session_state import SessionState
 
@@ -110,20 +108,11 @@ def _scenario_compact_populated_summary() -> None:
     assert '- 最近调用过的工具: check_training_status' in summary
 
     messages = builder.build_messages(state, [])
-    assert len(messages) >= 3
-    snapshot_message = next(
-        (message for message in messages if getattr(message, 'content', '').startswith(DATASET_FACT_SNAPSHOT_PREFIX)),
-        None,
-    )
-    assert snapshot_message is not None, messages
-    assert 'epidural' in snapshot_message.content
-    assert 'subdural' in snapshot_message.content
-    cached_snapshot_message = next(
-        (message for message in messages if getattr(message, 'content', '').startswith(CACHED_TOOL_SNAPSHOT_PREFIX)),
-        None,
-    )
-    assert cached_snapshot_message is not None, messages
-    assert 'list_training_runs' in cached_snapshot_message.content
+    assert len(messages) == 2, messages
+    assert getattr(messages[0], 'content', '') == 'system'
+    assert 'epidural' in getattr(messages[1], 'content', '')
+    assert 'subdural' in getattr(messages[1], 'content', '')
+    assert 'list_training_runs' not in getattr(messages[1], 'content', '')
 
 
 def main() -> None:

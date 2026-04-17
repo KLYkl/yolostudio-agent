@@ -14,8 +14,7 @@ if __package__ in {None, ''}:
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from yolostudio_agent.agent.client.cached_tool_reply_service import (
-    CACHED_TOOL_SNAPSHOT_PREFIX,
-    build_cached_tool_snapshot_message,
+    build_cached_tool_context_payload,
     resolve_cached_tool_reply,
 )
 from yolostudio_agent.agent.client.session_state import SessionState
@@ -76,101 +75,91 @@ def main() -> None:
         'default_profile': 'lab',
     }
 
-    snapshot_message = build_cached_tool_snapshot_message(state)
-    assert snapshot_message is not None
-    assert snapshot_message.startswith(CACHED_TOOL_SNAPSHOT_PREFIX)
+    cached_tool_context = build_cached_tool_context_payload(state)
+    assert cached_tool_context is not None
 
     best_messages = [
         SystemMessage(content='system'),
-        SystemMessage(content=snapshot_message),
         HumanMessage(content='哪次训练最好？'),
         AIMessage(content='', tool_calls=[{'id': 'tc-1', 'name': 'select_best_training_run', 'args': {}}]),
     ]
-    best = resolve_cached_tool_reply(best_messages)
+    best = resolve_cached_tool_reply(best_messages, cached_tool_context=cached_tool_context)
     assert best is not None
     assert best[0] == 'select_best_training_run'
     assert best[1]['best_run_id'] == 'run-best'
 
     inspect_messages = [
         SystemMessage(content='system'),
-        SystemMessage(content=snapshot_message),
         HumanMessage(content='看下 run-a 详情'),
         AIMessage(content='', tool_calls=[{'id': 'tc-2', 'name': 'inspect_training_run', 'args': {'run_id': 'run-a'}}]),
     ]
-    inspect = resolve_cached_tool_reply(inspect_messages)
+    inspect = resolve_cached_tool_reply(inspect_messages, cached_tool_context=cached_tool_context)
     assert inspect is not None
     assert inspect[0] == 'inspect_training_run'
 
     inspect_mismatch_messages = [
         SystemMessage(content='system'),
-        SystemMessage(content=snapshot_message),
         HumanMessage(content='看下 run-z 详情'),
         AIMessage(content='', tool_calls=[{'id': 'tc-3', 'name': 'inspect_training_run', 'args': {'run_id': 'run-z'}}]),
     ]
-    assert resolve_cached_tool_reply(inspect_mismatch_messages) is None
+    assert resolve_cached_tool_reply(inspect_mismatch_messages, cached_tool_context=cached_tool_context) is None
 
     loop_messages = [
         SystemMessage(content='system'),
-        SystemMessage(content=snapshot_message),
         HumanMessage(content='环训练现在怎么样？'),
         AIMessage(content='', tool_calls=[{'id': 'tc-4', 'name': 'check_training_loop_status', 'args': {'loop_id': 'loop-a'}}]),
     ]
-    loop_status = resolve_cached_tool_reply(loop_messages)
+    loop_status = resolve_cached_tool_reply(loop_messages, cached_tool_context=cached_tool_context)
     assert loop_status is not None
     assert loop_status[0] == 'check_training_loop_status'
     assert loop_status[1]['loop_id'] == 'loop-a'
 
     remote_messages = [
         SystemMessage(content='system'),
-        SystemMessage(content=snapshot_message),
         HumanMessage(content='再列一下可用服务器配置'),
         AIMessage(content='', tool_calls=[{'id': 'tc-5', 'name': 'list_remote_profiles', 'args': {}}]),
     ]
-    remote_profiles = resolve_cached_tool_reply(remote_messages)
+    remote_profiles = resolve_cached_tool_reply(remote_messages, cached_tool_context=cached_tool_context)
     assert remote_profiles is not None
     assert remote_profiles[0] == 'list_remote_profiles'
     assert remote_profiles[1]['default_profile'] == 'lab'
 
     extract_messages = [
         SystemMessage(content='system'),
-        SystemMessage(content=snapshot_message),
         HumanMessage(content='再说一下刚才抽图结果'),
         AIMessage(content='', tool_calls=[{'id': 'tc-6', 'name': 'extract_images', 'args': {'output_dir': '/tmp/extract_run'}}]),
     ]
-    extract_result = resolve_cached_tool_reply(extract_messages)
+    extract_result = resolve_cached_tool_reply(extract_messages, cached_tool_context=cached_tool_context)
     assert extract_result is not None
     assert extract_result[0] == 'extract_images'
     assert extract_result[1]['output_dir'] == '/tmp/extract_run'
 
     knowledge_messages = [
         SystemMessage(content='system'),
-        SystemMessage(content=snapshot_message),
         HumanMessage(content='刚才那条规则再详细一点'),
         AIMessage(content='', tool_calls=[{'id': 'tc-7', 'name': 'retrieve_training_knowledge', 'args': {'topic': 'training_metrics', 'stage': 'post_training', 'signals': ['high_precision_low_recall']}}]),
     ]
-    knowledge_result = resolve_cached_tool_reply(knowledge_messages)
+    knowledge_result = resolve_cached_tool_reply(knowledge_messages, cached_tool_context=cached_tool_context)
     assert knowledge_result is not None
     assert knowledge_result[0] == 'retrieve_training_knowledge'
     assert knowledge_result[1]['topic'] == 'training_metrics'
 
     status_messages = [
         SystemMessage(content='system'),
-        SystemMessage(content=snapshot_message),
         HumanMessage(content='看下训练状态'),
         AIMessage(content='', tool_calls=[{'id': 'tc-8', 'name': 'check_training_status', 'args': {}}]),
     ]
-    status_result = resolve_cached_tool_reply(status_messages)
+    status_result = resolve_cached_tool_reply(status_messages, cached_tool_context=cached_tool_context)
     assert status_result is not None
     assert status_result[0] == 'check_training_status'
     assert status_result[1]['run_state'] == 'completed'
 
     summary_messages = [
         SystemMessage(content='system'),
-        SystemMessage(content=snapshot_message),
         HumanMessage(content='数据总结'),
         AIMessage(content='', tool_calls=[{'id': 'tc-9', 'name': 'summarize_training_run', 'args': {}}]),
     ]
-    summary_result = resolve_cached_tool_reply(summary_messages)
+    summary_result = resolve_cached_tool_reply(summary_messages, cached_tool_context=cached_tool_context)
     assert summary_result is not None
     assert summary_result[0] == 'summarize_training_run'
     assert summary_result[1]['run_state'] == 'completed'

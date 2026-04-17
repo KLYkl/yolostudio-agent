@@ -17,7 +17,7 @@ if __package__ in {None, ''}:
 from langchain_core.messages import AIMessage, ToolMessage
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient, _build_agent_post_model_hook
-from yolostudio_agent.agent.client.cached_tool_reply_service import build_cached_tool_snapshot_message
+from yolostudio_agent.agent.client.cached_tool_reply_service import build_cached_tool_context_payload
 from yolostudio_agent.agent.client.memory_store import MemoryStore
 from yolostudio_agent.agent.client.session_state import SessionState
 
@@ -120,8 +120,8 @@ async def _run() -> None:
         'default_profile': 'lab',
         'profiles': [{'name': 'lab', 'target_label': 'lab'}],
     }
-    snapshot_message = build_cached_tool_snapshot_message(state)
-    assert snapshot_message is not None
+    cached_tool_context = build_cached_tool_context_payload(state)
+    assert cached_tool_context is not None
 
     hook = _build_agent_post_model_hook(_FakePlannerLlm(), route_reporter=_report_route)
     hook_update = await hook(
@@ -151,10 +151,10 @@ async def _run() -> None:
             'messages': [
                 SystemMessage(content='system'),
                 SystemMessage(content='summary'),
-                SystemMessage(content=snapshot_message),
                 HumanMessage(content='再列一下可用服务器配置'),
                 AIMessage(content='', tool_calls=[{'id': 'tc-hook-2', 'name': 'list_remote_profiles', 'args': {}}]),
-            ]
+            ],
+            'cached_tool_context': cached_tool_context,
         }
     )
     assert 'messages' in hook_update, hook_update

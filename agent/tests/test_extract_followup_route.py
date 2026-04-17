@@ -163,7 +163,6 @@ except Exception:
     sys.modules['langgraph.checkpoint.memory'] = checkpoint_mod
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
-from yolostudio_agent.agent.client.cached_tool_reply_service import build_cached_tool_snapshot_message
 from yolostudio_agent.agent.tests._post_model_hook_support import HookedToolCallGraph
 from langchain_core.messages import AIMessage, ToolMessage
 
@@ -248,13 +247,10 @@ async def _run() -> None:
         assert '实际抽取 18 张' in initial['message'], initial
         assert graph.calls[-1][0] == 'extract_images', graph.calls
 
-        snapshot = build_cached_tool_snapshot_message(client.session_state)
-        assert snapshot is not None
         client.planner_llm = _FakePlannerLlm('图片抽取完成，当前输出目录是 /tmp/extract_run，本次实际抽取 18 张图片。')  # type: ignore[assignment]
         client.graph = HookedToolCallGraph(
             planner_llm=client.planner_llm,
             tool_name='extract_images',
-            snapshot_messages=[snapshot],
         )
         before = len(graph.calls)
         assert await client._try_handle_mainline_intent('现在抽图情况怎么样？我需要详细一点的信息', 'thread-2') is None

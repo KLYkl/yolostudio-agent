@@ -7,6 +7,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from yolostudio_agent.agent.client import intent_parsing
 from yolostudio_agent.agent.client.dataset_fact_service import (
     build_dataset_fact_followup_reply_from_messages,
+    extract_dataset_fact_context_from_state,
 )
 
 
@@ -37,6 +38,7 @@ def build_fact_validation_middleware(
             messages,
             user_text=user_text,
             requested_dataset_path=requested_dataset_path,
+            dataset_fact_context=extract_dataset_fact_context_from_state(state),
         )
         if not reply:
             return {}

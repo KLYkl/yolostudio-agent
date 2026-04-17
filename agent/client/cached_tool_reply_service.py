@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from langchain_core.messages import AIMessage
@@ -8,10 +7,10 @@ from langchain_core.messages import AIMessage
 from yolostudio_agent.agent.client.session_state import SessionState
 from yolostudio_agent.agent.client.tool_adapter import canonical_tool_name
 
-CACHED_TOOL_SNAPSHOT_PREFIX = 'CACHED_TOOL_SNAPSHOT='
+CACHED_TOOL_CONTEXT_KEY = 'cached_tool_context'
 
 
-def build_cached_tool_snapshot_payload(state: SessionState) -> dict[str, Any] | None:
+def build_cached_tool_context_payload(state: SessionState) -> dict[str, Any] | None:
     dataset = state.active_dataset
     training = state.active_training
     remote_transfer = state.active_remote_transfer
@@ -119,28 +118,10 @@ def build_cached_tool_snapshot_payload(state: SessionState) -> dict[str, Any] | 
     return payload or None
 
 
-def build_cached_tool_snapshot_message(state: SessionState) -> str | None:
-    payload = build_cached_tool_snapshot_payload(state)
-    if not payload:
-        return None
-    return f'{CACHED_TOOL_SNAPSHOT_PREFIX}{json.dumps(payload, ensure_ascii=False, separators=(",", ":"))}'
-
-
-def extract_cached_tool_snapshot(messages: list[Any]) -> dict[str, Any] | None:
-    for message in reversed(messages):
-        content = getattr(message, 'content', '')
-        if not isinstance(content, str) or not content.startswith(CACHED_TOOL_SNAPSHOT_PREFIX):
-            continue
-        raw = content[len(CACHED_TOOL_SNAPSHOT_PREFIX):].strip()
-        if not raw:
-            return None
-        try:
-            payload = json.loads(raw)
-        except Exception:
-            return None
-        if isinstance(payload, dict):
-            return payload
-        return None
+def extract_cached_tool_context_from_state(state: dict[str, Any]) -> dict[str, Any] | None:
+    payload = state.get(CACHED_TOOL_CONTEXT_KEY)
+    if isinstance(payload, dict):
+        return dict(payload)
     return None
 
 
@@ -228,15 +209,19 @@ def _match_knowledge_payload(payload: dict[str, Any], args: dict[str, Any]) -> b
     return not cached_signals or cached_signals == expected_signals
 
 
-def resolve_cached_tool_reply(messages: list[Any]) -> tuple[str, dict[str, Any]] | None:
-    snapshot = extract_cached_tool_snapshot(messages)
-    if not snapshot:
+def resolve_cached_tool_reply(
+    messages: list[Any],
+    *,
+    cached_tool_context: dict[str, Any] | None = None,
+) -> tuple[str, dict[str, Any]] | None:
+    context_payload = dict(cached_tool_context) if isinstance(cached_tool_context, dict) else None
+    if not context_payload:
         return None
     pending_tool_call = _last_pending_tool_call(messages)
     if not pending_tool_call:
         return None
     tool_name, args = pending_tool_call
-    payload = snapshot.get(tool_name)
+    payload = context_payload.get(tool_name)
     if not isinstance(payload, dict):
         return None
 

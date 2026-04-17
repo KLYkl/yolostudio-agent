@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import json
 import re
 from typing import Any
 
 from yolostudio_agent.agent.client.session_state import SessionState
 
-DATASET_FACT_SNAPSHOT_PREFIX = 'DATASET_FACT_SNAPSHOT='
+DATASET_FACT_CONTEXT_KEY = 'dataset_fact_context'
 
 
 def looks_like_dataset_fact_question(user_text: str) -> bool:
@@ -100,7 +99,7 @@ def _extract_class_count_query(user_text: str, class_names: list[str]) -> str:
     return matches[0]
 
 
-def build_dataset_fact_snapshot_payload(session_state: SessionState) -> dict[str, Any] | None:
+def build_dataset_fact_context_payload(session_state: SessionState) -> dict[str, Any] | None:
     ds = session_state.active_dataset
     scan = dict(ds.last_scan or {})
     if not scan:
@@ -126,33 +125,15 @@ def build_dataset_fact_snapshot_payload(session_state: SessionState) -> dict[str
     }
 
 
-def build_dataset_fact_snapshot_message(session_state: SessionState) -> str | None:
-    payload = build_dataset_fact_snapshot_payload(session_state)
-    if not payload:
-        return None
-    return f'{DATASET_FACT_SNAPSHOT_PREFIX}{json.dumps(payload, ensure_ascii=False, separators=(",", ":"))}'
-
-
-def extract_dataset_fact_snapshot(messages: list[Any]) -> dict[str, Any] | None:
-    for message in reversed(messages):
-        content = getattr(message, 'content', '')
-        if not isinstance(content, str) or not content.startswith(DATASET_FACT_SNAPSHOT_PREFIX):
-            continue
-        raw = content[len(DATASET_FACT_SNAPSHOT_PREFIX):].strip()
-        if not raw:
-            return None
-        try:
-            payload = json.loads(raw)
-        except Exception:
-            return None
-        if isinstance(payload, dict):
-            return payload
-        return None
+def extract_dataset_fact_context_from_state(state: dict[str, Any]) -> dict[str, Any] | None:
+    payload = state.get(DATASET_FACT_CONTEXT_KEY)
+    if isinstance(payload, dict):
+        return dict(payload)
     return None
 
 
-def build_dataset_fact_followup_reply_from_snapshot(
-    snapshot: dict[str, Any],
+def build_dataset_fact_followup_reply_from_context(
+    context_payload: dict[str, Any],
     *,
     user_text: str,
     requested_dataset_path: str = '',
@@ -160,14 +141,14 @@ def build_dataset_fact_followup_reply_from_snapshot(
     if not looks_like_dataset_fact_question(user_text):
         return None
     dataset_context = {
-        'dataset_root': str(snapshot.get('dataset_root') or ''),
-        'img_dir': str(snapshot.get('img_dir') or ''),
-        'label_dir': str(snapshot.get('label_dir') or ''),
+        'dataset_root': str(context_payload.get('dataset_root') or ''),
+        'img_dir': str(context_payload.get('img_dir') or ''),
+        'label_dir': str(context_payload.get('label_dir') or ''),
     }
     if not _same_dataset_target_from_context(dataset_context, requested_dataset_path):
         return None
 
-    scan = dict(snapshot.get('scan') or {})
+    scan = dict(context_payload.get('scan') or {})
     if not scan:
         return None
 
@@ -223,12 +204,14 @@ def build_dataset_fact_followup_reply_from_messages(
     *,
     user_text: str,
     requested_dataset_path: str = '',
+    dataset_fact_context: dict[str, Any] | None = None,
 ) -> str | None:
-    snapshot = extract_dataset_fact_snapshot(messages)
-    if not snapshot:
+    del messages
+    context_payload = dict(dataset_fact_context) if isinstance(dataset_fact_context, dict) else None
+    if not context_payload:
         return None
-    return build_dataset_fact_followup_reply_from_snapshot(
-        snapshot,
+    return build_dataset_fact_followup_reply_from_context(
+        context_payload,
         user_text=user_text,
         requested_dataset_path=requested_dataset_path,
     )
@@ -244,11 +227,11 @@ def build_dataset_fact_followup_reply(
         return None
     if not _same_dataset_target(session_state, requested_dataset_path):
         return None
-    payload = build_dataset_fact_snapshot_payload(session_state)
-    if not payload:
+    context_payload = build_dataset_fact_context_payload(session_state)
+    if not context_payload:
         return None
-    return build_dataset_fact_followup_reply_from_snapshot(
-        payload,
+    return build_dataset_fact_followup_reply_from_context(
+        context_payload,
         user_text=user_text,
         requested_dataset_path=requested_dataset_path,
     )

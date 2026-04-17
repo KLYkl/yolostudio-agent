@@ -53,6 +53,8 @@ from yolostudio_agent.agent.client.hitl_manager import (
 )
 from yolostudio_agent.agent.client.state_applier import apply_tool_result_to_state
 from yolostudio_agent.agent.client import intent_parsing
+from yolostudio_agent.agent.client.cached_tool_reply_service import build_cached_tool_context_payload
+from yolostudio_agent.agent.client.dataset_fact_service import build_dataset_fact_context_payload
 from yolostudio_agent.agent.client.llm_factory import (
     LlmProviderSettings,
     build_llm,
@@ -728,7 +730,15 @@ class YoloStudioAgentClient:
             include_history_context=include_history_context,
         )
         built_messages = self.context_builder.build_messages(state_for_model, self._messages, digest=digest)
-        result = await self._graph_invoke({"messages": built_messages}, config=config, stream_handler=stream_handler)
+        # Keep the prompt summary lean when history should be trimmed, but always
+        # pass the full typed runtime context into the graph so post-model cached
+        # follow-up handling does not depend on synthetic message snapshots.
+        graph_input = {
+            "messages": built_messages,
+            "cached_tool_context": build_cached_tool_context_payload(self.session_state),
+            "dataset_fact_context": build_dataset_fact_context_payload(self.session_state),
+        }
+        result = await self._graph_invoke(graph_input, config=config, stream_handler=stream_handler)
         self._record_graph_selected_tools(result["messages"], thread_id=thread_id, built_messages_len=len(built_messages))
         self._record_tool_error_recovery(result["messages"], thread_id=thread_id, built_messages_len=len(built_messages))
         pending = self._resolve_pending_confirmation(thread_id=thread_id, config=config)
@@ -6721,6 +6731,8 @@ try:
     from langgraph.prebuilt.chat_agent_executor import AgentState as _LangGraphAgentState
 
     class _AgentRuntimeGraphState(_LangGraphAgentState, total=False):
+        cached_tool_context: dict[str, Any] | None
+        dataset_fact_context: dict[str, Any] | None
         pending_confirmation: dict[str, Any] | None
         pending_review: dict[str, Any] | None
 
@@ -6728,6 +6740,8 @@ except Exception:
     class _AgentRuntimeGraphState(TypedDict, total=False):
         messages: list[Any]
         remaining_steps: int
+        cached_tool_context: dict[str, Any] | None
+        dataset_fact_context: dict[str, Any] | None
         pending_confirmation: dict[str, Any] | None
         pending_review: dict[str, Any] | None
 

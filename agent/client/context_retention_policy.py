@@ -57,6 +57,7 @@ def _has_cached_followup_context(state: SessionState) -> bool:
             training.last_status,
             training.last_summary,
             training.training_run_summary,
+            training.last_remote_roundtrip,
             training.last_run_inspection,
             training.last_run_comparison,
             training.best_run_selection,

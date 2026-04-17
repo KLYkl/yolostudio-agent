@@ -4,8 +4,6 @@ from typing import Iterable
 
 from langchain_core.messages import BaseMessage, SystemMessage
 
-from yolostudio_agent.agent.client.cached_tool_reply_service import build_cached_tool_snapshot_message
-from yolostudio_agent.agent.client.dataset_fact_service import build_dataset_fact_snapshot_message
 from yolostudio_agent.agent.client.event_retriever import MemoryDigest
 from yolostudio_agent.agent.client.session_state import SessionState
 
@@ -92,12 +90,6 @@ class ContextBuilder:
             SystemMessage(content=self.system_prompt),
             SystemMessage(content=summary),
         ]
-        cached_tool_snapshot = build_cached_tool_snapshot_message(state)
-        if cached_tool_snapshot:
-            messages.append(SystemMessage(content=cached_tool_snapshot))
-        dataset_fact_snapshot = build_dataset_fact_snapshot_message(state)
-        if dataset_fact_snapshot:
-            messages.append(SystemMessage(content=dataset_fact_snapshot))
         messages.extend(list(recent_messages))
         return messages
 

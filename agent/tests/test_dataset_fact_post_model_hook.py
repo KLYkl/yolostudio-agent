@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import sys
 import types
 from pathlib import Path
@@ -43,7 +42,6 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
 from yolostudio_agent.agent.client.agent_client import _dataset_fact_post_model_hook
-from yolostudio_agent.agent.client.dataset_fact_service import DATASET_FACT_SNAPSHOT_PREFIX
 
 
 def main() -> None:
@@ -65,10 +63,10 @@ def main() -> None:
         'messages': [
             SystemMessage(content='system'),
             SystemMessage(content='summary'),
-            SystemMessage(content=f'{DATASET_FACT_SNAPSHOT_PREFIX}{json.dumps(snapshot, ensure_ascii=False)}'),
             HumanMessage(content='哪个类别的标注最少？'),
             AIMessage(content='', tool_calls=[{'id': 'tc-1', 'name': 'scan_dataset', 'args': {'img_dir': '/data/demo'}}]),
-        ]
+        ],
+        'dataset_fact_context': snapshot,
     }
 
     update = _dataset_fact_post_model_hook(state)

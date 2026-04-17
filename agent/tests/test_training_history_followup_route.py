@@ -144,9 +144,8 @@ def _install_fake_test_dependencies() -> None:
 
 _install_fake_test_dependencies()
 
-from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.messages import AIMessage
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient, _build_agent_post_model_hook
-from yolostudio_agent.agent.client.cached_tool_reply_service import CACHED_TOOL_SNAPSHOT_PREFIX, build_cached_tool_snapshot_message
 
 
 class _NoLLMGraph:
@@ -164,11 +163,9 @@ class _HookedToolCallGraph:
         planner_llm,
         tool_name: str,
         tool_args: dict[str, object] | None = None,
-        snapshot_message: str = '',
     ) -> None:
         self._tool_name = tool_name
         self._tool_args = dict(tool_args or {})
-        self._snapshot_message = str(snapshot_message or '').strip()
         self._hook = _build_agent_post_model_hook(planner_llm)
 
     def get_state(self, config):
@@ -178,13 +175,10 @@ class _HookedToolCallGraph:
     async def ainvoke(self, payload, config=None):
         del config
         messages = list(payload['messages'])
-        if self._snapshot_message and not any(
-            str(getattr(message, 'content', '')).startswith(CACHED_TOOL_SNAPSHOT_PREFIX)
-            for message in messages
-        ):
-            messages.insert(2 if len(messages) >= 2 else len(messages), SystemMessage(content=self._snapshot_message))
         messages.append(AIMessage(content='', tool_calls=[{'id': 'tc-1', 'name': self._tool_name, 'args': dict(self._tool_args)}]))
-        update = await self._hook({'messages': messages})
+        hook_state = dict(payload)
+        hook_state['messages'] = messages
+        update = await self._hook(hook_state)
         updated_messages = list(update.get('messages') or [])
         if updated_messages and getattr(updated_messages[0], 'id', '') == '__remove_all__':
             updated_messages = updated_messages[1:]
@@ -243,7 +237,6 @@ async def _scenario_best_followup_routes() -> None:
     client.graph = _HookedToolCallGraph(
         planner_llm=client.planner_llm,
         tool_name='select_best_training_run',
-        snapshot_message=build_cached_tool_snapshot_message(client.session_state) or '',
     )
     client.direct_tool = _unexpected_direct_tool  # type: ignore[assignment]
     turn = await client.chat('那个最佳训练详细一点呢？')
@@ -279,7 +272,6 @@ async def _scenario_compare_followup_routes() -> None:
     client.graph = _HookedToolCallGraph(
         planner_llm=client.planner_llm,
         tool_name='compare_training_runs',
-        snapshot_message=build_cached_tool_snapshot_message(client.session_state) or '',
     )
     client.direct_tool = _unexpected_direct_tool  # type: ignore[assignment]
     turn = await client.chat('刚才那两个训练对比结论再详细一点')
@@ -319,7 +311,6 @@ async def _scenario_runs_followup_routes() -> None:
     client.graph = _HookedToolCallGraph(
         planner_llm=client.planner_llm,
         tool_name='list_training_runs',
-        snapshot_message=build_cached_tool_snapshot_message(client.session_state) or '',
     )
     client.direct_tool = _unexpected_direct_tool  # type: ignore[assignment]
     turn = await client.chat('把刚才那些训练记录再概括一下')
@@ -351,7 +342,6 @@ async def _scenario_cached_best_request_reuses_state() -> None:
     client.graph = _HookedToolCallGraph(
         planner_llm=client.planner_llm,
         tool_name='select_best_training_run',
-        snapshot_message=build_cached_tool_snapshot_message(client.session_state) or '',
     )
     client.direct_tool = _unexpected_direct_tool  # type: ignore[assignment]
     turn = await client.chat('哪次训练最好？')
@@ -389,7 +379,6 @@ async def _scenario_cached_run_list_request_reuses_state() -> None:
     client.graph = _HookedToolCallGraph(
         planner_llm=client.planner_llm,
         tool_name='list_training_runs',
-        snapshot_message=build_cached_tool_snapshot_message(client.session_state) or '',
     )
     client.direct_tool = _unexpected_direct_tool  # type: ignore[assignment]
     turn = await client.chat('列出训练记录')
@@ -422,7 +411,6 @@ async def _scenario_cached_run_inspection_request_reuses_state() -> None:
         planner_llm=client.planner_llm,
         tool_name='inspect_training_run',
         tool_args={'run_id': 'train_log_run_a'},
-        snapshot_message=build_cached_tool_snapshot_message(client.session_state) or '',
     )
     client.direct_tool = _unexpected_direct_tool  # type: ignore[assignment]
     turn = await client.chat('查看 train_log_run_a 训练详情')

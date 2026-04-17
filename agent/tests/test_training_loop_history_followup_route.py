@@ -145,7 +145,6 @@ def _install_fake_test_dependencies() -> None:
 _install_fake_test_dependencies()
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
-from yolostudio_agent.agent.client.cached_tool_reply_service import build_cached_tool_snapshot_message
 from yolostudio_agent.agent.tests._post_model_hook_support import HookedToolCallGraph
 
 
@@ -199,7 +198,6 @@ async def _scenario_loop_list_followup_routes() -> None:
     client.graph = HookedToolCallGraph(
         planner_llm=client.planner_llm,
         tool_name='list_training_loops',
-        snapshot_messages=[build_cached_tool_snapshot_message(client.session_state) or ''],
     )
     client.direct_tool = _unexpected_direct_tool  # type: ignore[assignment]
     turn = await client.chat('把刚才那些环训练再概括一下')
@@ -244,7 +242,6 @@ async def _scenario_loop_inspect_followup_routes() -> None:
     client.graph = HookedToolCallGraph(
         planner_llm=client.planner_llm,
         tool_name='inspect_training_loop',
-        snapshot_messages=[build_cached_tool_snapshot_message(client.session_state) or ''],
     )
     client.direct_tool = _unexpected_direct_tool  # type: ignore[assignment]
     turn = await client.chat('那个环训练详细一点呢')
@@ -263,7 +260,6 @@ async def _scenario_cached_loop_list_request_reuses_state() -> None:
     client.graph = HookedToolCallGraph(
         planner_llm=_FakePlannerLlm('最近环训练包括 helmet-loop 和 vest-loop，其中 vest-loop 还在等待审阅。'),
         tool_name='list_training_loops',
-        snapshot_messages=[build_cached_tool_snapshot_message(client.session_state) or ''],
     )
 
     async def _unexpected_direct_tool(*args, **kwargs):
@@ -297,7 +293,6 @@ async def _scenario_cached_loop_inspect_request_reuses_state() -> None:
     client.graph = HookedToolCallGraph(
         planner_llm=_FakePlannerLlm('当前环训练 loop-b 正在等待审阅，建议先做误差分析。'),
         tool_name='inspect_training_loop',
-        snapshot_messages=[build_cached_tool_snapshot_message(client.session_state) or ''],
     )
 
     async def _unexpected_direct_tool(*args, **kwargs):
@@ -331,7 +326,6 @@ async def _scenario_cached_loop_status_request_reuses_state() -> None:
     client.graph = HookedToolCallGraph(
         planner_llm=_FakePlannerLlm('第 2 轮训练已完成，准备下一轮\n继续查看当前环训练详情'),
         tool_name='check_training_loop_status',
-        snapshot_messages=[build_cached_tool_snapshot_message(client.session_state) or ''],
     )
 
     async def _unexpected_direct_tool(*args, **kwargs):
