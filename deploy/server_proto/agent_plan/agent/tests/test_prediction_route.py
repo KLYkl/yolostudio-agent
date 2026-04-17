@@ -216,6 +216,14 @@ class _PredictionGraph:
         user_text = str(getattr(payload['messages'][-1], 'content', ''))
         pred = self.client.session_state.active_prediction
 
+        if '预测' in user_text and '/data/images' in user_text:
+            return await self._tool_reply(
+                payload,
+                'predict_images',
+                source_path='/data/images',
+                model='/models/yolov8n.pt',
+            )
+
         if '总结' in user_text and '预测' in user_text:
             assert 'last_result_summary:' in summary
             if pred.last_summary:
@@ -328,9 +336,11 @@ async def _run() -> None:
 
         client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
 
+        assert await client._try_handle_mainline_intent('请用 /models/yolov8n.pt 预测 /data/images 这个目录里的图片', 'thread-predict-images') is None
         routed = await client.chat('请用 /models/yolov8n.pt 预测 /data/images 这个目录里的图片')
         assert routed['status'] == 'completed', routed
         assert '预测完成' in routed['message'], routed
+        assert calls[-1][0] == 'predict_images', calls
         assert client.session_state.active_prediction.model == '/models/yolov8n.pt'
         assert client.session_state.active_prediction.source_path == '/data/images'
 

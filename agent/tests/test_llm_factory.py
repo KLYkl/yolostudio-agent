@@ -46,11 +46,16 @@ def main() -> None:
     original_all_proxy = os.environ.get('ALL_PROXY')
     os.environ['ALL_PROXY'] = 'socks5://127.0.0.1:9999'
     try:
-        ollama = LlmProviderSettings(provider='ollama', model='gemma4:e4b', base_url='http://127.0.0.1:11434')
+        ollama = LlmProviderSettings(provider='ollama', model='gemma4:e4b', base_url='http://127.0.0.1:11434', ollama_num_ctx=65536)
         llm1 = build_llm(ollama)
         assert llm1 is not None
+        num_ctx = getattr(llm1, 'num_ctx', None)
+        if num_ctx is None:
+            num_ctx = getattr(llm1, 'kwargs', {}).get('num_ctx')
+        assert num_ctx == 65536
         assert os.environ.get('ALL_PROXY') == 'socks5://127.0.0.1:9999'
         assert 'provider=ollama' in provider_summary(ollama)
+        assert 'ollama_num_ctx=65536' in provider_summary(ollama)
     finally:
         if original_all_proxy is None:
             os.environ.pop('ALL_PROXY', None)

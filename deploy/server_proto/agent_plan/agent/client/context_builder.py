@@ -27,6 +27,45 @@ def _join_values(values: object, *, limit: int = 4) -> str:
     return ', '.join(items)
 
 
+def _format_percent(value: object) -> str:
+    if value in (None, ''):
+        return ''
+    try:
+        ratio = float(value)
+    except (TypeError, ValueError):
+        return ''
+    return f'{ratio:.1%}'
+
+
+def _format_extreme_class(value: object) -> str:
+    if not isinstance(value, dict):
+        return ''
+    name = str(value.get('name') or '').strip()
+    count = value.get('count')
+    if not name or count in (None, ''):
+        return ''
+    return f'{name} ({count})'
+
+
+def _format_top_classes(value: object, *, limit: int = 4) -> str:
+    if not isinstance(value, list):
+        return ''
+    parts: list[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get('class_name') or item.get('name') or '').strip()
+        count = item.get('count')
+        if not name or count in (None, ''):
+            continue
+        parts.append(f'{name}={count}')
+    if not parts:
+        return ''
+    if len(parts) > limit:
+        return ', '.join(parts[:limit]) + f' 等 {len(parts)} 项'
+    return ', '.join(parts)
+
+
 def _append_section(lines: list[str], title: str, entries: list[tuple[str, object]]) -> None:
     filtered = [(key, value) for key, value in entries if _non_empty(value)]
     if not filtered:
@@ -76,6 +115,12 @@ class ContextBuilder:
                 ('label_dir', ds.label_dir),
                 ('data_yaml', ds.data_yaml),
                 ('last_scan_summary', str((ds.last_scan or {}).get('summary') or '')),
+                ('last_scan_classes', _join_values((ds.last_scan or {}).get('classes'))),
+                ('last_scan_top_classes', _format_top_classes((ds.last_scan or {}).get('top_classes'))),
+                ('last_scan_least_class', _format_extreme_class((ds.last_scan or {}).get('least_class'))),
+                ('last_scan_most_class', _format_extreme_class((ds.last_scan or {}).get('most_class'))),
+                ('last_scan_missing_label_ratio', _format_percent((ds.last_scan or {}).get('missing_label_ratio'))),
+                ('last_scan_class_name_source', str((ds.last_scan or {}).get('class_name_source') or '')),
                 ('last_validate_summary', str((ds.last_validate or {}).get('summary') or '')),
                 ('last_health_summary', str((ds.last_health_check or {}).get('summary') or '')),
                 ('last_health_duplicate_groups', (ds.last_health_check or {}).get('duplicate_groups')),
@@ -126,6 +171,9 @@ class ContextBuilder:
                 ('model', pred.model),
                 ('output_dir', pred.output_dir),
                 ('report_path', pred.report_path),
+                ('image_prediction_session_id', pred.image_prediction_session_id),
+                ('image_prediction_status', pred.image_prediction_status),
+                ('last_image_prediction_summary', str((pred.last_image_prediction_status or {}).get('summary') or '')),
                 ('last_result_summary', str((pred.last_result or {}).get('summary') or '')),
                 ('last_summary_text', str((pred.last_summary or {}).get('summary') or '')),
                 ('last_inspection_summary', str((pred.last_inspection or {}).get('summary') or '')),
@@ -134,8 +182,8 @@ class ContextBuilder:
                 ('last_path_lists_dir', str((pred.last_path_lists or {}).get('export_dir') or '')),
                 ('last_organized_destination', str((pred.last_organized_result or {}).get('destination_dir') or '')),
                 ('last_organized_mode', str((pred.last_organized_result or {}).get('organize_by') or '')),
-                ('result_cache', _cache_state(pred.last_result or pred.last_summary or pred.last_inspection)
-                 if (pred.last_result or pred.last_summary or pred.last_inspection) else ''),
+                ('result_cache', _cache_state(pred.last_result or pred.last_summary or pred.last_inspection or pred.last_image_prediction_status)
+                 if (pred.last_result or pred.last_summary or pred.last_inspection or pred.last_image_prediction_status) else ''),
                 ('realtime_session_id', pred.realtime_session_id),
                 ('realtime_source_type', pred.realtime_source_type),
                 ('realtime_source_label', pred.realtime_source_label),

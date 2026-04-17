@@ -46,6 +46,21 @@ def _prediction_overview(result: dict[str, Any], *, mode: str) -> dict[str, Any]
     return {key: value for key, value in overview.items() if value not in (None, '', [], {})}
 
 
+def _prediction_session_overview(result: dict[str, Any]) -> dict[str, Any]:
+    overview = {
+        'session_id': result.get('session_id'),
+        'status': result.get('status'),
+        'run_state': result.get('run_state'),
+        'running': result.get('running'),
+        'total_images': result.get('total_images'),
+        'processed_images': result.get('processed_images'),
+        'detected_images': result.get('detected_images'),
+        'output_dir': result.get('output_dir'),
+        'report_path': result.get('report_path'),
+    }
+    return {key: value for key, value in overview.items() if value not in (None, '', [], {})}
+
+
 def _prediction_output_overview(result: dict[str, Any]) -> dict[str, Any]:
     overview = {
         'output_dir': result.get('output_dir'),
@@ -131,7 +146,7 @@ def predict_images(
     generate_report: bool = True,
     max_images: int = 0,
 ) -> dict[str, Any]:
-    """对单张图片或图片目录执行 YOLO 预测。优先传 source_path 和 model；默认保存标注图与 JSON 报告，不修改原始数据。"""
+    """对单张图片或图片目录执行 YOLO 预测。优先传 source_path 和 model；默认保存标注图与 JSON 报告，不修改原始数据。目录很大时会自动转成后台图片预测会话。"""
     result = _wrap(
         '图片预测',
         service.predict_images,
@@ -148,15 +163,104 @@ def predict_images(
     )
     if result.get('ok'):
         result.setdefault('next_actions', [])
-        if result.get('detected_images', 0) > 0 and result.get('annotated_dir'):
+        if result.get('started_in_background'):
+            suggestion = '可继续调用 check_image_prediction_status 查看后台进度'
+            if suggestion not in result['next_actions']:
+                result['next_actions'].insert(0, suggestion)
+            _apply_structured_defaults(result, overview_key='prediction_session_overview', overview_value=_prediction_session_overview(result))
+        elif result.get('detected_images', 0) > 0 and result.get('annotated_dir'):
             suggestion = f"可查看标注结果目录: {result.get('annotated_dir')}"
             if suggestion not in result['next_actions']:
                 result['next_actions'].insert(0, suggestion)
-        _apply_structured_defaults(result, overview_key='prediction_overview', overview_value=_prediction_overview(result, mode='images'))
+            _apply_structured_defaults(result, overview_key='prediction_overview', overview_value=_prediction_overview(result, mode='images'))
+        else:
+            _apply_structured_defaults(result, overview_key='prediction_overview', overview_value=_prediction_overview(result, mode='images'))
     else:
         result.setdefault('summary', '预测未完成')
         result.setdefault('next_actions', ['请确认 source_path 是否包含可读取图片，并检查模型路径'])
         _apply_structured_defaults(result, overview_key='prediction_overview', overview_value=_prediction_overview(result, mode='images'))
+    return result
+
+
+def start_image_prediction(
+    source_path: str,
+    model: str,
+    conf: float = 0.25,
+    iou: float = 0.45,
+    output_dir: str = '',
+    save_annotated: bool = True,
+    save_labels: bool = False,
+    save_original: bool = False,
+    generate_report: bool = True,
+    max_images: int = 0,
+) -> dict[str, Any]:
+    """显式启动后台图片预测会话。适用于大目录或预计会持续较久的图片预测。"""
+    result = _wrap(
+        '后台图片预测启动',
+        service.start_image_prediction,
+        source_path=source_path,
+        model=model,
+        conf=conf,
+        iou=iou,
+        output_dir=output_dir,
+        save_annotated=save_annotated,
+        save_labels=save_labels,
+        save_original=save_original,
+        generate_report=generate_report,
+        max_images=max_images,
+    )
+    if result.get('ok'):
+        result.setdefault('next_actions', [])
+        suggestion = '可继续调用 check_image_prediction_status 查看后台进度'
+        if suggestion not in result['next_actions']:
+            result['next_actions'].insert(0, suggestion)
+        _apply_structured_defaults(result, overview_key='prediction_session_overview', overview_value=_prediction_session_overview(result))
+    else:
+        result.setdefault('summary', '后台图片预测未启动')
+        result.setdefault('next_actions', ['请确认 source_path 是否包含可读取图片，并检查模型路径'])
+        _apply_structured_defaults(result, overview_key='prediction_session_overview', overview_value=_prediction_session_overview(result))
+    return result
+
+
+def check_image_prediction_status(session_id: str = '') -> dict[str, Any]:
+    """查看当前或指定后台图片预测会话的运行状态、已处理图片数和检测统计。"""
+    result = _wrap(
+        '后台图片预测状态查询',
+        service.check_image_prediction_status,
+        session_id=session_id,
+    )
+    if result.get('ok'):
+        result.setdefault('next_actions', [])
+        if result.get('running'):
+            suggestion = '如需结束，可继续调用 stop_image_prediction'
+            if suggestion not in result['next_actions']:
+                result['next_actions'].insert(0, suggestion)
+        _apply_structured_defaults(result, overview_key='prediction_session_overview', overview_value=_prediction_session_overview(result))
+    else:
+        result.setdefault('summary', '后台图片预测状态查询未完成')
+        result.setdefault('next_actions', ['请先启动后台图片预测'])
+        _apply_structured_defaults(result, overview_key='prediction_session_overview', overview_value=_prediction_session_overview(result))
+    return result
+
+
+def stop_image_prediction(session_id: str = '') -> dict[str, Any]:
+    """停止当前或指定后台图片预测会话，并返回已完成的部分统计。"""
+    result = _wrap(
+        '后台图片预测停止',
+        service.stop_image_prediction,
+        session_id=session_id,
+    )
+    if result.get('ok'):
+        result.setdefault('next_actions', [])
+        if result.get('report_path'):
+            suggestion = f"可查看预测报告: {result.get('report_path')}"
+            if suggestion not in result['next_actions']:
+                result['next_actions'].insert(0, suggestion)
+        _apply_structured_defaults(result, overview_key='prediction_session_overview', overview_value=_prediction_session_overview(result))
+    else:
+        result.setdefault('summary', '停止后台图片预测未完成')
+        result.setdefault('next_actions', ['当前没有运行中的后台图片预测会话'])
+        _apply_structured_defaults(result, overview_key='prediction_session_overview', overview_value=_prediction_session_overview(result))
     return result
 
 

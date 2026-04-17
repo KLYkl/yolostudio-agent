@@ -26,6 +26,8 @@ def predict_images_batch(
     read_image_fn: Callable[[Path], Any | None],
     run_batch_inference_fn: Callable[..., list[list[dict[str, Any]]]],
     write_yolo_txt_fn: Callable[[Path, list[dict[str, Any]], int, int], None],
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     annotated_dir = resolved_output_dir / 'annotated'
     labels_dir = resolved_output_dir / 'labels_yolo'
@@ -46,12 +48,19 @@ def predict_images_batch(
     empty_samples: list[str] = []
     image_results: list[dict[str, Any]] = []
     batch_size = max(1, batch_size)
+    stopped = False
 
     for batch_start in range(0, len(image_paths), batch_size):
+        if should_stop and should_stop():
+            stopped = True
+            break
         batch_paths = image_paths[batch_start: batch_start + batch_size]
         valid_paths: list[Path] = []
         valid_frames: list[Any] = []
         for image_path in batch_paths:
+            if should_stop and should_stop():
+                stopped = True
+                break
             frame = read_image_fn(image_path)
             if frame is None:
                 failed_reads.append({
@@ -62,6 +71,8 @@ def predict_images_batch(
             valid_paths.append(image_path)
             valid_frames.append(frame)
 
+        if stopped:
+            break
         if not valid_frames:
             continue
 
@@ -106,8 +117,43 @@ def predict_images_batch(
                 'classes': sorted({str(det.get('class_name', 'unknown')) for det in detections}),
                 'artifact_paths': artifact_paths,
             })
+            if progress_callback is not None:
+                progress_callback({
+                    'processed_images': processed_images,
+                    'detected_images': detected_images,
+                    'empty_images': empty_images,
+                    'total_detections': sum(class_counter.values()),
+                    'class_counts': dict(sorted(class_counter.items(), key=lambda item: (-item[1], item[0]))),
+                    'last_image_path': str(image_path.resolve()),
+                })
 
     if processed_images <= 0:
+        if stopped:
+            return {
+                'ok': True,
+                'stopped': True,
+                'run_state': 'stopped',
+                'summary': '预测已停止：尚未处理任何图片',
+                'failed_reads': failed_reads,
+                'next_actions': ['可调整参数后重新启动图片预测'],
+                'processed_images': 0,
+                'detected_images': 0,
+                'empty_images': 0,
+                'class_counts': {},
+                'detected_samples': [],
+                'empty_samples': [],
+                'output_dir': str(resolved_output_dir.resolve()),
+                'annotated_dir': str(annotated_dir.resolve()) if save_annotated else '',
+                'labels_dir': str(labels_dir.resolve()) if save_labels else '',
+                'originals_dir': str(originals_dir.resolve()) if save_original else '',
+                'report_path': '',
+                'save_annotated': save_annotated,
+                'save_labels': save_labels,
+                'save_original': save_original,
+                'generate_report': generate_report,
+                'warnings': ['预测在处理首张图片前被停止'],
+                'image_results': [],
+            }
         return {
             'ok': False,
             'error': '未成功读取任何图片，预测未执行',
@@ -147,12 +193,15 @@ def predict_images_batch(
         warnings.append(f'有 {len(failed_reads)} 张图片读取失败')
     if truncated:
         warnings.append(f'已按 max_images 限制，仅处理前 {len(image_paths)} 张图片')
+    if stopped:
+        warnings.append('预测已在后台会话中被手动停止，结果为部分产物')
     if detected_images == 0:
         warnings.append('当前未检测到任何目标，可考虑更换模型或调低 conf')
 
     class_counts = dict(sorted(class_counter.items(), key=lambda item: (-item[1], item[0])))
     top_classes = [f'{name}={count}' for name, count in list(class_counts.items())[:4]]
-    summary = f'预测完成: 已处理 {processed_images} 张图片, 有检测 {detected_images}, 无检测 {empty_images}'
+    summary_prefix = '预测已停止' if stopped else '预测完成'
+    summary = f'{summary_prefix}: 已处理 {processed_images} 张图片, 有检测 {detected_images}, 无检测 {empty_images}'
     if top_classes:
         summary += f"，主要类别 {', '.join(top_classes)}"
 
@@ -170,6 +219,8 @@ def predict_images_batch(
 
     return {
         'ok': True,
+        'stopped': stopped,
+        'run_state': 'stopped' if stopped else 'completed',
         'summary': summary,
         'processed_images': processed_images,
         'detected_images': detected_images,

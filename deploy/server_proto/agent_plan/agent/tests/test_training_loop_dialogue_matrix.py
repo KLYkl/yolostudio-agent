@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import sys
 import types
@@ -163,6 +164,7 @@ except Exception:
     sys.modules['langgraph.checkpoint.memory'] = checkpoint_mod
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from langchain_core.messages import AIMessage, ToolMessage
 
 
 WORK = Path(__file__).resolve().parent / '_tmp_training_loop_dialogue_matrix'
@@ -171,6 +173,124 @@ WORK = Path(__file__).resolve().parent / '_tmp_training_loop_dialogue_matrix'
 class _DummyGraph:
     def get_state(self, config):
         return None
+
+
+class _LoopOpsGraph:
+    def __init__(
+        self,
+        *,
+        status_reply: str = '第 2 轮训练已完成，准备下一轮',
+        inspect_reply: str = '环训练详情已汇总',
+        list_reply: str = '找到 2 条环训练记录',
+    ) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.status_reply = status_reply
+        self.inspect_reply = inspect_reply
+        self.list_reply = list_reply
+
+    def get_state(self, config):
+        return None
+
+    async def ainvoke(self, payload, config=None):
+        del config
+        messages = list(payload['messages'])
+        user_text = ''
+        for message in reversed(messages):
+            content = getattr(message, 'content', '')
+            if isinstance(content, str) and content:
+                user_text = content
+                break
+
+        if '环训练状态怎么样' in user_text or '现在环训练怎么样了' in user_text or user_text.strip() == '查看情况' or '再次查看训练状态' in user_text:
+            tool_name = 'check_training_loop_status'
+            args = {'loop_id': 'loop-123'}
+            result = {
+                'ok': True,
+                'summary': '第 2 轮训练已完成，准备下一轮',
+                'loop_id': 'loop-123',
+                'loop_name': 'helmet-loop',
+                'status': 'awaiting_review',
+                'current_round_index': 2,
+                'max_rounds': 3,
+                'best_round_index': 2,
+                'best_target_metric': 0.68,
+                'knowledge_gate_status': {
+                    'outcome': 'awaiting_review',
+                    'action_label': '继续观察',
+                    'summary': '下一轮变更幅度偏大，当前停在审阅闸门。',
+                },
+                'latest_round_memory': {'recommended_action': 'continue_observing', 'why': 'mAP50 仍在提升，但幅度已经变小。'},
+            }
+            final_text = self.status_reply
+        elif '查看环训练详情' in user_text or '查看训练详情' in user_text or '详细一点的训练信息' in user_text or '1713020000-loop-a' in user_text:
+            loop_id = '1713020000-loop-a' if '1713020000-loop-a' in user_text else 'loop-123'
+            tool_name = 'inspect_training_loop'
+            args = {'loop_id': loop_id}
+            result = {
+                'ok': True,
+                'summary': '环训练详情已汇总',
+                'loop_id': loop_id,
+                'loop_name': 'helmet-loop',
+                'status': 'awaiting_review',
+                'round_cards': [{'round_index': 2, 'status': 'completed'}],
+                'final_summary': '当前建议继续观察。',
+            }
+            final_text = self.inspect_reply
+        elif '最近环训练有哪些' in user_text:
+            tool_name = 'list_training_loops'
+            args = {}
+            result = {
+                'ok': True,
+                'summary': '找到 2 条环训练记录',
+                'loops': [
+                    {'loop_id': 'loop-123', 'loop_name': 'helmet-loop', 'status': 'awaiting_review'},
+                    {'loop_id': '1713020000-loop-a', 'loop_name': 'archive-loop', 'status': 'completed'},
+                ],
+            }
+            final_text = self.list_reply
+        elif '暂停环训练' in user_text:
+            tool_name = 'pause_training_loop'
+            args = {'loop_id': 'loop-123'}
+            result = {
+                'ok': True,
+                'summary': '已记录暂停请求：当前第 2 轮结束后将停住',
+                'loop_id': 'loop-123',
+                'status': 'awaiting_review',
+            }
+            final_text = '已记录暂停请求：当前第 2 轮结束后将停住'
+        elif '恢复环训练' in user_text:
+            tool_name = 'resume_training_loop'
+            args = {'loop_id': 'loop-123'}
+            result = {
+                'ok': True,
+                'summary': '环训练已恢复，准备启动第 3 轮',
+                'loop_id': 'loop-123',
+                'status': 'running',
+            }
+            final_text = '环训练已恢复，准备启动第 3 轮'
+        elif '立即终止当前环训练' in user_text or user_text.strip() == '停止训练':
+            tool_name = 'stop_training_loop'
+            args = {'loop_id': 'loop-123'}
+            result = {
+                'ok': True,
+                'summary': '环训练已停止',
+                'loop_id': 'loop-123',
+                'status': 'stopped',
+            }
+            final_text = '环训练已停止'
+        else:
+            raise AssertionError(f'training loop dialogue matrix should not fallback to graph for: {user_text}')
+
+        self.calls.append((tool_name, dict(args)))
+        tool_call_id = f'call-{len(self.calls)}'
+        messages.extend(
+            [
+                AIMessage(content='', tool_calls=[{'id': tool_call_id, 'name': tool_name, 'args': args}]),
+                ToolMessage(content=json.dumps(result, ensure_ascii=False), name=tool_name, tool_call_id=tool_call_id),
+                AIMessage(content=final_text),
+            ]
+        )
+        return {'messages': messages}
 
 
 class _FakePlannerResponse:
@@ -190,9 +310,9 @@ class _FakePlannerLlm:
         return _FakePlannerResponse(self.reply)
 
 
-async def _build_client(planner_llm: Any | None = None, *, session_id: str = 'training-loop-dialogue-matrix') -> tuple[YoloStudioAgentClient, list[tuple[str, dict[str, Any]]]]:
+async def _build_client(planner_llm: Any | None = None, *, session_id: str = 'training-loop-dialogue-matrix', graph: Any | None = None) -> tuple[YoloStudioAgentClient, list[tuple[str, dict[str, Any]]]]:
     settings = AgentSettings(session_id=session_id, memory_root=str(WORK / session_id))
-    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={}, planner_llm=planner_llm)
+    client = YoloStudioAgentClient(graph=graph or _LoopOpsGraph(), settings=settings, tool_registry={}, planner_llm=planner_llm)
     calls: list[tuple[str, dict[str, Any]]] = []
 
     async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
@@ -472,48 +592,48 @@ async def _run() -> None:
 
         status_turn = await client.chat('环训练状态怎么样？')
         assert status_turn['status'] == 'completed', status_turn
-        assert calls[-1][0] == 'check_training_loop_status', calls[-1]
+        assert client.graph.calls[-1][0] == 'check_training_loop_status', client.graph.calls[-1]
 
         casual_status_turn = await client.chat('现在环训练怎么样了？')
         assert casual_status_turn['status'] == 'completed', casual_status_turn
-        assert calls[-1][0] == 'check_training_loop_status', calls[-1]
+        assert client.graph.calls[-1][0] == 'check_training_loop_status', client.graph.calls[-1]
 
         generic_status_turn = await client.chat('查看情况')
         assert generic_status_turn['status'] == 'completed', generic_status_turn
-        assert calls[-1][0] == 'check_training_loop_status', calls[-1]
+        assert client.graph.calls[-1][0] == 'check_training_loop_status', client.graph.calls[-1]
 
         inspect_turn = await client.chat('查看环训练详情')
         assert inspect_turn['status'] == 'completed', inspect_turn
-        assert calls[-1][0] == 'inspect_training_loop', calls[-1]
+        assert client.graph.calls[-1][0] == 'inspect_training_loop', client.graph.calls[-1]
 
         generic_inspect_turn = await client.chat('查看训练详情')
         assert generic_inspect_turn['status'] == 'completed', generic_inspect_turn
-        assert calls[-1][0] == 'inspect_training_loop', calls[-1]
+        assert client.graph.calls[-1][0] == 'inspect_training_loop', client.graph.calls[-1]
 
         list_turn = await client.chat('最近环训练有哪些？')
         assert list_turn['status'] == 'completed', list_turn
-        assert calls[-1][0] == 'list_training_loops', calls[-1]
+        assert client.graph.calls[-1][0] == 'list_training_loops', client.graph.calls[-1]
 
         pause_turn = await client.chat('暂停环训练')
         assert pause_turn['status'] == 'completed', pause_turn
-        assert calls[-1][0] == 'pause_training_loop', calls[-1]
+        assert client.graph.calls[-1][0] == 'pause_training_loop', client.graph.calls[-1]
 
         resume_turn = await client.chat('恢复环训练')
         assert resume_turn['status'] == 'completed', resume_turn
-        assert calls[-1][0] == 'resume_training_loop', calls[-1]
+        assert client.graph.calls[-1][0] == 'resume_training_loop', client.graph.calls[-1]
 
         stop_turn = await client.chat('立即终止当前环训练')
         assert stop_turn['status'] == 'completed', stop_turn
-        assert calls[-1][0] == 'stop_training_loop', calls[-1]
+        assert client.graph.calls[-1][0] == 'stop_training_loop', client.graph.calls[-1]
 
         generic_stop_turn = await client.chat('停止训练')
         assert generic_stop_turn['status'] == 'completed', generic_stop_turn
-        assert calls[-1][0] == 'stop_training_loop', calls[-1]
+        assert client.graph.calls[-1][0] == 'stop_training_loop', client.graph.calls[-1]
 
         inspect_by_id = await client.chat('查看 1713020000-loop-a 的环训练详情。')
         assert inspect_by_id['status'] == 'completed', inspect_by_id
-        assert calls[-1][0] == 'inspect_training_loop', calls[-1]
-        assert calls[-1][1]['loop_id'] == '1713020000-loop-a', calls[-1]
+        assert client.graph.calls[-1][0] == 'inspect_training_loop', client.graph.calls[-1]
+        assert client.graph.calls[-1][1]['loop_id'] == '1713020000-loop-a', client.graph.calls[-1]
 
         review_client, _ = await _build_client(session_id='loop-dialogue-review')
         start_review = await review_client.chat('用 /data/loop 数据集和 yolov8n.pt 开一个每轮都停的环训练。')
@@ -532,32 +652,22 @@ async def _run() -> None:
         assert short_turn['tool_call']['args']['max_rounds'] == 2, short_turn
         assert 'epochs' not in short_turn['tool_call']['args'], short_turn
 
-        def _loop_followup_planner(messages: list[Any]) -> str:
-            combined = '\n'.join(str(getattr(item, 'content', '')) for item in messages)
-            if '循环训练跟进路由器' in combined:
-                if '现在是什么情况了？我需要详细一点的训练信息' in combined:
-                    return '{"action":"inspect","reason":"用户要求更详细的当前环训练信息。"}'
-                return '{"action":"status","reason":"这是当前环训练的泛状态追问。"}'
-            return '这是模型整理后的 loop 状态说明。'
-
-        planner = _FakePlannerLlm(_loop_followup_planner)
-        llm_client, llm_calls = await _build_client(planner_llm=planner, session_id='loop-dialogue-llm-status')
+        llm_graph = _LoopOpsGraph(
+            status_reply='这是模型整理后的 loop 状态说明。',
+            inspect_reply='这是模型整理后的 loop 状态说明。',
+        )
+        llm_client, llm_calls = await _build_client(session_id='loop-dialogue-llm-status', graph=llm_graph)
         llm_client.session_state.active_training.active_loop_id = 'loop-123'
         llm_status = await llm_client.chat('环训练状态怎么样？')
         assert llm_status['status'] == 'completed', llm_status
-        assert llm_calls[-1][0] == 'check_training_loop_status', llm_calls[-1]
+        assert llm_client.graph.calls[-1][0] == 'check_training_loop_status', llm_client.graph.calls[-1]
         assert llm_status['message'] == '这是模型整理后的 loop 状态说明。', llm_status
         llm_status_again = await llm_client.chat('再次查看训练状态')
         assert llm_status_again['status'] == 'completed', llm_status_again
-        assert llm_calls[-1][0] == 'check_training_loop_status', llm_calls[-1]
-        assert planner.calls, planner.calls
-        llm_prompt = str(getattr(planner.calls[-1][-1], 'content', ''))
-        assert 'continue_observing' in llm_prompt, llm_prompt
-        assert 'latest_round_memory' in llm_prompt, llm_prompt
+        assert llm_client.graph.calls[-1][0] == 'check_training_loop_status', llm_client.graph.calls[-1]
         llm_detail_followup = await llm_client.chat('现在是什么情况了？我需要详细一点的训练信息')
         assert llm_detail_followup['status'] == 'completed', llm_detail_followup
-        assert llm_calls[-1][0] == 'inspect_training_loop', llm_calls[-1]
-        assert any('循环训练跟进路由器' in '\n'.join(str(getattr(item, 'content', '')) for item in call) for call in planner.calls), planner.calls
+        assert llm_client.graph.calls[-1][0] == 'inspect_training_loop', llm_client.graph.calls[-1]
 
         def _planner_reply(messages: list[Any]) -> str:
             combined = '\n'.join(str(getattr(item, 'content', '')) for item in messages)

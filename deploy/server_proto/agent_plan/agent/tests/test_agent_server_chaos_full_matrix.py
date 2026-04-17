@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
-import runpy
 import shutil
+import subprocess
+import sys
 from datetime import datetime, UTC
 from pathlib import Path
 
@@ -23,9 +24,10 @@ SUITES = [
     'test_agent_server_chaos_p2_mismatch_matrix.py',
     'test_agent_server_chaos_p2_guardrail_misc.py',
     'test_agent_server_chaos_p2_crossmainline_extra.py',
+    'test_agent_server_chaos_p3_intent_ab_matrix.py',
 ]
 
-SCENARIO_TOTAL = 100
+SCENARIO_TOTAL = 151
 
 
 def main() -> None:
@@ -34,7 +36,7 @@ def main() -> None:
     shutil.rmtree(tmp_root, ignore_errors=True)
     tmp_root.mkdir(parents=True, exist_ok=True)
     for suite in SUITES:
-        runpy.run_path(str(tests_dir / suite), run_name='__main__')
+        subprocess.run([sys.executable, str(tests_dir / suite)], check=True, cwd=str(tests_dir))
     output = {
         'ok': True,
         'scenario_total': SCENARIO_TOTAL,

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import asyncio
+import json
 import sys
 import types
 from pathlib import Path
+from typing import Any
 
 if __package__ in {None, ''}:
     repo_root = Path(__file__).resolve().parents[2]
@@ -16,21 +17,23 @@ if __package__ in {None, ''}:
 
 def _install_fake_test_dependencies() -> None:
     fake_openai = types.ModuleType('langchain_openai')
-    fake_ollama = types.ModuleType('langchain_ollama')
 
     class _FakeChatOpenAI:
         def __init__(self, *args, **kwargs):
             self.args = args
             self.kwargs = kwargs
 
+    fake_openai.ChatOpenAI = _FakeChatOpenAI
+    sys.modules['langchain_openai'] = fake_openai
+
+    fake_ollama = types.ModuleType('langchain_ollama')
+
     class _FakeChatOllama:
         def __init__(self, *args, **kwargs):
             self.args = args
             self.kwargs = kwargs
 
-    fake_openai.ChatOpenAI = _FakeChatOpenAI
     fake_ollama.ChatOllama = _FakeChatOllama
-    sys.modules['langchain_openai'] = fake_openai
     sys.modules['langchain_ollama'] = fake_ollama
 
     core_mod = types.ModuleType('langchain_core')
@@ -108,8 +111,8 @@ def _install_fake_test_dependencies() -> None:
             for key, value in kwargs.items():
                 setattr(self, key, value)
 
-    def _Field(default=None, **kwargs):
-        del kwargs
+    def _Field(default=None, description='', **kwargs):
+        del description, kwargs
         return default
 
     pyd_mod.BaseModel = _BaseModel
@@ -121,7 +124,7 @@ def _install_fake_test_dependencies() -> None:
     checkpoint_mod = types.ModuleType('langgraph.checkpoint.memory')
 
     def _fake_create_react_agent(*args, **kwargs):
-        return {'args': args, 'kwargs': kwargs}
+        raise AssertionError('create_react_agent should not be called in chaos tests')
 
     class _Command:
         def __init__(self, resume=None):
@@ -143,66 +146,55 @@ def _install_fake_test_dependencies() -> None:
 
 _install_fake_test_dependencies()
 
-import yolostudio_agent.agent.client.agent_client as agent_client
+from langchain_core.messages import AIMessage, ToolMessage
+from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
 
 
-class _FakeMCPClient:
-    def __init__(self, *args, **kwargs):
-        self.args = args
-        self.kwargs = kwargs
+class _NoLLMGraph:
+    def get_state(self, config):
+        return None
 
-    async def get_tools(self):
-        return []
-
-
-class _DummyLlm:
-    pass
+    async def ainvoke(self, *args, **kwargs):
+        raise AssertionError('chaos routed cases should not fallback to graph')
 
 
-async def _run() -> None:
-    captured: list[dict[str, object]] = []
+class _ScriptedGraph:
+    def __init__(self, routes: dict[str, tuple[list[tuple[str, dict[str, Any]]], str]]) -> None:
+        self.routes = dict(routes)
+        self.calls: list[tuple[str, dict[str, Any]]] = []
 
-    def _fake_create_react_agent(*args, **kwargs):
-        captured.append({'args': args, 'kwargs': kwargs})
-        return {'graph': 'ok'}
+    def get_state(self, config):
+        return None
 
-    class _FakeTool:
-        def __init__(self, name, metadata=None):
-            self.name = name
-            self.description = 'fake'
-            self.args_schema = None
-            self.metadata = metadata or {}
-
-    agent_client.MultiServerMCPClient = _FakeMCPClient  # type: ignore[assignment]
-    agent_client.build_mcp_connection_config = lambda url: {'url': url}  # type: ignore[assignment]
-    agent_client.build_local_transfer_tools = lambda: [
-        _FakeTool('upload_assets_to_remote', {'confirmation_required': True, 'open_world': True}),
-        _FakeTool('list_remote_profiles', {'confirmation_required': False, 'read_only': True}),
-    ]  # type: ignore[assignment]
-    agent_client.adapt_tools_for_chat_model = lambda tools, include_aliases=False: tools  # type: ignore[assignment]
-    agent_client.build_llm = lambda *args, **kwargs: _DummyLlm()  # type: ignore[assignment]
-    agent_client.create_react_agent = _fake_create_react_agent  # type: ignore[assignment]
-
-    manual = await agent_client.build_agent_client(
-        agent_client.AgentSettings(session_id='interrupt-manual', memory_root='agent/tests/_tmp_interrupt_manual', confirmation_mode='manual')
-    )
-    assert manual is not None
-    manual_kwargs = captured[-1]['kwargs']  # type: ignore[index]
-    assert manual_kwargs.get('interrupt_before') == ['tools'], manual_kwargs
-
-    auto = await agent_client.build_agent_client(
-        agent_client.AgentSettings(session_id='interrupt-auto', memory_root='agent/tests/_tmp_interrupt_auto', confirmation_mode='auto')
-    )
-    assert auto is not None
-    auto_kwargs = captured[-1]['kwargs']  # type: ignore[index]
-    assert 'interrupt_before' not in auto_kwargs, auto_kwargs
-
-    print('agent build interrupt mode ok')
+    async def ainvoke(self, payload, config=None):
+        del config
+        messages = list(payload['messages'])
+        user_text = ''
+        for message in reversed(messages):
+            content = getattr(message, 'content', '')
+            if isinstance(content, str) and content:
+                user_text = content
+                break
+        for marker, (tool_plan, final_text) in self.routes.items():
+            if marker in user_text:
+                tool_messages: list[Any] = []
+                for tool_name, result in tool_plan:
+                    self.calls.append((tool_name, {}))
+                    tool_call_id = f'call-{len(self.calls)}'
+                    tool_messages.extend(
+                        [
+                            AIMessage(content='', tool_calls=[{'id': tool_call_id, 'name': tool_name, 'args': {}}]),
+                            ToolMessage(content=json.dumps(result, ensure_ascii=False), name=tool_name, tool_call_id=tool_call_id),
+                        ]
+                    )
+                return {'messages': messages + tool_messages + [AIMessage(content=final_text)]}
+        raise AssertionError(f'unexpected graph prompt: {user_text}')
 
 
-def main() -> None:
-    asyncio.run(_run())
+WORK = Path(__file__).resolve().parent / '_tmp_agent_server_chaos_p0'
 
 
-if __name__ == '__main__':
-    main()
+def _make_client(session_id: str) -> YoloStudioAgentClient:
+    root = WORK / session_id
+    settings = AgentSettings(session_id=session_id, memory_root=str(root))
+    return YoloStudioAgentClient(graph=_NoLLMGraph(), settings=settings, tool_registry={})

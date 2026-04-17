@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import sys
 import types
@@ -166,11 +167,62 @@ except Exception:
     sys.modules['langgraph.checkpoint.memory'] = checkpoint_mod
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from langchain_core.messages import AIMessage, ToolMessage
 
 
-class _DummyGraph:
+class _FakeGraph:
+    def __init__(self, *, summary_payload: dict[str, Any], analysis_payload: dict[str, Any], recommendation_payload: dict[str, Any]) -> None:
+        self.summary_payload = dict(summary_payload)
+        self.analysis_payload = dict(analysis_payload)
+        self.recommendation_payload = dict(recommendation_payload)
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
     def get_state(self, config):
         return None
+
+    async def ainvoke(self, payload, config=None):
+        del config
+        messages = list(payload['messages'])
+        user_text = ''
+        for message in reversed(messages):
+            content = getattr(message, 'content', '')
+            if isinstance(content, str) and content:
+                user_text = content
+                break
+
+        if '这次训练效果怎么样' in user_text:
+            tool_plan = [
+                ('summarize_training_run', self.summary_payload),
+                ('analyze_training_outcome', self.analysis_payload),
+            ]
+            final_text = (
+                f"{self.summary_payload['summary']}\n\n"
+                f"{self.analysis_payload['summary']}"
+            )
+        elif '下一步先补数据还是调参数' in user_text:
+            tool_plan = [
+                ('summarize_training_run', self.summary_payload),
+                ('recommend_next_training_step', self.recommendation_payload),
+            ]
+            final_text = (
+                f"{self.summary_payload['summary']}\n\n"
+                f"{self.recommendation_payload['summary']}\n"
+                f"建议动作: {self.recommendation_payload['recommended_action']}"
+            )
+        else:
+            raise AssertionError(f'unexpected graph prompt: {user_text}')
+
+        tool_messages: list[Any] = []
+        for tool_name, result in tool_plan:
+            self.calls.append((tool_name, {}))
+            tool_call_id = f'call-{len(self.calls)}'
+            tool_messages.extend(
+                [
+                    AIMessage(content='', tool_calls=[{'id': tool_call_id, 'name': tool_name, 'args': {}}]),
+                    ToolMessage(content=json.dumps(result, ensure_ascii=False), name=tool_name, tool_call_id=tool_call_id),
+                ]
+            )
+        return {'messages': messages + tool_messages + [AIMessage(content=final_text)]}
 
 
 WORK = Path(__file__).resolve().parent / '_tmp_training_mainline_final_state_roundtrip'
@@ -196,9 +248,6 @@ def _build_status_payload(run_state: str, metrics: dict[str, Any], *, summary: s
 async def _run_final_state_scenario(*, session_id: str, status_query: str, final_run_state: str, status_summary: str, training_summary: str, analysis_summary: str, recommendation_summary: str, recommended_action: str, metrics: dict[str, Any], facts: list[str], signals: list[str]) -> None:
     scenario_root = WORK / session_id
     settings = AgentSettings(session_id=session_id, memory_root=str(scenario_root))
-    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
-    calls: list[tuple[str, dict[str, Any]]] = []
-
     status_payload = _build_status_payload(final_run_state, metrics, summary=status_summary, facts=facts, signals=signals)
     summary_payload = {
         'ok': True,
@@ -215,6 +264,36 @@ async def _run_final_state_scenario(*, session_id: str, status_query: str, final
         'observation_stage': 'final',
         'progress': {'epoch': 30, 'total_epochs': 30, 'progress_ratio': 1.0},
     }
+    analysis_payload = {
+        'ok': True,
+        'summary': analysis_summary,
+        'assessment': recommended_action,
+        'interpretation': '当前已是最终状态，可以基于验证指标做判断。',
+        'recommendation': recommendation_summary,
+        'matched_rule_ids': ['generic_training_final_observation'],
+        'signals': list(signals),
+        'facts': list(facts),
+        'next_actions': ['依据最终指标决定是补数据还是调参数'],
+        'source_summary': {'official': 2, 'workflow': 1},
+    }
+    recommendation_payload = {
+        'ok': True,
+        'summary': recommendation_summary,
+        'recommended_action': recommended_action,
+        'basis': list(facts),
+        'why': '当前已经拿到最终状态和可分析指标，可以做下一步动作判断。',
+        'matched_rule_ids': ['generic_training_final_observation'],
+        'signals': list(signals),
+        'next_actions': ['按照建议处理当前结果'],
+        'source_summary': {'official': 2, 'workflow': 1},
+    }
+    graph = _FakeGraph(
+        summary_payload=summary_payload,
+        analysis_payload=analysis_payload,
+        recommendation_payload=recommendation_payload,
+    )
+    client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
+    calls: list[tuple[str, dict[str, Any]]] = []
 
     async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
         calls.append((tool_name, dict(kwargs)))
@@ -270,39 +349,6 @@ async def _run_final_state_scenario(*, session_id: str, status_query: str, final
             }
         elif tool_name == 'check_training_status':
             result = dict(status_payload)
-        elif tool_name == 'summarize_training_run':
-            result = dict(summary_payload)
-        elif tool_name == 'analyze_training_outcome':
-            assert kwargs['metrics']['run_state'] == summary_payload['run_state']
-            assert kwargs['metrics']['summary'] == summary_payload['summary']
-            assert 'comparison' in kwargs
-            result = {
-                'ok': True,
-                'summary': analysis_summary,
-                'assessment': recommended_action,
-                'interpretation': '当前已是最终状态，可以基于验证指标做判断。',
-                'recommendation': recommendation_summary,
-                'matched_rule_ids': ['generic_training_final_observation'],
-                'signals': list(signals),
-                'facts': list(facts),
-                'next_actions': ['依据最终指标决定是补数据还是调参数'],
-                'source_summary': {'official': 2, 'workflow': 1},
-            }
-        elif tool_name == 'recommend_next_training_step':
-            assert kwargs['status']['run_state'] == summary_payload['run_state']
-            assert kwargs['status']['summary'] == summary_payload['summary']
-            assert 'comparison' in kwargs
-            result = {
-                'ok': True,
-                'summary': recommendation_summary,
-                'recommended_action': recommended_action,
-                'basis': list(facts),
-                'why': '当前已经拿到最终状态和可分析指标，可以做下一步动作判断。',
-                'matched_rule_ids': ['generic_training_final_observation'],
-                'signals': list(signals),
-                'next_actions': ['按照建议处理当前结果'],
-                'source_summary': {'official': 2, 'workflow': 1},
-            }
         else:
             raise AssertionError(f'unexpected tool call: {tool_name}')
 
@@ -336,17 +382,14 @@ async def _run_final_state_scenario(*, session_id: str, status_query: str, final
 
     turn5 = await client.chat('这次训练效果怎么样？')
     assert turn5['status'] == 'completed', turn5
-    assert calls[-2][0] == 'summarize_training_run'
-    assert calls[-1][0] == 'analyze_training_outcome'
+    assert graph.calls[-2:] == [('summarize_training_run', {}), ('analyze_training_outcome', {})], graph.calls
     assert '训练结果汇总:' in turn5['message']
     assert '训练结果分析:' in turn5['message']
     assert '不能当成最终结论' not in turn5['message']
 
     turn6 = await client.chat('下一步先补数据还是调参数？')
     assert turn6['status'] == 'completed', turn6
-    assert calls[-3][0] == 'training_readiness'
-    assert calls[-2][0] == 'summarize_training_run'
-    assert calls[-1][0] == 'recommend_next_training_step'
+    assert graph.calls[-2:] == [('summarize_training_run', {}), ('recommend_next_training_step', {})], graph.calls
     assert recommended_action in turn6['message'] or recommendation_summary in turn6['message']
     assert client.session_state.active_training.last_summary.get('run_state') == final_run_state
 

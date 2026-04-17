@@ -767,6 +767,19 @@ def build_grounded_tool_reply(applied_results: list[tuple[str, dict[str, Any]]])
             lines.append(f"结果目录: {save_dir}")
         return _join(lines)
     if tool_name == 'predict_images':
+        if result.get('started_in_background'):
+            lines = [result.get('summary', '后台图片预测已启动')]
+            if result.get('session_id'):
+                lines.append(f"会话 ID: {result.get('session_id')}")
+            if result.get('total_images') is not None:
+                lines.append(f"总图片数: {result.get('total_images')}")
+            if result.get('output_dir'):
+                lines.append(f"输出目录: {result.get('output_dir')}")
+            suggestions = _recommendation_lines(result, limit=3)
+            if suggestions:
+                lines.append('建议:')
+                lines.extend(f'- {item}' for item in suggestions)
+            return _join(lines)
         lines = [result.get('summary', '预测完成')]
         overview = result.get('prediction_overview') or {}
         processed_images = result.get('processed_images')
@@ -804,6 +817,32 @@ def build_grounded_tool_reply(applied_results: list[tuple[str, dict[str, Any]]])
         if report_path:
             lines.append(f"预测报告: {report_path}")
         suggestions = _recommendation_lines(result)
+        if suggestions:
+            lines.append('建议:')
+            lines.extend(f'- {item}' for item in suggestions)
+        return _join(lines)
+    if tool_name in {'start_image_prediction', 'check_image_prediction_status', 'stop_image_prediction'}:
+        lines = [result.get('summary', '后台图片预测状态已更新')]
+        if result.get('session_id'):
+            lines.append(f"会话 ID: {result.get('session_id')}")
+        if result.get('status'):
+            lines.append(f"状态: {result.get('status')}")
+        total_images = result.get('total_images', 0)
+        processed_images = result.get('processed_images', 0)
+        detected_images = result.get('detected_images', 0)
+        empty_images = result.get('empty_images', 0)
+        lines.append(
+            f"统计: 已处理 {processed_images}/{total_images} 张图片 / 有检测 {detected_images} / 无检测 {empty_images}"
+        )
+        class_counts = result.get('class_counts') or {}
+        if class_counts:
+            preview = '，'.join(f"{k}={v}" for k, v in list(class_counts.items())[:4])
+            lines.append(f'主要类别: {preview}')
+        if result.get('report_path'):
+            lines.append(f"预测报告: {result.get('report_path')}")
+        if result.get('error'):
+            lines.append(f"异常: {result.get('error')}")
+        suggestions = _recommendation_lines(result, limit=3)
         if suggestions:
             lines.append('建议:')
             lines.extend(f'- {item}' for item in suggestions)

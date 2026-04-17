@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import sys
 import types
@@ -163,11 +164,62 @@ except Exception:
     sys.modules['langgraph.checkpoint.memory'] = checkpoint_mod
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from langchain_core.messages import AIMessage, ToolMessage
 
 
-class _DummyGraph:
+class _FakeGraph:
+    def __init__(self, *, summary_result: dict[str, Any], analysis_result: dict[str, Any], next_step_result: dict[str, Any]) -> None:
+        self.summary_result = dict(summary_result)
+        self.analysis_result = dict(analysis_result)
+        self.next_step_result = dict(next_step_result)
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
     def get_state(self, config):
         return None
+
+    async def ainvoke(self, payload, config=None):
+        del config
+        messages = list(payload['messages'])
+        user_text = ''
+        for message in reversed(messages):
+            content = getattr(message, 'content', '')
+            if isinstance(content, str) and content:
+                user_text = content
+                break
+
+        if '这次训练效果怎么样' in user_text:
+            tool_plan = [
+                ('summarize_training_run', self.summary_result),
+                ('analyze_training_outcome', self.analysis_result),
+            ]
+            final_text = (
+                f"{self.summary_result['summary']}\n\n"
+                f"{self.analysis_result['summary']}"
+            )
+        elif '下一步先补数据还是调参数' in user_text:
+            tool_plan = [
+                ('summarize_training_run', self.summary_result),
+                ('recommend_next_training_step', self.next_step_result),
+            ]
+            final_text = (
+                f"{self.summary_result['summary']}\n\n"
+                f"{self.next_step_result['summary']}\n"
+                f"建议动作: {self.next_step_result['recommended_action']}"
+            )
+        else:
+            raise AssertionError(f'unexpected graph prompt: {user_text}')
+
+        tool_messages: list[Any] = []
+        for tool_name, result in tool_plan:
+            self.calls.append((tool_name, {}))
+            tool_call_id = f'call-{len(self.calls)}'
+            tool_messages.extend(
+                [
+                    AIMessage(content='', tool_calls=[{'id': tool_call_id, 'name': tool_name, 'args': {}}]),
+                    ToolMessage(content=json.dumps(result, ensure_ascii=False), name=tool_name, tool_call_id=tool_call_id),
+                ]
+            )
+        return {'messages': messages + tool_messages + [AIMessage(content=final_text)]}
 
 
 WORK = Path(__file__).resolve().parent / '_tmp_training_mainline_roundtrip'
@@ -177,8 +229,46 @@ async def _run() -> None:
     shutil.rmtree(WORK, ignore_errors=True)
     WORK.mkdir(parents=True, exist_ok=True)
     try:
+        summary_result = {
+            'ok': True,
+            'summary': '训练结果汇总: 当前训练仍在早期阶段，只有损失指标，尚不能下最终结论。',
+            'run_state': 'running',
+            'model_family': 'yolo',
+            'task_type': 'detection',
+            'metrics': {'box_loss': 1.245, 'cls_loss': 0.876, 'dfl_loss': 0.934},
+            'signals': ['training_running', 'loss_only_metrics', 'insufficient_eval_metrics'],
+            'facts': ['epoch=2/30', '当前仅有训练损失', '尚无稳定 precision/recall/mAP'],
+            'next_actions': ['继续训练到更多 epoch', '再观察验证指标'],
+            'analysis_ready': False,
+            'minimum_facts_ready': True,
+            'observation_stage': 'early',
+        }
+        analysis_result = {
+            'ok': True,
+            'summary': '训练结果分析: 当前仍属早期观察，更适合继续收集验证指标。',
+            'assessment': 'continue_training',
+            'interpretation': '现在只有训练损失，暂时不能把阶段性变化当成最终效果。',
+            'recommendation': '继续训练并关注后续验证指标。',
+            'matched_rule_ids': ['generic_training_early_observation'],
+            'signals': ['training_running', 'insufficient_eval_metrics'],
+            'facts': ['epoch=2/30', '当前仅有训练损失'],
+            'next_actions': ['继续训练到更多 epoch', '之后再看 precision/recall/mAP'],
+            'source_summary': {'official': 2, 'workflow': 1},
+        }
+        next_step_result = {
+            'ok': True,
+            'summary': '下一步建议: 当前先继续训练并收集更稳定的验证指标，不急着改参数。',
+            'recommended_action': 'continue_training_and_collect_metrics',
+            'basis': ['当前训练仅到第 2/30 轮', '尚无稳定 precision/recall/mAP'],
+            'why': '现在更像事实不足，而不是已经可以判断数据或参数问题。',
+            'matched_rule_ids': ['generic_training_early_observation'],
+            'signals': ['training_running', 'insufficient_eval_metrics'],
+            'next_actions': ['继续训练到更多 epoch', '等有验证指标后再判断是补数据还是调参数'],
+            'source_summary': {'official': 2, 'workflow': 1},
+        }
         settings = AgentSettings(session_id='training-mainline-roundtrip', memory_root=str(WORK))
-        client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+        graph = _FakeGraph(summary_result=summary_result, analysis_result=analysis_result, next_step_result=next_step_result)
+        client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
         calls: list[tuple[str, dict[str, Any]]] = []
         prepared = {'value': False}
 
@@ -289,52 +379,6 @@ async def _run() -> None:
                     'facts': ['epoch=2/30', 'batch=12', 'imgsz=960'],
                     'next_actions': ['可继续轮询 check_training_status', '也可以调用 summarize_training_run 查看阶段性事实'],
                 }
-            elif tool_name == 'summarize_training_run':
-                result = {
-                    'ok': True,
-                    'summary': '训练结果汇总: 当前训练仍在早期阶段，只有损失指标，尚不能下最终结论。',
-                    'run_state': 'running',
-                    'model_family': 'yolo',
-                    'task_type': 'detection',
-                    'metrics': {'box_loss': 1.245, 'cls_loss': 0.876, 'dfl_loss': 0.934},
-                    'signals': ['training_running', 'loss_only_metrics', 'insufficient_eval_metrics'],
-                    'facts': ['epoch=2/30', '当前仅有训练损失', '尚无稳定 precision/recall/mAP'],
-                    'next_actions': ['继续训练到更多 epoch', '再观察验证指标'],
-                    'analysis_ready': False,
-                    'minimum_facts_ready': True,
-                    'observation_stage': 'early',
-                }
-            elif tool_name == 'analyze_training_outcome':
-                assert kwargs['metrics']['run_state'] == 'running'
-                assert kwargs['metrics']['summary'].startswith('训练结果汇总:')
-                assert 'comparison' in kwargs
-                result = {
-                    'ok': True,
-                    'summary': '训练结果分析: 当前仍属早期观察，更适合继续收集验证指标。',
-                    'assessment': 'continue_training',
-                    'interpretation': '现在只有训练损失，暂时不能把阶段性变化当成最终效果。',
-                    'recommendation': '继续训练并关注后续验证指标。',
-                    'matched_rule_ids': ['generic_training_early_observation'],
-                    'signals': ['training_running', 'insufficient_eval_metrics'],
-                    'facts': ['epoch=2/30', '当前仅有训练损失'],
-                    'next_actions': ['继续训练到更多 epoch', '之后再看 precision/recall/mAP'],
-                    'source_summary': {'official': 2, 'workflow': 1},
-                }
-            elif tool_name == 'recommend_next_training_step':
-                assert kwargs['status']['run_state'] == 'running'
-                assert kwargs['status']['summary'].startswith('训练结果汇总:')
-                assert 'comparison' in kwargs
-                result = {
-                    'ok': True,
-                    'summary': '下一步建议: 当前先继续训练并收集更稳定的验证指标，不急着改参数。',
-                    'recommended_action': 'continue_training_and_collect_metrics',
-                    'basis': ['当前训练仅到第 2/30 轮', '尚无稳定 precision/recall/mAP'],
-                    'why': '现在更像事实不足，而不是已经可以判断数据或参数问题。',
-                    'matched_rule_ids': ['generic_training_early_observation'],
-                    'signals': ['training_running', 'insufficient_eval_metrics'],
-                    'next_actions': ['继续训练到更多 epoch', '等有验证指标后再判断是补数据还是调参数'],
-                    'source_summary': {'official': 2, 'workflow': 1},
-                }
             else:
                 raise AssertionError(f'unexpected tool call: {tool_name}')
 
@@ -375,8 +419,7 @@ async def _run() -> None:
 
         turn5 = await client.chat('这次训练效果怎么样？')
         assert turn5['status'] == 'completed', turn5
-        assert calls[-2][0] == 'summarize_training_run'
-        assert calls[-1][0] == 'analyze_training_outcome'
+        assert graph.calls[-2:] == [('summarize_training_run', {}), ('analyze_training_outcome', {})], graph.calls
         assert '训练结果汇总:' in turn5['message']
         assert '训练结果分析:' in turn5['message']
         assert '当前仍属早期观察' in turn5['message']
@@ -384,9 +427,7 @@ async def _run() -> None:
 
         turn6 = await client.chat('下一步先补数据还是调参数？')
         assert turn6['status'] == 'completed', turn6
-        assert calls[-3][0] == 'training_readiness'
-        assert calls[-2][0] == 'summarize_training_run'
-        assert calls[-1][0] == 'recommend_next_training_step'
+        assert graph.calls[-2:] == [('summarize_training_run', {}), ('recommend_next_training_step', {})], graph.calls
         assert '下一步建议:' in turn6['message']
         assert 'continue_training_and_collect_metrics' in turn6['message'] or '继续训练' in turn6['message']
         print('training mainline roundtrip ok')

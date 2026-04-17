@@ -33,17 +33,34 @@ def main() -> None:
             'resolved_img_dir': '/tmp/dataset/images',
             'resolved_label_dir': '/tmp/dataset/labels',
             'detected_data_yaml': '/tmp/dataset/data.yaml',
+            'detected_classes_txt': '/tmp/dataset/classes.txt',
             'total_images': 120,
             'labeled_images': 118,
             'missing_labels': 2,
+            'missing_label_images': 2,
+            'missing_label_ratio': 0.0167,
             'empty_labels': 1,
+            'risk_level': 'low',
             'scan_overview': {'image_count': 120, 'class_count': 3},
+            'warnings': ['发现 2 张图片缺少标签（占比 1.7%），训练结果可能受到明显影响'],
+            'classes': ['car', 'bus', 'truck'],
+            'class_stats': {'car': 52, 'bus': 41, 'truck': 25},
+            'top_classes': [{'class_name': 'car', 'count': 52}, {'class_name': 'bus', 'count': 41}],
+            'class_name_source': 'classes_txt',
+            'data_yaml_candidates': ['/tmp/dataset/data.yaml'],
+            'classes_txt_candidates': ['/tmp/dataset/classes.txt'],
+            'next_actions': ['可继续 validate_dataset 做标签合法性校验'],
             'action_candidates': [{'tool': 'run_dataset_health_check', 'description': '继续做健康检查'}],
         },
     )
     assert state.active_dataset.last_scan['scan_overview']['class_count'] == 3
     assert state.active_dataset.last_scan['action_candidates'][0]['tool'] == 'run_dataset_health_check'
     assert state.active_dataset.last_scan['detected_data_yaml'] == '/tmp/dataset/data.yaml'
+    assert state.active_dataset.last_scan['detected_classes_txt'] == '/tmp/dataset/classes.txt'
+    assert state.active_dataset.last_scan['class_stats']['truck'] == 25
+    assert state.active_dataset.last_scan['least_class'] == {'name': 'truck', 'count': 25}
+    assert state.active_dataset.last_scan['most_class'] == {'name': 'car', 'count': 52}
+    assert state.active_dataset.last_scan['missing_label_ratio'] == 0.0167
 
     apply_tool_result_to_state(
         state,
@@ -120,6 +137,61 @@ def main() -> None:
 
     apply_tool_result_to_state(
         state,
+        'start_image_prediction',
+        {
+            'ok': True,
+            'summary': '图片目录较大，已转为后台预测会话：共 320 张图片（session_id=image-predict-1234abcd）',
+            'session_id': 'image-predict-1234abcd',
+            'status': 'running',
+            'run_state': 'running',
+            'running': True,
+            'started_in_background': True,
+            'source_path': '/data/images-large',
+            'model': '/models/large.pt',
+            'total_images': 320,
+            'processed_images': 0,
+            'detected_images': 0,
+            'empty_images': 0,
+            'output_dir': '/tmp/predict-large',
+            'report_path': '',
+            'prediction_session_overview': {'session_id': 'image-predict-1234abcd', 'status': 'running', 'total_images': 320},
+            'action_candidates': [{'tool': 'check_image_prediction_status', 'description': '查看后台进度'}],
+        },
+        {'source_path': '/data/images-large', 'model': '/models/large.pt'},
+    )
+    assert state.active_prediction.image_prediction_session_id == 'image-predict-1234abcd'
+    assert state.active_prediction.image_prediction_status == 'running'
+    assert state.active_prediction.last_image_prediction_status['prediction_session_overview']['total_images'] == 320
+
+    apply_tool_result_to_state(
+        state,
+        'check_image_prediction_status',
+        {
+            'ok': True,
+            'summary': '后台图片预测运行中: 已处理 64/320 张图片, 有检测 40, 无检测 24',
+            'session_id': 'image-predict-1234abcd',
+            'status': 'running',
+            'run_state': 'running',
+            'running': True,
+            'source_path': '/data/images-large',
+            'model': '/models/large.pt',
+            'total_images': 320,
+            'processed_images': 64,
+            'detected_images': 40,
+            'empty_images': 24,
+            'total_detections': 88,
+            'class_counts': {'excavator': 60, 'truck': 28},
+            'output_dir': '/tmp/predict-large',
+            'report_path': '',
+            'prediction_session_overview': {'session_id': 'image-predict-1234abcd', 'status': 'running', 'processed_images': 64},
+            'action_candidates': [{'tool': 'stop_image_prediction', 'description': '停止后台预测'}],
+        },
+    )
+    assert state.active_prediction.last_image_prediction_status['processed_images'] == 64
+    assert state.active_prediction.last_image_prediction_status['class_counts']['excavator'] == 60
+
+    apply_tool_result_to_state(
+        state,
         'predict_videos',
         {
             'ok': True,
@@ -142,6 +214,36 @@ def main() -> None:
     assert state.active_prediction.model == '/models/a.pt'
     assert state.active_prediction.report_path.endswith('video_prediction_report.json')
     assert state.active_prediction.last_result['mode'] == 'videos'
+
+    apply_tool_result_to_state(
+        state,
+        'stop_image_prediction',
+        {
+            'ok': True,
+            'summary': '后台图片预测已停止: 已处理 120/320 张图片, 有检测 75, 无检测 45',
+            'session_id': 'image-predict-1234abcd',
+            'status': 'stopped',
+            'run_state': 'stopped',
+            'running': False,
+            'source_path': '/data/images-large',
+            'model': '/models/large.pt',
+            'total_images': 320,
+            'processed_images': 120,
+            'detected_images': 75,
+            'empty_images': 45,
+            'total_detections': 160,
+            'class_counts': {'excavator': 100, 'truck': 60},
+            'warnings': ['预测已在后台会话中被手动停止，结果为部分产物'],
+            'output_dir': '/tmp/predict-large',
+            'report_path': '/tmp/predict-large/prediction_report.json',
+            'prediction_session_overview': {'session_id': 'image-predict-1234abcd', 'status': 'stopped', 'processed_images': 120},
+            'action_candidates': [{'tool': 'inspect_prediction_outputs', 'description': '查看预测产物'}],
+        },
+    )
+    assert state.active_prediction.image_prediction_status == 'stopped'
+    assert state.active_prediction.last_image_prediction_status['report_path'] == '/tmp/predict-large/prediction_report.json'
+    assert state.active_prediction.last_result['processed_images'] == 120
+    assert state.active_prediction.last_result['mode'] == 'images'
 
     apply_tool_result_to_state(
         state,
@@ -341,6 +443,45 @@ def main() -> None:
     )
     assert state.active_dataset.last_readiness['ready'] is True
     assert state.active_dataset.data_yaml == '/tmp/data.yaml'
+
+    apply_tool_result_to_state(
+        state,
+        'prepare_dataset_for_training',
+        {
+            'ok': True,
+            'summary': '数据准备完成',
+            'dataset_root': '/tmp/prepared',
+            'img_dir': '/tmp/prepared/images',
+            'label_dir': '/tmp/prepared/labels',
+            'data_yaml': '/tmp/prepared/data.yaml',
+            'ready': True,
+            'steps_completed': [
+                {
+                    'step': 'scan',
+                    'ok': True,
+                    'summary': '扫描完成: 共 90 张图片，类别 2 个',
+                    'total_images': 90,
+                    'labeled_images': 84,
+                    'missing_labels': 6,
+                    'missing_label_images': 6,
+                    'missing_label_ratio': 0.0667,
+                    'empty_labels': 1,
+                    'risk_level': 'medium',
+                    'classes': ['epidural', 'subdural'],
+                    'class_stats': {'epidural': 66, 'subdural': 24},
+                    'top_classes': [{'class_name': 'epidural', 'count': 66}],
+                    'warnings': ['发现 6 张图片缺少标签（占比 6.7%），训练结果可能受到明显影响'],
+                    'detected_data_yaml': '/tmp/prepared/data.yaml',
+                    'detected_classes_txt': '/tmp/prepared/classes.txt',
+                    'class_name_source': 'detected_classes_txt',
+                },
+            ],
+        },
+    )
+    assert state.active_dataset.last_scan['class_stats']['epidural'] == 66
+    assert state.active_dataset.last_scan['least_class'] == {'name': 'subdural', 'count': 24}
+    assert state.active_dataset.last_scan['most_class'] == {'name': 'epidural', 'count': 66}
+    assert state.active_dataset.last_scan['detected_classes_txt'] == '/tmp/prepared/classes.txt'
 
     apply_tool_result_to_state(
         state,

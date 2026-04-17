@@ -43,7 +43,9 @@ def _scenario_sparse_summary() -> None:
     assert '当前结构化上下文:' in summary
     assert '- session_id: ctx-sparse' in summary
     assert '数据集:' not in summary
-    assert '训练:' not in summary
+    assert '训练:' in summary
+    assert 'workflow_state: idle' in summary
+    assert 'loop_workflow_state: loop_idle' in summary
     assert '预测:' not in summary
     assert '知识:' not in summary
     assert '远端传输:' not in summary
@@ -57,6 +59,15 @@ def _scenario_compact_populated_summary() -> None:
     state = SessionState(session_id='ctx-populated')
     state.active_dataset.dataset_root = '/data/demo'
     state.active_dataset.data_yaml = '/data/demo/data.yaml'
+    state.active_dataset.last_scan = {
+        'summary': '扫描完成: 共 90 张图片，类别 2 个',
+        'classes': ['epidural', 'subdural'],
+        'top_classes': [{'class_name': 'epidural', 'count': 66}, {'class_name': 'subdural', 'count': 24}],
+        'least_class': {'name': 'subdural', 'count': 24},
+        'most_class': {'name': 'epidural', 'count': 66},
+        'missing_label_ratio': 0.0667,
+        'class_name_source': 'detected_classes_txt',
+    }
     state.active_dataset.last_readiness = {'ready': True}
     state.active_training.running = True
     state.active_training.model = 'yolov8n.pt'
@@ -73,6 +84,11 @@ def _scenario_compact_populated_summary() -> None:
     summary = builder.build_state_summary(state, digest)
     assert '数据集:' in summary
     assert 'dataset_root: /data/demo' in summary
+    assert 'last_scan_classes: epidural, subdural' in summary
+    assert 'last_scan_top_classes: epidural=66, subdural=24' in summary
+    assert 'last_scan_least_class: subdural (24)' in summary
+    assert 'last_scan_most_class: epidural (66)' in summary
+    assert 'last_scan_missing_label_ratio: 6.7%' in summary
     assert 'readiness_cache: 已缓存' in summary
     assert '训练:' in summary
     assert 'running: True' in summary

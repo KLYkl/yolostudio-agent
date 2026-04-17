@@ -198,6 +198,19 @@ _ARG_ALIASES: dict[str, dict[str, str]] = {
         'dir_path': 'source_path',
         'folder': 'source_path',
     },
+    'start_image_prediction': {
+        'path': 'source_path',
+        'source': 'source_path',
+        'input_path': 'source_path',
+        'dir_path': 'source_path',
+        'folder': 'source_path',
+    },
+    'check_image_prediction_status': {
+        'id': 'session_id',
+    },
+    'stop_image_prediction': {
+        'id': 'session_id',
+    },
     'summarize_prediction_results': {
         'path': 'report_path',
         'report': 'report_path',
@@ -462,6 +475,7 @@ def _summarize_tool_result_mapping(value: dict[str, Any]) -> str:
         'analysis_overview': '分析概览',
         'recommendation_overview': '建议概览',
         'prediction_overview': '预测概览',
+        'prediction_session_overview': '后台预测概览',
         'prediction_summary_overview': '预测摘要概览',
         'prediction_output_overview': '预测输出概览',
         'organization_overview': '整理概览',

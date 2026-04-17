@@ -10,6 +10,7 @@ from typing import Any
 import sys
 
 from langchain_core.tools import StructuredTool
+from langchain_core.messages import AIMessage, ToolMessage
 from PIL import Image
 
 if __package__ in {None, ""}:
@@ -34,6 +35,53 @@ class _DummyGraph:
         return None
 
 
+class _GraphState:
+    def __init__(self, messages):
+        self.values = {'messages': list(messages)}
+        self.next = ()
+
+
+class _PredictionGraph:
+    def __init__(self) -> None:
+        self.client: YoloStudioAgentClient | None = None
+        self._last_state = _GraphState([])
+
+    def bind(self, client: YoloStudioAgentClient) -> None:
+        self.client = client
+
+    def get_state(self, config):
+        del config
+        return self._last_state
+
+    async def ainvoke(self, payload, config=None):
+        del config
+        assert self.client is not None
+        user_text = str(getattr(payload['messages'][-1], 'content', ''))
+        if '/data/images' in user_text and '预测' in user_text:
+            observed = await self.client.direct_tool('predict_images', source_path='/data/images', model='/models/yolov8n.pt')
+            reply = await self.client._render_tool_result_message('predict_images', observed)
+            tool_call = {'id': 'tc-predict-images', 'name': 'predict_images', 'args': {'source_path': '/data/images', 'model': '/models/yolov8n.pt'}}
+            messages = list(payload['messages']) + [
+                AIMessage(content='', tool_calls=[tool_call]),
+                ToolMessage(content=json.dumps(observed, ensure_ascii=False), name='predict_images', tool_call_id=tool_call['id']),
+                AIMessage(content=reply or observed.get('summary') or '操作已完成'),
+            ]
+            self._last_state = _GraphState(messages)
+            return {'messages': messages}
+        if '总结' in user_text and '预测' in user_text:
+            observed = await self.client.direct_tool('summarize_prediction_results', report_path='/tmp/predict/prediction_report.json')
+            reply = await self.client._render_tool_result_message('summarize_prediction_results', observed)
+            tool_call = {'id': 'tc-predict-summary', 'name': 'summarize_prediction_results', 'args': {'report_path': '/tmp/predict/prediction_report.json'}}
+            messages = list(payload['messages']) + [
+                AIMessage(content='', tool_calls=[tool_call]),
+                ToolMessage(content=json.dumps(observed, ensure_ascii=False), name='summarize_prediction_results', tool_call_id=tool_call['id']),
+                AIMessage(content=reply or observed.get('summary') or '操作已完成'),
+            ]
+            self._last_state = _GraphState(messages)
+            return {'messages': messages}
+        raise AssertionError(f'unexpected graph request: {user_text}')
+
+
 def _make_image(path: Path, size: tuple[int, int], color: tuple[int, int, int]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     Image.new('RGB', size, color).save(path, format='JPEG')
@@ -45,9 +93,13 @@ def _score(*flags: bool) -> dict[str, Any]:
     return {'passed_checks': passed, 'total_checks': total, 'score': round(passed / total, 3) if total else 1.0}
 
 
-async def _make_client(session_id: str) -> YoloStudioAgentClient:
+async def _make_client(session_id: str, graph: Any | None = None) -> YoloStudioAgentClient:
     settings = AgentSettings(session_id=session_id, memory_root=str(WORK / 'memory'))
-    return YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+    selected_graph = graph or _DummyGraph()
+    client = YoloStudioAgentClient(graph=selected_graph, settings=settings, tool_registry={})
+    if hasattr(selected_graph, 'bind'):
+        selected_graph.bind(client)
+    return client
 
 
 async def case_tool_predict_success(source_dir: Path, output_dir: Path) -> dict[str, Any]:
@@ -143,7 +195,7 @@ async def case_tool_prediction_summary(source_dir: Path, output_dir: Path) -> di
 
 async def case_agent_prediction_route() -> dict[str, Any]:
     started = time.time()
-    client = await _make_client(f'prediction-route-{uuid.uuid4().hex[:8]}')
+    client = await _make_client(f'prediction-route-{uuid.uuid4().hex[:8]}', graph=_PredictionGraph())
 
     async def _fake_direct_tool(tool_name: str, **kwargs):
         assert tool_name == 'predict_images'
@@ -168,7 +220,7 @@ async def case_agent_prediction_route() -> dict[str, Any]:
         return result
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
-    run = await client._try_handle_mainline_intent('请用 /models/yolov8n.pt 预测 /data/images 这个目录里的图片', 'thread-1')
+    run = await client.chat('请用 /models/yolov8n.pt 预测 /data/images 这个目录里的图片')
     assessment = _score(
         run is not None,
         run.get('status') == 'completed',
@@ -188,7 +240,7 @@ async def case_agent_prediction_route() -> dict[str, Any]:
 
 async def case_agent_prediction_summary() -> dict[str, Any]:
     started = time.time()
-    client = await _make_client(f'prediction-summary-{uuid.uuid4().hex[:8]}')
+    client = await _make_client(f'prediction-summary-{uuid.uuid4().hex[:8]}', graph=_PredictionGraph())
     client.session_state.active_prediction.source_path = '/data/images'
     client.session_state.active_prediction.model = '/models/yolov8n.pt'
     client.session_state.active_prediction.output_dir = '/tmp/predict'
@@ -238,7 +290,7 @@ async def case_agent_prediction_summary() -> dict[str, Any]:
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
 
-    run = await client._try_handle_mainline_intent('总结一下刚才预测结果', 'thread-2')
+    run = await client.chat('总结一下刚才预测结果')
     assessment = _score(
         run is not None,
         run.get('status') == 'completed',
@@ -356,6 +408,8 @@ async def main() -> None:
         'failed_cases': failed_cases,
         'cases': cases,
     }
+    OUT_JSON.parent.mkdir(parents=True, exist_ok=True)
+    OUT_MD.parent.mkdir(parents=True, exist_ok=True)
     OUT_JSON.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
 
     lines = [

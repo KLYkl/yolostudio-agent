@@ -15,6 +15,7 @@ _ROLE_ENV = {
         'api_key': 'YOLOSTUDIO_LLM_API_KEY',
         'temperature': 'YOLOSTUDIO_LLM_TEMPERATURE',
         'ollama_keep_alive': 'YOLOSTUDIO_OLLAMA_KEEP_ALIVE',
+        'ollama_num_ctx': 'YOLOSTUDIO_OLLAMA_NUM_CTX',
     },
     'helper': {
         'provider': 'YOLOSTUDIO_HELPER_LLM_PROVIDER',
@@ -23,6 +24,7 @@ _ROLE_ENV = {
         'api_key': 'YOLOSTUDIO_HELPER_LLM_API_KEY',
         'temperature': 'YOLOSTUDIO_HELPER_LLM_TEMPERATURE',
         'ollama_keep_alive': 'YOLOSTUDIO_HELPER_OLLAMA_KEEP_ALIVE',
+        'ollama_num_ctx': 'YOLOSTUDIO_HELPER_OLLAMA_NUM_CTX',
     },
     'loop': {
         'provider': 'YOLOSTUDIO_LOOP_LLM_PROVIDER',
@@ -31,6 +33,7 @@ _ROLE_ENV = {
         'api_key': 'YOLOSTUDIO_LOOP_LLM_API_KEY',
         'temperature': 'YOLOSTUDIO_LOOP_LLM_TEMPERATURE',
         'ollama_keep_alive': 'YOLOSTUDIO_LOOP_LLM_KEEP_ALIVE',
+        'ollama_num_ctx': 'YOLOSTUDIO_LOOP_OLLAMA_NUM_CTX',
     },
 }
 
@@ -132,6 +135,7 @@ class LlmProviderSettings:
     api_key: str = ''
     temperature: float | None = None
     ollama_keep_alive: str = ''
+    ollama_num_ctx: int | None = None
     role: str = 'primary'
 
 
@@ -158,6 +162,7 @@ def resolve_llm_settings(
     generic_api_key = os.getenv(_ROLE_ENV['primary']['api_key'], '').strip()
     generic_temperature = os.getenv(_ROLE_ENV['primary']['temperature'], '').strip()
     generic_keep_alive = os.getenv(_ROLE_ENV['primary']['ollama_keep_alive'], '').strip()
+    generic_num_ctx = os.getenv(_ROLE_ENV['primary']['ollama_num_ctx'], '').strip()
 
     if role_specific_provider_explicit:
         inherited_model = ''
@@ -165,6 +170,7 @@ def resolve_llm_settings(
         inherited_api_key = ''
         inherited_temperature = ''
         inherited_keep_alive = ''
+        inherited_num_ctx = ''
     else:
         inherited_model = str(inherit.model or '').strip() if inherit is not None else ''
         inherited_base_url = str(inherit.base_url or '').strip() if inherit is not None else ''
@@ -173,12 +179,14 @@ def resolve_llm_settings(
             '' if inherit is None or inherit.temperature is None else str(inherit.temperature).strip()
         )
         inherited_keep_alive = str(inherit.ollama_keep_alive or '').strip() if inherit is not None else ''
+        inherited_num_ctx = '' if inherit is None or inherit.ollama_num_ctx is None else str(inherit.ollama_num_ctx).strip()
 
     role_model = os.getenv(env_names['model'], '').strip() if resolved_role != 'primary' else ''
     role_base_url = os.getenv(env_names['base_url'], '').strip() if resolved_role != 'primary' else ''
     role_api_key = os.getenv(env_names['api_key'], '').strip() if resolved_role != 'primary' else ''
     role_temperature = os.getenv(env_names['temperature'], '').strip()
     role_keep_alive = os.getenv(env_names['ollama_keep_alive'], '').strip()
+    role_num_ctx = os.getenv(env_names['ollama_num_ctx'], '').strip()
 
     provider_model = os.getenv(provider_env['model'], '').strip() if provider_env['model'] else ''
     provider_base_url = os.getenv(provider_env['base_url'], '').strip() if provider_env['base_url'] else ''
@@ -234,6 +242,18 @@ def resolve_llm_settings(
         generic_keep_alive if (use_generic_fallback or provider == 'ollama') else '',
         provider_env['default_keep_alive'],
     )
+    if raw.ollama_num_ctx is not None:
+        ollama_num_ctx = int(raw.ollama_num_ctx)
+    else:
+        ollama_num_ctx_raw = _first_nonempty(
+            role_num_ctx,
+            inherited_num_ctx if resolved_role != 'primary' else '',
+            generic_num_ctx if (use_generic_fallback or provider == 'ollama') else '',
+        )
+        try:
+            ollama_num_ctx = int(ollama_num_ctx_raw) if ollama_num_ctx_raw else None
+        except Exception:
+            ollama_num_ctx = None
 
     if provider == 'ollama':
         api_key = ''
@@ -245,6 +265,7 @@ def resolve_llm_settings(
         api_key=api_key,
         temperature=temperature,
         ollama_keep_alive=ollama_keep_alive,
+        ollama_num_ctx=ollama_num_ctx,
         role=resolved_role,
     )
 
@@ -267,6 +288,7 @@ def build_llm(
                     base_url=resolved.base_url,
                     temperature=resolved.temperature,
                     keep_alive=resolved.ollama_keep_alive or None,
+                    num_ctx=resolved.ollama_num_ctx,
                 )
         from langchain_ollama import ChatOllama
 
@@ -275,6 +297,7 @@ def build_llm(
             base_url=resolved.base_url,
             temperature=resolved.temperature,
             keep_alive=resolved.ollama_keep_alive or None,
+            num_ctx=resolved.ollama_num_ctx,
         )
 
     if resolved.provider in {'deepseek', 'openai_compatible'}:
@@ -305,4 +328,5 @@ def provider_summary(
     return (
         f'provider={resolved.provider}, model={resolved.model}, '
         f'base_url={resolved.base_url or "<default>"}, api_key={key_state}'
+        + (f', ollama_num_ctx={resolved.ollama_num_ctx}' if resolved.provider == 'ollama' and resolved.ollama_num_ctx else '')
     )

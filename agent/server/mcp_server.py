@@ -41,6 +41,7 @@ from yolostudio_agent.agent.server.tools.knowledge_tools import (
     retrieve_training_knowledge,
 )
 from yolostudio_agent.agent.server.tools.predict_tools import (
+    check_image_prediction_status,
     check_realtime_prediction_status,
     export_prediction_path_lists,
     export_prediction_report,
@@ -50,9 +51,11 @@ from yolostudio_agent.agent.server.tools.predict_tools import (
     predict_videos,
     scan_cameras,
     scan_screens,
+    start_image_prediction,
     start_camera_prediction,
     start_rtsp_prediction,
     start_screen_prediction,
+    stop_image_prediction,
     stop_realtime_prediction,
     summarize_prediction_results,
     test_rtsp_stream,
@@ -201,6 +204,9 @@ _register_read_tool(retrieve_training_knowledge, open_world=False)
 _register_read_tool(analyze_training_outcome, open_world=False)
 _register_read_tool(recommend_next_training_step, open_world=False)
 _register_action_tool(predict_images, destructive=False)
+_register_action_tool(start_image_prediction, destructive=False)
+_register_read_tool(check_image_prediction_status)
+_register_action_tool(stop_image_prediction, destructive=True, idempotent=True)
 _register_action_tool(predict_videos, destructive=False)
 _register_read_tool(summarize_prediction_results)
 _register_read_tool(inspect_prediction_outputs)

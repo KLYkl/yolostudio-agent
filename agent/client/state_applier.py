@@ -46,6 +46,9 @@ STATEFUL_TOOL_PROJECTORS: dict[str, StateProjector] = {
     'summarize_training_run': apply_training_tool_result,
     'stop_training': apply_training_tool_result,
     'predict_images': apply_prediction_tool_result,
+    'start_image_prediction': apply_prediction_tool_result,
+    'check_image_prediction_status': apply_prediction_tool_result,
+    'stop_image_prediction': apply_prediction_tool_result,
     'predict_videos': apply_prediction_tool_result,
     'summarize_prediction_results': apply_prediction_tool_result,
     'inspect_prediction_outputs': apply_prediction_tool_result,
@@ -76,6 +79,7 @@ CRITICAL_STATEFUL_TOOLS = {
     'check_training_status',
     'stop_training',
     'predict_images',
+    'start_image_prediction',
     'upload_assets_to_remote',
 }
 

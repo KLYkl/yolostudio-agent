@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 from pathlib import Path
 import sys
@@ -162,78 +163,85 @@ except Exception:
     sys.modules['langgraph.checkpoint.memory'] = checkpoint_mod
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from langchain_core.messages import AIMessage, ToolMessage
 
 
-class _DummyGraph:
+class _FakeGraph:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
     def get_state(self, config):
         return None
 
-
-WORK = Path(__file__).resolve().parent / '_tmp_extract_route'
-
-
-async def _run() -> None:
-    shutil.rmtree(WORK, ignore_errors=True)
-    WORK.mkdir(parents=True, exist_ok=True)
-    try:
-        settings = AgentSettings(session_id='extract-route-smoke', memory_root=str(WORK))
-        client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
-        calls: list[tuple[str, dict[str, object]]] = []
-
-        async def _fake_direct_tool(tool_name: str, **kwargs):
-            calls.append((tool_name, dict(kwargs)))
-            if tool_name == 'preview_extract_images':
-                assert kwargs['source_path'] == '/data/raw/images'
-                assert kwargs['output_dir'] == '/tmp/extract_preview'
-                assert kwargs['selection_mode'] == 'count'
-                assert kwargs['count'] == 20
-                result = {
-                    'ok': True,
-                    'summary': '预览完成: 可用图片 180 张，计划抽取 20 张（global / count）',
-                    'available_images': 180,
-                    'planned_extract_count': 20,
-                    'sample_images': ['/data/raw/images/a.jpg'],
-                    'output_dir': '/tmp/extract_preview',
-                    'warnings': [],
-                    'next_actions': ['可继续调用 extract_images 真正执行抽取'],
-                }
-                client._apply_to_state('preview_extract_images', result, kwargs)
-                return result
-            if tool_name == 'extract_images':
-                assert kwargs['source_path'] == '/data/raw/images'
-                assert kwargs['selection_mode'] == 'ratio'
-                assert abs(float(kwargs['ratio']) - 0.1) < 1e-9
-                result = {
-                    'ok': True,
-                    'summary': '图片抽取完成: 实际抽取 18 张图片，复制标签 18 个',
-                    'extracted': 18,
-                    'labels_copied': 18,
-                    'conflict_count': 0,
-                    'output_dir': '/tmp/extract_run',
-                    'workflow_ready_path': '/tmp/extract_run',
-                    'warnings': [],
-                    'next_actions': ['可直接对输出目录继续 scan_dataset / validate_dataset: /tmp/extract_run'],
-                    'output_img_dir': '/tmp/extract_run/images',
-                    'output_label_dir': '/tmp/extract_run/labels',
-                }
-                client._apply_to_state('extract_images', result, kwargs)
-                return result
-            if tool_name == 'scan_videos':
-                assert kwargs['source_path'] == '/data/videos'
-                result = {
-                    'ok': True,
-                    'summary': '视频扫描完成: 发现 3 个视频文件',
-                    'total_videos': 3,
-                    'sample_videos': ['/data/videos/a.mp4'],
-                    'next_actions': ['如需抽帧，可继续调用 extract_video_frames'],
-                }
-                client._apply_to_state('scan_videos', result, kwargs)
-                return result
-            assert tool_name == 'extract_video_frames'
-            assert kwargs['source_path'] == '/data/videos'
-            assert kwargs['output_dir'] == '/tmp/frames_out'
-            assert kwargs['mode'] == 'interval'
-            assert kwargs['frame_interval'] == 10
+    async def ainvoke(self, payload, config=None):
+        del config
+        messages = list(payload['messages'])
+        user_text = ''
+        for message in reversed(messages):
+            content = getattr(message, 'content', '')
+            if isinstance(content, str) and content:
+                user_text = content
+                break
+        if '抽 20 张图片到 /tmp/extract_preview' in user_text:
+            tool_name = 'preview_extract_images'
+            args = {
+                'source_path': '/data/raw/images',
+                'output_dir': '/tmp/extract_preview',
+                'selection_mode': 'count',
+                'count': 20,
+            }
+            result = {
+                'ok': True,
+                'summary': '预览完成: 可用图片 180 张，计划抽取 20 张（global / count）',
+                'available_images': 180,
+                'planned_extract_count': 20,
+                'sample_images': ['/data/raw/images/a.jpg'],
+                'output_dir': '/tmp/extract_preview',
+                'warnings': [],
+                'next_actions': ['可继续调用 extract_images 真正执行抽取'],
+            }
+            final_text = '预览完成: 可用图片 180 张，计划抽取 20 张（global / count）'
+        elif '抽 10% 的图片到 /tmp/extract_run' in user_text:
+            tool_name = 'extract_images'
+            args = {
+                'source_path': '/data/raw/images',
+                'selection_mode': 'ratio',
+                'ratio': 0.1,
+                'output_dir': '/tmp/extract_run',
+            }
+            result = {
+                'ok': True,
+                'summary': '图片抽取完成: 实际抽取 18 张图片，复制标签 18 个',
+                'extracted': 18,
+                'labels_copied': 18,
+                'conflict_count': 0,
+                'output_dir': '/tmp/extract_run',
+                'workflow_ready_path': '/tmp/extract_run',
+                'warnings': [],
+                'next_actions': ['可直接对输出目录继续 scan_dataset / validate_dataset: /tmp/extract_run'],
+                'output_img_dir': '/tmp/extract_run/images',
+                'output_label_dir': '/tmp/extract_run/labels',
+            }
+            final_text = '图片抽取完成: 实际抽取 18 张图片，复制标签 18 个'
+        elif '扫描一下 /data/videos' in user_text:
+            tool_name = 'scan_videos'
+            args = {'source_path': '/data/videos'}
+            result = {
+                'ok': True,
+                'summary': '视频扫描完成: 发现 3 个视频文件',
+                'total_videos': 3,
+                'sample_videos': ['/data/videos/a.mp4'],
+                'next_actions': ['如需抽帧，可继续调用 extract_video_frames'],
+            }
+            final_text = '视频扫描完成: 发现 3 个视频文件'
+        else:
+            tool_name = 'extract_video_frames'
+            args = {
+                'source_path': '/data/videos',
+                'output_dir': '/tmp/frames_out',
+                'mode': 'interval',
+                'frame_interval': 10,
+            }
             result = {
                 'ok': True,
                 'summary': '视频抽帧完成: 最终保留 12 帧（原始抽取 12 / 去重移除 0）',
@@ -244,45 +252,57 @@ async def _run() -> None:
                 'warnings': [],
                 'next_actions': ['可将抽帧输出目录继续作为图片输入使用: /tmp/frames_out'],
             }
-            client._apply_to_state('extract_video_frames', result, kwargs)
-            return result
+            final_text = '视频抽帧完成: 最终保留 12 帧（原始抽取 12 / 去重移除 0）'
+        self.calls.append((tool_name, dict(args)))
+        tool_call_id = f'call-{len(self.calls)}'
+        return {
+            'messages': messages + [
+                AIMessage(content='', tool_calls=[{'id': tool_call_id, 'name': tool_name, 'args': args}]),
+                ToolMessage(content=json.dumps(result, ensure_ascii=False), name=tool_name, tool_call_id=tool_call_id),
+                AIMessage(content=final_text),
+            ]
+        }
 
-        client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
 
-        routed = await client._try_handle_mainline_intent('先预览一下从 /data/raw/images 抽 20 张图片到 /tmp/extract_preview，不要真的执行', 'thread-1')
-        assert routed is not None, routed
-        assert routed['status'] == 'completed', routed
-        assert '计划抽取 20 张' in routed['message'], routed
-        assert calls[-1][0] == 'preview_extract_images', calls
-        preview_call_count = len(calls)
+WORK = Path(__file__).resolve().parent / '_tmp_extract_route'
 
-        routed_cached = await client._try_handle_mainline_intent('再预览一下从 /data/raw/images 抽 20 张图片到 /tmp/extract_preview，不要真的执行', 'thread-1b')
-        assert routed_cached is not None, routed_cached
-        assert routed_cached['status'] == 'completed', routed_cached
-        assert '计划抽取 20 张' in routed_cached['message'], routed_cached
-        assert len(calls) == preview_call_count, calls
 
-        routed2 = await client._try_handle_mainline_intent('从 /data/raw/images 抽 10% 的图片到 /tmp/extract_run', 'thread-2')
-        assert routed2 is not None, routed2
-        assert routed2['status'] == 'completed', routed2
-        assert '实际抽取 18 张' in routed2['message'], routed2
+async def _run() -> None:
+    shutil.rmtree(WORK, ignore_errors=True)
+    WORK.mkdir(parents=True, exist_ok=True)
+    try:
+        settings = AgentSettings(session_id='extract-route-smoke', memory_root=str(WORK))
+        graph = _FakeGraph()
+        client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
+
+        preview_prompt = '先预览一下从 /data/raw/images 抽 20 张图片到 /tmp/extract_preview，不要真的执行'
+        assert await client._try_handle_mainline_intent(preview_prompt, 'thread-1') is None
+        preview_turn = await client.chat(preview_prompt)
+        assert preview_turn['status'] == 'completed', preview_turn
+        assert '计划抽取 20 张' in preview_turn['message'], preview_turn
+        assert graph.calls[-1][0] == 'preview_extract_images', graph.calls
+
+        extract_prompt = '从 /data/raw/images 抽 10% 的图片到 /tmp/extract_run'
+        assert await client._try_handle_mainline_intent(extract_prompt, 'thread-2') is None
+        extract_turn = await client.chat(extract_prompt)
+        assert extract_turn['status'] == 'completed', extract_turn
+        assert '实际抽取 18 张' in extract_turn['message'], extract_turn
+        assert graph.calls[-1][0] == 'extract_images', graph.calls
         assert client.session_state.active_dataset.dataset_root == '/tmp/extract_run'
 
-        routed3 = await client._try_handle_mainline_intent('扫描一下 /data/videos 目录里有多少视频', 'thread-3')
-        assert routed3 is not None, routed3
-        assert '发现 3 个视频' in routed3['message'], routed3
-        assert calls[-1][0] == 'scan_videos', calls
-        video_scan_call_count = len(calls)
+        scan_prompt = '扫描一下 /data/videos 目录里有多少视频'
+        assert await client._try_handle_mainline_intent(scan_prompt, 'thread-3') is None
+        scan_turn = await client.chat(scan_prompt)
+        assert scan_turn['status'] == 'completed', scan_turn
+        assert '发现 3 个视频' in scan_turn['message'], scan_turn
+        assert graph.calls[-1][0] == 'scan_videos', graph.calls
 
-        routed3_cached = await client._try_handle_mainline_intent('再扫描一下 /data/videos 目录里有多少视频', 'thread-3b')
-        assert routed3_cached is not None, routed3_cached
-        assert '发现 3 个视频' in routed3_cached['message'], routed3_cached
-        assert len(calls) == video_scan_call_count, calls
-
-        routed4 = await client._try_handle_mainline_intent('从 /data/videos 抽帧，每 10 帧抽 1 帧，输出到 /tmp/frames_out', 'thread-4')
-        assert routed4 is not None, routed4
-        assert '最终保留 12 帧' in routed4['message'], routed4
-        assert calls[-1][0] == 'extract_video_frames', calls
+        frame_prompt = '从 /data/videos 抽帧，每 10 帧抽 1 帧，输出到 /tmp/frames_out'
+        assert await client._try_handle_mainline_intent(frame_prompt, 'thread-4') is None
+        frame_turn = await client.chat(frame_prompt)
+        assert frame_turn['status'] == 'completed', frame_turn
+        assert '最终保留 12 帧' in frame_turn['message'], frame_turn
+        assert graph.calls[-1][0] == 'extract_video_frames', graph.calls
 
         print('extract route smoke ok')
     finally:

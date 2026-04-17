@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -13,14 +14,43 @@ if __package__ in {None, ''}:
         if path not in sys.path:
             sys.path.insert(0, path)
 
-from yolostudio_agent.agent.tests.test_agent_server_chaos_p0 import WORK as P0_WORK
-from yolostudio_agent.agent.tests.test_agent_server_chaos_p0 import _make_client
+from yolostudio_agent.agent.tests._chaos_test_support import WORK as P0_WORK, _make_client
 from yolostudio_agent.agent.tests._coroutine_runner import run
+from langchain_core.messages import AIMessage, ToolMessage
 
 
 def _fresh_client(session_id: str):
     shutil.rmtree(P0_WORK / session_id, ignore_errors=True)
     return _make_client(session_id)
+
+
+class _PredictVideosGraph:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def get_state(self, config):
+        return None
+
+    async def ainvoke(self, payload, config=None):
+        del config
+        messages = list(payload['messages'])
+        args = {'source_path': '/data/videos', 'model': 'yolov8n.pt'}
+        result = {
+            'ok': True,
+            'summary': '视频预测完成。',
+            'source_path': '/data/videos',
+            'output_dir': '/tmp/predict-out',
+            'report_path': '/tmp/predict-out/report.json',
+        }
+        self.calls.append(('predict_videos', dict(args)))
+        tool_call_id = f'call-{len(self.calls)}'
+        return {
+            'messages': messages + [
+                AIMessage(content='', tool_calls=[{'id': tool_call_id, 'name': 'predict_videos', 'args': args}]),
+                ToolMessage(content=json.dumps(result, ensure_ascii=False), name='predict_videos', tool_call_id=tool_call_id),
+                AIMessage(content='视频预测完成。'),
+            ]
+        }
 
 
 def _install_running_tools(client):
@@ -120,16 +150,20 @@ async def _scenario_c27_cannot_erase_running_history() -> None:
 
 async def _scenario_c28_running_training_can_temporarily_switch_to_prediction() -> None:
     client = _fresh_client('chaos-p1-c28')
+    predict_graph = _PredictVideosGraph()
+    client.graph = predict_graph  # type: ignore[assignment]
     calls = _install_running_tools(client)
     client.session_state.active_training.running = True
     client.session_state.active_training.pid = 2222
     client.session_state.active_training.model = 'yolov8n.pt'
     client.memory.save_state(client.session_state)
+    assert await client._try_handle_mainline_intent('训练先放着，先帮我预测这两个视频 /data/videos。', 'thread-chaos-p1-c28-predict') is None
     turn = await client.chat('训练先放着，先帮我预测这两个视频 /data/videos。')
     assert turn['status'] == 'completed', turn
     assert '视频预测完成' in turn['message']
     assert client.session_state.active_training.running is True
-    assert [name for name, _ in calls][-1] == 'predict_videos'
+    assert predict_graph.calls == [('predict_videos', {'source_path': '/data/videos', 'model': 'yolov8n.pt'})], predict_graph.calls
+    assert all(name != 'predict_videos' for name, _ in calls), calls
 
 
 async def _scenario_c29_running_training_cannot_switch_gpu_live() -> None:

@@ -119,14 +119,7 @@ def apply_dataset_tool_result(
         for step in result.get('steps_completed', []):
             step_name = step.get('step')
             if step_name == 'scan' and step.get('ok'):
-                ds.last_scan = {
-                    'total_images': step.get('total_images'),
-                    'labeled_images': step.get('labeled_images'),
-                    'missing_labels': step.get('missing_labels'),
-                    'empty_labels': step.get('empty_labels'),
-                    'summary': step.get('summary'),
-                    'detected_data_yaml': step.get('detected_data_yaml', ''),
-                }
+                ds.last_scan = _dataset_scan_snapshot(step, detected_yaml=str(step.get('detected_data_yaml') or ''))
             elif step_name == 'validate' and step.get('ok'):
                 ds.last_validate = {
                     'issue_count': step.get('issue_count'),

@@ -13,8 +13,7 @@ if __package__ in {None, ''}:
         if path not in sys.path:
             sys.path.insert(0, path)
 
-from yolostudio_agent.agent.tests.test_agent_server_chaos_p0 import WORK as P0_WORK
-from yolostudio_agent.agent.tests.test_agent_server_chaos_p0 import _make_client
+from yolostudio_agent.agent.tests._chaos_test_support import WORK as P0_WORK, _make_client
 from yolostudio_agent.agent.tests._coroutine_runner import run
 
 

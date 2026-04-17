@@ -184,8 +184,45 @@ DEFAULT_EXTRA_POLL_LIMIT = 8
 
 
 class _DummyGraph:
+    async def ainvoke(self, payload, config=None):
+        del payload, config
+        raise AssertionError('graph should not run in zyb agent roundtrip direct-tools mode')
+
     def get_state(self, config):
+        del config
         return None
+
+
+class _PlannerResponse:
+    def __init__(self, content: str):
+        self.content = content
+
+
+class _PlannerStub:
+    @staticmethod
+    def _joined_text(messages: list[Any]) -> str:
+        parts: list[str] = []
+        for message in messages:
+            content = getattr(message, 'content', '')
+            if isinstance(content, str):
+                parts.append(content)
+        return '\n'.join(parts)
+
+    async def ainvoke(self, messages: list[Any]) -> Any:
+        joined = self._joined_text(messages)
+        if '训练跟进路由器' in joined:
+            if '这次训练效果怎么样' in joined or '训练效果怎么样' in joined:
+                return _PlannerResponse('{"action":"analysis","reason":"用户在追问训练效果"}')
+            if '下一步先补数据还是调参数' in joined or '下一步' in joined:
+                return _PlannerResponse('{"action":"next_step","reason":"用户在追问下一步建议"}')
+            if '训练停了吗' in joined or '第几轮' in joined:
+                return _PlannerResponse('{"action":"status","reason":"用户在追问训练状态"}')
+        if '知识跟进路由器' in joined:
+            if '这次训练效果怎么样' in joined or '训练效果怎么样' in joined:
+                return _PlannerResponse('{"action":"analysis","reason":"用户在追问训练效果"}')
+            if '下一步先补数据还是调参数' in joined or '下一步' in joined:
+                return _PlannerResponse('{"action":"next_step","reason":"用户在追问下一步建议"}')
+        return _PlannerResponse('')
 
 
 def _norm(payload: Any) -> dict[str, Any]:
@@ -267,7 +304,7 @@ async def main() -> None:
         tool_map = await _build_mcp_tool_map(mcp_url)
 
     settings = AgentSettings(session_id=f'zyb-agent-roundtrip-{int(time.time())}', memory_root=str(work_root))
-    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={}, planner_llm=_PlannerStub())
     calls: list[dict[str, Any]] = []
 
     async def _direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:

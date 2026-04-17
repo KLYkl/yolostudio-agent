@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 from pathlib import Path
 import sys
@@ -162,11 +163,54 @@ except Exception:
     sys.modules['langgraph.checkpoint.memory'] = checkpoint_mod
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from langchain_core.messages import AIMessage, ToolMessage
 
 
-class _DummyGraph:
+class _FakeGraph:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
     def get_state(self, config):
         return None
+
+    async def ainvoke(self, payload, config=None):
+        del config
+        messages = list(payload['messages'])
+        user_text = ''
+        for message in reversed(messages):
+            content = getattr(message, 'content', '')
+            if isinstance(content, str) and content:
+                user_text = content
+                break
+        assert '抽 10% 的图片到 /tmp/extract_run' in user_text, user_text
+        tool_name = 'extract_images'
+        args = {
+            'source_path': '/data/raw/images',
+            'selection_mode': 'ratio',
+            'ratio': 0.1,
+            'output_dir': '/tmp/extract_run',
+        }
+        result = {
+            'ok': True,
+            'summary': '图片抽取完成: 实际抽取 18 张图片，复制标签 18 个',
+            'extracted': 18,
+            'labels_copied': 18,
+            'conflict_count': 0,
+            'output_dir': '/tmp/extract_run',
+            'workflow_ready_path': '/tmp/extract_run',
+            'warnings': [],
+            'action_candidates': [{'description': '可继续对输出目录做数据集质量检查', 'tool': 'scan_dataset'}],
+            'output_img_dir': '/tmp/extract_run/images',
+            'output_label_dir': '/tmp/extract_run/labels',
+        }
+        self.calls.append((tool_name, dict(args)))
+        return {
+            'messages': messages + [
+                AIMessage(content='', tool_calls=[{'id': 'call-1', 'name': tool_name, 'args': args}]),
+                ToolMessage(content=json.dumps(result, ensure_ascii=False), name=tool_name, tool_call_id='call-1'),
+                AIMessage(content='图片抽取完成: 实际抽取 18 张图片，复制标签 18 个'),
+            ]
+        }
 
 
 class _FakePlannerResponse:
@@ -192,35 +236,15 @@ async def _run() -> None:
     WORK.mkdir(parents=True, exist_ok=True)
     try:
         settings = AgentSettings(session_id='extract-followup-smoke', memory_root=str(WORK))
-        client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
-        calls: list[tuple[str, dict[str, object]]] = []
+        graph = _FakeGraph()
+        client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
 
-        async def _fake_direct_tool(tool_name: str, **kwargs):
-            calls.append((tool_name, dict(kwargs)))
-            assert tool_name == 'extract_images', tool_name
-            result = {
-                'ok': True,
-                'summary': '图片抽取完成: 实际抽取 18 张图片，复制标签 18 个',
-                'extracted': 18,
-                'labels_copied': 18,
-                'conflict_count': 0,
-                'output_dir': '/tmp/extract_run',
-                'workflow_ready_path': '/tmp/extract_run',
-                'warnings': [],
-                'action_candidates': [{'description': '可继续对输出目录做数据集质量检查', 'tool': 'scan_dataset'}],
-                'output_img_dir': '/tmp/extract_run/images',
-                'output_label_dir': '/tmp/extract_run/labels',
-            }
-            client._apply_to_state('extract_images', result, kwargs)
-            return result
-
-        client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
-
-        initial = await client._try_handle_mainline_intent('从 /data/raw/images 抽 10% 的图片到 /tmp/extract_run', 'thread-1')
-        assert initial is not None, initial
+        extract_prompt = '从 /data/raw/images 抽 10% 的图片到 /tmp/extract_run'
+        assert await client._try_handle_mainline_intent(extract_prompt, 'thread-1') is None
+        initial = await client.chat(extract_prompt)
         assert initial['status'] == 'completed', initial
         assert '实际抽取 18 张' in initial['message'], initial
-        assert calls[-1][0] == 'extract_images', calls
+        assert graph.calls[-1][0] == 'extract_images', graph.calls
 
         def _planner_reply(messages):
             text = '\n'.join(str(getattr(message, 'content', message)) for message in messages)
@@ -229,12 +253,12 @@ async def _run() -> None:
             return '图片抽取完成，当前输出目录是 /tmp/extract_run，本次实际抽取 18 张图片。'
 
         client.planner_llm = _FakePlannerLlm(_planner_reply)  # type: ignore[assignment]
-        before = len(calls)
+        before = len(graph.calls)
         routed = await client._try_handle_mainline_intent('现在抽图情况怎么样？我需要详细一点的信息', 'thread-2')
         assert routed is not None, routed
         assert routed['status'] == 'completed', routed
         assert '/tmp/extract_run' in routed['message'] or '18 张' in routed['message'], routed
-        assert len(calls) == before, calls
+        assert len(graph.calls) == before, graph.calls
 
         print('extract followup route ok')
     finally:

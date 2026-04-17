@@ -278,8 +278,14 @@ async def _run() -> None:
                     'ok': True,
                     'summary': '扫描完成: 共 200 张图片，类别 2 个',
                     'scan_overview': {'image_count': 200, 'class_count': 2},
-                    'classes': ['car', 'bus'],
-                    'warnings': [],
+                    'classes': ['epidural', 'subdural'],
+                    'class_stats': {'epidural': 66, 'subdural': 24},
+                    'top_classes': [{'class_name': 'epidural', 'count': 66}, {'class_name': 'subdural', 'count': 24}],
+                    'missing_label_images': 3,
+                    'missing_label_ratio': 0.015,
+                    'warnings': ['发现少量缺失标签'],
+                    'class_name_source': 'detected_classes_txt',
+                    'detected_classes_txt': '/data/dataset/classes.txt',
                     'action_candidates': [{'description': '可继续做数据集健康检查', 'tool': 'run_dataset_health_check'}],
                 }
                 if state_mode != 'observe':
@@ -334,6 +340,29 @@ async def _run() -> None:
         assert routed['status'] == 'completed', routed
         assert '重复图片' in routed['message'] or '缺失标签' in routed['message'] or '数据集质量分析' in routed['message'], routed
         assert [name for name, _ in calls[-3:]] == ['scan_dataset', 'validate_dataset', 'run_dataset_health_check'], calls
+
+        before_fact_followup = len(calls)
+        least = await client.chat('哪个类别的标注最少？')
+        assert least['status'] == 'completed', least
+        assert 'subdural' in least['message'].lower(), least
+        assert '24' in least['message'], least
+        assert len(calls) == before_fact_followup, calls
+
+        missing_labels = await client.chat('缺失标签有多少？')
+        assert missing_labels['status'] == 'completed', missing_labels
+        assert '3' in missing_labels['message'], missing_labels
+        assert len(calls) == before_fact_followup, calls
+
+        epidural = await client.chat('Epidural 有多少个？')
+        assert epidural['status'] == 'completed', epidural
+        assert '66' in epidural['message'], epidural
+        assert len(calls) == before_fact_followup, calls
+
+        classes = await client.chat('有哪些类别？')
+        assert classes['status'] == 'completed', classes
+        assert 'epidural' in classes['message'].lower(), classes
+        assert 'subdural' in classes['message'].lower(), classes
+        assert len(calls) == before_fact_followup, calls
 
         before_cached_followup = len(calls)
         routed2 = await client.chat('健康检查结果再详细一点')

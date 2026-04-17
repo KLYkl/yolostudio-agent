@@ -188,7 +188,7 @@ async def _run() -> None:
     )
     assert manual is not None
     manual_kwargs = captured[-1]['kwargs']  # type: ignore[index]
-    assert manual_kwargs.get('interrupt_before') == ['upload_assets_to_remote'], manual_kwargs
+    assert manual_kwargs.get('interrupt_before') == ['tools'], manual_kwargs
 
     auto = await agent_client.build_agent_client(
         agent_client.AgentSettings(session_id='interrupt-auto', memory_root='agent/tests/_tmp_interrupt_auto', confirmation_mode='auto')

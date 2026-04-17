@@ -19,6 +19,10 @@ from langgraph.prebuilt import create_react_agent
 from langgraph.types import Command
 
 from yolostudio_agent.agent.client.context_builder import ContextBuilder
+from yolostudio_agent.agent.client.dataset_fact_service import (
+    build_dataset_fact_followup_reply,
+    looks_like_dataset_fact_question,
+)
 from yolostudio_agent.agent.client.event_retriever import EventRetriever
 from yolostudio_agent.agent.client.followup_router import (
     classify_dataset_followup_action,
@@ -82,7 +86,7 @@ from yolostudio_agent.agent.client.tool_adapter import (
     stringify_tool_result_facts,
 )
 from yolostudio_agent.agent.client.tool_policy import (
-    build_manual_interrupt_tool_names,
+    build_manual_interrupt_nodes,
     pending_allowed_decisions,
     resolve_tool_execution_policy,
 )
@@ -457,6 +461,8 @@ class YoloStudioAgentClient:
         if str(self.session_state.pending_confirmation.tool_name or '').strip():
             return True
         if self.session_state.active_training.training_plan_draft:
+            return True
+        if self.session_state.active_dataset.last_scan and looks_like_dataset_fact_question(user_text):
             return True
         lowered = str(user_text or '').lower()
         low_risk_cache_context = bool(
@@ -1333,7 +1339,18 @@ class YoloStudioAgentClient:
         normalized_text: str,
         dataset_path: str,
     ) -> dict[str, Any] | None:
-        del enabled, user_text, normalized_text, dataset_path
+        del normalized_text
+        if not enabled:
+            return None
+        reply = build_dataset_fact_followup_reply(
+            self.session_state,
+            user_text=user_text,
+            requested_dataset_path=dataset_path,
+        )
+        if not reply:
+            return None
+        self._messages.append(AIMessage(content=reply))
+        return {'status': 'completed', 'message': reply, 'tool_call': None}
         return None
 
     async def _try_handle_realtime_followup(
@@ -1474,6 +1491,26 @@ class YoloStudioAgentClient:
         )
         if extract_followup:
             return extract_followup
+
+        dataset_followup = await self._try_handle_dataset_followup(
+            enabled=(
+                has_dataset_followup_context
+                and not wants_train
+                and not wants_predict
+                and not training_command_like
+                and not wants_remote_upload
+                and not wants_quality
+                and not wants_health
+                and not wants_duplicates
+                and not wants_readiness
+                and not extracted_dataset_path
+            ),
+            user_text=user_text,
+            normalized_text=normalized_text,
+            dataset_path=dataset_path,
+        )
+        if dataset_followup:
+            return dataset_followup
 
         if dataset_path and wants_quality and not wants_train:
             return await self._complete_dataset_quality_reply(dataset_path)
@@ -6800,9 +6837,9 @@ async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudi
         'checkpointer': FileCheckpointSaver(_checkpoint_path(settings)),
     }
     if str(settings.confirmation_mode or 'manual').strip().lower() == 'manual':
-        interrupt_tool_names = build_manual_interrupt_tool_names(raw_tools)
-        if interrupt_tool_names:
-            react_kwargs['interrupt_before'] = interrupt_tool_names
+        interrupt_nodes = build_manual_interrupt_nodes(raw_tools)
+        if interrupt_nodes:
+            react_kwargs['interrupt_before'] = interrupt_nodes
     graph = create_react_agent(
         llm,
         tools,

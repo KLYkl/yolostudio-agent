@@ -162,7 +162,7 @@ except Exception:
     sys.modules['langgraph.checkpoint.memory'] = checkpoint_mod
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
-from yolostudio_agent.agent.client.tool_policy import build_manual_interrupt_tool_names
+from yolostudio_agent.agent.client.tool_policy import build_manual_interrupt_nodes
 
 
 class _DummyGraph:
@@ -242,11 +242,8 @@ async def _run() -> None:
         assert remote_pipeline_review['risk_level'] == 'high'
         assert remote_pipeline_review['open_world'] is True
 
-        interrupt_tools = build_manual_interrupt_tool_names(raw_tools)
-        assert 'upload_assets_to_remote' in interrupt_tools
-        assert 'custom_destructive_tool' in interrupt_tools
-        assert 'start_training' in interrupt_tools
-        assert 'list_remote_profiles' not in interrupt_tools
+        interrupt_nodes = build_manual_interrupt_nodes(raw_tools)
+        assert interrupt_nodes == ['tools'], interrupt_nodes
 
         print('tool confirmation policy ok')
     finally:

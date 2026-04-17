@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import sys
 import types
@@ -146,11 +147,50 @@ except Exception:
     sys.modules['langgraph.checkpoint.memory'] = checkpoint_mod
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from langchain_core.messages import AIMessage, ToolMessage
 
 
-class _DummyGraph:
+class _FakeGraph:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
     def get_state(self, config):
         return None
+
+    async def ainvoke(self, payload, config=None):
+        del config
+        messages = list(payload['messages'])
+        user_text = ''
+        for message in reversed(messages):
+            content = getattr(message, 'content', '')
+            if isinstance(content, str) and content:
+                user_text = content
+                break
+        args: dict[str, Any] = {}
+        summary = '找到 1 条最近训练记录（筛选: 状态=failed）'
+        final_text = '筛选: 状态=failed'
+        if '可分析' in user_text:
+            args['analysis_ready'] = True
+            summary = '找到 1 条最近训练记录（筛选: 仅可分析训练）'
+            final_text = '仅可分析训练'
+        else:
+            args['run_state'] = 'failed'
+        result = {
+            'ok': True,
+            'summary': summary,
+            'applied_filters': {'run_state': args.get('run_state'), 'analysis_ready': args.get('analysis_ready')},
+            'runs': [{'run_id': 'train_log_404', 'run_state': 'failed', 'observation_stage': 'final'}],
+            'next_actions': ['可继续调用 inspect_training_run'],
+        }
+        self.calls.append(('list_training_runs', dict(args)))
+        tool_call_id = f'call-{len(self.calls)}'
+        return {
+            'messages': messages + [
+                AIMessage(content='', tool_calls=[{'id': tool_call_id, 'name': 'list_training_runs', 'args': args}]),
+                ToolMessage(content=json.dumps(result, ensure_ascii=False), name='list_training_runs', tool_call_id=tool_call_id),
+                AIMessage(content=final_text),
+            ]
+        }
 
 
 WORK = Path(__file__).resolve().parent / '_tmp_training_run_list_filters_route'
@@ -161,36 +201,19 @@ async def _run() -> None:
     WORK.mkdir(parents=True, exist_ok=True)
     try:
         settings = AgentSettings(session_id='training-run-list-filters-route', memory_root=str(WORK))
-        client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
-        calls: list[tuple[str, dict[str, Any]]] = []
+        graph = _FakeGraph()
+        client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
 
-        async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
-            calls.append((tool_name, dict(kwargs)))
-            if tool_name != 'list_training_runs':
-                raise AssertionError(f'unexpected tool call: {tool_name}')
-            result = {
-                'ok': True,
-                'summary': '找到 1 条最近训练记录（筛选: 状态=failed）',
-                'applied_filters': {'run_state': kwargs.get('run_state'), 'analysis_ready': kwargs.get('analysis_ready')},
-                'runs': [
-                    {'run_id': 'train_log_404', 'run_state': 'failed', 'observation_stage': 'final'},
-                ],
-                'next_actions': ['可继续调用 inspect_training_run'],
-            }
-            client._apply_to_state(tool_name, result, kwargs)
-            return result
-
-        client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
-
-        routed = await client._try_handle_mainline_intent('最近失败的训练有哪些？', 'thread-list-filter')
-        assert routed is not None
-        assert calls[-1] == ('list_training_runs', {'run_state': 'failed'})
+        failed_prompt = '最近失败的训练有哪些？'
+        assert await client._try_handle_mainline_intent(failed_prompt, 'thread-list-filter') is None
+        routed = await client.chat(failed_prompt)
+        assert graph.calls[-1] == ('list_training_runs', {'run_state': 'failed'})
         assert '筛选: 状态=failed' in routed['message']
 
-        calls.clear()
-        routed = await client._try_handle_mainline_intent('把可分析的训练记录列出来', 'thread-list-filter')
-        assert routed is not None
-        assert calls[-1] == ('list_training_runs', {'analysis_ready': True})
+        analyzable_prompt = '把可分析的训练记录列出来'
+        assert await client._try_handle_mainline_intent(analyzable_prompt, 'thread-list-filter-2') is None
+        routed = await client.chat(analyzable_prompt)
+        assert graph.calls[-1] == ('list_training_runs', {'analysis_ready': True})
         assert '仅可分析训练' in routed['message']
         print('training run list filters route ok')
     finally:

@@ -158,17 +158,16 @@ def resolve_raw_tool_execution_policy(tool: Any) -> ToolExecutionPolicy:
     )
 
 
-def build_manual_interrupt_tool_names(raw_tools: Iterable[Any]) -> list[str]:
-    names: list[str] = []
-    seen: set[str] = set()
+def build_manual_interrupt_nodes(raw_tools: Iterable[Any]) -> list[str]:
     for tool in raw_tools:
         policy = resolve_raw_tool_execution_policy(tool)
-        if not policy.tool_name or policy.tool_name in seen:
-            continue
         if policy.confirmation_required:
-            seen.add(policy.tool_name)
-            names.append(policy.tool_name)
-    return names
+            return ['tools']
+    return []
+
+
+def build_manual_interrupt_tool_names(raw_tools: Iterable[Any]) -> list[str]:
+    return build_manual_interrupt_nodes(raw_tools)
 
 
 def pending_allowed_decisions(policy: ToolExecutionPolicy) -> list[str]:

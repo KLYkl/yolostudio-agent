@@ -34,12 +34,15 @@ class PredictionContext:
     model: str = ""
     output_dir: str = ""
     report_path: str = ""
+    image_prediction_session_id: str = ""
+    image_prediction_status: str = ""
     last_result: dict[str, Any] = field(default_factory=dict)
     last_summary: dict[str, Any] = field(default_factory=dict)
     last_inspection: dict[str, Any] = field(default_factory=dict)
     last_export: dict[str, Any] = field(default_factory=dict)
     last_path_lists: dict[str, Any] = field(default_factory=dict)
     last_organized_result: dict[str, Any] = field(default_factory=dict)
+    last_image_prediction_status: dict[str, Any] = field(default_factory=dict)
     realtime_session_id: str = ""
     realtime_source_type: str = ""
     realtime_source_label: str = ""

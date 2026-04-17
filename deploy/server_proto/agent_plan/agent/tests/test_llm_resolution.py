@@ -66,6 +66,8 @@ def main() -> None:
         'YOLOSTUDIO_HELPER_LLM_MODEL',
         'YOLOSTUDIO_HELPER_LLM_BASE_URL',
         'YOLOSTUDIO_HELPER_LLM_API_KEY',
+        'YOLOSTUDIO_OLLAMA_NUM_CTX',
+        'YOLOSTUDIO_HELPER_OLLAMA_NUM_CTX',
         'YOLOSTUDIO_DEEPSEEK_MODEL',
         'YOLOSTUDIO_DEEPSEEK_BASE_URL',
         'DEEPSEEK_API_KEY',
@@ -81,18 +83,25 @@ def main() -> None:
         os.environ['YOLOSTUDIO_LLM_BASE_URL'] = 'https://api.deepseek.com/v1'
         os.environ['DEEPSEEK_API_KEY'] = 'secret'
         os.environ['YOLOSTUDIO_OLLAMA_URL'] = 'http://127.0.0.1:11434'
+        os.environ['YOLOSTUDIO_OLLAMA_NUM_CTX'] = '65536'
 
         primary = resolve_llm_settings(LlmProviderSettings(role='primary'), role='primary')
         assert primary.provider == 'ollama', primary
         assert primary.model == 'gemma4:e4b', primary
         assert primary.base_url == 'http://127.0.0.1:11434', primary
         assert primary.api_key == '', primary
+        assert primary.ollama_num_ctx == 65536, primary
         assert 'provider=ollama' in provider_summary(primary)
 
         helper = resolve_llm_settings(LlmProviderSettings(role='helper'), role='helper', inherit=primary)
         assert helper.provider == primary.provider, helper
         assert helper.model == primary.model, helper
         assert helper.base_url == primary.base_url, helper
+        assert helper.ollama_num_ctx == 65536, helper
+
+        os.environ['YOLOSTUDIO_HELPER_OLLAMA_NUM_CTX'] = '32768'
+        helper_num_ctx = resolve_llm_settings(LlmProviderSettings(role='helper'), role='helper', inherit=primary)
+        assert helper_num_ctx.ollama_num_ctx == 32768, helper_num_ctx
 
         os.environ['YOLOSTUDIO_HELPER_LLM_PROVIDER'] = 'deepseek'
         deepseek_helper = resolve_llm_settings(LlmProviderSettings(role='helper'), role='helper', inherit=primary)
@@ -100,6 +109,7 @@ def main() -> None:
         assert deepseek_helper.model == 'deepseek-chat', deepseek_helper
         assert deepseek_helper.base_url == 'https://api.deepseek.com/v1', deepseek_helper
         assert deepseek_helper.api_key == 'secret', deepseek_helper
+        assert deepseek_helper.ollama_num_ctx == 32768, deepseek_helper
 
         print('llm resolution ok')
     finally:

@@ -40,7 +40,11 @@ def retrieve_training_knowledge(
     include_case_sources: bool = False,
     include_test_sources: bool = False,
 ) -> dict[str, Any]:
-    """检索训练知识规则。默认只使用 official/workflow 规则，不把测试或真实 case 经验自动混入建议。"""
+    """检索训练知识规则。
+
+    适用: “precision 高 recall 低说明什么”“训练后这组指标意味着什么”。
+    默认只使用 official/workflow 规则，不把测试或真实 case 经验自动混入建议。
+    """
     result = _wrap(
         '检索训练知识',
         service.retrieve_training_knowledge,
@@ -84,7 +88,11 @@ def analyze_training_outcome(
     include_case_sources: bool = False,
     include_test_sources: bool = False,
 ) -> dict[str, Any]:
-    """结合训练指标、数据质量和预测摘要解释当前训练结果；默认仍只用 official/workflow 规则。"""
+    """结合训练指标、数据质量和预测摘要解释当前训练结果。
+
+    适用: “这次训练效果怎么样”“对比后这些差异说明什么”。
+    默认仍只用 official/workflow 规则。
+    """
     result = _wrap(
         '分析训练结果',
         service.analyze_training_outcome,
@@ -118,7 +126,11 @@ def recommend_next_training_step(
     include_case_sources: bool = False,
     include_test_sources: bool = False,
 ) -> dict[str, Any]:
-    """基于 readiness/health/status/prediction 给出下一步建议；默认不把测试沉淀和 case 经验自动混入。"""
+    """基于 readiness/health/status/prediction 给出下一步建议。
+
+    适用: “下一步先补数据还是先调参数”“最佳训练后下一轮该怎么做”。
+    默认不把测试沉淀和 case 经验自动混入。
+    """
     result = _wrap(
         '生成下一步训练建议',
         service.recommend_next_training_step,

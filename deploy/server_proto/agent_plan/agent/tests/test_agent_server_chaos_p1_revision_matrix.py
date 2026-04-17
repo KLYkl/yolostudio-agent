@@ -13,8 +13,7 @@ if __package__ in {None, ''}:
         if path not in sys.path:
             sys.path.insert(0, path)
 
-from yolostudio_agent.agent.tests.test_agent_server_chaos_p0 import WORK as P0_WORK
-from yolostudio_agent.agent.tests.test_agent_server_chaos_p0 import _make_client
+from yolostudio_agent.agent.tests._chaos_test_support import WORK as P0_WORK, _make_client
 from yolostudio_agent.agent.tests._coroutine_runner import run
 
 
@@ -121,7 +120,7 @@ async def _scenario_c17_explain_then_follow_latest_intent() -> None:
 
     async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
         calls.append((tool_name, dict(kwargs)))
-        if tool_name == 'training_readiness':
+        if tool_name in {'training_readiness', 'dataset_training_readiness'}:
             result = {
                 'ok': True,
                 'summary': '当前还不能直接训练：缺少可用的 data_yaml；但当前数据集可以先进入 prepare_dataset_for_training',
@@ -173,14 +172,15 @@ async def _scenario_c17_explain_then_follow_latest_intent() -> None:
 
     first = await client.chat('数据在 /data/preparable，用 yolov8n.pt 训练，只做准备。')
     assert first['status'] == 'needs_confirmation', first
+    assert first['tool_call']['name'] == 'prepare_dataset_for_training', first
     second = await client.chat('为什么不能直接训练？')
     assert second['status'] == 'needs_confirmation', second
     assert '缺少可用的 data_yaml' in second['message']
     third = await client.chat('那你直接训练。')
     assert third['status'] == 'needs_confirmation', third
-    assert third['tool_call']['name'] == 'start_training'
-    assert third['tool_call']['args'].get('data_yaml') == '/data/preparable/data.yaml'
-    assert [name for name, _ in calls] == ['training_readiness', 'list_training_environments', 'prepare_dataset_for_training', 'training_preflight']
+    assert third['tool_call']['name'] == 'start_training', third
+    assert third['tool_call']['args'].get('data_yaml') == '/data/preparable/data.yaml', third
+    assert [name for name, _ in calls] == ['dataset_training_readiness', 'prepare_dataset_for_training', 'training_preflight']
 
 
 async def _scenario_c18_same_turn_conflict_stays_conservative() -> None:
@@ -214,6 +214,16 @@ async def _scenario_c20_project_and_name_can_be_cleared() -> None:
     assert args.get('name') in ('', None)
 
 
+async def _scenario_c21_deferred_prediction_does_not_block_training_plan() -> None:
+    client = _fresh_client('chaos-p1-c21')
+    _install_ready_training_tools(client)
+    turn = await client.chat('预测先别做，直接用 /data/revision 和 yolov8n.pt 训练，先给我计划。')
+    assert turn['status'] == 'completed', turn
+    assert '训练计划草案' in turn['message'], turn
+    assert '请拆成连续步骤' not in turn['message'], turn
+    assert 'yolov8n.pt' in turn['message'], turn
+
+
 async def _run() -> None:
     await _scenario_c15_batch_override_can_restore_default()
     await _scenario_c16_classes_and_single_cls_do_not_cross_contaminate()
@@ -221,6 +231,7 @@ async def _run() -> None:
     await _scenario_c18_same_turn_conflict_stays_conservative()
     await _scenario_c19_resume_but_analysis_only_does_not_restart()
     await _scenario_c20_project_and_name_can_be_cleared()
+    await _scenario_c21_deferred_prediction_does_not_block_training_plan()
     print('agent server chaos p1 revision matrix ok')
 
 

@@ -246,7 +246,11 @@ def list_training_runs(
     model_keyword: str = '',
     data_keyword: str = '',
 ) -> dict[str, Any]:
-    """列出最近训练记录，便于查看最近一次训练、手动停止的训练或仅有日志的历史训练。"""
+    """列出训练记录列表。
+
+    适用: “最近训练记录有哪些”“最近失败的训练”“把可分析的训练列出来”。
+    不适用: 只看单条 run 详情时请用 inspect_training_run；比较两条 run 时请用 compare_training_runs；问哪次最好时请用 select_best_training_run。
+    """
     result = _wrap(
         "查询训练历史",
         service.list_training_runs,
@@ -288,7 +292,11 @@ def list_training_runs(
 
 
 def inspect_training_run(run_id: str = '') -> dict[str, Any]:
-    """查看某次训练记录详情；默认查看最近一次，也可传 run_id 或日志路径。"""
+    """查看单条训练记录详情。
+
+    适用: “看看 train_log_200 的详情”“最近一次训练具体情况”。
+    不适用: 列表查询请用 list_training_runs；两次对比请用 compare_training_runs。
+    """
     result = _wrap("查看训练记录详情", service.inspect_training_run, run_id=run_id)
     if result.get('ok'):
         run_state = str(result.get('run_state') or '').strip().lower()
@@ -316,7 +324,11 @@ def inspect_training_run(run_id: str = '') -> dict[str, Any]:
 
 
 def compare_training_runs(left_run_id: str = '', right_run_id: str = '') -> dict[str, Any]:
-    """对比两次训练记录的状态、关键指标和差异摘要。默认比较最近两次可读训练。"""
+    """对比两次训练记录的状态、关键指标和差异摘要。
+
+    适用: “对比最近两次训练”“比较 train_log_200 和 train_log_100”。
+    默认比较最近两次可读训练；如果只想看哪次最好，请改用 select_best_training_run。
+    """
     result = _wrap("对比训练记录", service.compare_training_runs, left_run_id=left_run_id, right_run_id=right_run_id)
     if result.get('ok'):
         result.setdefault('next_actions', [
@@ -332,7 +344,11 @@ def compare_training_runs(left_run_id: str = '', right_run_id: str = '') -> dict
 
 
 def select_best_training_run(limit: int = 5) -> dict[str, Any]:
-    """从最近若干条训练记录里选出最值得参考的一次。"""
+    """从最近若干条训练记录里选出最值得参考的一次。
+
+    适用: “最近哪次训练最好”“最值得参考的训练记录是哪次”。
+    不适用: 需要具体对比两次训练时请用 compare_training_runs。
+    """
     result = _wrap("选择最佳训练记录", service.select_best_training_run, limit=limit)
     if result.get('ok'):
         result.setdefault('next_actions', [
@@ -411,7 +427,11 @@ def summarize_training_run() -> dict[str, Any]:
 
 
 def stop_training() -> dict[str, Any]:
-    """停止当前训练任务。"""
+    """停止当前普通训练任务。
+
+    适用: “停止训练”“停掉当前训练”“终止当前训练进程”。
+    不适用: 停止循环训练请用 stop_training_loop。
+    """
     result = _wrap("停止训练", service.stop)
     if result.get("ok"):
         result.setdefault("summary", result.get("message") or "训练任务已停止")

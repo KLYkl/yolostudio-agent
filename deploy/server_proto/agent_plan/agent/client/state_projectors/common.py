@@ -367,6 +367,36 @@ def _prediction_result_snapshot(
     return snapshot
 
 
+def _image_prediction_session_snapshot(result: dict[str, Any]) -> dict[str, Any]:
+    snapshot = _pick_mapping(
+        result,
+        'summary',
+        'session_id',
+        'status',
+        'run_state',
+        'running',
+        'started_in_background',
+        'source_path',
+        'model',
+        'total_images',
+        'processed_images',
+        'detected_images',
+        'empty_images',
+        'total_detections',
+        'class_counts',
+        'warnings',
+        'output_dir',
+        'report_path',
+        'last_image_path',
+        'error',
+        'action_candidates',
+        'prediction_session_overview',
+    )
+    if 'warnings' in snapshot:
+        snapshot['warnings'] = [str(item) for item in (snapshot.get('warnings') or []) if str(item).strip()]
+    return snapshot
+
+
 def _prediction_management_snapshot(
     result: dict[str, Any],
     *,
@@ -382,17 +412,85 @@ def _prediction_management_snapshot(
     return snapshot
 
 
+def _dataset_class_extremum_snapshot(class_stats: dict[str, Any] | None, *, reverse: bool) -> dict[str, Any]:
+    if not isinstance(class_stats, dict) or not class_stats:
+        return {}
+    normalized: list[tuple[str, int]] = []
+    for name, value in class_stats.items():
+        key = str(name or '').strip()
+        if not key:
+            continue
+        try:
+            normalized.append((key, int(value)))
+        except (TypeError, ValueError):
+            continue
+    if not normalized:
+        return {}
+    normalized.sort(key=lambda item: (-item[1], item[0]) if reverse else (item[1], item[0]))
+    name, count = normalized[0]
+    return {'name': name, 'count': count}
+
+
 def _dataset_scan_snapshot(result: dict[str, Any], *, detected_yaml: str = '') -> dict[str, Any]:
     snapshot = _pick_mapping(
         result,
         'total_images',
         'labeled_images',
         'missing_labels',
+        'missing_label_images',
+        'missing_label_ratio',
         'empty_labels',
+        'risk_level',
         'summary',
         'scan_overview',
+        'warnings',
+        'classes',
+        'class_stats',
+        'top_classes',
+        'detected_classes_txt',
+        'class_name_source',
+        'data_yaml_candidates',
+        'classes_txt_candidates',
+        'next_actions',
         'action_candidates',
     )
+    if 'classes' in snapshot:
+        snapshot['classes'] = [str(item) for item in (snapshot.get('classes') or []) if str(item).strip()]
+    if 'class_stats' in snapshot:
+        normalized_stats: dict[str, int] = {}
+        for name, value in (snapshot.get('class_stats') or {}).items():
+            key = str(name or '').strip()
+            if not key:
+                continue
+            try:
+                normalized_stats[key] = int(value)
+            except (TypeError, ValueError):
+                continue
+        snapshot['class_stats'] = normalized_stats
+        snapshot['least_class'] = _dataset_class_extremum_snapshot(normalized_stats, reverse=False)
+        snapshot['most_class'] = _dataset_class_extremum_snapshot(normalized_stats, reverse=True)
+    if 'top_classes' in snapshot:
+        top_classes: list[dict[str, Any]] = []
+        for item in snapshot.get('top_classes') or []:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get('class_name') or item.get('name') or '').strip()
+            count = item.get('count')
+            if not name:
+                continue
+            try:
+                top_classes.append({'class_name': name, 'count': int(count)})
+            except (TypeError, ValueError):
+                continue
+        snapshot['top_classes'] = top_classes
+    if 'warnings' in snapshot:
+        snapshot['warnings'] = [str(item) for item in (snapshot.get('warnings') or []) if str(item).strip()]
+    if 'data_yaml_candidates' in snapshot:
+        snapshot['data_yaml_candidates'] = [str(item) for item in (snapshot.get('data_yaml_candidates') or []) if str(item).strip()]
+    if 'classes_txt_candidates' in snapshot:
+        snapshot['classes_txt_candidates'] = [str(item) for item in (snapshot.get('classes_txt_candidates') or []) if str(item).strip()]
+    if 'next_actions' in snapshot:
+        snapshot['next_actions'] = [str(item) for item in (snapshot.get('next_actions') or []) if str(item).strip()]
     snapshot['detected_data_yaml'] = detected_yaml
     return snapshot
 
