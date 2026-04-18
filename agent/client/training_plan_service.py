@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -26,6 +27,10 @@ TrainingArgsCollector = Callable[..., dict[str, Any]]
 TrainingDiscussionChecker = Callable[[str], bool]
 TrainingExecutionBackendExtractor = Callable[[str], str]
 TrainingAdvancedDetailsChecker = Callable[[str], bool]
+ModelPathExtractor = Callable[[str], str]
+PrepareOnlyRequestChecker = Callable[[str], bool]
+DatasetPathExtractor = Callable[[str], str]
+LocalPathExistenceChecker = Callable[[str], bool]
 
 TRAINING_PREFLIGHT_STRING_FIELDS = (
     'training_environment',
@@ -296,6 +301,40 @@ async def run_prepare_only_entrypoint(
         'clear_draft': False,
         'defer_to_graph': True,
     }
+
+
+def resolve_prepare_only_request_context(
+    *,
+    user_text: str,
+    looks_like_prepare_only_request: PrepareOnlyRequestChecker,
+    extract_dataset_path: DatasetPathExtractor,
+) -> dict[str, Any]:
+    if not looks_like_prepare_only_request(user_text):
+        return {'matches': False, 'dataset_path': ''}
+    dataset_path = str(extract_dataset_path(user_text) or '').strip()
+    if not dataset_path:
+        return {'matches': False, 'dataset_path': ''}
+    return {'matches': True, 'dataset_path': dataset_path}
+
+
+def resolve_prepare_only_local_path_result(
+    *,
+    dataset_path: str,
+    local_path_exists: LocalPathExistenceChecker,
+) -> dict[str, Any] | None:
+    dataset_path = str(dataset_path or '').strip()
+    if not dataset_path:
+        return None
+    candidate = Path(dataset_path).expanduser()
+    if candidate.is_absolute() and not local_path_exists(dataset_path):
+        return {
+            'status': 'completed',
+            'reply': f'我还没核实到这个路径存在：{dataset_path}。请先检查路径是否写对。',
+            'draft': None,
+            'clear_draft': True,
+            'defer_to_graph': False,
+        }
+    return None
 
 
 def build_training_recovery_base_args(session_state: SessionState) -> dict[str, Any]:
@@ -690,6 +729,130 @@ def resolve_training_recovery_bootstrap(
     }
 
 
+def resolve_training_request_entrypoint_guard(
+    *,
+    session_state: SessionState,
+    user_text: str,
+    normalized_text: str,
+    dataset_path: str,
+    wants_train: bool,
+    wants_predict: bool,
+    no_train: bool,
+    readiness_only_query: bool,
+    wants_training_outcome_analysis: bool,
+    wants_next_step_guidance: bool,
+    wants_training_knowledge: bool,
+    wants_training_revision: bool,
+    wants_stop_training: bool,
+    blocks_training_start: bool,
+    explicit_run_ids: list[str] | None,
+    extract_model_from_text: ModelPathExtractor,
+) -> dict[str, Any]:
+    explicit_run_ids = list(explicit_run_ids or [])
+    active_training = session_state.active_training
+    if (
+        active_training.running
+        and wants_train
+        and wants_training_revision
+        and not wants_stop_training
+        and not any(token in user_text for token in ('新数据', '新数据集', '另一个数据集', '换数据集', '改数据集'))
+        and not wants_predict
+        and not explicit_run_ids
+        and not any(token in user_text for token in ('数据', '数据集', 'dataset', 'img_dir', 'label_dir', '换成', '改成', '改用', '现在用'))
+        and 'resume' not in normalized_text
+    ):
+        return {
+            'reply': (
+                '当前训练还在运行，不能直接热更新 batch、轮数、优化器或设备等核心参数。'
+                '如果要改参数，请先停止当前训练，再生成新的训练计划。'
+            ),
+            'draft': None,
+            'defer_to_graph': False,
+            'proceed': False,
+        }
+
+    if (
+        wants_train
+        and not dataset_path
+        and not no_train
+        and not readiness_only_query
+        and not wants_training_outcome_analysis
+        and not wants_next_step_guidance
+        and not wants_training_knowledge
+        and not blocks_training_start
+    ):
+        requested_model = extract_model_from_text(user_text)
+        missing_fields = ['数据集路径']
+        if not requested_model:
+            missing_fields.append('预训练权重/模型')
+        lines = ['当前还不能开始训练：']
+        for field in missing_fields:
+            lines.append(f'- 缺少{field}')
+        lines.append('请先补充最少必要信息；我至少需要数据集目录，训练时还需要可用的预训练权重/模型。')
+        return {
+            'reply': '\n'.join(lines),
+            'draft': None,
+            'defer_to_graph': False,
+            'proceed': False,
+        }
+
+    if not (
+        dataset_path
+        and wants_train
+        and not no_train
+        and not readiness_only_query
+        and not wants_training_outcome_analysis
+        and not wants_next_step_guidance
+        and not wants_training_knowledge
+        and not blocks_training_start
+    ):
+        return {
+            'reply': '',
+            'draft': None,
+            'defer_to_graph': False,
+            'proceed': False,
+            'return_none': True,
+        }
+
+    return {
+        'reply': '',
+        'draft': None,
+        'defer_to_graph': False,
+        'proceed': True,
+    }
+
+
+async def prepare_training_request_context(
+    *,
+    session_state: SessionState,
+    user_text: str,
+    dataset_path: str,
+    frame_followup_path: str,
+    direct_tool: DirectToolInvoker,
+    collect_requested_training_args: TrainingArgsCollector,
+) -> dict[str, Any]:
+    active_training = session_state.active_training
+    readiness = await direct_tool('training_readiness', img_dir=dataset_path)
+    await direct_tool('list_training_environments')
+    requested_args = collect_requested_training_args(
+        user_text,
+        data_yaml=str(readiness.get('resolved_data_yaml') or session_state.active_dataset.data_yaml or ''),
+    )
+    if not str(requested_args.get('model') or '').strip():
+        draft_model = str((((active_training.training_plan_draft or {}).get('planned_training_args') or {}).get('model')) or '').strip()
+        preserved_model = ''
+        if frame_followup_path:
+            preserved_model = draft_model or str(active_training.model or '').strip()
+        elif any(token in user_text for token in ('继续', '刚才', '上次', '恢复')):
+            preserved_model = draft_model or str(active_training.model or '').strip()
+        if preserved_model:
+            requested_args['model'] = preserved_model
+    return {
+        'readiness': readiness,
+        'requested_args': requested_args,
+    }
+
+
 async def run_training_request_entrypoint(
     *,
     session_state: SessionState,
@@ -716,79 +879,43 @@ async def run_training_request_entrypoint(
     build_training_plan_draft_fn: TrainingPlanDraftBuilder,
     render_training_plan_message: TrainingPlanMessageRenderer,
 ) -> dict[str, Any] | None:
-    explicit_run_ids = list(explicit_run_ids or [])
-    active_training = session_state.active_training
-    if (
-        active_training.running
-        and wants_train
-        and wants_training_revision
-        and not wants_stop_training
-        and not any(token in user_text for token in ('新数据', '新数据集', '另一个数据集', '换数据集', '改数据集'))
-        and not wants_predict
-        and not explicit_run_ids
-        and not any(token in user_text for token in ('数据', '数据集', 'dataset', 'img_dir', 'label_dir', '换成', '改成', '改用', '现在用'))
-        and 'resume' not in normalized_text
-    ):
-        return {
-            'reply': (
-                '当前训练还在运行，不能直接热更新 batch、轮数、优化器或设备等核心参数。'
-                '如果要改参数，请先停止当前训练，再生成新的训练计划。'
-            ),
-            'draft': None,
-            'defer_to_graph': False,
-        }
-
-    if (
-        wants_train
-        and not dataset_path
-        and not no_train
-        and not readiness_only_query
-        and not wants_training_outcome_analysis
-        and not wants_next_step_guidance
-        and not wants_training_knowledge
-        and not blocks_training_start
-    ):
-        requested_model = intent_parsing.extract_model_from_text(user_text)
-        missing_fields = ['数据集路径']
-        if not requested_model:
-            missing_fields.append('预训练权重/模型')
-        lines = ['当前还不能开始训练：']
-        for field in missing_fields:
-            lines.append(f'- 缺少{field}')
-        lines.append('请先补充最少必要信息；我至少需要数据集目录，训练时还需要可用的预训练权重/模型。')
-        return {
-            'reply': '\n'.join(lines),
-            'draft': None,
-            'defer_to_graph': False,
-        }
-
-    if not (
-        dataset_path
-        and wants_train
-        and not no_train
-        and not readiness_only_query
-        and not wants_training_outcome_analysis
-        and not wants_next_step_guidance
-        and not wants_training_knowledge
-        and not blocks_training_start
-    ):
-        return None
-
-    readiness = await direct_tool('training_readiness', img_dir=dataset_path)
-    await direct_tool('list_training_environments')
-    requested_args = collect_requested_training_args(
-        user_text,
-        data_yaml=str(readiness.get('resolved_data_yaml') or session_state.active_dataset.data_yaml or ''),
+    guard = resolve_training_request_entrypoint_guard(
+        session_state=session_state,
+        user_text=user_text,
+        normalized_text=normalized_text,
+        dataset_path=dataset_path,
+        wants_train=wants_train,
+        wants_predict=wants_predict,
+        no_train=no_train,
+        readiness_only_query=readiness_only_query,
+        wants_training_outcome_analysis=wants_training_outcome_analysis,
+        wants_next_step_guidance=wants_next_step_guidance,
+        wants_training_knowledge=wants_training_knowledge,
+        wants_training_revision=wants_training_revision,
+        wants_stop_training=wants_stop_training,
+        blocks_training_start=blocks_training_start,
+        explicit_run_ids=explicit_run_ids,
+        extract_model_from_text=intent_parsing.extract_model_from_text,
     )
-    if not str(requested_args.get('model') or '').strip():
-        draft_model = str((((active_training.training_plan_draft or {}).get('planned_training_args') or {}).get('model')) or '').strip()
-        preserved_model = ''
-        if frame_followup_path:
-            preserved_model = draft_model or str(active_training.model or '').strip()
-        elif any(token in user_text for token in ('继续', '刚才', '上次', '恢复')):
-            preserved_model = draft_model or str(active_training.model or '').strip()
-        if preserved_model:
-            requested_args['model'] = preserved_model
+    if not guard.get('proceed'):
+        if guard.get('return_none'):
+            return None
+        return {
+            'reply': str(guard.get('reply') or '').strip(),
+            'draft': dict(guard.get('draft') or {}) or None,
+            'defer_to_graph': bool(guard.get('defer_to_graph')),
+        }
+
+    prepared_context = await prepare_training_request_context(
+        session_state=session_state,
+        user_text=user_text,
+        dataset_path=dataset_path,
+        frame_followup_path=frame_followup_path,
+        direct_tool=direct_tool,
+        collect_requested_training_args=collect_requested_training_args,
+    )
+    readiness = dict(prepared_context.get('readiness') or {})
+    requested_args = dict(prepared_context.get('requested_args') or {})
     plan_result = await run_training_request_orchestration(
         user_text=user_text,
         dataset_path=dataset_path,
@@ -944,6 +1071,25 @@ async def prepare_training_revision_context(
         'execution_backend': execution_backend,
         'advanced_requested': advanced_requested,
     }
+
+
+def resolve_training_revision_followup_action(
+    *,
+    revised_draft: dict[str, Any] | None,
+    pending: dict[str, Any] | None,
+    requested_execute: bool,
+    wants_retry_last_plan: bool,
+    wants_resume_recent_training: bool,
+) -> dict[str, Any]:
+    revised_draft = dict(revised_draft or {})
+    pending = dict(pending or {})
+    force_confirmation = wants_retry_last_plan or wants_resume_recent_training
+    next_step_tool = str(revised_draft.get('next_step_tool') or '').strip()
+    if next_step_tool and (pending or force_confirmation or requested_execute):
+        if not pending and (requested_execute or force_confirmation):
+            return {'action': 'defer_to_graph'}
+        return {'action': 'refresh_confirmation'}
+    return {'action': 'render_completed'}
 
 
 async def build_training_revision_draft(

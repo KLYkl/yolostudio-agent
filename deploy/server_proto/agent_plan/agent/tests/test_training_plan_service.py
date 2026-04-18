@@ -14,7 +14,8 @@ if __package__ in {None, ''}:
             sys.path.insert(0, path)
 
 try:
-    import langchain_core.messages  # type: ignore  # noqa: F401
+    import langchain_core.messages as _langchain_core_messages  # type: ignore
+    assert _langchain_core_messages
 except Exception:
     core_mod = types.ModuleType('langchain_core')
     messages_mod = types.ModuleType('langchain_core.messages')
@@ -36,13 +37,18 @@ except Exception:
     sys.modules['langchain_core.messages'] = messages_mod
 
 from yolostudio_agent.agent.client.training_plan_service import (
+    resolve_prepare_only_local_path_result,
+    resolve_prepare_only_request_context,
     build_training_recovery_base_args,
     build_training_revision_draft,
     build_training_preflight_tool_args,
+    prepare_training_request_context,
     prepare_training_revision_context,
     resolve_training_recovery_bootstrap,
     resolve_training_plan_dialogue_context,
     resolve_training_plan_dialogue_existing_action,
+    resolve_training_request_entrypoint_guard,
+    resolve_training_revision_followup_action,
     run_prepare_only_entrypoint,
     run_training_recovery_entrypoint,
     run_training_request_entrypoint,
@@ -217,6 +223,31 @@ async def _run_async() -> None:
     assert '- 缺少预训练权重/模型' in missing_input_result['reply'], missing_input_result
     assert missing_input_calls == [], missing_input_calls
 
+    missing_guard = resolve_training_request_entrypoint_guard(
+        session_state=SessionState(session_id='missing-guard'),
+        user_text='开始训练',
+        normalized_text='开始训练'.lower(),
+        dataset_path='',
+        wants_train=True,
+        wants_predict=False,
+        no_train=False,
+        readiness_only_query=False,
+        wants_training_outcome_analysis=False,
+        wants_next_step_guidance=False,
+        wants_training_knowledge=False,
+        wants_training_revision=False,
+        wants_stop_training=False,
+        blocks_training_start=False,
+        explicit_run_ids=None,
+        extract_model_from_text=lambda _text: '',
+    )
+    assert missing_guard == {
+        'reply': '当前还不能开始训练：\n- 缺少数据集路径\n- 缺少预训练权重/模型\n请先补充最少必要信息；我至少需要数据集目录，训练时还需要可用的预训练权重/模型。',
+        'draft': None,
+        'defer_to_graph': False,
+        'proceed': False,
+    }, missing_guard
+
     entrypoint_calls: list[tuple[str, dict]] = []
 
     async def _fake_entrypoint_tool(tool_name: str, **kwargs):
@@ -272,6 +303,41 @@ async def _run_async() -> None:
     assert preserved_model_result['defer_to_graph'] is True, preserved_model_result
     assert preserved_model_result['reply'] == 'pending:start_training', preserved_model_result
     assert preserved_model_result['draft']['planned_training_args']['model'] == '/weights/last.pt', preserved_model_result
+
+    prepared_context_calls: list[tuple[str, dict]] = []
+
+    async def _fake_prepared_context_tool(tool_name: str, **kwargs):
+        prepared_context_calls.append((tool_name, dict(kwargs)))
+        if tool_name == 'training_readiness':
+            return {
+                'ready': True,
+                'resolved_data_yaml': '/data/frames/data.yaml',
+            }
+        if tool_name == 'list_training_environments':
+            return {'items': ['yolodo']}
+        raise AssertionError(tool_name)
+
+    prepared_request_context = await prepare_training_request_context(
+        session_state=preserved_state,
+        user_text='这些帧训练一下，直接开始。',
+        dataset_path='/data/frames',
+        frame_followup_path='/data/frames',
+        direct_tool=_fake_prepared_context_tool,
+        collect_requested_training_args=lambda _text, *, data_yaml=None: {
+            'data_yaml': data_yaml,
+        },
+    )
+    assert prepared_request_context == {
+        'readiness': {'ready': True, 'resolved_data_yaml': '/data/frames/data.yaml'},
+        'requested_args': {
+            'data_yaml': '/data/frames/data.yaml',
+            'model': '/weights/last.pt',
+        },
+    }, prepared_request_context
+    assert prepared_context_calls == [
+        ('training_readiness', {'img_dir': '/data/frames'}),
+        ('list_training_environments', {}),
+    ], prepared_context_calls
     assert entrypoint_calls == [
         ('training_readiness', {'img_dir': '/data/frames'}),
         ('list_training_environments', {}),
@@ -580,6 +646,30 @@ async def _run_async() -> None:
         ('dataset_training_readiness', {'img_dir': '/data/prep'}),
     ], prepare_only_calls
 
+    prepare_only_context = resolve_prepare_only_request_context(
+        user_text='数据在 /data/prep，只做准备。',
+        looks_like_prepare_only_request=lambda _text: True,
+        extract_dataset_path=lambda _text: '/data/prep',
+    )
+    assert prepare_only_context == {
+        'matches': True,
+        'dataset_path': '/data/prep',
+    }, prepare_only_context
+
+    missing_root = Path(Path.cwd().anchor or '/')
+    missing_prepare_path = str(missing_root / 'missing' / 'train')
+    invalid_prepare_path = resolve_prepare_only_local_path_result(
+        dataset_path=missing_prepare_path,
+        local_path_exists=lambda _path: False,
+    )
+    assert invalid_prepare_path == {
+        'status': 'completed',
+        'reply': f'我还没核实到这个路径存在：{missing_prepare_path}。请先检查路径是否写对。',
+        'draft': None,
+        'clear_draft': True,
+        'defer_to_graph': False,
+    }, invalid_prepare_path
+
     prepare_ready_calls: list[tuple[str, dict]] = []
 
     async def _fake_prepare_ready_tool(tool_name: str, **kwargs):
@@ -868,6 +958,33 @@ def _run() -> None:
         'action': 'reply',
         'reply': '当前数据集已经准备完成：/data/ready/data.yaml；不需要重复 prepare。你可以直接继续训练或重新规划。',
     }, ready_repeat_action
+
+    revision_followup = resolve_training_revision_followup_action(
+        revised_draft={'next_step_tool': 'start_training'},
+        pending=None,
+        requested_execute=True,
+        wants_retry_last_plan=False,
+        wants_resume_recent_training=False,
+    )
+    assert revision_followup == {'action': 'defer_to_graph'}, revision_followup
+
+    revision_refresh_confirmation = resolve_training_revision_followup_action(
+        revised_draft={'next_step_tool': 'start_training'},
+        pending={'name': 'start_training', 'args': {'model': 'yolov8n.pt'}},
+        requested_execute=False,
+        wants_retry_last_plan=False,
+        wants_resume_recent_training=False,
+    )
+    assert revision_refresh_confirmation == {'action': 'refresh_confirmation'}, revision_refresh_confirmation
+
+    revision_render_completed = resolve_training_revision_followup_action(
+        revised_draft={'next_step_tool': ''},
+        pending=None,
+        requested_execute=False,
+        wants_retry_last_plan=False,
+        wants_resume_recent_training=False,
+    )
+    assert revision_render_completed == {'action': 'render_completed'}, revision_render_completed
 
     asyncio.run(_run_async())
 
