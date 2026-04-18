@@ -167,6 +167,25 @@ class _DummyLlm:
     pass
 
 
+class _RecordingMemoryStore:
+    instances: list['_RecordingMemoryStore'] = []
+
+    def __init__(self, root):
+        self.root = Path(root)
+        self.events: list[tuple[str, str, dict[str, object]]] = []
+        self.saved_states: list[object] = []
+        self.__class__.instances.append(self)
+
+    def load_state(self, session_id: str):
+        return agent_client.SessionState(session_id=session_id)
+
+    def save_state(self, state) -> None:
+        self.saved_states.append(state)
+
+    def append_event(self, session_id: str, event_type: str, payload: dict[str, object]) -> None:
+        self.events.append((session_id, event_type, dict(payload)))
+
+
 async def _run() -> None:
     captured: list[dict[str, object]] = []
 
@@ -190,6 +209,9 @@ async def _run() -> None:
     agent_client.adapt_tools_for_chat_model = lambda tools, include_aliases=False: tools  # type: ignore[assignment]
     agent_client.build_llm = lambda *args, **kwargs: _DummyLlm()  # type: ignore[assignment]
     agent_client.create_react_agent = _fake_create_react_agent  # type: ignore[assignment]
+    agent_client.MemoryStore = _RecordingMemoryStore  # type: ignore[assignment]
+
+    before_manual = len(_RecordingMemoryStore.instances)
 
     manual = await agent_client.build_agent_client(
         agent_client.AgentSettings(session_id='interrupt-manual', memory_root='agent/tests/_tmp_interrupt_manual', confirmation_mode='manual')
@@ -200,7 +222,9 @@ async def _run() -> None:
     assert getattr(manual_tools, 'handle_tool_errors', False) is True
     assert 'interrupt_before' not in manual_kwargs, manual_kwargs
     assert manual_kwargs.get('state_schema') is not None, manual_kwargs
+    assert len(_RecordingMemoryStore.instances) - before_manual == 1, _RecordingMemoryStore.instances
 
+    before_auto = len(_RecordingMemoryStore.instances)
     auto = await agent_client.build_agent_client(
         agent_client.AgentSettings(session_id='interrupt-auto', memory_root='agent/tests/_tmp_interrupt_auto', confirmation_mode='auto')
     )
@@ -210,6 +234,7 @@ async def _run() -> None:
     assert getattr(auto_tools, 'handle_tool_errors', False) is True
     assert 'interrupt_before' not in auto_kwargs, auto_kwargs
     assert auto_kwargs.get('state_schema') is not None, auto_kwargs
+    assert len(_RecordingMemoryStore.instances) - before_auto == 1, _RecordingMemoryStore.instances
 
     print('agent build interrupt mode ok')
 

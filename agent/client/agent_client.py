@@ -71,6 +71,9 @@ from yolostudio_agent.agent.client.mcp_connection import (
 )
 from yolostudio_agent.agent.client.memory_store import MemoryStore
 from yolostudio_agent.agent.client.prediction_request_service import resolve_prediction_request_followup_action
+from yolostudio_agent.agent.client.prediction_execution_service import (
+    run_remote_prediction_pipeline_flow,
+)
 from yolostudio_agent.agent.client.reply_renderer import (
     build_confirmation_message as build_confirmation_message_reply,
     build_confirmation_prompt as build_confirmation_prompt_reply,
@@ -1614,9 +1617,21 @@ class YoloStudioAgentClient:
         return {'status': 'completed', 'message': reply, 'tool_call': None}
 
     async def _execute_remote_prediction_pipeline(self, pipeline_args: dict[str, Any]) -> dict[str, Any]:
-        upload_args = dict(pipeline_args.get('upload_args') or {})
-        upload_result = await self.direct_tool('upload_assets_to_remote', **upload_args)
-        if not upload_result.get('ok'):
+        flow_result = await run_remote_prediction_pipeline_flow(
+            pipeline_args=pipeline_args,
+            direct_tool=self.direct_tool,
+            resolve_prediction_remote_inputs=self._resolve_prediction_remote_inputs,
+            build_remote_output_dir=lambda upload_result: self._remote_join(
+                str(upload_result.get('remote_root') or ''),
+                f'_agent_prediction_output_{datetime.now().strftime("%Y%m%d_%H%M%S")}',
+            ),
+        )
+        upload_result = dict(flow_result.get('upload') or {})
+        resolved_inputs = dict(flow_result.get('resolved_inputs') or {})
+        predict_result = dict(flow_result.get('predict') or {})
+        download_result = dict(flow_result.get('download') or {})
+        stage = str(flow_result.get('stage') or '').strip()
+        if stage == 'upload':
             reply = await self._render_multi_tool_result_message(
                 [('upload_assets_to_remote', upload_result)],
                 objective='远端预测闭环失败说明',
@@ -1626,8 +1641,7 @@ class YoloStudioAgentClient:
             self.memory.save_state(self.session_state)
             return {'status': 'error', 'message': reply, 'tool_call': {'name': 'remote_prediction_pipeline', 'args': pipeline_args}}
 
-        resolved_inputs = self._resolve_prediction_remote_inputs(upload_result)
-        if not resolved_inputs.get('ok'):
+        if stage == 'resolve':
             reply = await self._render_multi_tool_result_message(
                 [('upload_assets_to_remote', upload_result)],
                 objective='远端预测闭环失败说明',
@@ -1638,32 +1652,8 @@ class YoloStudioAgentClient:
             self.memory.save_state(self.session_state)
             return {'status': 'error', 'message': reply, 'tool_call': {'name': 'remote_prediction_pipeline', 'args': pipeline_args}}
 
-        remote_root = str(upload_result.get('remote_root') or '')
-        remote_output_dir = self._remote_join(
-            remote_root,
-            f'_agent_prediction_output_{datetime.now().strftime("%Y%m%d_%H%M%S")}',
-        )
         predict_tool_name = str(resolved_inputs.get('tool_name') or '')
-        predict_kwargs: dict[str, Any] = {
-            'source_path': str(resolved_inputs.get('source_path') or ''),
-            'model': str(resolved_inputs.get('model_path') or ''),
-            'output_dir': remote_output_dir,
-            'generate_report': True,
-        }
-        if predict_tool_name == 'predict_videos':
-            predict_kwargs.update({
-                'save_video': False,
-                'save_keyframes_annotated': True,
-                'save_keyframes_raw': False,
-            })
-        else:
-            predict_kwargs.update({
-                'save_annotated': True,
-                'save_labels': False,
-                'save_original': False,
-            })
-        predict_result = await self.direct_tool(predict_tool_name, **predict_kwargs)
-        if not predict_result.get('ok'):
+        if stage == 'predict':
             reply = await self._render_multi_tool_result_message(
                 [
                     ('upload_assets_to_remote', upload_result),
@@ -1676,67 +1666,7 @@ class YoloStudioAgentClient:
             self.memory.save_state(self.session_state)
             return {'status': 'error', 'message': reply, 'tool_call': {'name': 'remote_prediction_pipeline', 'args': pipeline_args}}
 
-        download_result: dict[str, Any] = {}
-        if pipeline_args.get('download_after_predict', True):
-            download_args = {
-                'remote_paths': [str(predict_result.get('output_dir') or remote_output_dir)],
-                'server': upload_args.get('server', ''),
-                'profile': upload_args.get('profile', ''),
-                'host': upload_args.get('host', ''),
-                'username': upload_args.get('username', ''),
-                'port': upload_args.get('port', 0),
-                'local_root': pipeline_args.get('local_result_root', ''),
-                'recursive': True,
-            }
-            download_result = await self.direct_tool('download_assets_from_remote', **download_args)
-
-        pipeline_result = {
-            'ok': predict_result.get('ok') is True and (not download_result or download_result.get('ok') is True),
-            'upload': upload_result,
-            'predict': predict_result,
-            'download': download_result,
-            'remote_source_path': str(resolved_inputs.get('source_path') or ''),
-            'remote_model_path': str(resolved_inputs.get('model_path') or ''),
-            'remote_output_dir': str(predict_result.get('output_dir') or remote_output_dir),
-            'local_result_root': str((download_result or {}).get('local_root') or pipeline_args.get('local_result_root') or ''),
-            'source_kind': str(resolved_inputs.get('source_kind') or ''),
-            'predict_tool_name': predict_tool_name,
-        }
-        pipeline_result['pipeline_overview'] = {
-            'target_label': str(upload_result.get('target_label') or upload_args.get('server') or '').strip(),
-            'remote_root': str(upload_result.get('remote_root') or upload_args.get('remote_root') or '').strip(),
-            'remote_source_path': pipeline_result['remote_source_path'],
-            'remote_model_path': pipeline_result['remote_model_path'],
-            'remote_output_dir': pipeline_result['remote_output_dir'],
-            'local_result_root': pipeline_result['local_result_root'],
-            'source_kind': pipeline_result['source_kind'],
-        }
-        pipeline_result['execution_overview'] = {
-            'upload_ok': bool(upload_result.get('ok')),
-            'predict_ok': bool(predict_result.get('ok')),
-            'download_ok': bool((not download_result) or download_result.get('ok')),
-            'predict_tool_name': predict_tool_name,
-            'download_after_predict': bool(pipeline_args.get('download_after_predict', True)),
-        }
-        action_candidates: list[dict[str, Any]] = []
-        if pipeline_result['local_result_root']:
-            action_candidates.append({
-                'tool': 'inspect_prediction_outputs',
-                'description': f"可继续查看本机结果目录: {pipeline_result['local_result_root']}",
-            })
-        elif pipeline_result['remote_output_dir']:
-            action_candidates.append({
-                'tool': 'download_assets_from_remote',
-                'description': f"如需回传，可继续下载远端预测目录: {pipeline_result['remote_output_dir']}",
-            })
-        report_path = str((predict_result.get('report_path') or '')).strip()
-        if report_path:
-            action_candidates.append({
-                'tool': 'summarize_prediction_results',
-                'description': f"可继续汇总远端预测报告: {report_path}",
-            })
-        if action_candidates:
-            pipeline_result['action_candidates'] = action_candidates[:4]
+        pipeline_result = dict(flow_result.get('pipeline_result') or {})
         self.session_state.active_prediction.last_remote_roundtrip = pipeline_result
         self.memory.append_event(self.session_state.session_id, 'remote_prediction_pipeline', pipeline_result)
 

@@ -235,6 +235,22 @@ def main() -> None:
     assert signals_schema.get('examples'), signals_schema
 
     loop_tool = tools['start_training_loop']
+    loop_model_schema = loop_tool.parameters['properties']['model']
+    assert _schema_types(loop_model_schema) == {'string'}, loop_model_schema
+    assert loop_model_schema.get('description'), loop_model_schema
+    assert loop_model_schema.get('examples'), loop_model_schema
+    loop_name_schema = loop_tool.parameters['properties']['loop_name']
+    assert _schema_types(loop_name_schema) == {'string'}, loop_name_schema
+    assert loop_name_schema.get('description'), loop_name_schema
+    assert loop_name_schema.get('examples'), loop_name_schema
+    managed_level_schema = loop_tool.parameters['properties']['managed_level']
+    assert _schema_types(managed_level_schema) == {'string'}, managed_level_schema
+    assert managed_level_schema.get('description'), managed_level_schema
+    assert managed_level_schema.get('examples'), managed_level_schema
+    max_rounds_schema = loop_tool.parameters['properties']['max_rounds']
+    assert _schema_types(max_rounds_schema) == {'integer'}, max_rounds_schema
+    assert max_rounds_schema.get('description'), max_rounds_schema
+    assert max_rounds_schema.get('examples'), max_rounds_schema
     allowed_schema = loop_tool.parameters['properties']['allowed_tuning_params']
     allowed_types = {item.get('type') for item in allowed_schema.get('anyOf', [])}
     assert allowed_types == {'array', 'null'}, allowed_schema
@@ -245,6 +261,22 @@ def main() -> None:
         enum_values.update(item.get('items', {}).get('enum') or [])
     assert enum_values == {'lr0', 'batch', 'imgsz', 'epochs', 'optimizer'}, allowed_schema
     assert allowed_schema.get('examples'), allowed_schema
+    auto_handle_oom_schema = loop_tool.parameters['properties']['auto_handle_oom']
+    assert _schema_types(auto_handle_oom_schema) == {'boolean'}, auto_handle_oom_schema
+    assert auto_handle_oom_schema.get('description'), auto_handle_oom_schema
+    assert auto_handle_oom_schema.get('examples'), auto_handle_oom_schema
+
+    list_loops_tool = tools['list_training_loops']
+    loop_limit_schema = list_loops_tool.parameters['properties']['limit']
+    assert _schema_types(loop_limit_schema) == {'integer'}, loop_limit_schema
+    assert loop_limit_schema.get('description'), loop_limit_schema
+    assert loop_limit_schema.get('examples'), loop_limit_schema
+
+    loop_status_tool = tools['check_training_loop_status']
+    loop_id_schema = loop_status_tool.parameters['properties']['loop_id']
+    assert _schema_types(loop_id_schema) == {'string'}, loop_id_schema
+    assert loop_id_schema.get('description'), loop_id_schema
+    assert loop_id_schema.get('examples'), loop_id_schema
 
     convert_tool = tools['convert_format']
     convert_classes_schema = convert_tool.parameters['properties']['classes']
