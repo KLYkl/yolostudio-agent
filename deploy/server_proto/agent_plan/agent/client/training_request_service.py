@@ -4,6 +4,11 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from yolostudio_agent.agent.client import intent_parsing
+from yolostudio_agent.agent.client.training_contracts import (
+    PrepareOnlyRequestContext,
+    PrepareOnlyResult,
+    TrainingPlanFollowupAction,
+)
 from yolostudio_agent.agent.client.session_state import SessionState
 from yolostudio_agent.agent.client.training_plan_service import run_training_request_orchestration
 
@@ -30,7 +35,7 @@ async def run_prepare_only_flow(
     collect_requested_training_args: TrainingArgsCollector,
     build_training_plan_draft_fn: TrainingPlanDraftBuilder,
     render_tool_result_message: ToolResultMessageRenderer,
-) -> dict[str, Any] | None:
+) -> TrainingPlanFollowupAction | None:
     request_context = resolve_prepare_only_request_context(
         user_text=user_text,
         looks_like_prepare_only_request=looks_like_prepare_only_request,
@@ -64,7 +69,7 @@ async def run_prepare_only_entrypoint(
     collect_requested_training_args: TrainingArgsCollector,
     build_training_plan_draft_fn: TrainingPlanDraftBuilder,
     render_tool_result_message: ToolResultMessageRenderer,
-) -> dict[str, Any]:
+) -> PrepareOnlyResult:
     readiness = await direct_tool('dataset_training_readiness', img_dir=dataset_path)
     if not readiness.get('ok'):
         reply = await render_tool_result_message('dataset_training_readiness', readiness)
@@ -134,8 +139,8 @@ async def run_prepare_only_entrypoint(
 
 def resolve_prepare_only_followup_action(
     *,
-    result: dict[str, Any] | None,
-) -> dict[str, Any]:
+    result: PrepareOnlyResult | None,
+) -> TrainingPlanFollowupAction:
     result = dict(result or {})
     if not result:
         return {'action': 'none'}
@@ -171,7 +176,7 @@ def resolve_prepare_only_request_context(
     user_text: str,
     looks_like_prepare_only_request: PrepareOnlyRequestChecker,
     extract_dataset_path: DatasetPathExtractor,
-) -> dict[str, Any]:
+) -> PrepareOnlyRequestContext:
     if not looks_like_prepare_only_request(user_text):
         return {'matches': False, 'dataset_path': ''}
     dataset_path = str(extract_dataset_path(user_text) or '').strip()
@@ -184,7 +189,7 @@ def resolve_prepare_only_local_path_result(
     *,
     dataset_path: str,
     local_path_exists: LocalPathExistenceChecker,
-) -> dict[str, Any] | None:
+) -> PrepareOnlyResult | None:
     dataset_path = str(dataset_path or '').strip()
     if not dataset_path:
         return None

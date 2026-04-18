@@ -112,6 +112,7 @@ from yolostudio_agent.agent.client.training_execution_service import (
 from yolostudio_agent.agent.client.training_dialogue_service import (
     run_training_plan_dialogue_flow,
 )
+from yolostudio_agent.agent.client.training_contracts import TrainingPlanFollowupAction
 from yolostudio_agent.agent.client.training_plan_service import (
     build_training_loop_start_draft as build_training_loop_start_draft_service,
     build_training_loop_start_fallback_plan as build_training_loop_start_fallback_plan_service,
@@ -226,6 +227,7 @@ class YoloStudioAgentClient:
         self._reconcile_startup_pending_confirmation()
         self._clear_stale_startup_state()
         self._sync_training_workflow_state(reason='startup_sync')
+        self._record_startup_checkpoint_health()
         self._sync_preferences()
         self.memory.save_state(self.session_state)
         self._record_llm_runtime_config()
@@ -530,6 +532,22 @@ class YoloStudioAgentClient:
         pending = self.session_state.pending_confirmation
         if not str(pending.tool_name or '').strip():
             self._clear_training_plan_draft()
+
+    def _record_startup_checkpoint_health(self) -> None:
+        if self.checkpointer is None or not hasattr(self.checkpointer, 'health_payload'):
+            return
+        try:
+            payload = dict(self.checkpointer.health_payload() or {})
+        except Exception:
+            return
+        status = str(payload.get('status') or '').strip().lower()
+        if status not in {'corrupt_detected', 'corrupt_recovered'}:
+            return
+        self.memory.append_event(
+            self.session_state.session_id,
+            'startup_checkpoint_degraded',
+            payload,
+        )
 
     def _startup_checkpoint_thread_ids(self) -> list[str]:
         if self.checkpointer is None or not hasattr(self.checkpointer, 'thread_ids'):
@@ -2005,7 +2023,7 @@ class YoloStudioAgentClient:
     async def _apply_training_plan_followup_action(
         self,
         *,
-        followup_action: dict[str, Any] | None,
+        followup_action: TrainingPlanFollowupAction | None,
         thread_id: str | None = None,
         user_text: str = '',
         handoff_mode: str = 'defer',

@@ -151,6 +151,7 @@ def _install_fake_dependencies() -> None:
 _install_fake_dependencies()
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from yolostudio_agent.agent.client.file_checkpointer import FileCheckpointSaver
 from yolostudio_agent.agent.client.memory_store import MemoryStore
 from yolostudio_agent.agent.client.session_state import SessionState
 
@@ -676,6 +677,46 @@ async def _scenario_legacy_synthetic_pending_is_bootstrapped_without_graph() -> 
     assert client.session_state.pending_confirmation.source == 'synthetic'
 
 
+async def _scenario_corrupt_checkpoint_is_observed_on_startup() -> None:
+    root = WORK / 'startup-corrupt-checkpoint'
+    store = MemoryStore(root)
+    state = SessionState(session_id='startup-corrupt-checkpoint')
+    state.pending_confirmation.thread_id = 'startup-corrupt-checkpoint-turn-1'
+    state.pending_confirmation.tool_name = 'remote_training_pipeline'
+    state.pending_confirmation.tool_args = {'server': 'yolostudio'}
+    state.pending_confirmation.source = 'graph'
+    state.pending_confirmation.summary = '等待远端训练闭环确认'
+    state.active_training.training_plan_draft = {
+        'status': 'ready_for_confirmation',
+        'next_step_tool': 'remote_training_pipeline',
+        'planned_training_args': {'model': 'yolov8n.pt'},
+    }
+    store.save_state(state)
+
+    checkpoint_path = root / 'checkpoints' / 'startup-corrupt-checkpoint.pkl'
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_path.write_bytes(b'not-a-pickle')
+    checkpointer = FileCheckpointSaver(checkpoint_path)
+
+    settings = AgentSettings(session_id='startup-corrupt-checkpoint', memory_root=str(root))
+    client = YoloStudioAgentClient(
+        graph=_NoGraph(),
+        settings=settings,
+        tool_registry={},
+        checkpointer=checkpointer,
+    )
+    assert client.session_state.pending_confirmation.tool_name == ''
+    assert client.session_state.active_training.training_plan_draft == {}
+    assert checkpoint_path.with_suffix('.pkl.corrupt').exists()
+    events = client.memory.read_events(client.session_state.session_id)
+    assert any(
+        event.get('type') == 'startup_checkpoint_degraded'
+        and event.get('status') == 'corrupt_recovered'
+        and event.get('checkpoint_name') == 'startup-corrupt-checkpoint.pkl'
+        for event in events
+    ), events
+
+
 async def _scenario_best_weight_path_is_visible_to_graph_handoff() -> None:
     root = WORK / 'best-weight-handoff'
     capture_graph = _CaptureGraph()
@@ -718,6 +759,7 @@ async def _run() -> None:
         await _scenario_existing_graph_pending_refreshes_stale_same_tool_draft()
         await _scenario_legacy_synthetic_pending_is_replaced_by_single_graph_pending()
         await _scenario_legacy_synthetic_pending_is_bootstrapped_without_graph()
+        await _scenario_corrupt_checkpoint_is_observed_on_startup()
         await _scenario_best_weight_path_is_visible_to_graph_handoff()
         print('client context guard ok')
     finally:

@@ -45,6 +45,7 @@ def main() -> None:
         )
 
         reloaded = FileCheckpointSaver(path)
+        assert reloaded.health_payload()['status'] == 'ok'
         assert reloaded.thread_ids() == ['session-2-turn-1', 'thread-1']
         assert reloaded.thread_ids(prefix='thread-') == ['thread-1']
         latest = reloaded.get_tuple({'configurable': {'thread_id': 'thread-1', 'checkpoint_ns': ''}})
@@ -64,6 +65,9 @@ def main() -> None:
 
         path.write_bytes(b'not-a-pickle')
         corrupted = FileCheckpointSaver(path)
+        assert corrupted.health_payload()['status'] == 'corrupt_recovered'
+        assert corrupted.health_payload()['error_type'] == 'UnpicklingError'
+        assert corrupted.health_payload()['backup_name'] == 'checkpoint.pkl.corrupt'
         assert corrupted.get_tuple({'configurable': {'thread_id': 'thread-1', 'checkpoint_ns': ''}}) is None
         assert path.with_suffix('.pkl.corrupt').exists()
 

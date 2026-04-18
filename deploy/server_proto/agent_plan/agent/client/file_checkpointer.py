@@ -22,6 +22,9 @@ class FileCheckpointSaver(InMemorySaver):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self.load_status = 'missing'
+        self.load_error_type = ''
+        self.corrupt_backup_name = ''
         self._load()
 
     def _to_plain_storage(self) -> dict[str, Any]:
@@ -43,28 +46,58 @@ class FileCheckpointSaver(InMemorySaver):
             pickle.dump(self._snapshot(), fh, protocol=pickle.HIGHEST_PROTOCOL)
         tmp.replace(self.path)
 
+    def _mark_corrupt(self, exc: Exception) -> None:
+        self.load_status = 'corrupt_detected'
+        self.load_error_type = exc.__class__.__name__
+        self.corrupt_backup_name = ''
+        corrupt = self.path.with_suffix(self.path.suffix + '.corrupt')
+        try:
+            if corrupt.exists():
+                corrupt.unlink()
+            self.path.replace(corrupt)
+            self.load_status = 'corrupt_recovered'
+            self.corrupt_backup_name = corrupt.name
+        except Exception:
+            pass
+
     def _load(self) -> None:
         if not self.path.exists():
+            self.load_status = 'missing'
+            self.load_error_type = ''
+            self.corrupt_backup_name = ''
             return
         try:
             with self._lock:
                 with self.path.open('rb') as fh:
                     raw = pickle.load(fh)
-        except Exception:
-            corrupt = self.path.with_suffix(self.path.suffix + '.corrupt')
-            try:
-                if corrupt.exists():
-                    corrupt.unlink()
-                self.path.replace(corrupt)
-            except Exception:
-                pass
+                storage = defaultdict(lambda: defaultdict(dict))
+                for thread_id, ns_map in (raw.get('storage') or {}).items():
+                    storage[thread_id] = defaultdict(
+                        dict,
+                        {checkpoint_ns: dict(entries) for checkpoint_ns, entries in ns_map.items()},
+                    )
+                writes = defaultdict(dict, {tuple(key): dict(value) for key, value in (raw.get('writes') or {}).items()})
+                blobs = dict(raw.get('blobs') or {})
+        except Exception as exc:
+            self._mark_corrupt(exc)
             return
-        storage = defaultdict(lambda: defaultdict(dict))
-        for thread_id, ns_map in (raw.get('storage') or {}).items():
-            storage[thread_id] = defaultdict(dict, {checkpoint_ns: dict(entries) for checkpoint_ns, entries in ns_map.items()})
         self.storage = storage
-        self.writes = defaultdict(dict, {tuple(key): dict(value) for key, value in (raw.get('writes') or {}).items()})
-        self.blobs = dict(raw.get('blobs') or {})
+        self.writes = writes
+        self.blobs = blobs
+        self.load_status = 'ok'
+        self.load_error_type = ''
+        self.corrupt_backup_name = ''
+
+    def health_payload(self) -> dict[str, Any]:
+        payload = {
+            'status': str(self.load_status or 'missing'),
+            'checkpoint_name': self.path.name,
+        }
+        if self.load_error_type:
+            payload['error_type'] = self.load_error_type
+        if self.corrupt_backup_name:
+            payload['backup_name'] = self.corrupt_backup_name
+        return payload
 
     def put(self, config, checkpoint, metadata, new_versions):
         with self._lock:

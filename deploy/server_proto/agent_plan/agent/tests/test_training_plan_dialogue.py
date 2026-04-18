@@ -17,7 +17,7 @@ if __package__ in {None, ''}:
             sys.path.insert(0, path)
 
 try:
-    import langchain_openai  # type: ignore  # noqa: F401
+    __import__('langchain_openai')
 except Exception:
     fake_mod = types.ModuleType('langchain_openai')
 
@@ -30,7 +30,7 @@ except Exception:
     sys.modules['langchain_openai'] = fake_mod
 
 try:
-    import langchain_ollama  # type: ignore  # noqa: F401
+    __import__('langchain_ollama')
 except Exception:
     fake_mod = types.ModuleType('langchain_ollama')
 
@@ -43,7 +43,7 @@ except Exception:
     sys.modules['langchain_ollama'] = fake_mod
 
 try:
-    import langchain_core.messages  # type: ignore  # noqa: F401
+    __import__('langchain_core.messages')
 except Exception:
     core_mod = types.ModuleType('langchain_core')
     messages_mod = types.ModuleType('langchain_core.messages')
@@ -101,7 +101,7 @@ except Exception:
     sys.modules['langchain_core.tools'] = tools_mod
 
 try:
-    import langchain_mcp_adapters.client  # type: ignore  # noqa: F401
+    __import__('langchain_mcp_adapters.client')
 except Exception:
     client_mod = types.ModuleType('langchain_mcp_adapters.client')
 
@@ -117,7 +117,7 @@ except Exception:
     sys.modules['langchain_mcp_adapters.client'] = client_mod
 
 try:
-    import pydantic  # type: ignore  # noqa: F401
+    __import__('pydantic')
 except Exception:
     pyd_mod = types.ModuleType('pydantic')
 
@@ -135,9 +135,9 @@ except Exception:
     sys.modules['pydantic'] = pyd_mod
 
 try:
-    import langgraph.prebuilt  # type: ignore  # noqa: F401
-    import langgraph.types  # type: ignore  # noqa: F401
-    import langgraph.checkpoint.memory  # type: ignore  # noqa: F401
+    __import__('langgraph.prebuilt')
+    __import__('langgraph.types')
+    __import__('langgraph.checkpoint.memory')
 except Exception:
     prebuilt_mod = types.ModuleType('langgraph.prebuilt')
     types_mod = types.ModuleType('langgraph.types')

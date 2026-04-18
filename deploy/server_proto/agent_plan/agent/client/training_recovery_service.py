@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from typing import Any, Awaitable, Callable
 
+from yolostudio_agent.agent.client.training_contracts import (
+    TrainingPlanFollowupAction,
+    TrainingRecoveryBootstrap,
+)
 from yolostudio_agent.agent.client.session_state import SessionState
 from yolostudio_agent.agent.client.training_plan_service import (
     build_training_preflight_tool_args,
@@ -45,7 +49,7 @@ def resolve_training_recovery_bootstrap(
     wants_retry_last_plan: bool,
     wants_resume_recent_training: bool,
     wants_analysis_only: bool,
-) -> dict[str, Any] | None:
+) -> TrainingRecoveryBootstrap | None:
     explicit_run_ids = list(explicit_run_ids or [])
     active_training = session_state.active_training
 
@@ -144,9 +148,9 @@ def resolve_training_recovery_bootstrap(
 
 def resolve_training_recovery_followup_action(
     *,
-    bootstrap: dict[str, Any] | None,
+    bootstrap: TrainingRecoveryBootstrap | None,
     plan_result: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+) -> TrainingPlanFollowupAction:
     bootstrap = dict(bootstrap or {})
     if not bootstrap:
         return {'action': 'none'}
@@ -182,7 +186,7 @@ async def run_training_recovery_bootstrap_flow(
     direct_tool: DirectToolInvoker,
     build_training_plan_draft_fn: TrainingPlanDraftBuilder,
     render_training_plan_message: TrainingPlanMessageRenderer,
-) -> dict[str, Any]:
+) -> TrainingPlanFollowupAction:
     bootstrap = resolve_training_recovery_bootstrap(
         session_state=session_state,
         user_text=user_text,
@@ -234,7 +238,7 @@ async def run_training_plan_bootstrap_flow(
     build_training_plan_draft_fn: TrainingPlanDraftBuilder,
     render_tool_result_message: ToolResultMessageRenderer,
     render_training_plan_message: TrainingPlanMessageRenderer,
-) -> dict[str, Any] | None:
+) -> TrainingPlanFollowupAction | None:
     prepare_only_followup = await run_prepare_only_flow(
         user_text=user_text,
         looks_like_prepare_only_request=looks_like_prepare_only_request,

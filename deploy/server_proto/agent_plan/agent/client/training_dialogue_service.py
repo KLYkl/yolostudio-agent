@@ -3,6 +3,11 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable
 
 from yolostudio_agent.agent.client import intent_parsing
+from yolostudio_agent.agent.client.training_contracts import (
+    TrainingPlanDialogueFlowResult,
+    TrainingPlanFollowupAction,
+    TrainingRevisionResult,
+)
 from yolostudio_agent.agent.client.training_recovery_service import run_training_plan_bootstrap_flow
 from yolostudio_agent.agent.client.session_state import SessionState
 from yolostudio_agent.agent.client.training_plan_service import (
@@ -469,7 +474,7 @@ def resolve_training_revision_followup_action(
     requested_execute: bool,
     wants_retry_last_plan: bool,
     wants_resume_recent_training: bool,
-) -> dict[str, Any]:
+) -> TrainingPlanFollowupAction:
     revised_draft = dict(revised_draft or {})
     pending = dict(pending or {})
     force_confirmation = wants_retry_last_plan or wants_resume_recent_training
@@ -500,7 +505,7 @@ async def run_training_revision_flow(
     wants_training_advanced_details: TrainingAdvancedDetailsChecker,
     direct_tool: DirectToolInvoker,
     build_training_plan_draft_fn: TrainingPlanDraftBuilder,
-) -> dict[str, Any]:
+) -> TrainingRevisionResult:
     revision_context = await prepare_training_revision_context(
         session_state=session_state,
         user_text=user_text,
@@ -564,7 +569,7 @@ async def run_training_plan_dialogue_flow(
     build_training_plan_draft_fn: TrainingPlanDraftBuilder,
     render_tool_result_message: ToolResultMessageRenderer,
     render_training_plan_message: TrainingPlanMessageRenderer,
-) -> dict[str, Any]:
+) -> TrainingPlanDialogueFlowResult:
     route_state = resolve_training_plan_dialogue_route(
         user_text=user_text,
         draft=draft,
