@@ -71,6 +71,7 @@ from yolostudio_agent.agent.client.mcp_connection import (
     load_mcp_tools_with_recovery,
 )
 from yolostudio_agent.agent.client.memory_store import MemoryStore
+from yolostudio_agent.agent.client.prediction_request_service import resolve_prediction_request_followup_action
 from yolostudio_agent.agent.client.reply_renderer import (
     build_confirmation_message as build_confirmation_message_reply,
     build_confirmation_prompt as build_confirmation_prompt_reply,
@@ -1318,21 +1319,13 @@ class YoloStudioAgentClient:
         if self.session_state.preferences.language != "zh-CN":
             self.session_state.preferences.language = "zh-CN"
 
-    async def _try_handle_prediction_requests(
-        self,
-        *,
-        wants_predict: bool,
-        training_command_like: bool,
-        wants_best_weight_prediction: bool,
-    ) -> dict[str, Any] | None:
-        if wants_best_weight_prediction and wants_predict and not training_command_like:
-            best_selection = self.session_state.active_training.best_run_selection or {}
-            best_run = best_selection.get('best_run') or {}
-            weight_path = str(best_run.get('best_weight_path') or best_run.get('weights_path') or '').strip()
-            if not weight_path:
-                reply = '我当前不能直接假定“最佳训练”的权重文件路径；请先查看最佳训练详情，或明确给我可用的权重路径。'
-                self._messages.append(AIMessage(content=reply))
-                return {'status': 'completed', 'message': reply, 'tool_call': None}
+    def _apply_prediction_request_action(self, followup_action: dict[str, Any] | None) -> dict[str, Any] | None:
+        followup_action = dict(followup_action or {})
+        action = str(followup_action.get('action') or '').strip()
+        if action == 'none':
+            return None
+        if action == 'reply':
+            return self._complete_dialogue_text(str(followup_action.get('reply') or ''))
         return None
 
     async def _try_handle_remote_requests(
@@ -1517,8 +1510,11 @@ class YoloStudioAgentClient:
         if remote_request:
             return remote_request
 
-        prediction_request = await self._try_handle_prediction_requests(
-            **dict(dispatch_payload.get('prediction_request_args') or {}),
+        prediction_request = self._apply_prediction_request_action(
+            resolve_prediction_request_followup_action(
+                **dict(dispatch_payload.get('prediction_request_args') or {}),
+                best_run_selection=self.session_state.active_training.best_run_selection,
+            )
         )
         if prediction_request:
             return prediction_request
