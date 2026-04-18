@@ -61,6 +61,11 @@ from yolostudio_agent.agent.client.training_request_service import (
     run_prepare_only_entrypoint,
     run_training_request_entrypoint,
 )
+from yolostudio_agent.agent.client.training_execution_service import (
+    run_post_prepare_training_start_flow,
+    run_remote_training_start_flow,
+    wait_for_remote_training_terminal_state,
+)
 from yolostudio_agent.agent.client.training_recovery_service import (
     build_training_recovery_base_args,
     run_training_plan_bootstrap_flow,
@@ -1537,6 +1542,206 @@ def _run() -> None:
         wants_resume_recent_training=False,
     )
     assert revision_render_completed == {'action': 'render_completed'}, revision_render_completed
+
+    execution_calls: list[tuple[str, dict]] = []
+
+    async def _fake_execution_tool(tool_name: str, **kwargs):
+        execution_calls.append((tool_name, dict(kwargs)))
+        if tool_name == 'training_preflight':
+            return {
+                'ok': True,
+                'ready_to_start': True,
+                'resolved_args': {
+                    'model': kwargs['model'],
+                    'data_yaml': kwargs['data_yaml'],
+                    'epochs': kwargs['epochs'],
+                    'device': '0',
+                    'training_environment': 'yolodo',
+                },
+            }
+        raise AssertionError(tool_name)
+
+    post_prepare_flow = asyncio.run(run_post_prepare_training_start_flow(
+        user_text='那就继续训练。',
+        dataset_path='/data/train',
+        readiness={'summary': '数据已就绪'},
+        synthetic_followup={'name': 'start_training', 'args': {'model': 'yolov8n.pt', 'data_yaml': '/data/train/data.yaml', 'epochs': 20}},
+        prepare_parsed={'summary': '数据准备完成'},
+        direct_tool=_fake_execution_tool,
+        build_training_plan_draft_fn=_build_training_plan_draft,
+        render_prepare_followup_message=lambda prepare_parsed, preflight: _render_tool_result_message('training_preflight', preflight),
+    ))
+    assert post_prepare_flow['followup_action']['action'] == 'save_draft_and_handoff', post_prepare_flow
+    assert post_prepare_flow['followup_action']['draft']['next_step_tool'] == 'start_training', post_prepare_flow
+    assert execution_calls == [
+        ('training_preflight', {
+            'model': 'yolov8n.pt',
+            'data_yaml': '/data/train/data.yaml',
+            'epochs': 20,
+            'device': 'auto',
+            'training_environment': '',
+            'project': '',
+            'name': '',
+            'optimizer': '',
+            'batch': None,
+            'imgsz': None,
+            'fraction': None,
+            'classes': None,
+            'single_cls': None,
+            'freeze': None,
+            'resume': None,
+            'lr0': None,
+            'patience': None,
+            'workers': None,
+            'amp': None,
+        }),
+    ], execution_calls
+
+    remote_calls: list[tuple[str, dict]] = []
+
+    async def _fake_remote_execution_tool(tool_name: str, **kwargs):
+        remote_calls.append((tool_name, dict(kwargs)))
+        if tool_name == 'training_readiness':
+            return {
+                'ok': True,
+                'ready': False,
+                'preparable': True,
+                'resolved_data_yaml': '',
+            }
+        if tool_name == 'prepare_dataset_for_training':
+            return {
+                'ok': True,
+                'ready': True,
+                'data_yaml': '/tmp/train/data.yaml',
+            }
+        if tool_name == 'training_preflight':
+            return {
+                'ok': True,
+                'ready_to_start': True,
+                'resolved_args': {
+                    'model': '/tmp/model.pt',
+                    'data_yaml': '/tmp/train/data.yaml',
+                    'epochs': 12,
+                    'device': 'auto',
+                    'project': '/tmp/runs',
+                    'name': 'remote-demo',
+                },
+            }
+        if tool_name == 'start_training':
+            return {
+                'ok': True,
+                'summary': '训练已启动',
+                'resolved_args': dict(kwargs),
+            }
+        raise AssertionError(tool_name)
+
+    remote_start_flow = asyncio.run(run_remote_training_start_flow(
+        pipeline_args={'user_text': '开始训练 12 轮', 'force_split': True},
+        resolved_inputs={'dataset_path': '/tmp/train', 'model_path': '/tmp/model.pt'},
+        direct_tool=_fake_remote_execution_tool,
+        collect_requested_training_args=lambda user_text, data_yaml='': {
+            'model': '',
+            'data_yaml': data_yaml,
+            'epochs': 12,
+            'device': 'auto',
+            'project': '/tmp/runs',
+            'name': 'remote-demo',
+        },
+    ))
+    assert remote_start_flow['ok'] is True, remote_start_flow
+    assert remote_start_flow['stage'] == 'completed', remote_start_flow
+    assert remote_start_flow['preflight']['ready_to_start'] is True, remote_start_flow
+    assert remote_start_flow['start']['ok'] is True, remote_start_flow
+    assert remote_calls == [
+        ('training_readiness', {'img_dir': '/tmp/train'}),
+        ('prepare_dataset_for_training', {'dataset_path': '/tmp/train', 'force_split': True}),
+        ('training_preflight', {
+            'model': '/tmp/model.pt',
+            'data_yaml': '/tmp/train/data.yaml',
+            'epochs': 12,
+            'device': 'auto',
+            'training_environment': '',
+            'project': '/tmp/runs',
+            'name': 'remote-demo',
+            'optimizer': '',
+            'batch': None,
+            'imgsz': None,
+            'fraction': None,
+            'classes': None,
+            'single_cls': None,
+            'freeze': None,
+            'resume': None,
+            'lr0': None,
+            'patience': None,
+            'workers': None,
+            'amp': None,
+        }),
+        ('start_training', {
+            'model': '/tmp/model.pt',
+            'data_yaml': '/tmp/train/data.yaml',
+            'epochs': 12,
+            'device': 'auto',
+            'training_environment': '',
+            'project': '/tmp/runs',
+            'name': 'remote-demo',
+            'batch': None,
+            'imgsz': None,
+            'fraction': None,
+            'classes': None,
+            'single_cls': None,
+            'optimizer': '',
+            'freeze': None,
+            'resume': None,
+            'lr0': None,
+            'patience': None,
+            'workers': None,
+            'amp': None,
+        }),
+    ], remote_calls
+
+    wait_calls: list[tuple[str, dict]] = []
+
+    async def _fake_wait_tool(tool_name: str, **kwargs):
+        wait_calls.append((tool_name, dict(kwargs)))
+        if tool_name == 'check_training_status':
+            index = len([name for name, _ in wait_calls if name == 'check_training_status'])
+            if index == 1:
+                return {
+                    'ok': True,
+                    'running': True,
+                    'run_state': 'running',
+                    'summary': '训练进行中',
+                }
+            return {
+                'ok': True,
+                'running': False,
+                'run_state': 'completed',
+                'summary': '训练已完成',
+            }
+        if tool_name == 'summarize_training_run':
+            return {'ok': True, 'run_state': 'completed', 'summary': '训练结果汇总'}
+        if tool_name == 'inspect_training_run':
+            return {'ok': True, 'run_state': 'completed', 'summary': '训练记录详情'}
+        raise AssertionError(tool_name)
+
+    async def _fast_sleep(_delay: float) -> None:
+        return None
+
+    wait_result = asyncio.run(wait_for_remote_training_terminal_state(
+        direct_tool=_fake_wait_tool,
+        poll_interval_seconds=0,
+        max_wait_seconds=1,
+        sleep=_fast_sleep,
+    ))
+    assert wait_result['ok'] is True, wait_result
+    assert wait_result['summary_result']['summary'] == '训练结果汇总', wait_result
+    assert wait_result['inspect_result']['summary'] == '训练记录详情', wait_result
+    assert wait_calls == [
+        ('check_training_status', {}),
+        ('check_training_status', {}),
+        ('summarize_training_run', {}),
+        ('inspect_training_run', {}),
+    ], wait_calls
 
     asyncio.run(_run_async())
 

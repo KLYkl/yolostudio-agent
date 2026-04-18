@@ -1,10 +1,123 @@
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Annotated, Any, Callable
 
+from pydantic import Field
 from yolostudio_agent.agent.server.services.extract_service import ExtractService
 
 service = ExtractService()
+
+_SOURCE_PATH_PARAM = Annotated[
+    str,
+    Field(
+        description='待抽取图片或视频的源路径。可以是单个文件，也可以是目录。',
+        examples=['/data/images', '/data/videos/demo.mp4'],
+    ),
+]
+_LABEL_DIR_PARAM = Annotated[
+    str,
+    Field(
+        description='标签目录路径。留空时默认按 source_path 的同级 labels 结构自动推断。',
+        examples=['/data/labels'],
+    ),
+]
+_OUTPUT_DIR_PARAM = Annotated[
+    str,
+    Field(
+        description='抽取结果输出目录。留空时由服务端自动创建默认输出目录。',
+        examples=['/tmp/extract_out', 'runs/extract'],
+    ),
+]
+_SELECTION_MODE_PARAM = Annotated[
+    str,
+    Field(
+        description='图片抽取选择模式。常用 count 或 ratio。',
+        examples=['count', 'ratio'],
+    ),
+]
+_COUNT_PARAM = Annotated[
+    int,
+    Field(
+        description='按 count 模式抽取时的图片数量。',
+        ge=1,
+        examples=[100, 500],
+    ),
+]
+_RATIO_PARAM = Annotated[
+    float,
+    Field(
+        description='按 ratio 模式抽取时的比例，范围 0 到 1。',
+        gt=0.0,
+        le=1.0,
+        examples=[0.1, 0.25],
+    ),
+]
+_GROUPING_MODE_PARAM = Annotated[
+    str,
+    Field(
+        description='图片抽取分组策略。常用 global 或 per_dir。',
+        examples=['global', 'per_dir'],
+    ),
+]
+_SELECTED_DIRS_PARAM = Annotated[
+    list[str] | str | None,
+    Field(
+        description='显式限制参与抽取的子目录。可传目录字符串列表，也兼容旧的单个字符串输入。',
+        examples=[['cam01', 'cam02'], 'cam01'],
+    ),
+]
+_OUTPUT_LAYOUT_PARAM = Annotated[
+    str,
+    Field(
+        description='抽取输出布局。常用 flat 或 preserve_dirs。',
+        examples=['flat', 'preserve_dirs'],
+    ),
+]
+_SEED_PARAM = Annotated[
+    int,
+    Field(
+        description='随机抽样种子。',
+        examples=[42, 1234],
+    ),
+]
+_MAX_EXAMPLES_PARAM = Annotated[
+    int,
+    Field(
+        description='预览或扫描时返回的样例数量上限。',
+        ge=0,
+        examples=[3, 10],
+    ),
+]
+_FRAME_MODE_PARAM = Annotated[
+    str,
+    Field(
+        description='视频抽帧模式。常用 interval、time 或 scene。',
+        examples=['interval', 'time', 'scene'],
+    ),
+]
+_FRAME_INTERVAL_PARAM = Annotated[
+    int,
+    Field(
+        description='按 interval 模式抽帧时的帧间隔。',
+        ge=1,
+        examples=[30, 60],
+    ),
+]
+_MAX_FRAMES_PARAM = Annotated[
+    int,
+    Field(
+        description='最多抽取的帧数；0 表示不限制。',
+        ge=0,
+        examples=[0, 300],
+    ),
+]
+_OUTPUT_FORMAT_PARAM = Annotated[
+    str,
+    Field(
+        description='抽帧图片格式。常用 jpg 或 png。',
+        examples=['jpg', 'png'],
+    ),
+]
 
 
 def _action_candidates_from_next_actions(next_actions: Any) -> list[dict[str, Any]]:
@@ -97,18 +210,18 @@ def _wrap(action: str, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> dic
 
 
 def preview_extract_images(
-    source_path: str,
-    label_dir: str = '',
-    output_dir: str = '',
-    selection_mode: str = 'count',
-    count: int = 100,
-    ratio: float = 0.1,
-    grouping_mode: str = 'global',
-    selected_dirs: list[str] | str | None = None,
+    source_path: _SOURCE_PATH_PARAM,
+    label_dir: _LABEL_DIR_PARAM = '',
+    output_dir: _OUTPUT_DIR_PARAM = '',
+    selection_mode: _SELECTION_MODE_PARAM = 'count',
+    count: _COUNT_PARAM = 100,
+    ratio: _RATIO_PARAM = 0.1,
+    grouping_mode: _GROUPING_MODE_PARAM = 'global',
+    selected_dirs: _SELECTED_DIRS_PARAM = None,
     copy_labels: bool = True,
-    output_layout: str = 'flat',
-    seed: int = 42,
-    max_examples: int = 3,
+    output_layout: _OUTPUT_LAYOUT_PARAM = 'flat',
+    seed: _SEED_PARAM = 42,
+    max_examples: _MAX_EXAMPLES_PARAM = 3,
 ) -> dict[str, Any]:
     """预览图片抽取计划。默认以 flat 布局输出，方便后续直接接 scan/validate/训练链；不会修改原始数据。"""
     result = _wrap(
@@ -131,18 +244,18 @@ def preview_extract_images(
 
 
 def extract_images(
-    source_path: str,
-    label_dir: str = '',
-    output_dir: str = '',
-    selection_mode: str = 'count',
-    count: int = 100,
-    ratio: float = 0.1,
-    grouping_mode: str = 'global',
-    selected_dirs: list[str] | str | None = None,
+    source_path: _SOURCE_PATH_PARAM,
+    label_dir: _LABEL_DIR_PARAM = '',
+    output_dir: _OUTPUT_DIR_PARAM = '',
+    selection_mode: _SELECTION_MODE_PARAM = 'count',
+    count: _COUNT_PARAM = 100,
+    ratio: _RATIO_PARAM = 0.1,
+    grouping_mode: _GROUPING_MODE_PARAM = 'global',
+    selected_dirs: _SELECTED_DIRS_PARAM = None,
     copy_labels: bool = True,
-    output_layout: str = 'flat',
-    seed: int = 42,
-    max_examples: int = 3,
+    output_layout: _OUTPUT_LAYOUT_PARAM = 'flat',
+    seed: _SEED_PARAM = 42,
+    max_examples: _MAX_EXAMPLES_PARAM = 3,
 ) -> dict[str, Any]:
     """执行图片抽取。默认输出为 flat 数据集结构，便于后续直接继续 scan_dataset / validate_dataset / prepare_dataset_for_training。"""
     result = _wrap(
@@ -164,26 +277,26 @@ def extract_images(
     return _apply_structured_defaults(result, overview_key='extract_overview', overview_value=_extract_overview(result))
 
 
-def scan_videos(source_path: str, max_examples: int = 3) -> dict[str, Any]:
+def scan_videos(source_path: _SOURCE_PATH_PARAM, max_examples: _MAX_EXAMPLES_PARAM = 3) -> dict[str, Any]:
     """扫描视频目录或单个视频，返回可处理视频数量与目录分布。"""
     result = _wrap('扫描视频目录', service.scan_videos, source_path=source_path, max_examples=max_examples)
     return _apply_structured_defaults(result, overview_key='video_scan_overview', overview_value=_video_scan_overview(result))
 
 
 def extract_video_frames(
-    source_path: str,
-    output_dir: str = '',
-    mode: str = 'interval',
-    frame_interval: int = 30,
+    source_path: _SOURCE_PATH_PARAM,
+    output_dir: _OUTPUT_DIR_PARAM = '',
+    mode: _FRAME_MODE_PARAM = 'interval',
+    frame_interval: _FRAME_INTERVAL_PARAM = 30,
     time_interval: float = 1.0,
     scene_threshold: float = 0.4,
     min_scene_gap: int = 15,
     enable_dedup: bool = True,
     dedup_threshold: int = 8,
-    max_frames: int = 0,
+    max_frames: _MAX_FRAMES_PARAM = 0,
     start_time: float = 0.0,
     end_time: float = 0.0,
-    output_format: str = 'jpg',
+    output_format: _OUTPUT_FORMAT_PARAM = 'jpg',
     jpg_quality: int = 95,
     name_prefix: str = '',
 ) -> dict[str, Any]:

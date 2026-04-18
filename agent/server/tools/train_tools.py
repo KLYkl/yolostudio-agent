@@ -9,6 +9,28 @@ from yolostudio_agent.agent.server.services.train_service import TrainService
 
 service = TrainService()
 
+_MODEL_PARAM = Annotated[
+    str,
+    Field(
+        description='训练使用的模型或权重路径。可以是 yolov8n.pt 这类权重名，或本地可访问的模型文件路径。',
+        examples=['yolov8n.pt', '/models/best.pt'],
+    ),
+]
+_DATA_YAML_PARAM = Annotated[
+    str,
+    Field(
+        description='训练使用的 data.yaml 路径。应指向已经准备好的数据集配置文件。',
+        examples=['/data/dataset/data.yaml'],
+    ),
+]
+_EPOCHS_PARAM = Annotated[
+    int,
+    Field(
+        description='训练轮数。',
+        ge=1,
+        examples=[20, 100],
+    ),
+]
 _DEVICE_PARAM = Annotated[
     str,
     Field(
@@ -21,6 +43,20 @@ _TRAINING_ENVIRONMENT_PARAM = Annotated[
     Field(
         description='显式训练环境名。留空时由服务端自动选择默认训练环境。',
         examples=['base', 'yolov8-gpu'],
+    ),
+]
+_PROJECT_PARAM = Annotated[
+    str,
+    Field(
+        description='训练输出项目目录。留空时由服务端使用默认 runs 目录。',
+        examples=['/tmp/runs', 'runs/train'],
+    ),
+]
+_RUN_NAME_PARAM = Annotated[
+    str,
+    Field(
+        description='训练任务名或 run 名。留空时由服务端自动生成。',
+        examples=['exp', 'remote-train-demo'],
     ),
 ]
 _TRAIN_CLASSES_PARAM = Annotated[
@@ -36,6 +72,13 @@ _RUN_LIST_LIMIT_PARAM = Annotated[
         description='返回最近若干条训练记录。',
         ge=1,
         examples=[5, 10],
+    ),
+]
+_KEYWORD_PARAM = Annotated[
+    str,
+    Field(
+        description='训练记录关键词过滤。可用于按模型名或数据集路径片段过滤。',
+        examples=['yolov8n', 'dataset_a'],
     ),
 ]
 _RUN_STATE_PARAM = Annotated[
@@ -107,13 +150,13 @@ def _wrap(action: str, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> dic
 
 
 def start_training(
-    model: str,
-    data_yaml: str = "",
-    epochs: int = 100,
+    model: _MODEL_PARAM,
+    data_yaml: _DATA_YAML_PARAM = "",
+    epochs: _EPOCHS_PARAM = 100,
     device: _DEVICE_PARAM = "auto",
     training_environment: _TRAINING_ENVIRONMENT_PARAM = "",
-    project: str = "",
-    name: str = "",
+    project: _PROJECT_PARAM = "",
+    name: _RUN_NAME_PARAM = "",
     batch: int | None = None,
     imgsz: int | None = None,
     fraction: float | None = None,
@@ -222,13 +265,13 @@ def list_training_environments() -> dict[str, Any]:
 
 
 def training_preflight(
-    model: str,
-    data_yaml: str = "",
-    epochs: int = 100,
+    model: _MODEL_PARAM,
+    data_yaml: _DATA_YAML_PARAM = "",
+    epochs: _EPOCHS_PARAM = 100,
     device: _DEVICE_PARAM = "auto",
     training_environment: _TRAINING_ENVIRONMENT_PARAM = "",
-    project: str = "",
-    name: str = "",
+    project: _PROJECT_PARAM = "",
+    name: _RUN_NAME_PARAM = "",
     batch: int | None = None,
     imgsz: int | None = None,
     fraction: float | None = None,
@@ -296,8 +339,8 @@ def list_training_runs(
     limit: _RUN_LIST_LIMIT_PARAM = 5,
     run_state: _RUN_STATE_PARAM = '',
     analysis_ready: _ANALYSIS_READY_PARAM = None,
-    model_keyword: str = '',
-    data_keyword: str = '',
+    model_keyword: _KEYWORD_PARAM = '',
+    data_keyword: _KEYWORD_PARAM = '',
 ) -> dict[str, Any]:
     """列出训练记录列表。
 

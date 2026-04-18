@@ -37,6 +37,85 @@ _CLASS_NAMES_PARAM = Annotated[
         examples=[['cat', 'dog', 'background']],
     ),
 ]
+_DATASET_IMG_DIR_PARAM = Annotated[
+    str,
+    Field(
+        description='数据集图片目录，或可自动解析到图片目录的数据集根目录。',
+        examples=['/data/dataset', '/data/dataset/images/train'],
+    ),
+]
+_LABEL_DIR_PARAM = Annotated[
+    str,
+    Field(
+        description='标签目录路径。留空时按标准 YOLO 结构自动推断。',
+        examples=['/data/dataset/labels/train'],
+    ),
+]
+_OUTPUT_DIR_PARAM = Annotated[
+    str,
+    Field(
+        description='输出目录。留空时由服务端使用默认输出目录。',
+        examples=['/tmp/dataset_out', 'runs/dataset'],
+    ),
+]
+_SPLIT_RATIO_PARAM = Annotated[
+    float,
+    Field(
+        description='训练集比例。必须在 0 和 1 之间，且不能取边界值。',
+        gt=0.0,
+        lt=1.0,
+        examples=[0.8, 0.9],
+    ),
+]
+_SEED_PARAM = Annotated[
+    int,
+    Field(
+        description='随机种子。',
+        examples=[42, 1234],
+    ),
+]
+_SPLIT_MODE_PARAM = Annotated[
+    str,
+    Field(
+        description='数据划分模式。常用 copy、move 或 index。',
+        examples=['copy', 'move', 'index'],
+    ),
+]
+_TRAIN_PATH_PARAM = Annotated[
+    str,
+    Field(
+        description='训练集图片目录路径。可为绝对路径，或相对 dataset root 的路径。',
+        examples=['images/train', '/data/dataset/images/train'],
+    ),
+]
+_VAL_PATH_PARAM = Annotated[
+    str,
+    Field(
+        description='验证集图片目录路径。可为绝对路径，或相对 dataset root 的路径。',
+        examples=['images/val', '/data/dataset/images/val'],
+    ),
+]
+_DATA_YAML_PATH_PARAM = Annotated[
+    str,
+    Field(
+        description='data.yaml 路径。留空时优先复用自动探测到的 YAML。',
+        examples=['/data/dataset/data.yaml'],
+    ),
+]
+_CLASSES_TXT_PATH_PARAM = Annotated[
+    str,
+    Field(
+        description='classes.txt 路径。留空时优先复用自动探测到的类别文件。',
+        examples=['/data/dataset/classes.txt'],
+    ),
+]
+_REQUIRE_CLEAN_LABELS_PARAM = Annotated[
+    bool,
+    Field(
+        description='是否要求标签完全无硬性问题才视为可以直接训练。',
+        examples=[True],
+    ),
+]
 
 
 def _install_headless_pyside6_stub() -> None:
@@ -1259,7 +1338,7 @@ def categorize_by_class(
             temp_classes_txt.unlink(missing_ok=True)
 
 
-def scan_dataset(img_dir: str, label_dir: str = "") -> dict[str, Any]:
+def scan_dataset(img_dir: _DATASET_IMG_DIR_PARAM, label_dir: _LABEL_DIR_PARAM = "") -> dict[str, Any]:
     """扫描数据集并返回结构化摘要、类别统计、候选 YAML / classes.txt 信息。img_dir 支持传入 dataset root。"""
     try:
         DataHandler = _get_data_handler_cls()
@@ -1365,12 +1444,12 @@ def scan_dataset(img_dir: str, label_dir: str = "") -> dict[str, Any]:
 
 
 def split_dataset(
-    img_dir: str,
-    label_dir: str = "",
-    output_dir: str = "",
-    ratio: float = 0.8,
-    seed: int = 42,
-    mode: str = "copy",
+    img_dir: _DATASET_IMG_DIR_PARAM,
+    label_dir: _LABEL_DIR_PARAM = "",
+    output_dir: _OUTPUT_DIR_PARAM = "",
+    ratio: _SPLIT_RATIO_PARAM = 0.8,
+    seed: _SEED_PARAM = 42,
+    mode: _SPLIT_MODE_PARAM = "copy",
     ignore_orphans: bool = False,
     clear_output: bool = False,
 ) -> dict[str, Any]:
@@ -1453,14 +1532,14 @@ def split_dataset(
 
 
 def generate_yaml(
-    train_path: str,
-    val_path: str,
+    train_path: _TRAIN_PATH_PARAM,
+    val_path: _VAL_PATH_PARAM,
     classes: _CLASS_NAMES_PARAM = None,
     classes_text: str = "",
-    output_path: str = "",
-    classes_txt: str = "",
-    img_dir: str = "",
-    label_dir: str = "",
+    output_path: _DATA_YAML_PATH_PARAM = "",
+    classes_txt: _CLASSES_TXT_PATH_PARAM = "",
+    img_dir: _DATASET_IMG_DIR_PARAM = "",
+    label_dir: _LABEL_DIR_PARAM = "",
 ) -> dict[str, Any]:
     """根据 split 结果或现有 data.yaml/classes.txt 生成 YOLO 训练 YAML。"""
     try:
@@ -1559,9 +1638,9 @@ def generate_yaml(
 
 
 def validate_dataset(
-    img_dir: str,
-    label_dir: str = "",
-    classes_txt: str = "",
+    img_dir: _DATASET_IMG_DIR_PARAM,
+    label_dir: _LABEL_DIR_PARAM = "",
+    classes_txt: _CLASSES_TXT_PATH_PARAM = "",
     check_coords: bool = True,
     check_class_ids: bool = True,
     check_format: bool = True,
@@ -1679,10 +1758,10 @@ def validate_dataset(
 
 
 def dataset_training_readiness(
-    img_dir: str,
-    label_dir: str = "",
-    data_yaml: str = "",
-    require_clean_labels: bool = True,
+    img_dir: _DATASET_IMG_DIR_PARAM,
+    label_dir: _LABEL_DIR_PARAM = "",
+    data_yaml: _DATA_YAML_PATH_PARAM = "",
+    require_clean_labels: _REQUIRE_CLEAN_LABELS_PARAM = True,
 ) -> dict[str, Any]:
     """只从数据集事实出发，判断这份数据是否已经具备直接训练的结构条件。
 
@@ -1877,10 +1956,10 @@ def dataset_training_readiness(
 
 
 def training_readiness(
-    img_dir: str,
-    label_dir: str = "",
-    data_yaml: str = "",
-    require_clean_labels: bool = True,
+    img_dir: _DATASET_IMG_DIR_PARAM,
+    label_dir: _LABEL_DIR_PARAM = "",
+    data_yaml: _DATA_YAML_PATH_PARAM = "",
+    require_clean_labels: _REQUIRE_CLEAN_LABELS_PARAM = True,
 ) -> dict[str, Any]:
     """给出当前数据集是否适合直接训练的综合判断。优先用作训练前的标准检查入口。"""
     try:

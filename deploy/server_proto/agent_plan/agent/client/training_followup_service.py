@@ -8,6 +8,41 @@ from yolostudio_agent.agent.client.session_state import SessionState
 AssistantMessageAppender = Callable[[str], None]
 
 
+def _is_training_provenance_request(user_text: str, normalized_text: str) -> bool:
+    text = str(user_text or '')
+    normalized = str(normalized_text or '')
+    return any(token in text for token in (
+        '你基于哪次训练说的', '你是基于哪次训练说的', '基于哪次训练', '根据哪次训练', '依据哪次训练',
+        '你上次不是说', '你不是说过',
+    )) and any(
+        token in text or token in normalized
+        for token in ('训练', 'run', '最好', '最值得参考', '分析', '结论')
+    )
+
+
+def _is_training_evidence_request(user_text: str) -> bool:
+    text = str(user_text or '')
+    return any(token in text for token in (
+        '依据是什么', '根据什么说的', '为什么这么说', '为什么说数据有问题',
+    ))
+
+
+def resolve_training_grounded_reply_kind(
+    *,
+    user_text: str,
+    normalized_text: str,
+    wants_predict: bool,
+    training_command_like: bool,
+) -> str:
+    if wants_predict or training_command_like:
+        return ''
+    if _is_training_provenance_request(user_text, normalized_text):
+        return 'provenance'
+    if _is_training_evidence_request(user_text):
+        return 'evidence'
+    return ''
+
+
 def complete_training_provenance_reply(
     session_state: SessionState,
     *,

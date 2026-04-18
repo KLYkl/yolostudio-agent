@@ -30,6 +30,7 @@ def resolve_mainline_context(
         or session_state.active_dataset.img_dir
     )
     return {
+        'user_text': user_text,
         'dataset_path': dataset_path,
         'frame_followup_path': frame_followup_path,
         'normalized_text': user_text.lower(),
@@ -174,8 +175,6 @@ def resolve_mainline_followup_flags(
         'wants_training_run_inspect': bool(training_run_signals.get('wants_training_run_inspect')),
         'wants_next_step_guidance': bool(training_run_signals.get('wants_next_step_guidance')),
         'wants_training_knowledge': bool(training_run_signals.get('wants_training_knowledge')),
-        'wants_training_provenance': bool(training_run_signals.get('wants_training_provenance')),
-        'wants_training_evidence': bool(training_run_signals.get('wants_training_evidence')),
     }
 
 
@@ -270,10 +269,10 @@ def resolve_mainline_dispatch_payload(
             'wants_best_weight_prediction': bool(getattr(guard_policy, 'wants_best_weight_prediction', False)),
         },
         'training_context_request_args': {
+            'user_text': str(mainline_context.get('user_text') or ''),
+            'normalized_text': normalized_text,
             'wants_predict': bool(getattr(guard_policy, 'wants_predict', False)),
             'training_command_like': bool(mainline_signals.get('training_command_like')),
-            'wants_training_provenance': bool(followup_flags.get('wants_training_provenance')),
-            'wants_training_evidence': bool(followup_flags.get('wants_training_evidence')),
         },
         'training_entrypoint_request_args': {
             'normalized_text': normalized_text,

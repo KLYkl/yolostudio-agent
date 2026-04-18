@@ -1,10 +1,179 @@
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Annotated, Any, Callable
+
+from pydantic import Field
 
 from yolostudio_agent.agent.server.services.predict_service import PredictService
 
 service = PredictService()
+
+_SOURCE_PATH_PARAM = Annotated[
+    str,
+    Field(
+        description='待预测的图片或视频文件路径，也可以是待批量处理的目录路径。',
+        examples=['/data/images', '/data/videos/demo.mp4'],
+    ),
+]
+_MODEL_PARAM = Annotated[
+    str,
+    Field(
+        description='用于预测的模型或权重路径。可以是 yolov8n.pt 这类模型名，或本地可访问的权重文件路径。',
+        examples=['yolov8n.pt', '/models/best.pt'],
+    ),
+]
+_CONF_PARAM = Annotated[
+    float,
+    Field(
+        description='预测置信度阈值，范围 0 到 1。',
+        ge=0.0,
+        le=1.0,
+        examples=[0.25, 0.5],
+    ),
+]
+_IOU_PARAM = Annotated[
+    float,
+    Field(
+        description='NMS IOU 阈值，范围 0 到 1。',
+        ge=0.0,
+        le=1.0,
+        examples=[0.45, 0.6],
+    ),
+]
+_OUTPUT_DIR_PARAM = Annotated[
+    str,
+    Field(
+        description='预测输出目录。留空时由服务端自动创建默认输出目录。',
+        examples=['/tmp/predict_out', 'runs/predict'],
+    ),
+]
+_SESSION_ID_PARAM = Annotated[
+    str,
+    Field(
+        description='后台或实时预测会话 ID。留空时默认使用当前活动会话。',
+        examples=['image-predict-1234abcd', 'realtime-camera-12345678'],
+    ),
+]
+_REPORT_PATH_PARAM = Annotated[
+    str,
+    Field(
+        description='prediction_report.json 或 video_prediction_report.json 路径。',
+        examples=['/tmp/predict/prediction_report.json', '/tmp/predict/video_prediction_report.json'],
+    ),
+]
+_EXPORT_PATH_PARAM = Annotated[
+    str,
+    Field(
+        description='导出报告文件路径。留空时按默认命名写入输出目录。',
+        examples=['/tmp/predict/report.md', '/tmp/predict/report.json'],
+    ),
+]
+_EXPORT_DIR_PARAM = Annotated[
+    str,
+    Field(
+        description='导出路径清单目录。留空时按默认命名写入输出目录。',
+        examples=['/tmp/predict/lists'],
+    ),
+]
+_EXPORT_FORMAT_PARAM = Annotated[
+    str,
+    Field(
+        description='报告导出格式。常用 markdown 或 json。',
+        examples=['markdown', 'json'],
+    ),
+]
+_DESTINATION_DIR_PARAM = Annotated[
+    str,
+    Field(
+        description='整理预测结果时复制到的新目录。',
+        examples=['/tmp/predict/organized'],
+    ),
+]
+_ORGANIZE_BY_PARAM = Annotated[
+    str,
+    Field(
+        description='整理策略。常用 detected_only 或 class。',
+        examples=['detected_only', 'class'],
+    ),
+]
+_ARTIFACT_PREFERENCE_PARAM = Annotated[
+    str,
+    Field(
+        description='整理时优先复制哪类产物。常用 auto、annotated 或 original。',
+        examples=['auto', 'annotated', 'original'],
+    ),
+]
+_MAX_IMAGES_PARAM = Annotated[
+    int,
+    Field(
+        description='最多处理的图片数量；0 表示不限制。',
+        ge=0,
+        examples=[0, 100],
+    ),
+]
+_MAX_VIDEOS_PARAM = Annotated[
+    int,
+    Field(
+        description='最多处理的视频数量；0 表示不限制。',
+        ge=0,
+        examples=[0, 10],
+    ),
+]
+_MAX_FRAMES_PARAM = Annotated[
+    int,
+    Field(
+        description='最多处理的帧数；0 表示不限制。',
+        ge=0,
+        examples=[0, 300],
+    ),
+]
+_CAMERA_ID_PARAM = Annotated[
+    int,
+    Field(
+        description='摄像头设备编号。',
+        ge=0,
+        examples=[0, 1],
+    ),
+]
+_SCREEN_ID_PARAM = Annotated[
+    int,
+    Field(
+        description='屏幕编号。',
+        ge=0,
+        examples=[1, 2],
+    ),
+]
+_RTSP_URL_PARAM = Annotated[
+    str,
+    Field(
+        description='RTSP 视频流地址。',
+        examples=['rtsp://demo/live'],
+    ),
+]
+_TIMEOUT_MS_PARAM = Annotated[
+    int,
+    Field(
+        description='RTSP 地址探测超时时间，单位毫秒。',
+        ge=1,
+        examples=[3000, 5000],
+    ),
+]
+_FRAME_INTERVAL_MS_PARAM = Annotated[
+    int,
+    Field(
+        description='实时预测采样间隔，单位毫秒。',
+        ge=0,
+        examples=[100, 500],
+    ),
+]
+_MAX_DEVICES_PARAM = Annotated[
+    int,
+    Field(
+        description='扫描摄像头时最多探测的设备数量。',
+        ge=1,
+        examples=[5, 10],
+    ),
+]
 
 
 def _action_candidates_from_next_actions(next_actions: Any) -> list[dict[str, Any]]:
@@ -135,16 +304,16 @@ def _wrap(action: str, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> dic
 
 
 def predict_images(
-    source_path: str,
-    model: str,
-    conf: float = 0.25,
-    iou: float = 0.45,
-    output_dir: str = '',
+    source_path: _SOURCE_PATH_PARAM,
+    model: _MODEL_PARAM,
+    conf: _CONF_PARAM = 0.25,
+    iou: _IOU_PARAM = 0.45,
+    output_dir: _OUTPUT_DIR_PARAM = '',
     save_annotated: bool = True,
     save_labels: bool = False,
     save_original: bool = False,
     generate_report: bool = True,
-    max_images: int = 0,
+    max_images: _MAX_IMAGES_PARAM = 0,
 ) -> dict[str, Any]:
     """对单张图片或图片目录执行 YOLO 预测。优先传 source_path 和 model；默认保存标注图与 JSON 报告，不修改原始数据。目录很大时会自动转成后台图片预测会话。"""
     result = _wrap(
@@ -183,16 +352,16 @@ def predict_images(
 
 
 def start_image_prediction(
-    source_path: str,
-    model: str,
-    conf: float = 0.25,
-    iou: float = 0.45,
-    output_dir: str = '',
+    source_path: _SOURCE_PATH_PARAM,
+    model: _MODEL_PARAM,
+    conf: _CONF_PARAM = 0.25,
+    iou: _IOU_PARAM = 0.45,
+    output_dir: _OUTPUT_DIR_PARAM = '',
     save_annotated: bool = True,
     save_labels: bool = False,
     save_original: bool = False,
     generate_report: bool = True,
-    max_images: int = 0,
+    max_images: _MAX_IMAGES_PARAM = 0,
 ) -> dict[str, Any]:
     """显式启动后台图片预测会话。适用于大目录或预计会持续较久的图片预测。"""
     result = _wrap(
@@ -222,7 +391,7 @@ def start_image_prediction(
     return result
 
 
-def check_image_prediction_status(session_id: str = '') -> dict[str, Any]:
+def check_image_prediction_status(session_id: _SESSION_ID_PARAM = '') -> dict[str, Any]:
     """查看当前或指定后台图片预测会话的运行状态、已处理图片数和检测统计。"""
     result = _wrap(
         '后台图片预测状态查询',
@@ -243,7 +412,7 @@ def check_image_prediction_status(session_id: str = '') -> dict[str, Any]:
     return result
 
 
-def stop_image_prediction(session_id: str = '') -> dict[str, Any]:
+def stop_image_prediction(session_id: _SESSION_ID_PARAM = '') -> dict[str, Any]:
     """停止当前或指定后台图片预测会话，并返回已完成的部分统计。"""
     result = _wrap(
         '后台图片预测停止',
@@ -264,7 +433,7 @@ def stop_image_prediction(session_id: str = '') -> dict[str, Any]:
     return result
 
 
-def summarize_prediction_results(report_path: str = '', output_dir: str = '') -> dict[str, Any]:
+def summarize_prediction_results(report_path: _REPORT_PATH_PARAM = '', output_dir: _OUTPUT_DIR_PARAM = '') -> dict[str, Any]:
     """读取预测 JSON 报告或预测输出目录，汇总当前预测结果，用于 grounded 总结与后续分析。"""
     result = _wrap(
         '预测结果汇总',
@@ -287,7 +456,7 @@ def summarize_prediction_results(report_path: str = '', output_dir: str = '') ->
     return result
 
 
-def inspect_prediction_outputs(report_path: str = '', output_dir: str = '') -> dict[str, Any]:
+def inspect_prediction_outputs(report_path: _REPORT_PATH_PARAM = '', output_dir: _OUTPUT_DIR_PARAM = '') -> dict[str, Any]:
     """检查最近一次 prediction 的输出目录、报告路径和已生成产物，便于多轮 follow-up 继续复用。"""
     result = _wrap(
         '预测输出检查',
@@ -309,10 +478,10 @@ def inspect_prediction_outputs(report_path: str = '', output_dir: str = '') -> d
 
 
 def export_prediction_report(
-    report_path: str = '',
-    output_dir: str = '',
-    export_path: str = '',
-    export_format: str = 'markdown',
+    report_path: _REPORT_PATH_PARAM = '',
+    output_dir: _OUTPUT_DIR_PARAM = '',
+    export_path: _EXPORT_PATH_PARAM = '',
+    export_format: _EXPORT_FORMAT_PARAM = 'markdown',
 ) -> dict[str, Any]:
     """把 prediction 结果导出成可复查报告；默认导出为 markdown，不会改写原始 prediction_report.json。"""
     result = _wrap(
@@ -336,7 +505,11 @@ def export_prediction_report(
     return result
 
 
-def export_prediction_path_lists(report_path: str = '', output_dir: str = '', export_dir: str = '') -> dict[str, Any]:
+def export_prediction_path_lists(
+    report_path: _REPORT_PATH_PARAM = '',
+    output_dir: _OUTPUT_DIR_PARAM = '',
+    export_dir: _EXPORT_DIR_PARAM = '',
+) -> dict[str, Any]:
     """导出命中 / 无命中 / 失败样本的路径清单，方便继续筛选、复查和批量处理。"""
     result = _wrap(
         '预测路径清单导出',
@@ -359,12 +532,12 @@ def export_prediction_path_lists(report_path: str = '', output_dir: str = '', ex
 
 
 def organize_prediction_results(
-    report_path: str = '',
-    output_dir: str = '',
-    destination_dir: str = '',
-    organize_by: str = 'detected_only',
+    report_path: _REPORT_PATH_PARAM = '',
+    output_dir: _OUTPUT_DIR_PARAM = '',
+    destination_dir: _DESTINATION_DIR_PARAM = '',
+    organize_by: _ORGANIZE_BY_PARAM = 'detected_only',
     include_empty: bool = False,
-    artifact_preference: str = 'auto',
+    artifact_preference: _ARTIFACT_PREFERENCE_PARAM = 'auto',
 ) -> dict[str, Any]:
     """把 prediction 产物复制整理到新目录；支持只收集命中结果，或按类别分桶，不改写原始输出。"""
     result = _wrap(
@@ -390,7 +563,7 @@ def organize_prediction_results(
     return result
 
 
-def scan_cameras(max_devices: int = 5) -> dict[str, Any]:
+def scan_cameras(max_devices: _MAX_DEVICES_PARAM = 5) -> dict[str, Any]:
     """扫描当前环境可用的本地摄像头设备，返回 camera_id 列表，便于后续启动实时预测。"""
     result = _wrap(
         '摄像头扫描',
@@ -431,7 +604,7 @@ def scan_screens() -> dict[str, Any]:
     return result
 
 
-def test_rtsp_stream(rtsp_url: str, timeout_ms: int = 5000) -> dict[str, Any]:
+def test_rtsp_stream(rtsp_url: _RTSP_URL_PARAM, timeout_ms: _TIMEOUT_MS_PARAM = 5000) -> dict[str, Any]:
     """测试 RTSP 地址是否可连通并能读取视频帧，不启动长时间预测。"""
     result = _wrap(
         'RTSP 流测试',
@@ -453,13 +626,13 @@ def test_rtsp_stream(rtsp_url: str, timeout_ms: int = 5000) -> dict[str, Any]:
 
 
 def start_camera_prediction(
-    model: str,
-    camera_id: int = 0,
-    conf: float = 0.25,
-    iou: float = 0.45,
-    output_dir: str = '',
-    frame_interval_ms: int = 100,
-    max_frames: int = 0,
+    model: _MODEL_PARAM,
+    camera_id: _CAMERA_ID_PARAM = 0,
+    conf: _CONF_PARAM = 0.25,
+    iou: _IOU_PARAM = 0.45,
+    output_dir: _OUTPUT_DIR_PARAM = '',
+    frame_interval_ms: _FRAME_INTERVAL_MS_PARAM = 100,
+    max_frames: _MAX_FRAMES_PARAM = 0,
 ) -> dict[str, Any]:
     """启动摄像头实时预测。默认只记录统计和 report，不改原始输入；需要结束时调用 stop_realtime_prediction。"""
     result = _wrap(
@@ -487,13 +660,13 @@ def start_camera_prediction(
 
 
 def start_rtsp_prediction(
-    model: str,
-    rtsp_url: str,
-    conf: float = 0.25,
-    iou: float = 0.45,
-    output_dir: str = '',
-    frame_interval_ms: int = 100,
-    max_frames: int = 0,
+    model: _MODEL_PARAM,
+    rtsp_url: _RTSP_URL_PARAM,
+    conf: _CONF_PARAM = 0.25,
+    iou: _IOU_PARAM = 0.45,
+    output_dir: _OUTPUT_DIR_PARAM = '',
+    frame_interval_ms: _FRAME_INTERVAL_MS_PARAM = 100,
+    max_frames: _MAX_FRAMES_PARAM = 0,
 ) -> dict[str, Any]:
     """启动 RTSP 实时预测。建议先用 test_rtsp_stream 确认地址可用。"""
     result = _wrap(
@@ -521,13 +694,13 @@ def start_rtsp_prediction(
 
 
 def start_screen_prediction(
-    model: str,
-    screen_id: int = 1,
-    conf: float = 0.25,
-    iou: float = 0.45,
-    output_dir: str = '',
-    frame_interval_ms: int = 100,
-    max_frames: int = 0,
+    model: _MODEL_PARAM,
+    screen_id: _SCREEN_ID_PARAM = 1,
+    conf: _CONF_PARAM = 0.25,
+    iou: _IOU_PARAM = 0.45,
+    output_dir: _OUTPUT_DIR_PARAM = '',
+    frame_interval_ms: _FRAME_INTERVAL_MS_PARAM = 100,
+    max_frames: _MAX_FRAMES_PARAM = 0,
 ) -> dict[str, Any]:
     """启动屏幕实时预测。默认按 screen_id 选择显示器并持续采集，直到 stop_realtime_prediction。"""
     result = _wrap(
@@ -554,7 +727,7 @@ def start_screen_prediction(
     return result
 
 
-def check_realtime_prediction_status(session_id: str = '') -> dict[str, Any]:
+def check_realtime_prediction_status(session_id: _SESSION_ID_PARAM = '') -> dict[str, Any]:
     """查看当前或指定实时预测会话的运行状态、已处理帧数和检测统计。"""
     result = _wrap(
         '实时预测状态查询',
@@ -575,7 +748,7 @@ def check_realtime_prediction_status(session_id: str = '') -> dict[str, Any]:
     return result
 
 
-def stop_realtime_prediction(session_id: str = '') -> dict[str, Any]:
+def stop_realtime_prediction(session_id: _SESSION_ID_PARAM = '') -> dict[str, Any]:
     """停止当前或指定实时预测会话，并返回最终统计。
 
     适用: “停止实时预测”“停掉摄像头预测”“终止 RTSP 实时检测”。
@@ -601,17 +774,17 @@ def stop_realtime_prediction(session_id: str = '') -> dict[str, Any]:
 
 
 def predict_videos(
-    source_path: str,
-    model: str,
-    conf: float = 0.25,
-    iou: float = 0.45,
-    output_dir: str = '',
+    source_path: _SOURCE_PATH_PARAM,
+    model: _MODEL_PARAM,
+    conf: _CONF_PARAM = 0.25,
+    iou: _IOU_PARAM = 0.45,
+    output_dir: _OUTPUT_DIR_PARAM = '',
     save_video: bool = True,
     save_keyframes_annotated: bool = True,
     save_keyframes_raw: bool = False,
     generate_report: bool = True,
-    max_videos: int = 0,
-    max_frames: int = 0,
+    max_videos: _MAX_VIDEOS_PARAM = 0,
+    max_frames: _MAX_FRAMES_PARAM = 0,
 ) -> dict[str, Any]:
     """对单个视频或视频目录执行 YOLO 预测。默认保存结果视频与关键帧报告，不修改原始视频。"""
     result = _wrap(

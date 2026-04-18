@@ -18,15 +18,15 @@ from yolostudio_agent.agent.client.intent_parsing import extract_all_paths_from_
 
 
 class _ListRemoteProfilesArgs(BaseModel):
-    profiles_path: str = Field(default='', description='可选远端 profile 配置文件路径；不传则按默认搜索路径查找。')
+    profiles_path: str = Field(default='', description='可选远端 profile 配置文件路径；不传则按默认搜索路径查找。', examples=['.codex/remote_profiles.json'])
 
 
 class _UploadAssetsToRemoteArgs(BaseModel):
-    local_paths: list[str] = Field(default=[], description='本地文件或目录路径列表。')
+    local_paths: list[str] = Field(default=[], description='本地文件或目录路径列表。', examples=[['/data/model.pt', '/data/dataset']])
     paths_text: str = Field(default='', description='兼容字段；多个路径可用换行、逗号或分号分隔。')
-    server: str = Field(default='', description='远端 profile 名、SSH alias，或 user@host 形式的目标。')
+    server: str = Field(default='', description='远端 profile 名、SSH alias，或 user@host 形式的目标。', examples=['yolostudio', 'user@example.com'])
     profile: str = Field(default='', description='显式指定远端 profile 名。')
-    remote_root: str = Field(default='', description='远端目标根目录；不传时尝试使用 profile 默认值。')
+    remote_root: str = Field(default='', description='远端目标根目录；不传时尝试使用 profile 默认值。', examples=['/tmp/agent_stage'])
     host: str = Field(default='', description='显式远端主机名或 IP。')
     username: str = Field(default='', description='显式远端用户名。')
     port: int = Field(default=0, description='显式 SSH 端口；0 表示使用默认值。')
@@ -35,22 +35,22 @@ class _UploadAssetsToRemoteArgs(BaseModel):
     profiles_path: str = Field(default='', description='可选远端 profile 配置文件路径；不传则按默认搜索路径查找。')
     resume: bool = Field(default=True, description='大文件上传时是否启用断点续传。')
     verify_hash: bool = Field(default=True, description='上传完成后是否做哈希校验。')
-    hash_algorithm: str = Field(default='sha256', description='校验算法；当前支持 sha256 / md5。')
+    hash_algorithm: str = Field(default='sha256', description='校验算法；当前支持 sha256 / md5。', examples=['sha256', 'md5'])
     large_file_threshold_mb: int = Field(default=256, description='达到该体积后自动切到大文件分块模式。')
     chunk_size_mb: int = Field(default=64, description='大文件分块上传的单块大小，单位 MB。')
     show_progress: bool = Field(default=True, description='上传时是否在本机标准输出打印进度。')
 
 
 class _DownloadAssetsFromRemoteArgs(BaseModel):
-    remote_paths: list[str] = Field(default=[], description='远端文件或目录路径列表。')
+    remote_paths: list[str] = Field(default=[], description='远端文件或目录路径列表。', examples=[['/tmp/agent_stage/results', '/tmp/agent_stage/log.txt']])
     paths_text: str = Field(default='', description='兼容字段；多个远端路径可用换行、逗号或分号分隔。')
-    server: str = Field(default='', description='远端 profile 名、SSH alias，或 user@host 形式的目标。')
+    server: str = Field(default='', description='远端 profile 名、SSH alias，或 user@host 形式的目标。', examples=['yolostudio', 'user@example.com'])
     profile: str = Field(default='', description='显式指定远端 profile 名。')
     host: str = Field(default='', description='显式远端主机名或 IP。')
     username: str = Field(default='', description='显式远端用户名。')
     port: int = Field(default=0, description='显式 SSH 端口；0 表示使用默认值。')
     recursive: bool = Field(default=True, description='下载目录时是否递归复制。')
-    local_root: str = Field(default='', description='本地接收根目录；不传时默认写到仓库 output/remote_downloads。')
+    local_root: str = Field(default='', description='本地接收根目录；不传时默认写到仓库 output/remote_downloads。', examples=['output/remote_downloads'])
     profiles_path: str = Field(default='', description='可选远端 profile 配置文件路径；不传则按默认搜索路径查找。')
 
 
@@ -1055,7 +1055,6 @@ def download_assets_from_remote(
         profiles_path=profiles_path,
     )
 
-    ssh_exe = _discover_executable('ssh')
     scp_exe = _discover_executable('scp')
     ssh_target = str(resolved['ssh_target'])
     scp_args = [scp_exe]

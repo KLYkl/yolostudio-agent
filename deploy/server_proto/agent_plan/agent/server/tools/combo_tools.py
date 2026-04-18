@@ -1,13 +1,53 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
+
+from pydantic import Field
 
 from yolostudio_agent.agent.server.services.dataset_root import resolve_dataset_root
 from yolostudio_agent.agent.server.tools.data_tool_helpers import _inspect_training_yaml
 from yolostudio_agent.agent.server.tools.data_tools import generate_yaml, scan_dataset, split_dataset, training_readiness, validate_dataset
 
 _EARLY_BLOCK_TYPES = {'unknown', 'images_only', 'flat'}
+
+_DATASET_PATH_PARAM = Annotated[
+    str,
+    Field(
+        description='待准备的数据集路径。可以是数据集根目录，也可以是图片目录或已知数据子目录。',
+        examples=['/data/dataset', '/data/dataset/images/train'],
+    ),
+]
+_SPLIT_RATIO_PARAM = Annotated[
+    float,
+    Field(
+        description='自动划分训练集和验证集时的训练集比例。',
+        gt=0.0,
+        lt=1.0,
+        examples=[0.8, 0.9],
+    ),
+]
+_FORCE_SPLIT_PARAM = Annotated[
+    bool,
+    Field(
+        description='是否强制重新划分 train/val，即使当前数据集已经检测到可用的 split 或 data.yaml。',
+        examples=[True],
+    ),
+]
+_CLASSES_TXT_PARAM = Annotated[
+    str,
+    Field(
+        description='classes.txt 路径。留空时优先复用扫描结果里的类别文件。',
+        examples=['/data/dataset/classes.txt'],
+    ),
+]
+_CLASSES_TEXT_PARAM = Annotated[
+    str,
+    Field(
+        description='直接传入类别名文本内容，按行分隔。用于在没有 classes.txt 时显式提供类别定义。',
+        examples=['cat\ndog\nperson'],
+    ),
+]
 
 
 def _tool_candidate(*, tool: str, reason: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -34,11 +74,11 @@ def _action_candidates_from_next_actions(next_actions: list[dict[str, Any]] | No
 
 
 def prepare_dataset_for_training(
-    dataset_path: str,
-    split_ratio: float = 0.8,
-    force_split: bool = False,
-    classes_txt: str = '',
-    classes_text: str = '',
+    dataset_path: _DATASET_PATH_PARAM,
+    split_ratio: _SPLIT_RATIO_PARAM = 0.8,
+    force_split: _FORCE_SPLIT_PARAM = False,
+    classes_txt: _CLASSES_TXT_PARAM = '',
+    classes_text: _CLASSES_TEXT_PARAM = '',
 ) -> dict[str, Any]:
     """将数据集准备到可训练状态：解析根目录、扫描、校验、按需划分并生成 YAML。
 

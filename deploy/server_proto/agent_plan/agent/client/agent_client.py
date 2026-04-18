@@ -101,15 +101,18 @@ from yolostudio_agent.agent.client.training_workflow import sync_training_workfl
 from yolostudio_agent.agent.client.training_request_service import (
     run_training_request_entrypoint,
 )
+from yolostudio_agent.agent.client.training_execution_service import (
+    run_post_prepare_training_start_flow,
+    run_remote_training_start_flow,
+    wait_for_remote_training_terminal_state as wait_for_remote_training_terminal_state_service,
+)
 from yolostudio_agent.agent.client.training_dialogue_service import (
     run_training_plan_dialogue_flow,
 )
 from yolostudio_agent.agent.client.training_plan_service import (
-    build_training_preflight_tool_args,
     build_training_loop_start_draft as build_training_loop_start_draft_service,
     build_training_loop_start_fallback_plan as build_training_loop_start_fallback_plan_service,
     render_training_plan_message as render_training_plan_message_service,
-    resolve_training_start_args,
     run_training_loop_start_orchestration as run_training_loop_start_orchestration_service,
     training_plan_render_error,
     training_plan_user_facts,
@@ -117,6 +120,7 @@ from yolostudio_agent.agent.client.training_plan_service import (
 from yolostudio_agent.agent.client.training_followup_service import (
     complete_training_evidence_reply as complete_training_evidence_reply_service,
     complete_training_provenance_reply as complete_training_provenance_reply_service,
+    resolve_training_grounded_reply_kind,
 )
 from yolostudio_agent.agent.client.training_plan_context_service import (
     build_training_plan_context_payload,
@@ -195,6 +199,7 @@ class YoloStudioAgentClient:
         *,
         primary_llm_settings: LlmProviderSettings | None = None,
         helper_llm_settings: LlmProviderSettings | None = None,
+        memory: MemoryStore | None = None,
     ) -> None:
         self.graph = graph
         self.settings = settings
@@ -212,7 +217,7 @@ class YoloStudioAgentClient:
         self._recorded_tool_error_signatures: set[str] = set()
         self._pending_confirmation_shadow: dict[str, Any] | None = None
         self._pending_review_shadow: dict[str, Any] = {}
-        self.memory = MemoryStore(settings.memory_root)
+        self.memory = memory or MemoryStore(settings.memory_root)
         self.context_builder = ContextBuilder(SYSTEM_PROMPT)
         self.event_retriever = EventRetriever(self.memory)
         self.session_state: SessionState = self.memory.load_state(settings.session_id)
@@ -1399,15 +1404,21 @@ class YoloStudioAgentClient:
     async def _try_handle_training_context_requests(
         self,
         *,
+        user_text: str,
+        normalized_text: str,
         wants_predict: bool,
         training_command_like: bool,
-        wants_training_provenance: bool,
-        wants_training_evidence: bool,
     ) -> dict[str, Any] | None:
-        if not wants_predict and not training_command_like and wants_training_provenance:
+        grounded_reply_kind = resolve_training_grounded_reply_kind(
+            user_text=user_text,
+            normalized_text=normalized_text,
+            wants_predict=wants_predict,
+            training_command_like=training_command_like,
+        )
+        if grounded_reply_kind == 'provenance':
             return self._complete_training_provenance_reply()
 
-        if not wants_predict and not training_command_like and wants_training_evidence:
+        if grounded_reply_kind == 'evidence':
             return self._complete_training_evidence_reply()
 
         return None
@@ -1771,72 +1782,44 @@ class YoloStudioAgentClient:
             self.memory.save_state(self.session_state)
             return {'status': 'error', 'message': reply, 'tool_call': {'name': 'remote_training_pipeline', 'args': pipeline_args}}
 
-        dataset_path = str(resolved_inputs.get('dataset_path') or '')
-        model_path = str(resolved_inputs.get('model_path') or '')
-        readiness = await self.direct_tool('training_readiness', img_dir=dataset_path)
-        if not readiness.get('ok'):
-            reply = await self._render_multi_tool_result_message(
-                [
-                    ('upload_assets_to_remote', upload_result),
-                    ('training_readiness', readiness),
-                ],
-                objective='远端训练闭环失败说明',
-            ) or readiness.get('error') or '远端训练前检查失败'
-            self._messages.append(AIMessage(content=reply))
-            self._trim_history()
-            self.memory.save_state(self.session_state)
-            return {'status': 'error', 'message': reply, 'tool_call': {'name': 'remote_training_pipeline', 'args': pipeline_args}}
-
-        prepare_result: dict[str, Any] = {}
-        data_yaml = str(readiness.get('resolved_data_yaml') or '').strip()
-        if not readiness.get('ready'):
-            prepare_args: dict[str, Any] = {'dataset_path': dataset_path}
-            if pipeline_args.get('force_split'):
-                prepare_args['force_split'] = True
-            prepare_result = await self.direct_tool('prepare_dataset_for_training', **prepare_args)
-            if not prepare_result.get('ok') or not prepare_result.get('ready'):
-                reply = await self._render_multi_tool_result_message(
-                    [
-                        ('upload_assets_to_remote', upload_result),
-                        ('training_readiness', readiness),
-                        ('prepare_dataset_for_training', prepare_result),
-                    ],
-                    objective='远端训练闭环失败说明',
-                ) or prepare_result.get('summary') or prepare_result.get('error') or '远端数据准备未通过'
-                self._messages.append(AIMessage(content=reply))
-                self._trim_history()
-                self.memory.save_state(self.session_state)
-                return {'status': 'error', 'message': reply, 'tool_call': {'name': 'remote_training_pipeline', 'args': pipeline_args}}
-            data_yaml = str(prepare_result.get('data_yaml') or '').strip()
-
-        requested_args = self._collect_requested_training_args(str(pipeline_args.get('user_text') or ''), data_yaml=data_yaml)
-        requested_args['model'] = model_path
-        requested_args['data_yaml'] = data_yaml
-        requested_args['device'] = str(requested_args.get('device') or 'auto')
-        requested_args['epochs'] = int(requested_args.get('epochs', 100))
-
-        preflight_args = build_training_preflight_tool_args(requested_args)
-        preflight = await self.direct_tool('training_preflight', **preflight_args)
-        if not preflight.get('ok') or not preflight.get('ready_to_start'):
+        start_flow = await run_remote_training_start_flow(
+            pipeline_args=pipeline_args,
+            resolved_inputs=resolved_inputs,
+            direct_tool=self.direct_tool,
+            collect_requested_training_args=self._collect_requested_training_args,
+        )
+        dataset_path = str(start_flow.get('dataset_path') or resolved_inputs.get('dataset_path') or '')
+        model_path = str(start_flow.get('model_path') or resolved_inputs.get('model_path') or '')
+        readiness = dict(start_flow.get('readiness') or {})
+        prepare_result = dict(start_flow.get('prepare') or {})
+        preflight = dict(start_flow.get('preflight') or {})
+        start_result = dict(start_flow.get('start') or {})
+        start_stage = str(start_flow.get('stage') or '').strip()
+        if not start_flow.get('ok'):
             reply = await self._render_multi_tool_result_message(
                 [
                     ('upload_assets_to_remote', upload_result),
                     ('training_readiness', readiness),
                     ('prepare_dataset_for_training', prepare_result) if prepare_result else ('', {}),
-                    ('training_preflight', preflight),
+                    ('training_preflight', preflight) if preflight else ('', {}),
+                    ('start_training', start_result) if start_result else ('', {}),
                 ],
                 objective='远端训练闭环失败说明',
-            ) or preflight.get('summary') or preflight.get('error') or '远端训练预检未通过'
+            ) or (
+                readiness.get('error')
+                if start_stage == 'readiness'
+                else prepare_result.get('summary') or prepare_result.get('error')
+                if start_stage == 'prepare'
+                else preflight.get('summary') or preflight.get('error')
+                if start_stage == 'preflight'
+                else start_result.get('summary') or start_result.get('error')
+                if start_stage == 'start'
+                else '远端训练启动失败'
+            )
             self._messages.append(AIMessage(content=reply))
             self._trim_history()
             self.memory.save_state(self.session_state)
             return {'status': 'error', 'message': reply, 'tool_call': {'name': 'remote_training_pipeline', 'args': pipeline_args}}
-
-        resolved_args = resolve_training_start_args(requested_args, preflight)
-        start_result = await self.direct_tool(
-            'start_training',
-            **resolved_args,
-        )
 
         wait_result: dict[str, Any] = {}
         final_status: dict[str, Any] = {}
@@ -1980,51 +1963,12 @@ class YoloStudioAgentClient:
         poll_interval_seconds: int = 15,
         max_wait_seconds: int = 7200,
     ) -> dict[str, Any]:
-        started = time.monotonic()
-        status_checks: list[dict[str, Any]] = []
-        interval = max(0, int(poll_interval_seconds))
-        wait_limit = max(1, int(max_wait_seconds))
-
-        while True:
-            status_result = await self.direct_tool('check_training_status')
-            status_checks.append({
-                'summary': status_result.get('summary'),
-                'running': status_result.get('running'),
-                'run_state': status_result.get('run_state'),
-                'save_dir': status_result.get('save_dir'),
-                'log_file': status_result.get('log_file'),
-            })
-            if not status_result.get('ok'):
-                return {
-                    'ok': False,
-                    'message': '训练已启动，但轮询训练状态失败；未执行自动回传。',
-                    'status_result': status_result,
-                    'status_checks': status_checks,
-                }
-
-            run_state = str(status_result.get('run_state') or '').strip().lower()
-            if not status_result.get('running') and run_state not in {'', 'running'}:
-                summary_result = await self.direct_tool('summarize_training_run')
-                inspect_result = await self.direct_tool('inspect_training_run')
-                return {
-                    'ok': True,
-                    'status_result': status_result,
-                    'summary_result': summary_result,
-                    'inspect_result': inspect_result,
-                    'status_checks': status_checks,
-                }
-
-            if (time.monotonic() - started) >= wait_limit:
-                return {
-                    'ok': False,
-                    'timed_out': True,
-                    'message': f'训练已启动，但在等待窗口 {wait_limit}s 内仍未结束；未执行自动回传。',
-                    'status_result': status_result,
-                    'status_checks': status_checks,
-                }
-
-            if interval > 0:
-                await asyncio.sleep(interval)
+        return await wait_for_remote_training_terminal_state_service(
+            direct_tool=self.direct_tool,
+            poll_interval_seconds=poll_interval_seconds,
+            max_wait_seconds=max_wait_seconds,
+            sleep=asyncio.sleep,
+        )
 
     def _extract_training_save_dir(self, payload: dict[str, Any]) -> str:
         if not isinstance(payload, dict):
@@ -3160,41 +3104,30 @@ class YoloStudioAgentClient:
         prepare_parsed: dict[str, Any],
         stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
     ) -> dict[str, Any]:
-        followup_args = dict(synthetic_followup.get('args') or {})
-        preflight_args = build_training_preflight_tool_args(followup_args)
-        preflight = await self.direct_tool(
-            'training_preflight',
-            **preflight_args,
-        )
-        resolved_followup_args = resolve_training_start_args(followup_args, preflight)
-        draft = self._build_training_plan_draft(
+        flow_result = await run_post_prepare_training_start_flow(
             user_text=self._recent_user_text(),
             dataset_path=self.session_state.active_dataset.dataset_root or self.session_state.active_dataset.img_dir,
             readiness=self.session_state.active_dataset.last_readiness,
-            preflight=preflight,
-            next_tool_name='start_training' if preflight.get('ready_to_start') else '',
-            next_tool_args=resolved_followup_args if preflight.get('ready_to_start') else {},
-            planned_training_args=resolved_followup_args,
+            synthetic_followup=synthetic_followup,
+            prepare_parsed=prepare_parsed,
+            direct_tool=self.direct_tool,
+            build_training_plan_draft_fn=self._build_training_plan_draft,
+            render_prepare_followup_message=self._render_prepare_followup_message,
         )
-        self._save_training_plan_draft(draft)
-        if not preflight.get('ready_to_start'):
-            reply = await self._render_prepare_followup_message(prepare_parsed, preflight)
-            self._messages.append(AIMessage(content=reply))
-            self._trim_history()
-            self.memory.save_state(self.session_state)
-            return {
-                "status": "error",
-                "message": reply,
-                "tool_call": synthetic_followup,
-                "approved": True,
-            }
-        followup_thread_id = f"{thread_id}-post-prepare-start"
-        return await self._handoff_current_runtime_to_graph(
-            thread_id=followup_thread_id,
-            user_text_hint=self._recent_user_text(),
-            auto_approve=False,
-            stream_handler=stream_handler,
+        result = await self._apply_training_plan_followup_action(
+            followup_action=dict(flow_result.get('followup_action') or {}),
+            thread_id=f"{thread_id}-post-prepare-start",
+            user_text=self._recent_user_text(),
+            handoff_mode='handoff',
         )
+        if result is not None:
+            return result
+        return {
+            "status": "error",
+            "message": "",
+            "tool_call": synthetic_followup,
+            "approved": True,
+        }
 
     @staticmethod
     def _find_applied_tool_result(
@@ -4627,7 +4560,8 @@ def _tool_rejection_command(*, tool_name: str, tool_call_id: str, message: str) 
 
 async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudioAgentClient:
     settings = settings or AgentSettings()
-    route_event_store = MemoryStore(settings.memory_root)
+    memory_store = MemoryStore(settings.memory_root)
+    route_event_store = memory_store
     client_holder: dict[str, YoloStudioAgentClient] = {}
 
     def _record_post_hook_route(route: str, payload: dict[str, Any]) -> None:
@@ -4682,6 +4616,7 @@ async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudi
         planner_llm=helper_llm,
         primary_llm_settings=primary_llm_settings,
         helper_llm_settings=helper_llm_settings,
+        memory=memory_store,
     )
     client_holder['client'] = client
     return client

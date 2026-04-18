@@ -161,6 +161,7 @@ from yolostudio_agent.agent.client.mainline_route_support import (
     resolve_mainline_guardrail_reply,
     resolve_mainline_route_state_payload,
 )
+from yolostudio_agent.agent.client.training_followup_service import resolve_training_grounded_reply_kind
 
 
 class _NoLLMGraph:
@@ -293,7 +294,13 @@ async def _scenario_training_run_query_signals_prior_statement_disables_compare_
         metric_signals=[],
         explicit_run_ids=['train_log_300'],
     )
-    assert signals['wants_training_provenance'] is True, signals
+    grounded_reply_kind = resolve_training_grounded_reply_kind(
+        user_text='你上次不是说这次训练最好吗，基于哪次训练说的？',
+        normalized_text='你上次不是说这次训练最好吗，基于哪次训练说的？'.lower(),
+        wants_predict=False,
+        training_command_like=False,
+    )
+    assert grounded_reply_kind == 'provenance', grounded_reply_kind
     assert signals['wants_training_run_compare'] is False, signals
     assert signals['wants_best_training_run'] is False, signals
     assert signals['comparison_run_ids'] == [], signals
