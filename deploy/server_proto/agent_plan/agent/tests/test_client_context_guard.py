@@ -218,6 +218,27 @@ async def _scenario_stale_training_plan_draft_is_cleared_on_startup() -> None:
     assert client.session_state.active_training.training_plan_draft == {}
 
 
+async def _scenario_stale_graph_pending_is_cleared_on_startup() -> None:
+    root = WORK / 'startup-stale-pending'
+    store = MemoryStore(root)
+    state = SessionState(session_id='startup-stale-pending')
+    state.active_training.training_plan_draft = {'execution_mode': 'direct_train', 'model': 'yolov8n.pt'}
+    state.pending_confirmation.thread_id = 'startup-stale-pending-turn-1'
+    state.pending_confirmation.tool_name = 'remote_training_pipeline'
+    state.pending_confirmation.tool_args = {'server': 'yolostudio'}
+    state.pending_confirmation.source = 'graph'
+    state.pending_confirmation.summary = '等待远端训练闭环确认'
+    store.save_state(state)
+
+    settings = AgentSettings(session_id='startup-stale-pending', memory_root=str(root))
+    client = YoloStudioAgentClient(graph=_NoGraph(), settings=settings, tool_registry={})
+    assert client.session_state.pending_confirmation.tool_name == ''
+    assert client.session_state.pending_confirmation.thread_id == ''
+    assert client.session_state.active_training.training_plan_draft == {}
+    events = client.memory.read_events(client.session_state.session_id)
+    assert any(event.get('type') == 'startup_stale_pending_cleared' for event in events), events
+
+
 async def _scenario_best_weight_path_is_visible_to_graph_handoff() -> None:
     root = WORK / 'best-weight-handoff'
     capture_graph = _CaptureGraph()
@@ -251,6 +272,7 @@ async def _run() -> None:
     try:
         await _scenario_observe_mode_does_not_pollute_state()
         await _scenario_stale_training_plan_draft_is_cleared_on_startup()
+        await _scenario_stale_graph_pending_is_cleared_on_startup()
         await _scenario_best_weight_path_is_visible_to_graph_handoff()
         print('client context guard ok')
     finally:

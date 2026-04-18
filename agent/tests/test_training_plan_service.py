@@ -63,6 +63,7 @@ from yolostudio_agent.agent.client.training_request_service import (
 )
 from yolostudio_agent.agent.client.training_execution_service import (
     run_post_prepare_training_start_flow,
+    run_remote_training_pipeline_flow,
     run_remote_training_start_flow,
     wait_for_remote_training_terminal_state,
 )
@@ -1742,6 +1743,128 @@ def _run() -> None:
         ('summarize_training_run', {}),
         ('inspect_training_run', {}),
     ], wait_calls
+
+    remote_pipeline_calls: list[tuple[str, dict]] = []
+    remote_pipeline_status_checks = 0
+
+    async def _fake_remote_pipeline_tool(tool_name: str, **kwargs):
+        nonlocal remote_pipeline_status_checks
+        remote_pipeline_calls.append((tool_name, dict(kwargs)))
+        if tool_name == 'upload_assets_to_remote':
+            return {
+                'ok': True,
+                'target_label': 'yolostudio',
+                'remote_root': '/tmp/train_stage',
+                'uploaded_items': [
+                    {'local_path': '/local/best.pt', 'remote_path': '/tmp/train_stage/best.pt', 'item_type': 'file'},
+                    {'local_path': '/local/dataset', 'remote_path': '/tmp/train_stage/dataset', 'item_type': 'directory'},
+                ],
+            }
+        if tool_name == 'training_readiness':
+            return {
+                'ok': True,
+                'ready': True,
+                'preparable': False,
+                'resolved_data_yaml': '/tmp/train_stage/dataset/data.yaml',
+            }
+        if tool_name == 'training_preflight':
+            return {
+                'ok': True,
+                'ready_to_start': True,
+                'resolved_args': {
+                    'model': '/tmp/train_stage/best.pt',
+                    'data_yaml': '/tmp/train_stage/dataset/data.yaml',
+                    'epochs': 5,
+                    'device': 'auto',
+                    'project': '/tmp/train_stage/runs',
+                    'name': 'remote-train-demo',
+                },
+            }
+        if tool_name == 'start_training':
+            return {
+                'ok': True,
+                'summary': '训练已启动',
+                'resolved_args': dict(kwargs),
+            }
+        if tool_name == 'check_training_status':
+            remote_pipeline_status_checks += 1
+            if remote_pipeline_status_checks == 1:
+                return {'ok': True, 'running': True, 'run_state': 'running', 'summary': '训练进行中'}
+            return {
+                'ok': True,
+                'running': False,
+                'run_state': 'completed',
+                'summary': '训练已完成',
+                'save_dir': '/tmp/train_stage/runs/remote-train-demo',
+            }
+        if tool_name == 'summarize_training_run':
+            return {
+                'ok': True,
+                'run_state': 'completed',
+                'summary': '训练结果汇总',
+                'save_dir': '/tmp/train_stage/runs/remote-train-demo',
+            }
+        if tool_name == 'inspect_training_run':
+            return {
+                'ok': True,
+                'run_state': 'completed',
+                'summary': '训练记录详情',
+                'save_dir': '/tmp/train_stage/runs/remote-train-demo',
+            }
+        if tool_name == 'download_assets_from_remote':
+            return {
+                'ok': True,
+                'local_root': 'D:/tmp/train_output',
+            }
+        raise AssertionError(tool_name)
+
+    remote_pipeline_flow = asyncio.run(run_remote_training_pipeline_flow(
+        pipeline_args={
+            'user_text': '开始训练 5 轮',
+            'upload_args': {'server': 'yolostudio', 'remote_root': '/tmp/train_stage'},
+            'wait_for_completion': True,
+            'download_after_completion': True,
+            'local_result_root': 'D:/tmp/train_output',
+            'poll_interval_seconds': 0,
+            'max_wait_seconds': 1,
+        },
+        direct_tool=_fake_remote_pipeline_tool,
+        resolve_training_remote_inputs=lambda _: {
+            'ok': True,
+            'dataset_path': '/tmp/train_stage/dataset',
+            'model_path': '/tmp/train_stage/best.pt',
+        },
+        collect_requested_training_args=lambda user_text, data_yaml='': {
+            'model': '',
+            'data_yaml': data_yaml,
+            'epochs': 5,
+            'device': 'auto',
+            'project': '/tmp/train_stage/runs',
+            'name': 'remote-train-demo',
+        },
+        wait_for_remote_training_terminal_state=lambda **kwargs: wait_for_remote_training_terminal_state(
+            direct_tool=_fake_remote_pipeline_tool,
+            sleep=_fast_sleep,
+            **kwargs,
+        ),
+        resolve_remote_training_result_path=lambda **kwargs: '/tmp/train_stage/runs/remote-train-demo',
+    ))
+    assert remote_pipeline_flow['stage'] == 'completed', remote_pipeline_flow
+    remote_pipeline_result = dict(remote_pipeline_flow['pipeline_result'])
+    assert remote_pipeline_result['ok'] is True, remote_pipeline_result
+    assert remote_pipeline_result['remote_result_path'] == '/tmp/train_stage/runs/remote-train-demo', remote_pipeline_result
+    assert remote_pipeline_result['local_result_root'] == 'D:/tmp/train_output', remote_pipeline_result
+    assert [name for name, _ in remote_pipeline_calls] == [
+        'upload_assets_to_remote',
+        'training_readiness',
+        'training_preflight',
+        'start_training',
+        'check_training_status',
+        'check_training_status',
+        'summarize_training_run',
+        'inspect_training_run',
+        'download_assets_from_remote',
+    ], remote_pipeline_calls
 
     asyncio.run(_run_async())
 

@@ -174,6 +174,62 @@ _MAX_DEVICES_PARAM = Annotated[
         examples=[5, 10],
     ),
 ]
+_SAVE_ANNOTATED_PARAM = Annotated[
+    bool,
+    Field(
+        description='是否保存带框标注图。',
+        examples=[True, False],
+    ),
+]
+_SAVE_LABELS_PARAM = Annotated[
+    bool,
+    Field(
+        description='是否额外导出 YOLO txt 标签文件。',
+        examples=[False, True],
+    ),
+]
+_SAVE_ORIGINAL_PARAM = Annotated[
+    bool,
+    Field(
+        description='是否在输出目录保留原始输入图片副本。',
+        examples=[False, True],
+    ),
+]
+_GENERATE_REPORT_PARAM = Annotated[
+    bool,
+    Field(
+        description='是否生成结构化 prediction_report.json 报告。',
+        examples=[True, False],
+    ),
+]
+_INCLUDE_EMPTY_PARAM = Annotated[
+    bool,
+    Field(
+        description='整理结果时是否把未检出的空样本也复制进去。',
+        examples=[False, True],
+    ),
+]
+_SAVE_VIDEO_PARAM = Annotated[
+    bool,
+    Field(
+        description='视频预测时是否导出带框结果视频。',
+        examples=[True, False],
+    ),
+]
+_SAVE_KEYFRAMES_ANNOTATED_PARAM = Annotated[
+    bool,
+    Field(
+        description='视频预测时是否导出带框关键帧。',
+        examples=[True, False],
+    ),
+]
+_SAVE_KEYFRAMES_RAW_PARAM = Annotated[
+    bool,
+    Field(
+        description='视频预测时是否额外导出原始关键帧。',
+        examples=[False, True],
+    ),
+]
 
 
 def _action_candidates_from_next_actions(next_actions: Any) -> list[dict[str, Any]]:
@@ -309,10 +365,10 @@ def predict_images(
     conf: _CONF_PARAM = 0.25,
     iou: _IOU_PARAM = 0.45,
     output_dir: _OUTPUT_DIR_PARAM = '',
-    save_annotated: bool = True,
-    save_labels: bool = False,
-    save_original: bool = False,
-    generate_report: bool = True,
+    save_annotated: _SAVE_ANNOTATED_PARAM = True,
+    save_labels: _SAVE_LABELS_PARAM = False,
+    save_original: _SAVE_ORIGINAL_PARAM = False,
+    generate_report: _GENERATE_REPORT_PARAM = True,
     max_images: _MAX_IMAGES_PARAM = 0,
 ) -> dict[str, Any]:
     """对单张图片或图片目录执行 YOLO 预测。优先传 source_path 和 model；默认保存标注图与 JSON 报告，不修改原始数据。目录很大时会自动转成后台图片预测会话。"""
@@ -357,10 +413,10 @@ def start_image_prediction(
     conf: _CONF_PARAM = 0.25,
     iou: _IOU_PARAM = 0.45,
     output_dir: _OUTPUT_DIR_PARAM = '',
-    save_annotated: bool = True,
-    save_labels: bool = False,
-    save_original: bool = False,
-    generate_report: bool = True,
+    save_annotated: _SAVE_ANNOTATED_PARAM = True,
+    save_labels: _SAVE_LABELS_PARAM = False,
+    save_original: _SAVE_ORIGINAL_PARAM = False,
+    generate_report: _GENERATE_REPORT_PARAM = True,
     max_images: _MAX_IMAGES_PARAM = 0,
 ) -> dict[str, Any]:
     """显式启动后台图片预测会话。适用于大目录或预计会持续较久的图片预测。"""
@@ -536,7 +592,7 @@ def organize_prediction_results(
     output_dir: _OUTPUT_DIR_PARAM = '',
     destination_dir: _DESTINATION_DIR_PARAM = '',
     organize_by: _ORGANIZE_BY_PARAM = 'detected_only',
-    include_empty: bool = False,
+    include_empty: _INCLUDE_EMPTY_PARAM = False,
     artifact_preference: _ARTIFACT_PREFERENCE_PARAM = 'auto',
 ) -> dict[str, Any]:
     """把 prediction 产物复制整理到新目录；支持只收集命中结果，或按类别分桶，不改写原始输出。"""
@@ -779,10 +835,10 @@ def predict_videos(
     conf: _CONF_PARAM = 0.25,
     iou: _IOU_PARAM = 0.45,
     output_dir: _OUTPUT_DIR_PARAM = '',
-    save_video: bool = True,
-    save_keyframes_annotated: bool = True,
-    save_keyframes_raw: bool = False,
-    generate_report: bool = True,
+    save_video: _SAVE_VIDEO_PARAM = True,
+    save_keyframes_annotated: _SAVE_KEYFRAMES_ANNOTATED_PARAM = True,
+    save_keyframes_raw: _SAVE_KEYFRAMES_RAW_PARAM = False,
+    generate_report: _GENERATE_REPORT_PARAM = True,
     max_videos: _MAX_VIDEOS_PARAM = 0,
     max_frames: _MAX_FRAMES_PARAM = 0,
 ) -> dict[str, Any]:

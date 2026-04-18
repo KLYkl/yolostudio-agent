@@ -65,6 +65,10 @@ def main() -> None:
     assert selected_dir_types == {'array', 'string', 'null'}, selected_dirs_schema
     assert selected_dirs_schema.get('description'), selected_dirs_schema
     assert selected_dirs_schema.get('examples'), selected_dirs_schema
+    copy_labels_schema = extract_preview_tool.parameters['properties']['copy_labels']
+    assert _schema_types(copy_labels_schema) == {'boolean'}, copy_labels_schema
+    assert copy_labels_schema.get('description'), copy_labels_schema
+    assert copy_labels_schema.get('examples'), copy_labels_schema
 
     frame_tool = tools['extract_video_frames']
     frame_mode_schema = frame_tool.parameters['properties']['mode']
@@ -79,6 +83,18 @@ def main() -> None:
     assert _schema_types(frame_max_schema) == {'integer'}, frame_max_schema
     assert frame_max_schema.get('description'), frame_max_schema
     assert frame_max_schema.get('examples'), frame_max_schema
+    frame_time_interval_schema = frame_tool.parameters['properties']['time_interval']
+    assert _schema_types(frame_time_interval_schema) == {'number'}, frame_time_interval_schema
+    assert frame_time_interval_schema.get('description'), frame_time_interval_schema
+    assert frame_time_interval_schema.get('examples'), frame_time_interval_schema
+    frame_enable_dedup_schema = frame_tool.parameters['properties']['enable_dedup']
+    assert _schema_types(frame_enable_dedup_schema) == {'boolean'}, frame_enable_dedup_schema
+    assert frame_enable_dedup_schema.get('description'), frame_enable_dedup_schema
+    assert frame_enable_dedup_schema.get('examples'), frame_enable_dedup_schema
+    frame_jpg_quality_schema = frame_tool.parameters['properties']['jpg_quality']
+    assert _schema_types(frame_jpg_quality_schema) == {'integer'}, frame_jpg_quality_schema
+    assert frame_jpg_quality_schema.get('description'), frame_jpg_quality_schema
+    assert frame_jpg_quality_schema.get('examples'), frame_jpg_quality_schema
 
     scan_tool = tools['scan_dataset']
     scan_img_dir_schema = scan_tool.parameters['properties']['img_dir']
@@ -90,6 +106,100 @@ def main() -> None:
     assert scan_label_dir_schema.get('description'), scan_label_dir_schema
     assert scan_label_dir_schema.get('examples'), scan_label_dir_schema
 
+    augment_tool = tools['augment_dataset']
+    augment_copies_schema = augment_tool.parameters['properties']['copies_per_image']
+    assert _schema_types(augment_copies_schema) == {'integer'}, augment_copies_schema
+    assert augment_copies_schema.get('description'), augment_copies_schema
+    assert augment_copies_schema.get('examples'), augment_copies_schema
+    augment_include_original_schema = augment_tool.parameters['properties']['include_original']
+    assert _schema_types(augment_include_original_schema) == {'boolean'}, augment_include_original_schema
+    assert augment_include_original_schema.get('description'), augment_include_original_schema
+    assert augment_include_original_schema.get('examples'), augment_include_original_schema
+    augment_flip_schema = augment_tool.parameters['properties']['enable_horizontal_flip']
+    assert _schema_types(augment_flip_schema) == {'boolean'}, augment_flip_schema
+    assert augment_flip_schema.get('description'), augment_flip_schema
+    assert augment_flip_schema.get('examples'), augment_flip_schema
+    augment_rotate_schema = augment_tool.parameters['properties']['rotate_degrees']
+    assert _schema_types(augment_rotate_schema) == {'number'}, augment_rotate_schema
+    assert augment_rotate_schema.get('description'), augment_rotate_schema
+    assert augment_rotate_schema.get('examples'), augment_rotate_schema
+
+    modify_tool = tools['modify_labels']
+    modify_action_schema = modify_tool.parameters['properties']['action']
+    assert _schema_types(modify_action_schema) == {'string'}, modify_action_schema
+    assert modify_action_schema.get('description'), modify_action_schema
+    assert modify_action_schema.get('examples'), modify_action_schema
+    modify_backup_schema = modify_tool.parameters['properties']['backup']
+    assert _schema_types(modify_backup_schema) == {'boolean'}, modify_backup_schema
+    assert modify_backup_schema.get('description'), modify_backup_schema
+    assert modify_backup_schema.get('examples'), modify_backup_schema
+
+    orphan_tool = tools['clean_orphan_labels']
+    orphan_dry_run_schema = orphan_tool.parameters['properties']['dry_run']
+    assert _schema_types(orphan_dry_run_schema) == {'boolean'}, orphan_dry_run_schema
+    assert orphan_dry_run_schema.get('description'), orphan_dry_run_schema
+    assert orphan_dry_run_schema.get('examples'), orphan_dry_run_schema
+
+    empty_label_tool = tools['generate_empty_labels']
+    empty_label_format_schema = empty_label_tool.parameters['properties']['label_format']
+    assert _schema_types(empty_label_format_schema) == {'string'}, empty_label_format_schema
+    assert empty_label_format_schema.get('description'), empty_label_format_schema
+    assert empty_label_format_schema.get('examples'), empty_label_format_schema
+    empty_only_missing_schema = empty_label_tool.parameters['properties']['only_missing']
+    assert _schema_types(empty_only_missing_schema) == {'boolean'}, empty_only_missing_schema
+    assert empty_only_missing_schema.get('description'), empty_only_missing_schema
+    assert empty_only_missing_schema.get('examples'), empty_only_missing_schema
+
+    categorize_tool = tools['categorize_by_class']
+    categorize_classes_schema = categorize_tool.parameters['properties']['classes_txt']
+    assert _schema_types(categorize_classes_schema) == {'string'}, categorize_classes_schema
+    assert categorize_classes_schema.get('description'), categorize_classes_schema
+    assert categorize_classes_schema.get('examples'), categorize_classes_schema
+    categorize_include_no_label_schema = categorize_tool.parameters['properties']['include_no_label']
+    assert _schema_types(categorize_include_no_label_schema) == {'boolean'}, categorize_include_no_label_schema
+    assert categorize_include_no_label_schema.get('description'), categorize_include_no_label_schema
+    assert categorize_include_no_label_schema.get('examples'), categorize_include_no_label_schema
+
+    convert_tool = tools['convert_format']
+    convert_target_schema = convert_tool.parameters['properties']['target_format']
+    assert _schema_types(convert_target_schema) == {'string'}, convert_target_schema
+    assert convert_target_schema.get('description'), convert_target_schema
+    assert convert_target_schema.get('examples'), convert_target_schema
+    convert_classes_txt_schema = convert_tool.parameters['properties']['classes_txt']
+    assert _schema_types(convert_classes_txt_schema) == {'string'}, convert_classes_txt_schema
+    assert convert_classes_txt_schema.get('description'), convert_classes_txt_schema
+    assert convert_classes_txt_schema.get('examples'), convert_classes_txt_schema
+
+    validate_tool = tools['validate_dataset']
+    validate_check_coords_schema = validate_tool.parameters['properties']['check_coords']
+    assert _schema_types(validate_check_coords_schema) == {'boolean'}, validate_check_coords_schema
+    assert validate_check_coords_schema.get('description'), validate_check_coords_schema
+    assert validate_check_coords_schema.get('examples'), validate_check_coords_schema
+    validate_check_orphans_schema = validate_tool.parameters['properties']['check_orphans']
+    assert _schema_types(validate_check_orphans_schema) == {'boolean'}, validate_check_orphans_schema
+    assert validate_check_orphans_schema.get('description'), validate_check_orphans_schema
+    assert validate_check_orphans_schema.get('examples'), validate_check_orphans_schema
+
+    health_tool = tools['run_dataset_health_check']
+    health_include_duplicates_schema = health_tool.parameters['properties']['include_duplicates']
+    assert _schema_types(health_include_duplicates_schema) == {'boolean'}, health_include_duplicates_schema
+    assert health_include_duplicates_schema.get('description'), health_include_duplicates_schema
+    assert health_include_duplicates_schema.get('examples'), health_include_duplicates_schema
+    health_duplicate_method_schema = health_tool.parameters['properties']['duplicate_method']
+    assert _schema_types(health_duplicate_method_schema) == {'string'}, health_duplicate_method_schema
+    assert health_duplicate_method_schema.get('description'), health_duplicate_method_schema
+    assert health_duplicate_method_schema.get('examples'), health_duplicate_method_schema
+
+    duplicate_tool = tools['detect_duplicate_images']
+    duplicate_method_schema = duplicate_tool.parameters['properties']['method']
+    assert _schema_types(duplicate_method_schema) == {'string'}, duplicate_method_schema
+    assert duplicate_method_schema.get('description'), duplicate_method_schema
+    assert duplicate_method_schema.get('examples'), duplicate_method_schema
+    duplicate_max_groups_schema = duplicate_tool.parameters['properties']['max_groups']
+    assert _schema_types(duplicate_max_groups_schema) == {'integer'}, duplicate_max_groups_schema
+    assert duplicate_max_groups_schema.get('description'), duplicate_max_groups_schema
+    assert duplicate_max_groups_schema.get('examples'), duplicate_max_groups_schema
+
     split_tool = tools['split_dataset']
     split_ratio_schema = split_tool.parameters['properties']['ratio']
     assert _schema_types(split_ratio_schema) == {'number'}, split_ratio_schema
@@ -99,6 +209,10 @@ def main() -> None:
     assert _schema_types(split_mode_schema) == {'string'}, split_mode_schema
     assert split_mode_schema.get('description'), split_mode_schema
     assert split_mode_schema.get('examples'), split_mode_schema
+    split_ignore_orphans_schema = split_tool.parameters['properties']['ignore_orphans']
+    assert _schema_types(split_ignore_orphans_schema) == {'boolean'}, split_ignore_orphans_schema
+    assert split_ignore_orphans_schema.get('description'), split_ignore_orphans_schema
+    assert split_ignore_orphans_schema.get('examples'), split_ignore_orphans_schema
 
     readiness_tool = tools['training_readiness']
     readiness_yaml_schema = readiness_tool.parameters['properties']['data_yaml']
@@ -127,10 +241,24 @@ def main() -> None:
     assert _schema_types(predict_conf_schema) == {'number'}, predict_conf_schema
     assert predict_conf_schema.get('description'), predict_conf_schema
     assert predict_conf_schema.get('examples'), predict_conf_schema
+    predict_save_annotated_schema = predict_tool.parameters['properties']['save_annotated']
+    assert _schema_types(predict_save_annotated_schema) == {'boolean'}, predict_save_annotated_schema
+    assert predict_save_annotated_schema.get('description'), predict_save_annotated_schema
+    assert predict_save_annotated_schema.get('examples'), predict_save_annotated_schema
+    predict_generate_report_schema = predict_tool.parameters['properties']['generate_report']
+    assert _schema_types(predict_generate_report_schema) == {'boolean'}, predict_generate_report_schema
+    assert predict_generate_report_schema.get('description'), predict_generate_report_schema
+    assert predict_generate_report_schema.get('examples'), predict_generate_report_schema
     predict_output_schema = predict_tool.parameters['properties']['output_dir']
     assert _schema_types(predict_output_schema) == {'string'}, predict_output_schema
     assert predict_output_schema.get('description'), predict_output_schema
     assert predict_output_schema.get('examples'), predict_output_schema
+
+    organize_tool = tools['organize_prediction_results']
+    include_empty_schema = organize_tool.parameters['properties']['include_empty']
+    assert _schema_types(include_empty_schema) == {'boolean'}, include_empty_schema
+    assert include_empty_schema.get('description'), include_empty_schema
+    assert include_empty_schema.get('examples'), include_empty_schema
 
     image_status_tool = tools['check_image_prediction_status']
     image_session_schema = image_status_tool.parameters['properties']['session_id']
@@ -171,6 +299,14 @@ def main() -> None:
     assert _schema_types(video_max_videos_schema) == {'integer'}, video_max_videos_schema
     assert video_max_videos_schema.get('description'), video_max_videos_schema
     assert video_max_videos_schema.get('examples'), video_max_videos_schema
+    video_save_video_schema = video_tool.parameters['properties']['save_video']
+    assert _schema_types(video_save_video_schema) == {'boolean'}, video_save_video_schema
+    assert video_save_video_schema.get('description'), video_save_video_schema
+    assert video_save_video_schema.get('examples'), video_save_video_schema
+    video_generate_report_schema = video_tool.parameters['properties']['generate_report']
+    assert _schema_types(video_generate_report_schema) == {'boolean'}, video_generate_report_schema
+    assert video_generate_report_schema.get('description'), video_generate_report_schema
+    assert video_generate_report_schema.get('examples'), video_generate_report_schema
     video_max_frames_schema = video_tool.parameters['properties']['max_frames']
     assert _schema_types(video_max_frames_schema) == {'integer'}, video_max_frames_schema
     assert video_max_frames_schema.get('description'), video_max_frames_schema
@@ -202,6 +338,20 @@ def main() -> None:
     assert class_types == {'array', 'string', 'null'}, classes_schema
     assert classes_schema.get('description'), classes_schema
     assert classes_schema.get('examples'), classes_schema
+    batch_schema = action_tool.parameters['properties']['batch']
+    batch_types = {item.get('type') for item in batch_schema.get('anyOf', [])}
+    assert batch_types == {'integer', 'null'}, batch_schema
+    assert batch_schema.get('description'), batch_schema
+    assert batch_schema.get('examples'), batch_schema
+    optimizer_schema = action_tool.parameters['properties']['optimizer']
+    assert _schema_types(optimizer_schema) == {'string'}, optimizer_schema
+    assert optimizer_schema.get('description'), optimizer_schema
+    assert optimizer_schema.get('examples'), optimizer_schema
+    amp_schema = action_tool.parameters['properties']['amp']
+    amp_types = {item.get('type') for item in amp_schema.get('anyOf', [])}
+    assert amp_types == {'boolean', 'null'}, amp_schema
+    assert amp_schema.get('description'), amp_schema
+    assert amp_schema.get('examples'), amp_schema
 
     preflight_tool = tools['training_preflight']
     preflight_classes_schema = preflight_tool.parameters['properties']['classes']
@@ -209,6 +359,11 @@ def main() -> None:
     assert preflight_class_types == {'array', 'string', 'null'}, preflight_classes_schema
     assert preflight_classes_schema.get('description'), preflight_classes_schema
     assert preflight_classes_schema.get('examples'), preflight_classes_schema
+    preflight_fraction_schema = preflight_tool.parameters['properties']['fraction']
+    preflight_fraction_types = {item.get('type') for item in preflight_fraction_schema.get('anyOf', [])}
+    assert preflight_fraction_types == {'number', 'null'}, preflight_fraction_schema
+    assert preflight_fraction_schema.get('description'), preflight_fraction_schema
+    assert preflight_fraction_schema.get('examples'), preflight_fraction_schema
 
     list_runs_tool = tools['list_training_runs']
     run_state_schema = list_runs_tool.parameters['properties']['run_state']
@@ -229,10 +384,26 @@ def main() -> None:
     assert metrics_schema.get('examples'), metrics_schema
 
     retrieval_tool = tools['retrieve_training_knowledge']
+    topic_schema = retrieval_tool.parameters['properties']['topic']
+    assert _schema_types(topic_schema) == {'string'}, topic_schema
+    assert topic_schema.get('description'), topic_schema
+    assert topic_schema.get('examples'), topic_schema
+    stage_schema = retrieval_tool.parameters['properties']['stage']
+    assert _schema_types(stage_schema) == {'string'}, stage_schema
+    assert stage_schema.get('description'), stage_schema
+    assert stage_schema.get('examples'), stage_schema
     signals_schema = retrieval_tool.parameters['properties']['signals']
     signal_types = {item.get('type') for item in signals_schema.get('anyOf', [])}
     assert signal_types == {'array', 'null'}, signals_schema
     assert signals_schema.get('examples'), signals_schema
+    max_rules_schema = retrieval_tool.parameters['properties']['max_rules']
+    assert _schema_types(max_rules_schema) == {'integer'}, max_rules_schema
+    assert max_rules_schema.get('description'), max_rules_schema
+    assert max_rules_schema.get('examples'), max_rules_schema
+    include_case_sources_schema = retrieval_tool.parameters['properties']['include_case_sources']
+    assert _schema_types(include_case_sources_schema) == {'boolean'}, include_case_sources_schema
+    assert include_case_sources_schema.get('description'), include_case_sources_schema
+    assert include_case_sources_schema.get('examples'), include_case_sources_schema
 
     loop_tool = tools['start_training_loop']
     loop_model_schema = loop_tool.parameters['properties']['model']

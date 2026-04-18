@@ -102,6 +102,50 @@ _RUN_ID_PARAM = Annotated[
         examples=['train_log_200'],
     ),
 ]
+_BATCH_PARAM = Annotated[
+    int | None,
+    Field(description='训练批大小；留空时由服务端或默认配置决定。', examples=[8, 16]),
+]
+_IMGSZ_PARAM = Annotated[
+    int | None,
+    Field(description='训练输入尺寸；留空时使用默认值。', examples=[640, 960]),
+]
+_FRACTION_PARAM = Annotated[
+    float | None,
+    Field(description='训练样本抽样比例；留空时使用全量数据。', examples=[0.25, 0.5]),
+]
+_SINGLE_CLS_PARAM = Annotated[
+    bool | None,
+    Field(description='是否按单类别任务训练。', examples=[True, False]),
+]
+_OPTIMIZER_PARAM = Annotated[
+    str,
+    Field(description='优化器名称；留空时沿用默认值。', examples=['SGD', 'AdamW']),
+]
+_FREEZE_PARAM = Annotated[
+    int | None,
+    Field(description='冻结前多少层；留空表示不额外冻结。', examples=[0, 10]),
+]
+_RESUME_PARAM = Annotated[
+    bool | None,
+    Field(description='是否从中断训练继续。', examples=[True, False]),
+]
+_LR0_PARAM = Annotated[
+    float | None,
+    Field(description='初始学习率；留空时使用默认值。', examples=[0.01, 0.001]),
+]
+_PATIENCE_PARAM = Annotated[
+    int | None,
+    Field(description='早停耐心轮数；留空时使用默认值。', examples=[20, 50]),
+]
+_WORKERS_PARAM = Annotated[
+    int | None,
+    Field(description='数据加载 worker 数；留空时自动决定。', examples=[4, 8]),
+]
+_AMP_PARAM = Annotated[
+    bool | None,
+    Field(description='是否启用 AMP 混合精度。', examples=[True, False]),
+]
 
 
 def _tool_candidate(
@@ -157,18 +201,18 @@ def start_training(
     training_environment: _TRAINING_ENVIRONMENT_PARAM = "",
     project: _PROJECT_PARAM = "",
     name: _RUN_NAME_PARAM = "",
-    batch: int | None = None,
-    imgsz: int | None = None,
-    fraction: float | None = None,
+    batch: _BATCH_PARAM = None,
+    imgsz: _IMGSZ_PARAM = None,
+    fraction: _FRACTION_PARAM = None,
     classes: _TRAIN_CLASSES_PARAM = None,
-    single_cls: bool | None = None,
-    optimizer: str = "",
-    freeze: int | None = None,
-    resume: bool | None = None,
-    lr0: float | None = None,
-    patience: int | None = None,
-    workers: int | None = None,
-    amp: bool | None = None,
+    single_cls: _SINGLE_CLS_PARAM = None,
+    optimizer: _OPTIMIZER_PARAM = "",
+    freeze: _FREEZE_PARAM = None,
+    resume: _RESUME_PARAM = None,
+    lr0: _LR0_PARAM = None,
+    patience: _PATIENCE_PARAM = None,
+    workers: _WORKERS_PARAM = None,
+    amp: _AMP_PARAM = None,
 ) -> dict[str, Any]:
     """启动一次 YOLO 训练任务。优先传 model/data_yaml/epochs；device 默认 auto，由服务端按当前 GPU 策略解析。"""
     result = _wrap(
@@ -272,18 +316,18 @@ def training_preflight(
     training_environment: _TRAINING_ENVIRONMENT_PARAM = "",
     project: _PROJECT_PARAM = "",
     name: _RUN_NAME_PARAM = "",
-    batch: int | None = None,
-    imgsz: int | None = None,
-    fraction: float | None = None,
+    batch: _BATCH_PARAM = None,
+    imgsz: _IMGSZ_PARAM = None,
+    fraction: _FRACTION_PARAM = None,
     classes: _TRAIN_CLASSES_PARAM = None,
-    single_cls: bool | None = None,
-    optimizer: str = "",
-    freeze: int | None = None,
-    resume: bool | None = None,
-    lr0: float | None = None,
-    patience: int | None = None,
-    workers: int | None = None,
-    amp: bool | None = None,
+    single_cls: _SINGLE_CLS_PARAM = None,
+    optimizer: _OPTIMIZER_PARAM = "",
+    freeze: _FREEZE_PARAM = None,
+    resume: _RESUME_PARAM = None,
+    lr0: _LR0_PARAM = None,
+    patience: _PATIENCE_PARAM = None,
+    workers: _WORKERS_PARAM = None,
+    amp: _AMP_PARAM = None,
 ) -> dict[str, Any]:
     """只做训练预检，不真正启动训练；用于确认参数、训练环境和命令预览。"""
     result = _wrap(

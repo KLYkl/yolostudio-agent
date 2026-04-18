@@ -66,6 +66,34 @@ _STATUS_PARAM = Annotated[
         examples=[{'running': False, 'run_state': 'completed', 'analysis_ready': True}],
     ),
 ]
+_TOPIC_PARAM = Annotated[
+    str,
+    Field(description='知识检索主题，例如 training_metrics、data_quality、optimizer。', examples=['training_metrics', 'data_quality']),
+]
+_STAGE_PARAM = Annotated[
+    str,
+    Field(description='训练阶段，例如 pre_training、post_training、prediction_review。', examples=['post_training', 'pre_training']),
+]
+_MODEL_FAMILY_PARAM = Annotated[
+    str,
+    Field(description='模型家族，用于缩小知识规则范围。', examples=['yolo', 'rt-detr']),
+]
+_TASK_TYPE_PARAM = Annotated[
+    str,
+    Field(description='任务类型，用于匹配更准确的规则。', examples=['detection', 'segmentation']),
+]
+_MAX_RULES_PARAM = Annotated[
+    int,
+    Field(description='最多返回多少条匹配知识规则。', examples=[3, 5]),
+]
+_INCLUDE_CASE_SOURCES_PARAM = Annotated[
+    bool,
+    Field(description='是否把真实 case 经验规则一起纳入结果。', examples=[True, False]),
+]
+_INCLUDE_TEST_SOURCES_PARAM = Annotated[
+    bool,
+    Field(description='是否把测试规则或实验规则一起纳入结果。', examples=[True, False]),
+]
 
 
 def _knowledge_action_candidate(*, tool: str, reason: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -133,14 +161,14 @@ def _coerce_str_list(value: list[str] | str | None) -> list[str] | None:
 
 
 def retrieve_training_knowledge(
-    topic: str = '',
-    stage: str = '',
-    model_family: str = 'yolo',
-    task_type: str = 'detection',
+    topic: _TOPIC_PARAM = '',
+    stage: _STAGE_PARAM = '',
+    model_family: _MODEL_FAMILY_PARAM = 'yolo',
+    task_type: _TASK_TYPE_PARAM = 'detection',
     signals: _TRAINING_SIGNALS_PARAM = None,
-    max_rules: int = 5,
-    include_case_sources: bool = False,
-    include_test_sources: bool = False,
+    max_rules: _MAX_RULES_PARAM = 5,
+    include_case_sources: _INCLUDE_CASE_SOURCES_PARAM = False,
+    include_test_sources: _INCLUDE_TEST_SOURCES_PARAM = False,
 ) -> dict[str, Any]:
     """检索训练知识规则。
 
@@ -186,10 +214,10 @@ def analyze_training_outcome(
     data_quality: _DATA_QUALITY_PARAM = None,
     comparison: _COMPARISON_PARAM = None,
     prediction_summary: _PREDICTION_SUMMARY_PARAM = None,
-    model_family: str = 'yolo',
-    task_type: str = 'detection',
-    include_case_sources: bool = False,
-    include_test_sources: bool = False,
+    model_family: _MODEL_FAMILY_PARAM = 'yolo',
+    task_type: _TASK_TYPE_PARAM = 'detection',
+    include_case_sources: _INCLUDE_CASE_SOURCES_PARAM = False,
+    include_test_sources: _INCLUDE_TEST_SOURCES_PARAM = False,
 ) -> dict[str, Any]:
     """结合训练指标、数据质量和预测摘要解释当前训练结果。
 
@@ -225,10 +253,10 @@ def recommend_next_training_step(
     status: _STATUS_PARAM = None,
     comparison: _COMPARISON_PARAM = None,
     prediction_summary: _PREDICTION_SUMMARY_PARAM = None,
-    model_family: str = 'yolo',
-    task_type: str = 'detection',
-    include_case_sources: bool = False,
-    include_test_sources: bool = False,
+    model_family: _MODEL_FAMILY_PARAM = 'yolo',
+    task_type: _TASK_TYPE_PARAM = 'detection',
+    include_case_sources: _INCLUDE_CASE_SOURCES_PARAM = False,
+    include_test_sources: _INCLUDE_TEST_SOURCES_PARAM = False,
 ) -> dict[str, Any]:
     """基于 readiness/health/status/prediction 给出下一步建议。
 

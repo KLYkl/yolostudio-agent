@@ -116,6 +116,276 @@ _REQUIRE_CLEAN_LABELS_PARAM = Annotated[
         examples=[True],
     ),
 ]
+_COPIES_PER_IMAGE_PARAM = Annotated[
+    int,
+    Field(
+        description='每张原图额外生成的增强副本数量。',
+        ge=1,
+        examples=[1, 3],
+    ),
+]
+_INCLUDE_ORIGINAL_PARAM = Annotated[
+    bool,
+    Field(
+        description='增强输出中是否保留原始图片。',
+        examples=[True, False],
+    ),
+]
+_AUGMENT_MODE_PARAM = Annotated[
+    str,
+    Field(
+        description='增强策略模式。常用 random。',
+        examples=['random'],
+    ),
+]
+_ENABLE_HORIZONTAL_FLIP_PARAM = Annotated[
+    bool,
+    Field(
+        description='是否启用水平翻转增强。',
+        examples=[True, False],
+    ),
+]
+_ENABLE_ROTATE_PARAM = Annotated[
+    bool,
+    Field(
+        description='是否启用旋转增强。',
+        examples=[False, True],
+    ),
+]
+_ROTATE_DEGREES_PARAM = Annotated[
+    float,
+    Field(
+        description='旋转增强角度上限。',
+        ge=0.0,
+        examples=[15.0, 30.0],
+    ),
+]
+_ENABLE_BRIGHTNESS_PARAM = Annotated[
+    bool,
+    Field(
+        description='是否启用亮度增强。',
+        examples=[False, True],
+    ),
+]
+_BRIGHTNESS_STRENGTH_PARAM = Annotated[
+    float,
+    Field(
+        description='亮度增强强度。',
+        ge=0.0,
+        examples=[0.2, 0.4],
+    ),
+]
+_ENABLE_CONTRAST_PARAM = Annotated[
+    bool,
+    Field(
+        description='是否启用对比度增强。',
+        examples=[False, True],
+    ),
+]
+_CONTRAST_STRENGTH_PARAM = Annotated[
+    float,
+    Field(
+        description='对比度增强强度。',
+        ge=0.0,
+        examples=[0.25, 0.5],
+    ),
+]
+_ENABLE_NOISE_PARAM = Annotated[
+    bool,
+    Field(
+        description='是否启用噪声增强。',
+        examples=[False, True],
+    ),
+]
+_NOISE_STRENGTH_PARAM = Annotated[
+    float,
+    Field(
+        description='噪声增强强度。',
+        ge=0.0,
+        examples=[0.08, 0.15],
+    ),
+]
+_MODIFY_ACTION_PARAM = Annotated[
+    str,
+    Field(
+        description='标签批量修改动作。常用 replace 或 remove。',
+        examples=['replace', 'remove'],
+    ),
+]
+_LABEL_VALUE_PARAM = Annotated[
+    str,
+    Field(
+        description='标签类别值，可传类别名或类别 id 字符串。',
+        examples=['cat', '0'],
+    ),
+]
+_BACKUP_PARAM = Annotated[
+    bool,
+    Field(
+        description='执行写入或删除前是否创建 .bak 备份。',
+        examples=[True, False],
+    ),
+]
+_DRY_RUN_PARAM = Annotated[
+    bool,
+    Field(
+        description='是否只预览不真正执行删除或写入。',
+        examples=[True, False],
+    ),
+]
+_LABEL_FORMAT_PARAM = Annotated[
+    str,
+    Field(
+        description='标签格式。常用 auto、txt 或 xml。',
+        examples=['auto', 'txt', 'xml'],
+    ),
+]
+_ONLY_MISSING_PARAM = Annotated[
+    bool,
+    Field(
+        description='是否只处理当前缺失标签的图片。',
+        examples=[True, False],
+    ),
+]
+_INCLUDE_NO_LABEL_PARAM = Annotated[
+    bool,
+    Field(
+        description='按类别整理时是否保留无标签图片到独立桶。',
+        examples=[True, False],
+    ),
+]
+_TARGET_FORMAT_PARAM = Annotated[
+    str,
+    Field(
+        description='标签转换目标格式。常用 xml 或 txt。',
+        examples=['xml', 'txt'],
+    ),
+]
+_IGNORE_ORPHANS_PARAM = Annotated[
+    bool,
+    Field(
+        description='划分数据集时是否忽略孤儿标签。',
+        examples=[False, True],
+    ),
+]
+_CLEAR_OUTPUT_PARAM = Annotated[
+    bool,
+    Field(
+        description='划分数据集前是否清空既有输出目录。',
+        examples=[False, True],
+    ),
+]
+_CLASSES_TEXT_PARAM = Annotated[
+    str,
+    Field(
+        description='以纯文本形式显式提供类别名，每行一个类别或逗号分隔。',
+        examples=['cat\\ndog', 'cat,dog'],
+    ),
+]
+_CHECK_COORDS_PARAM = Annotated[
+    bool,
+    Field(
+        description='校验标签坐标是否合法。',
+        examples=[True, False],
+    ),
+]
+_CHECK_CLASS_IDS_PARAM = Annotated[
+    bool,
+    Field(
+        description='校验标签类别 id 是否超出类别表范围。',
+        examples=[True, False],
+    ),
+]
+_CHECK_FORMAT_PARAM = Annotated[
+    bool,
+    Field(
+        description='校验标签文件格式是否合法。',
+        examples=[True, False],
+    ),
+]
+_CHECK_ORPHANS_PARAM = Annotated[
+    bool,
+    Field(
+        description='校验是否存在孤儿标签文件。',
+        examples=[True, False],
+    ),
+]
+_INCLUDE_DUPLICATES_PARAM = Annotated[
+    bool,
+    Field(
+        description='健康检查时是否同时检测重复图片。',
+        examples=[True, False],
+    ),
+]
+_DUPLICATE_METHOD_PARAM = Annotated[
+    str,
+    Field(
+        description='重复图片检测方法。常用 md5 或 phash。',
+        examples=['md5', 'phash'],
+    ),
+]
+_HASH_THRESHOLD_PARAM = Annotated[
+    int,
+    Field(
+        description='感知哈希重复检测阈值。',
+        ge=0,
+        examples=[8, 12],
+    ),
+]
+_SMALL_THRESHOLD_PARAM = Annotated[
+    int,
+    Field(
+        description='图像过小阈值，单位像素。',
+        ge=0,
+        examples=[32, 64],
+    ),
+]
+_LARGE_THRESHOLD_PARAM = Annotated[
+    int,
+    Field(
+        description='图像过大阈值，单位像素。',
+        ge=0,
+        examples=[8192, 12000],
+    ),
+]
+_EXPORT_REPORT_PARAM = Annotated[
+    bool,
+    Field(
+        description='是否导出健康检查文本报告。',
+        examples=[False, True],
+    ),
+]
+_REPORT_PATH_PARAM = Annotated[
+    str,
+    Field(
+        description='导出报告路径。留空时使用默认报告名。',
+        examples=['/tmp/health_report.txt'],
+    ),
+]
+_ISSUE_EXAMPLE_LIMIT_PARAM = Annotated[
+    int,
+    Field(
+        description='返回问题样例数量上限。',
+        ge=0,
+        examples=[3, 10],
+    ),
+]
+_DUPLICATE_GROUP_LIMIT_PARAM = Annotated[
+    int,
+    Field(
+        description='返回重复组数量上限。',
+        ge=0,
+        examples=[3, 10],
+    ),
+]
+_PATHS_PER_GROUP_LIMIT_PARAM = Annotated[
+    int,
+    Field(
+        description='每个重复组返回的路径数量上限。',
+        ge=0,
+        examples=[3, 10],
+    ),
+]
 
 
 def _install_headless_pyside6_stub() -> None:
@@ -454,12 +724,12 @@ def _predict_categorize_output_dir(img_root: Path, output_dir: str = '') -> Path
 
 
 def preview_convert_format(
-    dataset_path: str,
-    label_dir: str = '',
-    target_format: str = 'xml',
+    dataset_path: _DATASET_IMG_DIR_PARAM,
+    label_dir: _LABEL_DIR_PARAM = '',
+    target_format: _TARGET_FORMAT_PARAM = 'xml',
     classes: _CLASS_NAMES_PARAM = None,
-    classes_txt: str = '',
-    data_yaml: str = '',
+    classes_txt: _CLASSES_TXT_PATH_PARAM = '',
+    data_yaml: _DATA_YAML_PATH_PARAM = '',
 ) -> dict[str, Any]:
     """预览标签格式转换范围；仅分析会转换哪些标签，不写文件。dataset_path 支持传入 dataset root 或 images/ 目录。"""
     try:
@@ -539,12 +809,12 @@ def preview_convert_format(
 
 
 def convert_format(
-    dataset_path: str,
-    label_dir: str = '',
-    target_format: str = 'xml',
+    dataset_path: _DATASET_IMG_DIR_PARAM,
+    label_dir: _LABEL_DIR_PARAM = '',
+    target_format: _TARGET_FORMAT_PARAM = 'xml',
     classes: _CLASS_NAMES_PARAM = None,
-    classes_txt: str = '',
-    data_yaml: str = '',
+    classes_txt: _CLASSES_TXT_PATH_PARAM = '',
+    data_yaml: _DATA_YAML_PATH_PARAM = '',
 ) -> dict[str, Any]:
     """执行标签格式转换并写入独立输出目录。默认不会覆盖旧标签，而是写到 dataset root 下的新目录。"""
     try:
@@ -645,13 +915,13 @@ def convert_format(
 
 
 def preview_modify_labels(
-    dataset_path: str,
-    label_dir: str = '',
-    action: str = 'replace',
-    old_value: str = '',
-    new_value: str = '',
-    classes_txt: str = '',
-    data_yaml: str = '',
+    dataset_path: _DATASET_IMG_DIR_PARAM,
+    label_dir: _LABEL_DIR_PARAM = '',
+    action: _MODIFY_ACTION_PARAM = 'replace',
+    old_value: _LABEL_VALUE_PARAM = '',
+    new_value: _LABEL_VALUE_PARAM = '',
+    classes_txt: _CLASSES_TXT_PATH_PARAM = '',
+    data_yaml: _DATA_YAML_PATH_PARAM = '',
 ) -> dict[str, Any]:
     """预览标签批量修改范围；仅统计会命中的文件和标注数量，不写文件。"""
     temp_classes_txt: Path | None = None
@@ -752,14 +1022,14 @@ def preview_modify_labels(
 
 
 def modify_labels(
-    dataset_path: str,
-    label_dir: str = '',
-    action: str = 'replace',
-    old_value: str = '',
-    new_value: str = '',
-    classes_txt: str = '',
-    data_yaml: str = '',
-    backup: bool = True,
+    dataset_path: _DATASET_IMG_DIR_PARAM,
+    label_dir: _LABEL_DIR_PARAM = '',
+    action: _MODIFY_ACTION_PARAM = 'replace',
+    old_value: _LABEL_VALUE_PARAM = '',
+    new_value: _LABEL_VALUE_PARAM = '',
+    classes_txt: _CLASSES_TXT_PATH_PARAM = '',
+    data_yaml: _DATA_YAML_PATH_PARAM = '',
+    backup: _BACKUP_PARAM = True,
 ) -> dict[str, Any]:
     """执行标签批量修改。默认原地写回标签，并创建 .bak 备份文件。"""
     temp_classes_txt: Path | None = None
@@ -878,10 +1148,10 @@ def modify_labels(
 
 
 def clean_orphan_labels(
-    dataset_path: str,
-    label_dir: str = '',
-    backup: bool = True,
-    dry_run: bool = True,
+    dataset_path: _DATASET_IMG_DIR_PARAM,
+    label_dir: _LABEL_DIR_PARAM = '',
+    backup: _BACKUP_PARAM = True,
+    dry_run: _DRY_RUN_PARAM = True,
 ) -> dict[str, Any]:
     """检测并清理孤儿标签。默认 dry_run=true，仅返回待清理范围；实际删除需显式 dry_run=false。"""
     try:
@@ -962,11 +1232,11 @@ def clean_orphan_labels(
 
 
 def preview_generate_empty_labels(
-    dataset_path: str,
-    label_dir: str = '',
-    label_format: str = 'auto',
-    output_dir: str = '',
-    only_missing: bool = True,
+    dataset_path: _DATASET_IMG_DIR_PARAM,
+    label_dir: _LABEL_DIR_PARAM = '',
+    label_format: _LABEL_FORMAT_PARAM = 'auto',
+    output_dir: _OUTPUT_DIR_PARAM = '',
+    only_missing: _ONLY_MISSING_PARAM = True,
 ) -> dict[str, Any]:
     """预览空标签生成范围。默认 only_missing=true，只为当前缺少标签的图片生成空标签。"""
     try:
@@ -1041,11 +1311,11 @@ def preview_generate_empty_labels(
 
 
 def generate_empty_labels(
-    dataset_path: str,
-    label_dir: str = '',
-    label_format: str = 'auto',
-    output_dir: str = '',
-    only_missing: bool = True,
+    dataset_path: _DATASET_IMG_DIR_PARAM,
+    label_dir: _LABEL_DIR_PARAM = '',
+    label_format: _LABEL_FORMAT_PARAM = 'auto',
+    output_dir: _OUTPUT_DIR_PARAM = '',
+    only_missing: _ONLY_MISSING_PARAM = True,
 ) -> dict[str, Any]:
     """为图片生成空标签文件。默认 only_missing=true，只补齐当前缺失标签。"""
     try:
@@ -1130,10 +1400,10 @@ def generate_empty_labels(
 
 
 def preview_generate_missing_labels(
-    dataset_path: str,
-    label_dir: str = '',
-    label_format: str = 'auto',
-    output_dir: str = '',
+    dataset_path: _DATASET_IMG_DIR_PARAM,
+    label_dir: _LABEL_DIR_PARAM = '',
+    label_format: _LABEL_FORMAT_PARAM = 'auto',
+    output_dir: _OUTPUT_DIR_PARAM = '',
 ) -> dict[str, Any]:
     """预览缺失标签补齐范围。"""
     result = preview_generate_empty_labels(
@@ -1154,10 +1424,10 @@ def preview_generate_missing_labels(
 
 
 def generate_missing_labels(
-    dataset_path: str,
-    label_dir: str = '',
-    label_format: str = 'auto',
-    output_dir: str = '',
+    dataset_path: _DATASET_IMG_DIR_PARAM,
+    label_dir: _LABEL_DIR_PARAM = '',
+    label_format: _LABEL_FORMAT_PARAM = 'auto',
+    output_dir: _OUTPUT_DIR_PARAM = '',
 ) -> dict[str, Any]:
     """补齐当前数据集中缺失标签的图片。"""
     result = generate_empty_labels(
@@ -1178,12 +1448,12 @@ def generate_missing_labels(
 
 
 def preview_categorize_by_class(
-    dataset_path: str,
-    label_dir: str = '',
-    output_dir: str = '',
-    classes_txt: str = '',
-    data_yaml: str = '',
-    include_no_label: bool = True,
+    dataset_path: _DATASET_IMG_DIR_PARAM,
+    label_dir: _LABEL_DIR_PARAM = '',
+    output_dir: _OUTPUT_DIR_PARAM = '',
+    classes_txt: _CLASSES_TXT_PATH_PARAM = '',
+    data_yaml: _DATA_YAML_PATH_PARAM = '',
+    include_no_label: _INCLUDE_NO_LABEL_PARAM = True,
 ) -> dict[str, Any]:
     """预览按类别整理数据的分桶结果；仅统计分类去向，不复制文件。"""
     temp_classes_txt: Path | None = None
@@ -1266,12 +1536,12 @@ def preview_categorize_by_class(
 
 
 def categorize_by_class(
-    dataset_path: str,
-    label_dir: str = '',
-    output_dir: str = '',
-    classes_txt: str = '',
-    data_yaml: str = '',
-    include_no_label: bool = True,
+    dataset_path: _DATASET_IMG_DIR_PARAM,
+    label_dir: _LABEL_DIR_PARAM = '',
+    output_dir: _OUTPUT_DIR_PARAM = '',
+    classes_txt: _CLASSES_TXT_PATH_PARAM = '',
+    data_yaml: _DATA_YAML_PATH_PARAM = '',
+    include_no_label: _INCLUDE_NO_LABEL_PARAM = True,
 ) -> dict[str, Any]:
     """按类别复制整理图片和标签到新目录。"""
     temp_classes_txt: Path | None = None
@@ -1450,8 +1720,8 @@ def split_dataset(
     ratio: _SPLIT_RATIO_PARAM = 0.8,
     seed: _SEED_PARAM = 42,
     mode: _SPLIT_MODE_PARAM = "copy",
-    ignore_orphans: bool = False,
-    clear_output: bool = False,
+    ignore_orphans: _IGNORE_ORPHANS_PARAM = False,
+    clear_output: _CLEAR_OUTPUT_PARAM = False,
 ) -> dict[str, Any]:
     """按现有 DataHandler 能力将数据集切分为 train/val。"""
     try:
@@ -1535,7 +1805,7 @@ def generate_yaml(
     train_path: _TRAIN_PATH_PARAM,
     val_path: _VAL_PATH_PARAM,
     classes: _CLASS_NAMES_PARAM = None,
-    classes_text: str = "",
+    classes_text: _CLASSES_TEXT_PARAM = "",
     output_path: _DATA_YAML_PATH_PARAM = "",
     classes_txt: _CLASSES_TXT_PATH_PARAM = "",
     img_dir: _DATASET_IMG_DIR_PARAM = "",
@@ -1641,10 +1911,10 @@ def validate_dataset(
     img_dir: _DATASET_IMG_DIR_PARAM,
     label_dir: _LABEL_DIR_PARAM = "",
     classes_txt: _CLASSES_TXT_PATH_PARAM = "",
-    check_coords: bool = True,
-    check_class_ids: bool = True,
-    check_format: bool = True,
-    check_orphans: bool = True,
+    check_coords: _CHECK_COORDS_PARAM = True,
+    check_class_ids: _CHECK_CLASS_IDS_PARAM = True,
+    check_format: _CHECK_FORMAT_PARAM = True,
+    check_orphans: _CHECK_ORPHANS_PARAM = True,
 ) -> dict[str, Any]:
     """校验标签合法性并返回问题统计与示例。img_dir 支持传入 dataset root。"""
     try:
@@ -2161,16 +2431,16 @@ def training_readiness(
 
 
 def run_dataset_health_check(
-    dataset_path: str,
-    include_duplicates: bool = True,
-    duplicate_method: str = 'md5',
-    hash_threshold: int = 8,
-    small_threshold: int = 32,
-    large_threshold: int = 8192,
-    export_report: bool = False,
-    report_path: str = '',
-    max_examples: int = MAX_ISSUE_EXAMPLES,
-    max_duplicate_groups: int = MAX_ISSUE_EXAMPLES,
+    dataset_path: _DATASET_IMG_DIR_PARAM,
+    include_duplicates: _INCLUDE_DUPLICATES_PARAM = True,
+    duplicate_method: _DUPLICATE_METHOD_PARAM = 'md5',
+    hash_threshold: _HASH_THRESHOLD_PARAM = 8,
+    small_threshold: _SMALL_THRESHOLD_PARAM = 32,
+    large_threshold: _LARGE_THRESHOLD_PARAM = 8192,
+    export_report: _EXPORT_REPORT_PARAM = False,
+    report_path: _REPORT_PATH_PARAM = '',
+    max_examples: _ISSUE_EXAMPLE_LIMIT_PARAM = MAX_ISSUE_EXAMPLES,
+    max_duplicate_groups: _DUPLICATE_GROUP_LIMIT_PARAM = MAX_ISSUE_EXAMPLES,
 ) -> dict[str, Any]:
     """对数据集图片做只读健康检查：完整性、尺寸异常、重复图片，并可选导出报告。"""
     try:
@@ -2321,11 +2591,11 @@ def run_dataset_health_check(
 
 
 def detect_duplicate_images(
-    dataset_path: str,
-    method: str = 'md5',
-    hash_threshold: int = 8,
-    max_groups: int = 10,
-    max_paths_per_group: int = MAX_ISSUE_EXAMPLES,
+    dataset_path: _DATASET_IMG_DIR_PARAM,
+    method: _DUPLICATE_METHOD_PARAM = 'md5',
+    hash_threshold: _HASH_THRESHOLD_PARAM = 8,
+    max_groups: _DUPLICATE_GROUP_LIMIT_PARAM = 10,
+    max_paths_per_group: _PATHS_PER_GROUP_LIMIT_PARAM = MAX_ISSUE_EXAMPLES,
 ) -> dict[str, Any]:
     """检测图片重复样本，返回重复组摘要和示例路径。dataset_path 支持 dataset root。"""
     try:
@@ -2408,23 +2678,23 @@ def detect_duplicate_images(
 
 
 def augment_dataset(
-    img_dir: str,
-    label_dir: str = "",
-    output_dir: str = "",
-    classes_txt: str = "",
-    copies_per_image: int = 1,
-    include_original: bool = True,
-    seed: int = 42,
-    mode: str = "random",
-    enable_horizontal_flip: bool = True,
-    enable_rotate: bool = False,
-    rotate_degrees: float = 15.0,
-    enable_brightness: bool = False,
-    brightness_strength: float = 0.2,
-    enable_contrast: bool = False,
-    contrast_strength: float = 0.25,
-    enable_noise: bool = False,
-    noise_strength: float = 0.08,
+    img_dir: _DATASET_IMG_DIR_PARAM,
+    label_dir: _LABEL_DIR_PARAM = "",
+    output_dir: _OUTPUT_DIR_PARAM = "",
+    classes_txt: _CLASSES_TXT_PATH_PARAM = "",
+    copies_per_image: _COPIES_PER_IMAGE_PARAM = 1,
+    include_original: _INCLUDE_ORIGINAL_PARAM = True,
+    seed: _SEED_PARAM = 42,
+    mode: _AUGMENT_MODE_PARAM = "random",
+    enable_horizontal_flip: _ENABLE_HORIZONTAL_FLIP_PARAM = True,
+    enable_rotate: _ENABLE_ROTATE_PARAM = False,
+    rotate_degrees: _ROTATE_DEGREES_PARAM = 15.0,
+    enable_brightness: _ENABLE_BRIGHTNESS_PARAM = False,
+    brightness_strength: _BRIGHTNESS_STRENGTH_PARAM = 0.2,
+    enable_contrast: _ENABLE_CONTRAST_PARAM = False,
+    contrast_strength: _CONTRAST_STRENGTH_PARAM = 0.25,
+    enable_noise: _ENABLE_NOISE_PARAM = False,
+    noise_strength: _NOISE_STRENGTH_PARAM = 0.08,
 ) -> dict[str, Any]:
     """执行离线数据增强，默认启用最常用的水平翻转。"""
     try:

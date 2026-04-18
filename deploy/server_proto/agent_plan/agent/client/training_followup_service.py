@@ -43,6 +43,34 @@ def resolve_training_grounded_reply_kind(
     return ''
 
 
+def run_training_grounded_reply_flow(
+    session_state: SessionState,
+    *,
+    user_text: str,
+    normalized_text: str,
+    wants_predict: bool,
+    training_command_like: bool,
+    append_ai_message: AssistantMessageAppender,
+) -> dict[str, object] | None:
+    grounded_reply_kind = resolve_training_grounded_reply_kind(
+        user_text=user_text,
+        normalized_text=normalized_text,
+        wants_predict=wants_predict,
+        training_command_like=training_command_like,
+    )
+    if grounded_reply_kind == 'provenance':
+        return complete_training_provenance_reply(
+            session_state,
+            append_ai_message=append_ai_message,
+        )
+    if grounded_reply_kind == 'evidence':
+        return complete_training_evidence_reply(
+            session_state,
+            append_ai_message=append_ai_message,
+        )
+    return None
+
+
 def complete_training_provenance_reply(
     session_state: SessionState,
     *,

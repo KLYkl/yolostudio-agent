@@ -106,7 +106,7 @@ from yolostudio_agent.agent.client.training_request_service import (
 )
 from yolostudio_agent.agent.client.training_execution_service import (
     run_post_prepare_training_start_flow,
-    run_remote_training_start_flow,
+    run_remote_training_pipeline_flow,
     wait_for_remote_training_terminal_state as wait_for_remote_training_terminal_state_service,
 )
 from yolostudio_agent.agent.client.training_dialogue_service import (
@@ -121,9 +121,7 @@ from yolostudio_agent.agent.client.training_plan_service import (
     training_plan_user_facts,
 )
 from yolostudio_agent.agent.client.training_followup_service import (
-    complete_training_evidence_reply as complete_training_evidence_reply_service,
-    complete_training_provenance_reply as complete_training_provenance_reply_service,
-    resolve_training_grounded_reply_kind,
+    run_training_grounded_reply_flow,
 )
 from yolostudio_agent.agent.client.training_plan_context_service import (
     build_training_plan_context_payload,
@@ -225,6 +223,7 @@ class YoloStudioAgentClient:
         self.event_retriever = EventRetriever(self.memory)
         self.session_state: SessionState = self.memory.load_state(settings.session_id)
         self._bootstrap_pending_confirmation_state()
+        self._reconcile_startup_pending_confirmation()
         self._clear_stale_startup_state()
         self._sync_training_workflow_state(reason='startup_sync')
         self._sync_preferences()
@@ -531,6 +530,29 @@ class YoloStudioAgentClient:
         pending = self.session_state.pending_confirmation
         if not str(pending.tool_name or '').strip():
             self._clear_training_plan_draft()
+
+    def _reconcile_startup_pending_confirmation(self) -> None:
+        pending = self._pending_from_state()
+        if not pending:
+            return
+        pending_source = str(pending.get('source') or 'synthetic').strip().lower() or 'synthetic'
+        if pending_source != 'graph':
+            return
+        thread_id = str(pending.get('thread_id') or '').strip() or self._pending_confirmation_thread_id()
+        resolved = self._resolve_pending_confirmation(
+            thread_id=thread_id,
+            config=self._pending_config(thread_id),
+        )
+        if resolved is None:
+            self.memory.append_event(
+                self.session_state.session_id,
+                'startup_stale_pending_cleared',
+                {
+                    'tool': str(pending.get('name') or pending.get('tool_name') or '').strip(),
+                    'thread_id': thread_id,
+                    'pending_source': pending_source,
+                },
+            )
 
     def _sync_training_workflow_state(self, *, reason: str = '') -> None:
         sync_training_workflow_state(
@@ -1412,19 +1434,14 @@ class YoloStudioAgentClient:
         wants_predict: bool,
         training_command_like: bool,
     ) -> dict[str, Any] | None:
-        grounded_reply_kind = resolve_training_grounded_reply_kind(
+        return run_training_grounded_reply_flow(
+            self.session_state,
             user_text=user_text,
             normalized_text=normalized_text,
             wants_predict=wants_predict,
             training_command_like=training_command_like,
+            append_ai_message=lambda reply: self._messages.append(AIMessage(content=reply)),
         )
-        if grounded_reply_kind == 'provenance':
-            return self._complete_training_provenance_reply()
-
-        if grounded_reply_kind == 'evidence':
-            return self._complete_training_evidence_reply()
-
-        return None
 
     def _complete_training_entrypoint_result(self, entrypoint_result: dict[str, Any]) -> dict[str, Any] | object:
         draft = dict(entrypoint_result.get('draft') or {})
@@ -1688,9 +1705,21 @@ class YoloStudioAgentClient:
         }
 
     async def _execute_remote_training_pipeline(self, pipeline_args: dict[str, Any]) -> dict[str, Any]:
-        upload_args = dict(pipeline_args.get('upload_args') or {})
-        upload_result = await self.direct_tool('upload_assets_to_remote', **upload_args)
-        if not upload_result.get('ok'):
+        flow_result = await run_remote_training_pipeline_flow(
+            pipeline_args=pipeline_args,
+            direct_tool=self.direct_tool,
+            resolve_training_remote_inputs=self._resolve_training_remote_inputs,
+            collect_requested_training_args=self._collect_requested_training_args,
+            wait_for_remote_training_terminal_state=lambda **kwargs: self._wait_for_remote_training_terminal_state(**kwargs),
+            resolve_remote_training_result_path=lambda **kwargs: self._resolve_remote_training_result_path(**kwargs),
+        )
+        upload_result = dict(flow_result.get('upload') or {})
+        resolved_inputs = dict(flow_result.get('resolved_inputs') or {})
+        start_flow = dict(flow_result.get('start_flow') or {})
+        wait_result = dict(flow_result.get('wait') or {})
+        download_result = dict(flow_result.get('download') or {})
+        stage = str(flow_result.get('stage') or '').strip()
+        if stage == 'upload':
             reply = await self._render_multi_tool_result_message(
                 [('upload_assets_to_remote', upload_result)],
                 objective='远端训练闭环失败说明',
@@ -1700,8 +1729,7 @@ class YoloStudioAgentClient:
             self.memory.save_state(self.session_state)
             return {'status': 'error', 'message': reply, 'tool_call': {'name': 'remote_training_pipeline', 'args': pipeline_args}}
 
-        resolved_inputs = self._resolve_training_remote_inputs(upload_result)
-        if not resolved_inputs.get('ok'):
+        if stage == 'resolve':
             reply = await self._render_multi_tool_result_message(
                 [('upload_assets_to_remote', upload_result)],
                 objective='远端训练闭环失败说明',
@@ -1712,20 +1740,12 @@ class YoloStudioAgentClient:
             self.memory.save_state(self.session_state)
             return {'status': 'error', 'message': reply, 'tool_call': {'name': 'remote_training_pipeline', 'args': pipeline_args}}
 
-        start_flow = await run_remote_training_start_flow(
-            pipeline_args=pipeline_args,
-            resolved_inputs=resolved_inputs,
-            direct_tool=self.direct_tool,
-            collect_requested_training_args=self._collect_requested_training_args,
-        )
-        dataset_path = str(start_flow.get('dataset_path') or resolved_inputs.get('dataset_path') or '')
-        model_path = str(start_flow.get('model_path') or resolved_inputs.get('model_path') or '')
         readiness = dict(start_flow.get('readiness') or {})
         prepare_result = dict(start_flow.get('prepare') or {})
         preflight = dict(start_flow.get('preflight') or {})
         start_result = dict(start_flow.get('start') or {})
         start_stage = str(start_flow.get('stage') or '').strip()
-        if not start_flow.get('ok'):
+        if stage == 'start':
             reply = await self._render_multi_tool_result_message(
                 [
                     ('upload_assets_to_remote', upload_result),
@@ -1751,116 +1771,13 @@ class YoloStudioAgentClient:
             self.memory.save_state(self.session_state)
             return {'status': 'error', 'message': reply, 'tool_call': {'name': 'remote_training_pipeline', 'args': pipeline_args}}
 
-        wait_result: dict[str, Any] = {}
         final_status: dict[str, Any] = {}
         final_summary: dict[str, Any] = {}
-        final_inspection: dict[str, Any] = {}
-        download_result: dict[str, Any] = {}
-        remote_result_path = ''
-
-        if start_result.get('ok') and pipeline_args.get('wait_for_completion'):
-            poll_interval = pipeline_args.get('poll_interval_seconds', 15)
-            max_wait = pipeline_args.get('max_wait_seconds', 7200)
-            wait_result = await self._wait_for_remote_training_terminal_state(
-                poll_interval_seconds=int(15 if poll_interval is None else poll_interval),
-                max_wait_seconds=int(7200 if max_wait is None else max_wait),
-            )
+        if wait_result:
             final_status = dict(wait_result.get('status_result') or {})
             final_summary = dict(wait_result.get('summary_result') or {})
-            final_inspection = dict(wait_result.get('inspect_result') or {})
-            remote_result_path = self._resolve_remote_training_result_path(
-                start_result=start_result,
-                status_result=final_status,
-                summary_result=final_summary,
-                inspection_result=final_inspection,
-            )
-            if wait_result.get('ok') and pipeline_args.get('download_after_completion'):
-                if remote_result_path:
-                    download_args = {
-                        'remote_paths': [remote_result_path],
-                        'server': upload_args.get('server', ''),
-                        'profile': upload_args.get('profile', ''),
-                        'host': upload_args.get('host', ''),
-                        'username': upload_args.get('username', ''),
-                        'port': upload_args.get('port', 0),
-                        'local_root': pipeline_args.get('local_result_root', ''),
-                        'recursive': True,
-                    }
-                    download_result = await self.direct_tool('download_assets_from_remote', **download_args)
-                else:
-                    download_result = {
-                        'ok': False,
-                        'summary': '训练已结束，但当前无法解析远端结果目录，未执行自动回传。',
-                        'error': 'missing_remote_result_path',
-                    }
+        pipeline_result = dict(flow_result.get('pipeline_result') or {})
 
-        final_run_state = str(
-            (final_summary.get('run_state') if isinstance(final_summary, dict) else '')
-            or (final_status.get('run_state') if isinstance(final_status, dict) else '')
-            or ''
-        ).strip().lower()
-        wait_required = bool(pipeline_args.get('wait_for_completion'))
-        wait_ok = True
-        if wait_required:
-            wait_ok = bool(wait_result.get('ok')) and final_run_state == 'completed'
-        download_required = bool(pipeline_args.get('download_after_completion'))
-        download_ok = (not download_required) or bool(download_result.get('ok'))
-        pipeline_result = {
-            'ok': start_result.get('ok') is True and wait_ok and download_ok,
-            'upload': upload_result,
-            'readiness': readiness,
-            'prepare': prepare_result,
-            'preflight': preflight,
-            'start': start_result,
-            'wait': wait_result,
-            'final_status': final_status,
-            'final_summary': final_summary,
-            'final_inspection': final_inspection,
-            'download': download_result,
-            'remote_dataset_path': dataset_path,
-            'remote_model_path': model_path,
-            'remote_result_path': remote_result_path,
-            'local_result_root': str((download_result or {}).get('local_root') or pipeline_args.get('local_result_root') or ''),
-            'wait_for_completion': wait_required,
-            'download_after_completion': download_required,
-            'final_run_state': final_run_state,
-        }
-        pipeline_result['pipeline_overview'] = {
-            'target_label': str(upload_result.get('target_label') or upload_args.get('server') or '').strip(),
-            'remote_root': str(upload_result.get('remote_root') or upload_args.get('remote_root') or '').strip(),
-            'remote_dataset_path': pipeline_result['remote_dataset_path'],
-            'remote_model_path': pipeline_result['remote_model_path'],
-            'remote_result_path': pipeline_result['remote_result_path'],
-            'local_result_root': pipeline_result['local_result_root'],
-        }
-        pipeline_result['execution_overview'] = {
-            'upload_ok': bool(upload_result.get('ok')),
-            'readiness_ok': bool(readiness.get('ok')),
-            'prepare_ok': bool((not prepare_result) or prepare_result.get('ok')),
-            'preflight_ok': bool(preflight.get('ok')),
-            'start_ok': bool(start_result.get('ok')),
-            'wait_ok': bool(wait_ok),
-            'download_ok': bool(download_ok),
-            'final_run_state': final_run_state,
-        }
-        action_candidates: list[dict[str, Any]] = []
-        if pipeline_result['local_result_root']:
-            action_candidates.append({
-                'tool': 'summarize_training_run',
-                'description': f"可继续查看本机训练产物目录: {pipeline_result['local_result_root']}",
-            })
-        elif pipeline_result['remote_result_path']:
-            action_candidates.append({
-                'tool': 'download_assets_from_remote',
-                'description': f"如需回传，可继续下载远端训练目录: {pipeline_result['remote_result_path']}",
-            })
-        if final_run_state == 'completed':
-            action_candidates.append({
-                'tool': 'summarize_training_run',
-                'description': '可继续查看训练总结或下一步建议',
-            })
-        if action_candidates:
-            pipeline_result['action_candidates'] = action_candidates[:4]
         self.session_state.active_training.last_remote_roundtrip = pipeline_result
         self.memory.append_event(self.session_state.session_id, 'remote_training_pipeline', pipeline_result)
 
@@ -1930,18 +1847,6 @@ class YoloStudioAgentClient:
             if save_dir:
                 return save_dir
         return ''
-
-    def _complete_training_provenance_reply(self) -> dict[str, Any]:
-        return complete_training_provenance_reply_service(
-            self.session_state,
-            append_ai_message=lambda reply: self._messages.append(AIMessage(content=reply)),
-        )
-
-    def _complete_training_evidence_reply(self) -> dict[str, Any]:
-        return complete_training_evidence_reply_service(
-            self.session_state,
-            append_ai_message=lambda reply: self._messages.append(AIMessage(content=reply)),
-        )
 
     @staticmethod
     def _merge_grounded_sections(sections: list[str]) -> str:

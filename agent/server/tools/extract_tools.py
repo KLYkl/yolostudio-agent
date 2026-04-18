@@ -118,6 +118,85 @@ _OUTPUT_FORMAT_PARAM = Annotated[
         examples=['jpg', 'png'],
     ),
 ]
+_COPY_LABELS_PARAM = Annotated[
+    bool,
+    Field(
+        description='抽取图片时是否同步复制对应标签文件。',
+        examples=[True, False],
+    ),
+]
+_TIME_INTERVAL_SECONDS_PARAM = Annotated[
+    float,
+    Field(
+        description='按 time 模式抽帧时的时间间隔，单位秒。',
+        gt=0.0,
+        examples=[0.5, 1.0],
+    ),
+]
+_SCENE_THRESHOLD_PARAM = Annotated[
+    float,
+    Field(
+        description='按 scene 模式抽帧时的场景切换阈值。',
+        ge=0.0,
+        le=1.0,
+        examples=[0.3, 0.4],
+    ),
+]
+_MIN_SCENE_GAP_PARAM = Annotated[
+    int,
+    Field(
+        description='两次场景切换之间的最小帧间隔。',
+        ge=0,
+        examples=[10, 15],
+    ),
+]
+_ENABLE_DEDUP_PARAM = Annotated[
+    bool,
+    Field(
+        description='抽帧后是否执行近重复帧去重。',
+        examples=[True, False],
+    ),
+]
+_DEDUP_THRESHOLD_PARAM = Annotated[
+    int,
+    Field(
+        description='近重复帧去重阈值；值越小越严格。',
+        ge=0,
+        examples=[8, 12],
+    ),
+]
+_START_TIME_SECONDS_PARAM = Annotated[
+    float,
+    Field(
+        description='抽帧起始时间，单位秒；0 表示从头开始。',
+        ge=0.0,
+        examples=[0.0, 5.0],
+    ),
+]
+_END_TIME_SECONDS_PARAM = Annotated[
+    float,
+    Field(
+        description='抽帧结束时间，单位秒；0 表示直到视频结束。',
+        ge=0.0,
+        examples=[0.0, 30.0],
+    ),
+]
+_JPG_QUALITY_PARAM = Annotated[
+    int,
+    Field(
+        description='输出 jpg 时的压缩质量。',
+        ge=1,
+        le=100,
+        examples=[90, 95],
+    ),
+]
+_NAME_PREFIX_PARAM = Annotated[
+    str,
+    Field(
+        description='输出文件名前缀。留空时使用默认命名。',
+        examples=['demo_', 'cam01_'],
+    ),
+]
 
 
 def _action_candidates_from_next_actions(next_actions: Any) -> list[dict[str, Any]]:
@@ -218,7 +297,7 @@ def preview_extract_images(
     ratio: _RATIO_PARAM = 0.1,
     grouping_mode: _GROUPING_MODE_PARAM = 'global',
     selected_dirs: _SELECTED_DIRS_PARAM = None,
-    copy_labels: bool = True,
+    copy_labels: _COPY_LABELS_PARAM = True,
     output_layout: _OUTPUT_LAYOUT_PARAM = 'flat',
     seed: _SEED_PARAM = 42,
     max_examples: _MAX_EXAMPLES_PARAM = 3,
@@ -252,7 +331,7 @@ def extract_images(
     ratio: _RATIO_PARAM = 0.1,
     grouping_mode: _GROUPING_MODE_PARAM = 'global',
     selected_dirs: _SELECTED_DIRS_PARAM = None,
-    copy_labels: bool = True,
+    copy_labels: _COPY_LABELS_PARAM = True,
     output_layout: _OUTPUT_LAYOUT_PARAM = 'flat',
     seed: _SEED_PARAM = 42,
     max_examples: _MAX_EXAMPLES_PARAM = 3,
@@ -288,17 +367,17 @@ def extract_video_frames(
     output_dir: _OUTPUT_DIR_PARAM = '',
     mode: _FRAME_MODE_PARAM = 'interval',
     frame_interval: _FRAME_INTERVAL_PARAM = 30,
-    time_interval: float = 1.0,
-    scene_threshold: float = 0.4,
-    min_scene_gap: int = 15,
-    enable_dedup: bool = True,
-    dedup_threshold: int = 8,
+    time_interval: _TIME_INTERVAL_SECONDS_PARAM = 1.0,
+    scene_threshold: _SCENE_THRESHOLD_PARAM = 0.4,
+    min_scene_gap: _MIN_SCENE_GAP_PARAM = 15,
+    enable_dedup: _ENABLE_DEDUP_PARAM = True,
+    dedup_threshold: _DEDUP_THRESHOLD_PARAM = 8,
     max_frames: _MAX_FRAMES_PARAM = 0,
-    start_time: float = 0.0,
-    end_time: float = 0.0,
+    start_time: _START_TIME_SECONDS_PARAM = 0.0,
+    end_time: _END_TIME_SECONDS_PARAM = 0.0,
     output_format: _OUTPUT_FORMAT_PARAM = 'jpg',
-    jpg_quality: int = 95,
-    name_prefix: str = '',
+    jpg_quality: _JPG_QUALITY_PARAM = 95,
+    name_prefix: _NAME_PREFIX_PARAM = '',
 ) -> dict[str, Any]:
     """执行视频抽帧。支持 interval/time/scene 三种最常见模式，输出目录可继续作为图片输入使用。"""
     result = _wrap(
