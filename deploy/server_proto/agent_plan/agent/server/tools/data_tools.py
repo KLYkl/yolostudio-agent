@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
+
+from pydantic import Field
 
 from yolostudio_agent.agent.server.services.dataset_root import resolve_dataset_inputs, resolve_dataset_root
 from yolostudio_agent.agent.server.services.gpu_utils import describe_gpu_policy, get_effective_gpu_policy, resolve_auto_device
@@ -27,6 +29,14 @@ from yolostudio_agent.agent.server.tools.data_tool_helpers import (
     _summarize_health_outputs,
     _top_class_stats,
 )
+
+_CLASS_NAMES_PARAM = Annotated[
+    list[str] | None,
+    Field(
+        description='显式类别名列表。优先传数组，不要传逗号拼接字符串。',
+        examples=[['cat', 'dog', 'background']],
+    ),
+]
 
 
 def _install_headless_pyside6_stub() -> None:
@@ -368,7 +378,7 @@ def preview_convert_format(
     dataset_path: str,
     label_dir: str = '',
     target_format: str = 'xml',
-    classes: list[str] | None = None,
+    classes: _CLASS_NAMES_PARAM = None,
     classes_txt: str = '',
     data_yaml: str = '',
 ) -> dict[str, Any]:
@@ -453,7 +463,7 @@ def convert_format(
     dataset_path: str,
     label_dir: str = '',
     target_format: str = 'xml',
-    classes: list[str] | None = None,
+    classes: _CLASS_NAMES_PARAM = None,
     classes_txt: str = '',
     data_yaml: str = '',
 ) -> dict[str, Any]:
@@ -1445,7 +1455,7 @@ def split_dataset(
 def generate_yaml(
     train_path: str,
     val_path: str,
-    classes: list[str] | None = None,
+    classes: _CLASS_NAMES_PARAM = None,
     classes_text: str = "",
     output_path: str = "",
     classes_txt: str = "",

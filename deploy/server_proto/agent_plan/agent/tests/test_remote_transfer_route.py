@@ -1,6 +1,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 import sys
 import types
@@ -163,6 +164,7 @@ def _install_fake_test_dependencies() -> None:
 
 _install_fake_test_dependencies()
 
+from langchain_core.messages import AIMessage
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
 from yolostudio_agent.agent.tests._coroutine_runner import run
 
@@ -173,6 +175,86 @@ class _NoLLMGraph:
 
     async def ainvoke(self, *args, **kwargs):
         raise AssertionError('remote transfer route should stay on routed flows, not fallback to graph')
+
+
+class _GraphState:
+    def __init__(self, *, messages: list[Any], pending_confirmation: dict[str, Any] | None):
+        self.next = ('tools',) if pending_confirmation else ()
+        self.values = {
+            'messages': list(messages),
+            'pending_confirmation': dict(pending_confirmation) if pending_confirmation else None,
+            'pending_review': {},
+        }
+        self.tasks = ()
+        self.interrupts = ()
+
+
+class _GraphWithPendingTool:
+    def __init__(
+        self,
+        client: YoloStudioAgentClient,
+        *,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        adapted: bool = False,
+    ) -> None:
+        self.client = client
+        self.tool_name = tool_name
+        self.tool_args = dict(tool_args)
+        self.adapted = adapted
+        self._state: _GraphState | None = None
+        self._tool_call_id = f'{tool_name}-call'
+
+    def get_state(self, config):
+        del config
+        return self._state
+
+    async def ainvoke(self, payload, config=None):
+        thread_id = str((((config or {}).get('configurable') or {}).get('thread_id') or '')).strip()
+        messages = list((payload or {}).get('messages') or [])
+        ai_message = AIMessage(
+            content='',
+            tool_calls=[
+                {
+                    'id': self._tool_call_id,
+                    'name': self.tool_name,
+                    'args': dict(self.tool_args),
+                }
+            ],
+        )
+        messages.append(ai_message)
+        pending_payload = self.client._build_pending_action_payload(
+            {
+                'name': self.tool_name,
+                'args': dict(self.tool_args),
+                'tool_call_id': self._tool_call_id,
+                'thread_id': thread_id,
+                'source': 'graph',
+                'adapted': self.adapted,
+            },
+            thread_id=thread_id,
+        )
+        pending_confirmation = {
+            'id': self._tool_call_id,
+            'tool_call_id': self._tool_call_id,
+            'name': self.tool_name,
+            'tool_name': self.tool_name,
+            'args': dict(self.tool_args),
+            'tool_args': dict(self.tool_args),
+            'raw_name': self.tool_name,
+            'raw_args': dict(self.tool_args),
+            'summary': pending_payload['summary'],
+            'objective': pending_payload['objective'],
+            'allowed_decisions': list(pending_payload['allowed_decisions']),
+            'review_config': dict(pending_payload['review_config']),
+            'decision_context': dict(pending_payload.get('decision_context') or {}),
+            'thread_id': thread_id,
+            'source': 'graph',
+            'interrupt_kind': pending_payload['interrupt_kind'],
+            'adapted': self.adapted,
+        }
+        self._state = _GraphState(messages=messages, pending_confirmation=pending_confirmation)
+        return {'messages': messages}
 
 
 WORK = Path(__file__).resolve().parent / '_tmp_remote_transfer_route'
@@ -246,12 +328,22 @@ async def _scenario_upload_route_requires_confirmation_and_then_executes() -> No
         return result
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
-    turn = await client.chat(f'把 "{weight_path}" 和 "{dataset_dir}" 上传到服务器 yolostudio 的 /tmp/agent_stage')
+    prompt = f'把 "{weight_path}" 和 "{dataset_dir}" 上传到服务器 yolostudio 的 /tmp/agent_stage'
+    expected_args = client._apply_remote_defaults(client._build_remote_upload_args(prompt))
+    client.graph = _GraphWithPendingTool(
+        client,
+        tool_name='upload_assets_to_remote',
+        tool_args=expected_args,
+        adapted=True,
+    )
+    turn = await client.chat(prompt)
     assert turn['status'] == 'needs_confirmation', turn
     assert turn['tool_call']['name'] == 'upload_assets_to_remote', turn
     assert turn['tool_call']['args']['server'] == 'yolostudio', turn
     assert turn['tool_call']['args']['remote_root'] == '/tmp/agent_stage', turn
     assert len(turn['tool_call']['args']['local_paths']) == 2, turn
+    routes = client.route_ownership_report()
+    assert any(item.get('route') == 'graph-selected-tool' for item in routes), routes
 
     done = await client.confirm(turn['thread_id'], True)
     assert done['status'] == 'completed', done
@@ -339,14 +431,23 @@ async def _scenario_remote_prediction_pipeline_route() -> None:
         return result
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
-    turn = await client.chat(
+    prompt = (
         f'把 "{weight_path}" 和 "{image_dir}" 上传到服务器 yolostudio 的 /tmp/predict_stage，'
         '然后做图片预测并把结果拉回本机'
     )
+    expected_args = client._build_remote_prediction_pipeline_args(prompt)
+    client.graph = _GraphWithPendingTool(
+        client,
+        tool_name='remote_prediction_pipeline',
+        tool_args=expected_args,
+    )
+    turn = await client.chat(prompt)
     assert turn['status'] == 'needs_confirmation', turn
     assert turn['tool_call']['name'] == 'remote_prediction_pipeline', turn
     assert '远端预测闭环' in turn['message'], turn
     assert '结果下载回本机' in turn['message'], turn
+    routes = client.route_ownership_report()
+    assert any(item.get('route') == 'graph-selected-tool' for item in routes), routes
 
     local_result_root = Path(turn['tool_call']['args']['local_result_root'])
     done = await client.confirm(turn['thread_id'], True)
@@ -450,14 +551,23 @@ async def _scenario_remote_training_pipeline_route() -> None:
         return result
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
-    turn = await client.chat(
+    prompt = (
         f'把 "{weight_path}" 和 "{dataset_dir}" 上传到服务器 yolostudio 的 /tmp/train_stage，'
         '然后直接开始训练 20 轮'
     )
+    expected_args = client._build_remote_training_pipeline_args(prompt)
+    client.graph = _GraphWithPendingTool(
+        client,
+        tool_name='remote_training_pipeline',
+        tool_args=expected_args,
+    )
+    turn = await client.chat(prompt)
     assert turn['status'] == 'needs_confirmation', turn
     assert turn['tool_call']['name'] == 'remote_training_pipeline', turn
     assert '远端训练闭环' in turn['message'], turn
     assert '启动训练' in turn['message'], turn
+    routes = client.route_ownership_report()
+    assert any(item.get('route') == 'graph-selected-tool' for item in routes), routes
 
     done = await client.confirm(turn['thread_id'], True)
     assert done['status'] == 'completed', done
@@ -640,22 +750,41 @@ async def _scenario_remote_training_pipeline_waits_and_downloads() -> None:
         return result
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
-    turn = await client.chat(
+    prompt = (
         f'把 "{weight_path}" 和 "{dataset_dir}" 上传到服务器 yolostudio 的 /tmp/train_stage，'
         '开始训练 5 轮，等训练结束后把产物拉回本机'
     )
+    expected_args = client._build_remote_training_pipeline_args(prompt)
+    client.graph = _GraphWithPendingTool(
+        client,
+        tool_name='remote_training_pipeline',
+        tool_args=expected_args,
+    )
+    turn = await client.chat(prompt)
     assert turn['status'] == 'needs_confirmation', turn
     assert turn['tool_call']['name'] == 'remote_training_pipeline', turn
     assert turn['tool_call']['args']['wait_for_completion'] is True, turn
     assert turn['tool_call']['args']['download_after_completion'] is True, turn
     assert '等待策略' in turn['message'], turn
     assert '自动把远端 run 目录下载回本机' in turn['message'], turn
+    routes = client.route_ownership_report()
+    assert any(item.get('route') == 'graph-selected-tool' for item in routes), routes
 
     local_result_root = Path(turn['tool_call']['args']['local_result_root'])
     client.session_state.pending_confirmation.tool_args['poll_interval_seconds'] = 0
     client.session_state.pending_confirmation.tool_args['max_wait_seconds'] = 1
 
-    done = await client.confirm(turn['thread_id'], True)
+    original_sleep = asyncio.sleep
+
+    async def _fast_sleep(delay: float, result: Any = None) -> Any:
+        del delay
+        return result
+
+    asyncio.sleep = _fast_sleep
+    try:
+        done = await client.confirm(turn['thread_id'], True)
+    finally:
+        asyncio.sleep = original_sleep
     assert done['status'] == 'completed', done
     assert [name for name, _ in calls] == [
         'upload_assets_to_remote',

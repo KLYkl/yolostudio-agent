@@ -672,7 +672,7 @@ async def _scenario_c91_reloaded_session_keeps_status_context() -> None:
     assert '训练仍在运行' in turn3['message']
     assert client2.session_state.active_training.pid == 9090
     assert calls2 == [('check_training_status', {})]
-    assert graph.calls == []
+    assert graph.calls == [('check_training_status', {})]
 
 
 async def _scenario_c22_stop_then_replan_restart() -> None:

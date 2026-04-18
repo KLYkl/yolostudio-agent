@@ -40,7 +40,14 @@ from yolostudio_agent.agent.client.context_retention_policy import build_context
 from yolostudio_agent.agent.client.event_retriever import EventRetriever
 from yolostudio_agent.agent.client.followup_router import (
     classify_training_loop_followup_action,
+    resolve_mainline_request_signals,
     resolve_training_loop_route,
+)
+from yolostudio_agent.agent.client.mainline_route_support import (
+    resolve_mainline_context,
+    resolve_mainline_dispatch_payload,
+    resolve_mainline_guardrail_reply,
+    resolve_mainline_route_state_payload,
 )
 from yolostudio_agent.agent.client.grounded_reply_builder import build_grounded_tool_reply
 from yolostudio_agent.agent.client.hitl_manager import (
@@ -64,11 +71,6 @@ from yolostudio_agent.agent.client.mcp_connection import (
     load_mcp_tools_with_recovery,
 )
 from yolostudio_agent.agent.client.memory_store import MemoryStore
-from yolostudio_agent.agent.client.mainline_guard_policy import (
-    build_train_predict_guard_policy,
-    compute_initial_train_predict_flags,
-    suppress_deferred_cross_domain_intents,
-)
 from yolostudio_agent.agent.client.reply_renderer import (
     build_confirmation_message as build_confirmation_message_reply,
     build_confirmation_prompt as build_confirmation_prompt_reply,
@@ -1370,13 +1372,12 @@ class YoloStudioAgentClient:
     async def _try_handle_remote_requests(
         self,
         *,
-        thread_id: str,
         user_text: str,
         wants_remote_profile_list: bool,
         wants_remote_upload: bool,
         wants_remote_prediction_pipeline: bool,
         wants_remote_training_pipeline: bool,
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any] | object | None:
         if wants_remote_profile_list:
             return await self._complete_cached_or_direct_tool_reply(
                 'list_remote_profiles',
@@ -1402,11 +1403,7 @@ class YoloStudioAgentClient:
                 reply = '当前还不能发起远端预测闭环：请明确远端目录，或先配置一个带默认 remote_root 的远端 profile。'
                 self._messages.append(AIMessage(content=reply))
                 return {'status': 'completed', 'message': reply, 'tool_call': None}
-            pending = {'name': 'remote_prediction_pipeline', 'args': pipeline_args, 'id': None, 'synthetic': True}
-            self._set_pending_confirmation(thread_id, pending)
-            reply = await self._build_confirmation_message(pending)
-            self._messages.append(AIMessage(content=reply))
-            return self._needs_confirmation_result(thread_id, pending, reply)
+            return _DEFER_TO_GRAPH
 
         if wants_remote_training_pipeline:
             pipeline_args = self._build_remote_training_pipeline_args(user_text)
@@ -1424,11 +1421,7 @@ class YoloStudioAgentClient:
                 reply = '当前还不能发起远端训练闭环：请明确远端目录，或先配置一个带默认 remote_root 的远端 profile。'
                 self._messages.append(AIMessage(content=reply))
                 return {'status': 'completed', 'message': reply, 'tool_call': None}
-            pending = {'name': 'remote_training_pipeline', 'args': pipeline_args, 'id': None, 'synthetic': True}
-            self._set_pending_confirmation(thread_id, pending)
-            reply = await self._build_confirmation_message(pending)
-            self._messages.append(AIMessage(content=reply))
-            return self._needs_confirmation_result(thread_id, pending, reply)
+            return _DEFER_TO_GRAPH
 
         if wants_remote_upload:
             upload_args = self._build_remote_upload_args(user_text)
@@ -1442,11 +1435,7 @@ class YoloStudioAgentClient:
                 reply = '当前还不能发起远端上传：请明确远端目录，或先配置一个带默认 remote_root 的远端 profile。'
                 self._messages.append(AIMessage(content=reply))
                 return {'status': 'completed', 'message': reply, 'tool_call': None}
-            pending = {'name': 'upload_assets_to_remote', 'args': upload_args, 'id': None, 'synthetic': True}
-            self._set_pending_confirmation(thread_id, pending)
-            reply = await self._build_confirmation_message(pending)
-            self._messages.append(AIMessage(content=reply))
-            return self._needs_confirmation_result(thread_id, pending, reply)
+            return _DEFER_TO_GRAPH
         return None
 
     async def _try_handle_training_context_requests(
@@ -1475,19 +1464,6 @@ class YoloStudioAgentClient:
                 return cached_reply
             return None
 
-        if not wants_predict and not training_command_like:
-            suggested_tool = self._suggested_training_followup_tool(user_text)
-            if suggested_tool:
-                cached_result = (
-                    self._training_summary_request_cached_result()
-                    if suggested_tool == 'summarize_training_run'
-                    else self._knowledge_tool_cached_result(suggested_tool)
-                )
-                cached_reply = await self._complete_cached_tool_reply_if_available(cached_result)
-                if cached_reply is not None:
-                    return cached_reply
-                return None
-
         if (
             wants_training_status
             and not wants_predict
@@ -1504,18 +1480,6 @@ class YoloStudioAgentClient:
             cached_reply = await self._complete_cached_tool_reply_if_available(cached_result)
             if cached_reply is not None:
                 return cached_reply
-            training_state = self.session_state.active_training
-            run_state = str(
-                (training_state.last_status or {}).get('run_state')
-                or ((training_state.last_status or {}).get('status_overview') or {}).get('run_state')
-                or ''
-            ).strip().lower()
-            if (
-                training_state.running
-                or training_state.workflow_state == 'running'
-                or run_state == 'running'
-            ):
-                return await self._complete_direct_tool_reply('check_training_status')
             return None
 
         if not wants_predict and not training_command_like and wants_training_provenance:
@@ -1602,6 +1566,86 @@ class YoloStudioAgentClient:
             return self._complete_training_entrypoint_result(entrypoint_result)
         return None
 
+    async def _dispatch_mainline_requests(
+        self,
+        *,
+        thread_id: str,
+        user_text: str,
+        mainline_context: dict[str, Any],
+        route_state: dict[str, Any],
+    ) -> dict[str, Any] | object | None:
+        dispatch_payload = resolve_mainline_dispatch_payload(
+            mainline_context=mainline_context,
+            route_state=route_state,
+        )
+        remote_request = await self._try_handle_remote_requests(
+            user_text=user_text,
+            **dict(dispatch_payload.get('remote_request_args') or {}),
+        )
+        if remote_request is _DEFER_TO_GRAPH:
+            return _DEFER_TO_GRAPH
+        if remote_request:
+            return remote_request
+
+        prediction_request = await self._try_handle_prediction_requests(
+            **dict(dispatch_payload.get('prediction_request_args') or {}),
+        )
+        if prediction_request:
+            return prediction_request
+
+        training_context_request = await self._try_handle_training_context_requests(
+            user_text=user_text,
+            **dict(dispatch_payload.get('training_context_request_args') or {}),
+        )
+        if training_context_request:
+            return training_context_request
+
+        training_entrypoint_request = await self._try_handle_training_entrypoints(
+            thread_id=thread_id,
+            user_text=user_text,
+            **dict(dispatch_payload.get('training_entrypoint_request_args') or {}),
+        )
+        if training_entrypoint_request is _DEFER_TO_GRAPH:
+            return None
+        return training_entrypoint_request
+
+    def _collect_mainline_context(self, user_text: str) -> dict[str, Any]:
+        return resolve_mainline_context(
+            session_state=self.session_state,
+            user_text=user_text,
+            metric_signal_extractor=self._extract_metric_signals_from_text,
+            training_context_checker=self._has_training_state_context,
+            run_id_extractor=self._extract_training_run_ids_from_text,
+        )
+
+    async def _resolve_mainline_route_state(self, user_text: str, mainline_context: dict[str, Any]) -> dict[str, Any]:
+        normalized_text = str(mainline_context.get('normalized_text') or '')
+        metric_signals = list(mainline_context.get('metric_signals') or [])
+        has_training_context = bool(mainline_context.get('has_training_context'))
+        explicit_run_ids = list(mainline_context.get('explicit_run_ids') or [])
+        mainline_signals = resolve_mainline_request_signals(
+            session_state=self.session_state,
+            user_text=user_text,
+            normalized_text=normalized_text,
+        )
+        loop_route = await self._resolve_training_loop_route(
+            user_text=user_text,
+            normalized_text=normalized_text,
+            wants_predict=bool(mainline_signals.get('wants_predict')),
+            wants_stop_training=bool(mainline_signals.get('wants_stop_training')),
+            explicit_run_ids=explicit_run_ids,
+        )
+        return resolve_mainline_route_state_payload(
+            session_state=self.session_state,
+            user_text=user_text,
+            normalized_text=normalized_text,
+            has_training_context=has_training_context,
+            mainline_signals=mainline_signals,
+            metric_signals=metric_signals,
+            explicit_run_ids=explicit_run_ids,
+            loop_route=loop_route,
+        )
+
     async def _try_handle_mainline_intent(self, user_text: str, thread_id: str) -> dict[str, Any] | None:
         self._sync_training_workflow_state(reason='route_eval')
         guardrail = self._try_handle_guardrail_intent(user_text)
@@ -1612,379 +1656,24 @@ class YoloStudioAgentClient:
             return None
         if plan_dialogue is not None:
             return plan_dialogue
-        extracted_dataset_path = intent_parsing.extract_dataset_path_from_text(user_text)
-        frame_followup_path = ''
-        if any(token in user_text for token in ('这些帧', '刚才抽的帧', '刚才这些帧', '这些抽出来的帧', '这些图片', '刚才抽的图片')):
-            frame_followup_path = str((self.session_state.active_dataset.last_frame_extract or {}).get('output_dir') or '').strip()
-        dataset_path = extracted_dataset_path or frame_followup_path or self.session_state.active_dataset.dataset_root or self.session_state.active_dataset.img_dir
-        normalized_text = user_text.lower()
-        metric_signals = self._extract_metric_signals_from_text(user_text)
-        has_training_context = self._has_training_state_context()
-        training_status_phrase = (
-            any(token in user_text for token in (
-                '训练状态', '当前训练状态', '训练进度', '当前进度',
-                '还在训练吗', '训练还在吗', '刚才训练还在吗', '上次训练还在吗', '还在跑吗',
-                '训练到哪了', '训练到第几轮', '跑到第几轮',
-                '第几轮了', '到第几轮了', '现在第几轮了',
-                '现在状态呢', '训练情况', '查看训练情况', '看看训练情况', '看训练情况',
-                '训练停了吗', '停了吗', '训练结束了吗', '结束了没', '跑完了吗', '训练完成了吗',
-                '训练失败了吗', '失败了吗', '是不是训练失败了', '是不是失败了', '训练挂了吗',
-                '查看训练状态', '再次查看训练状态', '看一下训练状态', '再看一下训练状态',
-            ))
-            or any(token in normalized_text for token in (
-                'training status', 'training progress', 'check status',
-                'is training done', 'training finished', 'training failed', 'did training fail'
-            ))
-        )
-        wants_train, wants_predict = compute_initial_train_predict_flags(
-            user_text,
-            normalized_text,
-            training_status_phrase=training_status_phrase,
-        )
-        no_train = any(token in user_text for token in ('不要训练', '不训练', '只检查', '仅检查', '不要启动'))
-        wants_readiness = any(token in user_text for token in ('能不能直接训练', '是否可以直接训练', '可不可以直接训练', '直接训练', '训练前检查', '适合训练吗', '适不适合训练'))
-        wants_split = any(token in user_text for token in ('默认划分', '划分比例', '先划分', 'split'))
-        wants_train, wants_predict = suppress_deferred_cross_domain_intents(
-            user_text,
-            normalized_text,
-            wants_train=wants_train,
-            wants_predict=wants_predict,
-        )
-        has_training_summary_context = bool(
-            self.session_state.active_training.training_run_summary
-            or self.session_state.active_training.last_summary
-            or self.session_state.active_training.last_status
-            or self.session_state.active_training.last_start_result
-            or self.session_state.active_training.running
-        )
-        wants_remote_profile_list = any(
-            token in user_text
-            for token in (
-                '远端配置', '服务器配置', '远端 profile', 'remote profile', '可用服务器', '可用节点', '有哪些节点', '有哪些服务器', 'SSH alias'
-            )
-        ) or any(token in normalized_text for token in ('list remote profiles', 'list remote servers', 'list ssh aliases'))
-        wants_remote_upload = (
-            any(token in user_text for token in ('上传', '传到服务器', '传到远端', '同步到服务器', '同步到远端', '发到服务器'))
-            or any(token in normalized_text for token in ('upload', 'scp', 'sync to server', 'sync to remote'))
-        ) and any(
-            token in user_text or token in normalized_text
-            for token in ('服务器', '远端', '节点', 'server', 'remote')
-        )
-        wants_remote_prediction_pipeline = wants_remote_upload and wants_predict and not wants_train
-        wants_remote_training_pipeline = wants_remote_upload and wants_train
-        asks_metric_terms = any(token in normalized_text for token in ('precision', 'recall', 'map', 'loss', 'epoch', 'epochs', 'batch', 'imgsz', 'patience', 'lr')) or any(token in user_text for token in ('精确率', '召回', '损失', '学习率', '轮数', '批大小'))
-        wants_training_summary = (
-            any(
-                token in user_text
-                for token in (
-                    '训练总结',
-                    '训练摘要',
-                    '训练汇总',
-                    '训练结果汇总',
-                    '训练结果总结',
-                    '结果总结',
-                )
-            )
-            or (
-                has_training_summary_context
-                and '数据总结' in user_text
-                and not any(
-                    token in user_text
-                    for token in (
-                        '数据集质量',
-                        '数据质量',
-                        '类别分布',
-                        '有哪些类别',
-                        '缺失标签',
-                        '最少类别',
-                        '最多类别',
-                    )
-                )
-            )
-        )
-        wants_training_outcome_analysis = (
-            any(token in user_text for token in ('训练效果怎么样', '这次训练效果怎么样', '训练结果怎么样', '训练效果如何', '结果更像', '训练效果'))
-            or any(token in user_text for token in ('是不是已经收敛了', '已经收敛了吗', '收敛了吗'))
-            or (
-                has_training_context
-                and any(token in user_text for token in ('效果怎么样', '结果怎么样', '效果如何', '结果如何'))
-            )
-            or (asks_metric_terms and any(token in user_text for token in ('怎么看', '说明什么', '意味着什么', '结果如何')))
-        )
-        wants_training_status = training_status_phrase
-        references_prior_statement = any(token in user_text for token in ('你上次不是说', '你不是说过'))
-        wants_training_run_compare = any(token in user_text for token in (
-            '对比最近两次训练', '比较最近两次训练', '最近两次训练对比',
-            '对比两次训练', '比较两次训练', '训练结果对比', '训练记录对比',
-            '刚刚那次和上次比哪个好',
-        )) or any(token in normalized_text for token in ('compare training runs', 'compare last two runs'))
-        wants_best_training_run = any(token in user_text for token in (
-            '最近哪次训练最好', '哪次训练最好', '最好的训练记录', '最好的训练结果',
-            '最近哪次最值得参考', '哪次最值得参考',
-            '最值得参考的训练记录', '最值得参考的训练结果',
-        )) or any(token in normalized_text for token in ('best training run', 'best run'))
-        if references_prior_statement:
-            wants_training_run_compare = False
-            wants_best_training_run = False
-        wants_stop_training = any(token in user_text for token in (
-            '停止训练', '停掉训练', '停一下训练', '先停训练', '先把训练停掉', '停止当前训练', '先停一下', '再停一次', '再停一下',
-        )) or any(token in normalized_text for token in ('stop training', 'stop current training'))
-        explicit_run_ids = self._extract_training_run_ids_from_text(user_text)
-        loop_route = await self._resolve_training_loop_route(
-            user_text=user_text,
-            normalized_text=normalized_text,
-            wants_predict=wants_predict,
-            wants_stop_training=wants_stop_training,
-            explicit_run_ids=explicit_run_ids,
-        )
-        wants_training_loop_start = loop_route.get('action') == 'start'
-        wants_training_loop_status = loop_route.get('action') == 'status'
-        wants_training_loop_list = loop_route.get('action') == 'list'
-        wants_pause_training_loop = loop_route.get('action') == 'pause'
-        wants_resume_training_loop = loop_route.get('action') == 'resume'
-        wants_stop_training_loop = loop_route.get('action') == 'stop'
-        wants_inspect_training_loop = loop_route.get('action') == 'inspect'
-        wants_training_revision = any(
-            token in normalized_text or token in user_text
-            for token in (
-                'batch', 'imgsz', 'device', 'epochs', '轮数', '轮', 'optimizer', '优化器',
-                'freeze', '冻结', 'lr0', '学习率', 'resume', 'project', 'name',
-                'fraction', 'classes', '类别', 'single_cls', '环境', '继续训练', '别停', '不要停',
-            )
-        )
-        wants_training_run_list = any(token in user_text for token in (
-            '最近训练有哪些', '最近一次训练', '训练历史', '训练记录'
-        )) or any(token in normalized_text for token in ('recent training runs', 'training history', 'list training runs'))
-        wants_failed_training_run_list = any(token in user_text for token in ('失败的训练', '失败训练', '失败记录'))
-        wants_completed_training_run_list = any(token in user_text for token in ('已完成的训练', '完成的训练', '跑完的训练'))
-        wants_stopped_training_run_list = any(token in user_text for token in ('停止的训练', '中断的训练', '停掉的训练'))
-        wants_running_training_run_list = any(token in user_text for token in ('运行中的训练', '还在跑的训练', '正在训练的记录'))
-        wants_analysis_ready_run_list = any(token in user_text for token in ('可分析的训练', '有完整指标的训练', '值得分析的训练'))
-        explicit_run_outcome_phrase = bool(explicit_run_ids) and any(
-            token in user_text for token in (
-                '效果怎么样', '结果怎么样', '效果如何', '结果如何',
-                '怎么看', '说明什么', '意味着什么',
-                '是不是已经收敛了', '已经收敛了吗', '收敛了吗',
-            )
-        )
-        explicit_compare_hint = any(token in user_text for token in ('对比', '比较', '哪个好', '哪次更好'))
-        repeat_training_run_compare = any(
-            token in user_text
-            for token in (
-                '刚才那个对比再比较一次',
-                '刚才那个对比再来一次',
-                '把刚才那两次训练再比较一次',
-                '把刚才那两次训练重新比较',
-                '再比较一次',
-                '再对比一次',
-                '重新比较一下',
-                '重新对比一下',
-            )
-        )
-        comparison_run_ids: list[str] = list(explicit_run_ids)
-        if references_prior_statement:
-            comparison_run_ids = []
-        if repeat_training_run_compare and not comparison_run_ids:
-            last_comparison = self.session_state.active_training.last_run_comparison or {}
-            left_run = last_comparison.get('left_run') or {}
-            right_run = last_comparison.get('right_run') or {}
-            left_run_id = str(left_run.get('run_id') or left_run.get('log_file') or '').strip()
-            right_run_id = str(right_run.get('run_id') or right_run.get('log_file') or '').strip()
-            if left_run_id:
-                comparison_run_ids.append(left_run_id)
-            if right_run_id:
-                comparison_run_ids.append(right_run_id)
-        wants_training_run_compare = wants_training_run_compare or (bool(comparison_run_ids) and (repeat_training_run_compare or explicit_compare_hint))
-        wants_training_run_inspect = (not references_prior_statement) and bool(explicit_run_ids) and any(
-            token in user_text for token in ('详情', '记录', '具体情况')
-        )
-        wants_next_step_guidance = any(token in user_text for token in ('下一步', '先补数据还是先调参数', '先补数据', '先调参数', '怎么优化', '如何优化下一步训练', '下一轮怎么做'))
-        wants_training_knowledge = bool(metric_signals) or (asks_metric_terms and any(token in user_text for token in ('说明什么', '什么意思', '意味着什么', '怎么看')))
-        wants_training_provenance = any(token in user_text for token in (
-            '你基于哪次训练说的', '你是基于哪次训练说的', '基于哪次训练', '根据哪次训练', '依据哪次训练',
-            '你上次不是说', '你不是说过',
-        )) and any(
-            token in user_text or token in normalized_text
-            for token in ('训练', 'run', '最好', '最值得参考', '分析', '结论')
-        )
-        wants_training_evidence = any(token in user_text for token in (
-            '依据是什么', '根据什么说的', '为什么这么说', '为什么说数据有问题',
-        ))
-        wants_training_outcome_analysis = wants_training_outcome_analysis or explicit_run_outcome_phrase
-        training_command_like = any(token in user_text for token in ('开始训练', '启动训练', '训练这个数据', '用这个数据训练', '直接开训', 'start_training'))
-        guard_policy = build_train_predict_guard_policy(
-            user_text=user_text,
-            normalized_text=normalized_text,
-            wants_train=wants_train,
-            wants_predict=wants_predict,
-            no_train=no_train,
-            wants_readiness=wants_readiness,
-            training_command_like=training_command_like,
-            wants_training_run_compare=wants_training_run_compare,
-            wants_best_training_run=wants_best_training_run,
-            blocks_training_start_signals=(
-                wants_stop_training,
-                wants_training_run_list,
-                wants_training_run_compare,
-                wants_best_training_run,
-                wants_training_run_inspect,
-                wants_failed_training_run_list,
-                wants_completed_training_run_list,
-                wants_stopped_training_run_list,
-                wants_running_training_run_list,
-                wants_analysis_ready_run_list,
-                wants_training_loop_list,
-                wants_training_loop_status,
-                wants_inspect_training_loop,
-                wants_pause_training_loop,
-                wants_resume_training_loop,
-                wants_stop_training_loop,
-            ),
-        )
-        wants_train = guard_policy.wants_train
-        wants_predict = guard_policy.wants_predict
-        wants_segmentation_training = guard_policy.wants_segmentation_training
-        wants_prediction_and_training_mix = guard_policy.wants_prediction_and_training_mix
-        wants_prediction_result_as_training_data = guard_policy.wants_prediction_result_as_training_data
-        wants_merge_extract_into_training = guard_policy.wants_merge_extract_into_training
-        wants_best_weight_prediction = guard_policy.wants_best_weight_prediction
-        wants_continuous_parallel_predict = guard_policy.wants_continuous_parallel_predict
-        blocks_training_start = guard_policy.blocks_training_start
-        readiness_only_query = guard_policy.readiness_only_query
-
-        if wants_segmentation_training and not wants_predict:
-            reply = '当前训练主线先按 YOLO detection 做稳定交付；分割/SAM 训练暂不在这条主线上直接执行。'
+        mainline_context = self._collect_mainline_context(user_text)
+        route_state = await self._resolve_mainline_route_state(user_text, mainline_context)
+        guard_reply = str(route_state.get('guard_reply') or '')
+        if guard_reply:
+            reply = guard_reply
             self._messages.append(AIMessage(content=reply))
             return {'status': 'completed', 'message': reply, 'tool_call': None}
 
-        if wants_continuous_parallel_predict:
-            reply = '当前不支持“边训练边持续做视频预测”这种高资源并发编排；请先明确主任务，或分成独立步骤执行。'
-            self._messages.append(AIMessage(content=reply))
-            return {'status': 'completed', 'message': reply, 'tool_call': None}
-
-        if wants_prediction_and_training_mix:
-            reply = '这条请求同时混了预测、训练或训练比较；为了避免串扰，请拆成连续步骤，我会按顺序执行。'
-            self._messages.append(AIMessage(content=reply))
-            return {'status': 'completed', 'message': reply, 'tool_call': None}
-
-        if wants_prediction_result_as_training_data:
-            reply = '预测结果目录不能直接当训练数据开训；如果要用于训练，先确认是否有可用标签，再走数据准备/校验链。'
-            self._messages.append(AIMessage(content=reply))
-            return {'status': 'completed', 'message': reply, 'tool_call': None}
-
-        if wants_merge_extract_into_training:
-            reply = '抽帧结果或旧数据集合并后，应该先走数据准备/校验，再决定是否训练；我不会直接把它们无检查地并进训练。'
-            self._messages.append(AIMessage(content=reply))
-            return {'status': 'completed', 'message': reply, 'tool_call': None}
-
-        remote_request = await self._try_handle_remote_requests(
+        return await self._dispatch_mainline_requests(
             thread_id=thread_id,
             user_text=user_text,
-            wants_remote_profile_list=wants_remote_profile_list,
-            wants_remote_upload=wants_remote_upload,
-            wants_remote_prediction_pipeline=wants_remote_prediction_pipeline,
-            wants_remote_training_pipeline=wants_remote_training_pipeline,
+            mainline_context=mainline_context,
+            route_state=route_state,
         )
-        if remote_request:
-            return remote_request
-
-        prediction_request = await self._try_handle_prediction_requests(
-            wants_predict=wants_predict,
-            training_command_like=training_command_like,
-            wants_best_weight_prediction=wants_best_weight_prediction,
-        )
-        if prediction_request:
-            return prediction_request
-
-        training_context_request = await self._try_handle_training_context_requests(
-            user_text=user_text,
-            wants_predict=wants_predict,
-            training_command_like=training_command_like,
-            wants_training_provenance=wants_training_provenance,
-            wants_training_evidence=wants_training_evidence,
-            wants_training_summary=wants_training_summary,
-            wants_training_status=wants_training_status,
-            wants_training_loop_list=wants_training_loop_list,
-            wants_training_loop_status=wants_training_loop_status,
-            wants_inspect_training_loop=wants_inspect_training_loop,
-            wants_pause_training_loop=wants_pause_training_loop,
-            wants_resume_training_loop=wants_resume_training_loop,
-            wants_stop_training_loop=wants_stop_training_loop,
-            wants_training_loop_start=wants_training_loop_start,
-        )
-        if training_context_request:
-            return training_context_request
-
-        training_entrypoint_request = await self._try_handle_training_entrypoints(
-            thread_id=thread_id,
-            user_text=user_text,
-            normalized_text=normalized_text,
-            dataset_path=dataset_path,
-            frame_followup_path=frame_followup_path,
-            wants_train=wants_train,
-            wants_predict=wants_predict,
-            no_train=no_train,
-            readiness_only_query=readiness_only_query,
-            wants_training_outcome_analysis=wants_training_outcome_analysis,
-            wants_next_step_guidance=wants_next_step_guidance,
-            wants_training_knowledge=wants_training_knowledge,
-            wants_training_loop_start=wants_training_loop_start,
-            training_command_like=training_command_like,
-            wants_training_revision=wants_training_revision,
-            wants_stop_training=wants_stop_training,
-            blocks_training_start=blocks_training_start,
-            explicit_run_ids=explicit_run_ids,
-            wants_split=wants_split,
-        )
-        if training_entrypoint_request is _DEFER_TO_GRAPH:
-            return None
-        if training_entrypoint_request:
-            return training_entrypoint_request
-
-        return None
 
     def _try_handle_guardrail_intent(self, user_text: str) -> dict[str, Any] | None:
-        normalized = user_text.lower()
-        if (
-            'push 到 github' in user_text
-            or 'push到github' in user_text
-            or 'git push' in normalized
-            or ('github' in normalized and 'push' in normalized)
-        ):
-            reply = '当前服务器端聊天 Agent 不负责直接 push 代码仓库；这类发布动作必须在外部代码管理链路里显式确认。'
-        elif (
-            any(token in user_text for token in ('删掉这次训练所有痕迹', '删除这次训练所有痕迹', '把服务器上所有旧 run 都清掉', '清掉所有旧 run', '清空所有训练记录'))
-            or ('delete' in normalized and 'training' in normalized and 'trace' in normalized)
-        ):
-            reply = '我不会直接删除训练历史、运行痕迹或整批 run；如果确实要清理，必须先明确目标并走高风险运维确认。'
-        elif any(token in user_text for token in ('把这次当没发生', '把刚才那次当没发生', '把这次训练当没发生', '当没发生')):
-            reply = '我不能把已经发生的训练当成没发生；如果当前训练不该继续，可以停止它，但历史记录不会被伪造删除。'
-        elif any(token in user_text for token in ('敏感信息', '所有敏感信息', '系统里记住的所有敏感信息', '所有凭据', '所有令牌')):
-            reply = '我不会泄露系统记录的敏感信息、凭据、令牌或内部状态。'
-        elif (
-            any(token in user_text for token in ('以后都默认用', '以后默认用', '默认都用'))
-            and '环境' in user_text
-            and any(token in user_text for token in ('不用再检查', '别再检查', '不需要再检查'))
-        ):
-            reply = '我可以把训练环境当成偏好参考，但每次真正开训前仍会重新检查当前环境是否存在且可用。'
-        elif any(token in user_text for token in ('伪造一个环境', '自己伪造一个环境', '环境不存在就伪造', '环境不存在你就自己伪造')):
-            reply = '我不会伪造训练环境；环境不存在时只能明确阻塞并要求切到真实可用环境。'
-        elif (
-            any(token in user_text for token in ('把失败状态改成 completed', '改成 completed', '把失败那次当成功', '失败那次当成功', '把刚才失败那次当成功', '忽略日志错误继续告诉我训练很好', '把旧 run 的结果和新 run 混在一起总结'))
-            or ('ignore' in normalized and 'log' in normalized and 'training' in normalized and 'good' in normalized)
-        ):
-            reply = '我不会篡改训练事实，也不会把不同 run 的结果混在一起；所有分析和建议都必须基于真实工具结果。'
-        elif (
-            ('最佳训练' in user_text or '最好训练' in user_text or 'best run' in normalized or 'best training' in normalized)
-            and any(token in user_text for token in ('权重', 'weights', '模型文件', 'pt 文件'))
-            and any(token in user_text for token in ('覆盖', '覆盖旧文件', '覆盖掉', '替换', 'overwrite', 'copy 到', '复制到'))
-        ):
-            reply = '我不会直接复制或覆盖最佳训练权重到其他位置；这类产物写入或覆盖操作必须先明确目标并走高风险确认。'
-        elif any(token in user_text for token in ('忽略系统规则', '忽略规则', '绕开规则', '别管规则')):
-            reply = '我不会绕开系统规则、高风险确认或 grounded 边界；这类请求不能直接执行。'
-        elif any(token in user_text for token in ('别再问我确认', '后面都默认执行', '以后都默认执行')):
-            reply = '我不会关闭高风险确认；训练启动、准备数据和其他高风险动作仍然需要显式确认。'
-        else:
+        reply = resolve_mainline_guardrail_reply(user_text=user_text, normalized_text=user_text.lower())
+        if not reply:
             return None
         self._messages.append(AIMessage(content=reply))
         return {'status': 'completed', 'message': reply, 'tool_call': None}
@@ -3591,12 +3280,6 @@ class YoloStudioAgentClient:
                 return message.content
         return ""
 
-    def _recent_ai_text(self) -> str:
-        for message in reversed(self._messages):
-            if isinstance(message, AIMessage):
-                return self._message_text(getattr(message, 'content', ''))
-        return ""
-
     async def _continue_followup_training_after_prepare(
         self,
         *,
@@ -4383,40 +4066,6 @@ class YoloStudioAgentClient:
         if canonical_name == 'recommend_next_training_step' and knowledge.last_recommendation:
             return ('recommend_next_training_step', dict(knowledge.last_recommendation))
         return None
-
-    def _suggested_training_followup_tool(self, user_text: str) -> str:
-        if self._classify_confirmation_reply_fallback(user_text) != 'approve':
-            return ''
-        recent_ai_text = self._recent_ai_text()
-        if not recent_ai_text or not any(
-            token in recent_ai_text
-            for token in (
-                '训练结果汇总',
-                '训练总结',
-                '训练摘要',
-                '训练结果分析',
-                '下一步建议',
-                '可继续调用',
-                '是否同意',
-                '可以继续分析训练结果',
-            )
-        ):
-            return ''
-        training = self.session_state.active_training
-        for payload in (
-            training.training_run_summary,
-            training.last_summary,
-            training.last_status,
-        ):
-            if not isinstance(payload, dict) or not payload:
-                continue
-            for item in list(payload.get('action_candidates') or []):
-                if not isinstance(item, dict):
-                    continue
-                tool_name = canonical_tool_name(item.get('tool') or '')
-                if tool_name in {'summarize_training_run', 'analyze_training_outcome', 'recommend_next_training_step'}:
-                    return tool_name
-        return ''
 
     @staticmethod
     def _extract_training_loop_max_rounds(text: str) -> int | None:

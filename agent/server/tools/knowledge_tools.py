@@ -2,11 +2,70 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Callable
+from typing import Annotated, Any, Callable
+
+from pydantic import Field
 
 from yolostudio_agent.agent.server.services.knowledge_service import KnowledgeService
 
 service = KnowledgeService()
+
+_TRAINING_SIGNALS_PARAM = Annotated[
+    list[str] | None,
+    Field(
+        description='结构化训练信号列表。优先传数组，不要传逗号拼接字符串。',
+        examples=[['high_precision_low_recall', 'comparison_map_improved']],
+    ),
+]
+_METRICS_PARAM = Annotated[
+    dict[str, Any] | None,
+    Field(
+        description='结构化训练指标对象，例如 precision/recall/map50/map5095。',
+        examples=[{'precision': 0.84, 'recall': 0.38, 'map50': 0.42}],
+    ),
+]
+_DATA_QUALITY_PARAM = Annotated[
+    dict[str, Any] | None,
+    Field(
+        description='结构化数据质量摘要，例如缺标比例、重复组数量、类别不均衡等。',
+        examples=[{'missing_label_ratio': 0.061, 'duplicate_groups': 1}],
+    ),
+]
+_COMPARISON_PARAM = Annotated[
+    dict[str, Any] | None,
+    Field(
+        description='结构化训练对比结果，优先传 compare_training_runs 的输出摘要。',
+        examples=[{'ok': True, 'metric_deltas': {'precision': {'delta': 0.1}}}],
+    ),
+]
+_PREDICTION_SUMMARY_PARAM = Annotated[
+    dict[str, Any] | None,
+    Field(
+        description='结构化预测摘要，优先传 summarize_prediction_results 的输出。',
+        examples=[{'processed_images': 12, 'detected_images': 9, 'class_counts': {'car': 14}}],
+    ),
+]
+_READINESS_PARAM = Annotated[
+    dict[str, Any] | None,
+    Field(
+        description='结构化训练就绪度结果，优先传 training_readiness 或 dataset_training_readiness 的输出。',
+        examples=[{'ready': False, 'missing_label_ratio': 0.31}],
+    ),
+]
+_HEALTH_PARAM = Annotated[
+    dict[str, Any] | None,
+    Field(
+        description='结构化数据健康检查摘要，优先传 run_dataset_health_check 的输出。',
+        examples=[{'duplicate_groups': 2, 'corrupted_images': 0}],
+    ),
+]
+_STATUS_PARAM = Annotated[
+    dict[str, Any] | None,
+    Field(
+        description='结构化训练状态摘要，优先传 check_training_status 或 summarize_training_run 的输出。',
+        examples=[{'running': False, 'run_state': 'completed', 'analysis_ready': True}],
+    ),
+]
 
 
 def _knowledge_action_candidate(*, tool: str, reason: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -78,7 +137,7 @@ def retrieve_training_knowledge(
     stage: str = '',
     model_family: str = 'yolo',
     task_type: str = 'detection',
-    signals: list[str] | str | None = None,
+    signals: _TRAINING_SIGNALS_PARAM = None,
     max_rules: int = 5,
     include_case_sources: bool = False,
     include_test_sources: bool = False,
@@ -87,6 +146,7 @@ def retrieve_training_knowledge(
 
     适用: “precision 高 recall 低说明什么”“训练后这组指标意味着什么”。
     默认只使用 official/workflow 规则，不把测试或真实 case 经验自动混入建议。
+    示例 signals: ["high_precision_low_recall", "comparison_map_improved"]
     """
     result = _wrap(
         '检索训练知识',
@@ -122,10 +182,10 @@ def retrieve_training_knowledge(
 
 
 def analyze_training_outcome(
-    metrics: dict[str, Any] | str | None = None,
-    data_quality: dict[str, Any] | str | None = None,
-    comparison: dict[str, Any] | str | None = None,
-    prediction_summary: dict[str, Any] | str | None = None,
+    metrics: _METRICS_PARAM = None,
+    data_quality: _DATA_QUALITY_PARAM = None,
+    comparison: _COMPARISON_PARAM = None,
+    prediction_summary: _PREDICTION_SUMMARY_PARAM = None,
     model_family: str = 'yolo',
     task_type: str = 'detection',
     include_case_sources: bool = False,
@@ -135,6 +195,7 @@ def analyze_training_outcome(
 
     适用: “这次训练效果怎么样”“对比后这些差异说明什么”。
     默认仍只用 official/workflow 规则。
+    示例 metrics: {"precision": 0.84, "recall": 0.38, "map50": 0.42}
     """
     result = _wrap(
         '分析训练结果',
@@ -159,11 +220,11 @@ def analyze_training_outcome(
 
 
 def recommend_next_training_step(
-    readiness: dict[str, Any] | str | None = None,
-    health: dict[str, Any] | str | None = None,
-    status: dict[str, Any] | str | None = None,
-    comparison: dict[str, Any] | str | None = None,
-    prediction_summary: dict[str, Any] | str | None = None,
+    readiness: _READINESS_PARAM = None,
+    health: _HEALTH_PARAM = None,
+    status: _STATUS_PARAM = None,
+    comparison: _COMPARISON_PARAM = None,
+    prediction_summary: _PREDICTION_SUMMARY_PARAM = None,
     model_family: str = 'yolo',
     task_type: str = 'detection',
     include_case_sources: bool = False,
@@ -173,6 +234,7 @@ def recommend_next_training_step(
 
     适用: “下一步先补数据还是先调参数”“最佳训练后下一轮该怎么做”。
     默认不把测试沉淀和 case 经验自动混入。
+    示例 readiness: {"ready": false, "missing_label_ratio": 0.31}
     """
     result = _wrap(
         '生成下一步训练建议',

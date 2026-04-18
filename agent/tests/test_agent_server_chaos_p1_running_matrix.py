@@ -17,6 +17,7 @@ if __package__ in {None, ''}:
 from yolostudio_agent.agent.tests._chaos_test_support import WORK as P0_WORK, _make_client
 from yolostudio_agent.agent.tests._coroutine_runner import run
 from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
 
 
 def _fresh_client(session_id: str):
@@ -118,6 +119,36 @@ def _install_running_tools(client):
     return calls
 
 
+class _ObservedStatusGraph:
+    def __init__(self) -> None:
+        self.client = None
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def bind(self, client) -> None:
+        self.client = client
+
+    def get_state(self, config):
+        return None
+
+    async def ainvoke(self, payload, config=None):
+        del config
+        assert self.client is not None
+        messages = list(payload['messages'])
+        self.calls.append(('check_training_status', {}))
+        result = await self.client.direct_tool('check_training_status')
+        reply = await self.client._render_tool_result_message('check_training_status', result)
+        if not reply:
+            reply = str(result.get('summary') or result.get('error') or '操作已完成')
+        tool_call_id = f'call-{len(self.calls)}'
+        return {
+            'messages': messages + [
+                AIMessage(content='', tool_calls=[{'id': tool_call_id, 'name': 'check_training_status', 'args': {}}]),
+                ToolMessage(content=json.dumps(result, ensure_ascii=False), name='check_training_status', tool_call_id=tool_call_id),
+                AIMessage(content=reply),
+            ]
+        }
+
+
 async def _scenario_c25_running_train_cannot_resume_other_run() -> None:
     client = _fresh_client('chaos-p1-c25')
     _install_running_tools(client)
@@ -132,6 +163,9 @@ async def _scenario_c25_running_train_cannot_resume_other_run() -> None:
 async def _scenario_c26_repeated_status_queries_stay_on_status() -> None:
     client = _fresh_client('chaos-p1-c26')
     calls = _install_running_tools(client)
+    graph = _ObservedStatusGraph()
+    graph.bind(client)
+    client.graph = graph  # type: ignore[assignment]
     client.session_state.active_training.running = True
     client.memory.save_state(client.session_state)
     for query in ('现在第几轮了？', '现在第几轮了？', '现在第几轮了？'):
@@ -139,6 +173,7 @@ async def _scenario_c26_repeated_status_queries_stay_on_status() -> None:
         assert turn['status'] == 'completed', turn
         assert '训练仍在运行' in turn['message']
     assert [name for name, _ in calls].count('check_training_status') == 3
+    assert [name for name, _ in graph.calls].count('check_training_status') == 3
 
 
 async def _scenario_c27_cannot_erase_running_history() -> None:

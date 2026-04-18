@@ -2,13 +2,23 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any, Callable
+from typing import Annotated, Any, Callable, Literal
+
+from pydantic import Field
 
 import yolostudio_agent.agent.server.tools.knowledge_tools as knowledge_tools
 import yolostudio_agent.agent.server.tools.train_tools as train_tools
 from yolostudio_agent.agent.server.services.training_loop_service import TrainingLoopService
 
 _DEFAULT_LOOP_EPOCHS = max(1, int(str(os.getenv('YOLOSTUDIO_LOOP_DEFAULT_EPOCHS', '10')).strip() or '10'))
+_ALLOWED_TUNING_PARAM = Literal['lr0', 'batch', 'imgsz', 'epochs', 'optimizer']
+_ALLOWED_TUNING_PARAMS_PARAM = Annotated[
+    list[_ALLOWED_TUNING_PARAM] | None,
+    Field(
+        description='允许环训练自动调整的参数白名单。优先传数组，而不是自然语言字符串。',
+        examples=[['batch', 'imgsz'], ['epochs']],
+    ),
+]
 
 
 service = TrainingLoopService(
@@ -89,10 +99,13 @@ def start_training_loop(
     min_improvement: float = 0.005,
     no_improvement_rounds: int = 2,
     max_failures: int = 2,
-    allowed_tuning_params: list[str] | str | None = None,
+    allowed_tuning_params: _ALLOWED_TUNING_PARAMS_PARAM = None,
     auto_handle_oom: bool = True,
 ) -> dict[str, Any]:
-    """启动一个服务端持久化的 Agent 环训练任务。"""
+    """启动一个服务端持久化的 Agent 环训练任务。
+
+    示例 allowed_tuning_params: ["batch", "imgsz"]
+    """
     result = _wrap(
         '启动环训练',
         service.start_loop,

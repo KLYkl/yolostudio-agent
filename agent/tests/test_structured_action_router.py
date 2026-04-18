@@ -149,6 +149,18 @@ _install_fake_test_dependencies()
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
 from yolostudio_agent.agent.client.llm_factory import LlmProviderSettings
+from yolostudio_agent.agent.client.followup_router import (
+    resolve_mainline_request_signals,
+    resolve_training_run_query_signals,
+)
+from yolostudio_agent.agent.client.mainline_route_support import (
+    resolve_mainline_context,
+    resolve_mainline_dispatch_payload,
+    resolve_mainline_guard_policy,
+    resolve_mainline_guard_reply,
+    resolve_mainline_guardrail_reply,
+    resolve_mainline_route_state_payload,
+)
 
 
 class _NoLLMGraph:
@@ -249,7 +261,6 @@ async def _scenario_training_loop_route_prefers_classifier_for_control_actions()
         user_text='从下一轮开始继续。',
         normalized_text='从下一轮开始继续。'.lower(),
         wants_predict=False,
-        wants_train=False,
         wants_stop_training=False,
         explicit_run_ids=[],
     )
@@ -266,11 +277,275 @@ async def _scenario_training_loop_route_falls_back_without_llm() -> None:
         user_text='现在环训练怎么样了？',
         normalized_text='现在环训练怎么样了？'.lower(),
         wants_predict=False,
-        wants_train=False,
         wants_stop_training=False,
         explicit_run_ids=[],
     )
     assert route == {'action': 'status', 'loop_id': 'loop-789', 'has_context': True}, route
+
+
+async def _scenario_training_run_query_signals_reuse_last_comparison() -> None:
+    client = _make_client('training-run-query-signals-repeat-compare')
+    client.session_state.active_training.last_run_comparison = {
+        'left_run': {'run_id': 'train_log_200'},
+        'right_run': {'run_id': 'train_log_100'},
+    }
+    signals = resolve_training_run_query_signals(
+        session_state=client.session_state,
+        user_text='把刚才那两次训练再比较一次',
+        normalized_text='把刚才那两次训练再比较一次'.lower(),
+        has_training_context=True,
+        has_training_summary_context=True,
+        asks_metric_terms=False,
+        metric_signals=[],
+        explicit_run_ids=[],
+    )
+    assert signals['wants_training_run_compare'] is True, signals
+    assert signals['comparison_run_ids'] == ['train_log_200', 'train_log_100'], signals
+    assert signals['wants_best_training_run'] is False, signals
+
+
+async def _scenario_training_run_query_signals_prior_statement_disables_compare_and_best() -> None:
+    client = _make_client('training-run-query-signals-prior-statement')
+    signals = resolve_training_run_query_signals(
+        session_state=client.session_state,
+        user_text='你上次不是说这次训练最好吗，基于哪次训练说的？',
+        normalized_text='你上次不是说这次训练最好吗，基于哪次训练说的？'.lower(),
+        has_training_context=True,
+        has_training_summary_context=True,
+        asks_metric_terms=False,
+        metric_signals=[],
+        explicit_run_ids=['train_log_300'],
+    )
+    assert signals['wants_training_provenance'] is True, signals
+    assert signals['wants_training_run_compare'] is False, signals
+    assert signals['wants_best_training_run'] is False, signals
+    assert signals['comparison_run_ids'] == [], signals
+    assert signals['wants_training_run_inspect'] is False, signals
+
+
+async def _scenario_mainline_request_signals_remote_prediction_pipeline() -> None:
+    client = _make_client('mainline-request-signals-remote-predict')
+    signals = resolve_mainline_request_signals(
+        session_state=client.session_state,
+        user_text='把这批图片上传到服务器后直接预测',
+        normalized_text='把这批图片上传到服务器后直接预测'.lower(),
+    )
+    assert signals['wants_predict'] is True, signals
+    assert signals['wants_train'] is False, signals
+    assert signals['wants_remote_upload'] is True, signals
+    assert signals['wants_remote_prediction_pipeline'] is True, signals
+    assert signals['wants_remote_training_pipeline'] is False, signals
+
+
+async def _scenario_mainline_request_signals_training_entry() -> None:
+    client = _make_client('mainline-request-signals-training-entry')
+    signals = resolve_mainline_request_signals(
+        session_state=client.session_state,
+        user_text='开始训练，先默认划分，batch 改成 16',
+        normalized_text='开始训练，先默认划分，batch 改成 16'.lower(),
+    )
+    assert signals['wants_train'] is True, signals
+    assert signals['wants_predict'] is False, signals
+    assert signals['wants_split'] is True, signals
+    assert signals['training_command_like'] is True, signals
+    assert signals['wants_training_revision'] is True, signals
+
+
+async def _scenario_mainline_guard_reply_segmentation_training() -> None:
+    reply = resolve_mainline_guard_reply(
+        wants_segmentation_training=True,
+        wants_predict=False,
+        wants_continuous_parallel_predict=False,
+        wants_prediction_and_training_mix=False,
+        wants_prediction_result_as_training_data=False,
+        wants_merge_extract_into_training=False,
+    )
+    assert '分割/SAM 训练暂不在这条主线上直接执行' in reply, reply
+
+
+async def _scenario_mainline_guard_reply_predict_train_mix() -> None:
+    reply = resolve_mainline_guard_reply(
+        wants_segmentation_training=False,
+        wants_predict=False,
+        wants_continuous_parallel_predict=False,
+        wants_prediction_and_training_mix=True,
+        wants_prediction_result_as_training_data=False,
+        wants_merge_extract_into_training=False,
+    )
+    assert '同时混了预测、训练或训练比较' in reply, reply
+
+
+async def _scenario_mainline_guardrail_reply_push() -> None:
+    reply = resolve_mainline_guardrail_reply(
+        user_text='把这个分支 push 到 github',
+        normalized_text='把这个分支 push 到 github'.lower(),
+    )
+    assert '不负责直接 push 代码仓库' in reply, reply
+
+
+async def _scenario_mainline_guardrail_reply_ignores_safe_text() -> None:
+    reply = resolve_mainline_guardrail_reply(
+        user_text='先看看最近训练状态',
+        normalized_text='先看看最近训练状态'.lower(),
+    )
+    assert reply == '', reply
+
+
+async def _scenario_mainline_guard_policy_blocks_training_start_for_history_and_loop_status() -> None:
+    policy = resolve_mainline_guard_policy(
+        user_text='训练历史和当前环训练状态都看一下',
+        normalized_text='训练历史和当前环训练状态都看一下'.lower(),
+        wants_train=True,
+        wants_predict=False,
+        no_train=False,
+        wants_readiness=False,
+        training_command_like=False,
+        wants_training_run_compare=False,
+        wants_best_training_run=False,
+        wants_stop_training=False,
+        wants_training_run_list=True,
+        wants_training_run_inspect=False,
+        wants_failed_training_run_list=False,
+        wants_completed_training_run_list=False,
+        wants_stopped_training_run_list=False,
+        wants_running_training_run_list=False,
+        wants_analysis_ready_run_list=False,
+        wants_training_loop_list=False,
+        wants_training_loop_status=True,
+        wants_inspect_training_loop=False,
+        wants_pause_training_loop=False,
+        wants_resume_training_loop=False,
+        wants_stop_training_loop=False,
+    )
+    assert policy.blocks_training_start is True, policy
+    assert policy.wants_train is False, policy
+
+
+async def _scenario_collect_mainline_context_reuses_last_frame_extract() -> None:
+    client = _make_client('collect-mainline-context-frame-followup')
+    client.session_state.active_dataset.last_frame_extract = {'output_dir': '/data/frames'}
+    context = client._collect_mainline_context('就用这些帧开始训练。')
+    assert context['frame_followup_path'] == '/data/frames', context
+    assert context['dataset_path'] == '/data/frames', context
+    assert context['normalized_text'] == '就用这些帧开始训练。'.lower(), context
+
+
+async def _scenario_resolve_mainline_context_helper_extracts_dataset_and_run_ids() -> None:
+    client = _make_client('resolve-mainline-context-helper')
+    helper_calls: dict[str, object] = {}
+
+    def _metric_signal_extractor(text: str) -> list[str]:
+        helper_calls['metric_text'] = text
+        return ['precision']
+
+    def _training_context_checker() -> bool:
+        helper_calls['checked_training_context'] = True
+        return True
+
+    def _run_id_extractor(text: str) -> list[str]:
+        helper_calls['run_id_text'] = text
+        return ['train_log_123']
+
+    context = resolve_mainline_context(
+        session_state=client.session_state,
+        user_text='用 /data/demo 这个数据集看看 train_log_123 的 precision',
+        metric_signal_extractor=_metric_signal_extractor,
+        training_context_checker=_training_context_checker,
+        run_id_extractor=_run_id_extractor,
+    )
+    assert context['dataset_path'] == '/data/demo', context
+    assert context['frame_followup_path'] == '', context
+    assert context['metric_signals'] == ['precision'], context
+    assert context['has_training_context'] is True, context
+    assert context['explicit_run_ids'] == ['train_log_123'], context
+    assert helper_calls == {
+        'metric_text': '用 /data/demo 这个数据集看看 train_log_123 的 precision',
+        'checked_training_context': True,
+        'run_id_text': '用 /data/demo 这个数据集看看 train_log_123 的 precision',
+    }, helper_calls
+
+
+async def _scenario_resolve_mainline_route_state_payload_helper_aggregates_followups() -> None:
+    client = _make_client('resolve-mainline-route-state-payload-helper')
+    client.session_state.active_training.active_loop_id = 'loop-321'
+    client.session_state.active_training.last_loop_status = {'summary': '环训练仍在运行'}
+    user_text = '训练历史和当前环训练状态都看一下'
+    mainline_context = client._collect_mainline_context(user_text)
+    route_state = resolve_mainline_route_state_payload(
+        session_state=client.session_state,
+        user_text=user_text,
+        normalized_text=str(mainline_context.get('normalized_text') or ''),
+        has_training_context=bool(mainline_context.get('has_training_context')),
+        mainline_signals=resolve_mainline_request_signals(
+            session_state=client.session_state,
+            user_text=user_text,
+            normalized_text=str(mainline_context.get('normalized_text') or ''),
+        ),
+        metric_signals=list(mainline_context.get('metric_signals') or []),
+        explicit_run_ids=list(mainline_context.get('explicit_run_ids') or []),
+        loop_route={'action': 'status'},
+    )
+    followup_flags = dict(route_state.get('followup_flags') or {})
+    guard_policy = route_state.get('guard_policy')
+    training_run_signals = dict(route_state.get('training_run_signals') or {})
+    assert training_run_signals['wants_training_run_list'] is True, training_run_signals
+    assert followup_flags['wants_training_run_list'] is True, followup_flags
+    assert followup_flags['wants_training_loop_status'] is True, followup_flags
+    assert bool(guard_policy.blocks_training_start) is True, guard_policy
+
+
+async def _scenario_resolve_mainline_dispatch_payload_helper_builds_request_args() -> None:
+    client = _make_client('resolve-mainline-dispatch-payload-helper')
+    client.session_state.active_training.active_loop_id = 'loop-654'
+    user_text = '把这批图片上传到服务器后直接预测'
+    mainline_context = client._collect_mainline_context(user_text)
+    route_state = resolve_mainline_route_state_payload(
+        session_state=client.session_state,
+        user_text=user_text,
+        normalized_text=str(mainline_context.get('normalized_text') or ''),
+        has_training_context=bool(mainline_context.get('has_training_context')),
+        mainline_signals=resolve_mainline_request_signals(
+            session_state=client.session_state,
+            user_text=user_text,
+            normalized_text=str(mainline_context.get('normalized_text') or ''),
+        ),
+        metric_signals=list(mainline_context.get('metric_signals') or []),
+        explicit_run_ids=list(mainline_context.get('explicit_run_ids') or []),
+        loop_route={'action': ''},
+    )
+    dispatch_payload = resolve_mainline_dispatch_payload(
+        mainline_context=mainline_context,
+        route_state=route_state,
+    )
+    remote_request_args = dict(dispatch_payload.get('remote_request_args') or {})
+    prediction_request_args = dict(dispatch_payload.get('prediction_request_args') or {})
+    training_entrypoint_request_args = dict(dispatch_payload.get('training_entrypoint_request_args') or {})
+    assert remote_request_args == {
+        'wants_remote_profile_list': False,
+        'wants_remote_upload': True,
+        'wants_remote_prediction_pipeline': True,
+        'wants_remote_training_pipeline': False,
+    }, remote_request_args
+    assert prediction_request_args['wants_predict'] is True, prediction_request_args
+    assert prediction_request_args['training_command_like'] is False, prediction_request_args
+    assert training_entrypoint_request_args['wants_train'] is False, training_entrypoint_request_args
+    assert training_entrypoint_request_args['wants_predict'] is True, training_entrypoint_request_args
+    assert training_entrypoint_request_args['blocks_training_start'] is False, training_entrypoint_request_args
+
+
+async def _scenario_resolve_mainline_route_state_aggregates_followups() -> None:
+    client = _make_client('resolve-mainline-route-state-aggregates-followups')
+    client.session_state.active_training.active_loop_id = 'loop-321'
+    client.session_state.active_training.last_loop_status = {'summary': '环训练仍在运行'}
+    route_state = await client._resolve_mainline_route_state(
+        '训练历史和当前环训练状态都看一下',
+        client._collect_mainline_context('训练历史和当前环训练状态都看一下'),
+    )
+    followup_flags = dict(route_state.get('followup_flags') or {})
+    guard_policy = route_state.get('guard_policy')
+    assert followup_flags['wants_training_run_list'] is True, followup_flags
+    assert followup_flags['wants_training_loop_status'] is True, followup_flags
+    assert bool(guard_policy.blocks_training_start) is True, guard_policy
 
 
 async def _run() -> None:
@@ -282,6 +557,20 @@ async def _run() -> None:
         await _scenario_training_loop_followup_classifier_supports_control_actions()
         await _scenario_training_loop_route_prefers_classifier_for_control_actions()
         await _scenario_training_loop_route_falls_back_without_llm()
+        await _scenario_training_run_query_signals_reuse_last_comparison()
+        await _scenario_training_run_query_signals_prior_statement_disables_compare_and_best()
+        await _scenario_mainline_request_signals_remote_prediction_pipeline()
+        await _scenario_mainline_request_signals_training_entry()
+        await _scenario_mainline_guard_reply_segmentation_training()
+        await _scenario_mainline_guard_reply_predict_train_mix()
+        await _scenario_mainline_guardrail_reply_push()
+        await _scenario_mainline_guardrail_reply_ignores_safe_text()
+        await _scenario_mainline_guard_policy_blocks_training_start_for_history_and_loop_status()
+        await _scenario_collect_mainline_context_reuses_last_frame_extract()
+        await _scenario_resolve_mainline_context_helper_extracts_dataset_and_run_ids()
+        await _scenario_resolve_mainline_route_state_payload_helper_aggregates_followups()
+        await _scenario_resolve_mainline_dispatch_payload_helper_builds_request_args()
+        await _scenario_resolve_mainline_route_state_aggregates_followups()
         print('structured action router ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)
