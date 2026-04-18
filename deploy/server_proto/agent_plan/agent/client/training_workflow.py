@@ -34,7 +34,7 @@ class TrainingLoopWorkflowState(StrEnum):
     LOOP_COMPLETED = 'loop_completed'
 
 
-TRAINING_PENDING_TOOLS = {'prepare_dataset_for_training', 'start_training'}
+TRAINING_PENDING_TOOLS = {'prepare_dataset_for_training', 'start_training', 'remote_training_pipeline'}
 RUNNING_RUN_STATES = {'running', 'in_progress', 'active'}
 FAILED_RUN_STATES = {'failed', 'error', 'crashed'}
 STOPPED_RUN_STATES = {'stopped', 'cancelled', 'terminated', 'aborted'}

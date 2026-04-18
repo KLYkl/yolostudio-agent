@@ -60,6 +60,11 @@ def main() -> None:
     assert pending.training_state == TrainingWorkflowState.PENDING_CONFIRMATION.value
     assert events[-1][1]['pending_tool'] == 'start_training'
 
+    state.pending_confirmation.tool_name = 'remote_training_pipeline'
+    remote_pending = sync_training_workflow_state(state, append_event=append_event, reason='remote_pending_confirmation')
+    assert remote_pending.training_state == TrainingWorkflowState.PENDING_CONFIRMATION.value
+    assert state.active_training.workflow_state == TrainingWorkflowState.PENDING_CONFIRMATION.value
+
     state.pending_confirmation.tool_name = ''
     state.active_training.running = True
     running = sync_training_workflow_state(state, append_event=append_event, reason='running')

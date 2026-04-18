@@ -222,6 +222,7 @@ async def _run() -> None:
     assert getattr(manual_tools, 'handle_tool_errors', False) is True
     assert 'interrupt_before' not in manual_kwargs, manual_kwargs
     assert manual_kwargs.get('state_schema') is not None, manual_kwargs
+    assert getattr(manual, 'checkpointer', None) is manual_kwargs.get('checkpointer')
     assert len(_RecordingMemoryStore.instances) - before_manual == 1, _RecordingMemoryStore.instances
 
     before_auto = len(_RecordingMemoryStore.instances)
@@ -234,6 +235,7 @@ async def _run() -> None:
     assert getattr(auto_tools, 'handle_tool_errors', False) is True
     assert 'interrupt_before' not in auto_kwargs, auto_kwargs
     assert auto_kwargs.get('state_schema') is not None, auto_kwargs
+    assert getattr(auto, 'checkpointer', None) is auto_kwargs.get('checkpointer')
     assert len(_RecordingMemoryStore.instances) - before_auto == 1, _RecordingMemoryStore.instances
 
     print('agent build interrupt mode ok')

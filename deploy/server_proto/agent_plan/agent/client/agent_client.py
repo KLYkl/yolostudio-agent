@@ -120,11 +120,9 @@ from yolostudio_agent.agent.client.training_plan_service import (
     training_plan_render_error,
     training_plan_user_facts,
 )
-from yolostudio_agent.agent.client.training_followup_service import (
-    run_training_grounded_reply_flow,
-)
 from yolostudio_agent.agent.client.training_plan_context_service import (
     build_training_plan_context_payload,
+    extract_training_plan_context_from_state,
 )
 
 SYSTEM_PROMPT = """你是 YoloStudio Agent，负责帮助用户解决数据准备、训练、预测和远端传输问题。
@@ -201,6 +199,7 @@ class YoloStudioAgentClient:
         primary_llm_settings: LlmProviderSettings | None = None,
         helper_llm_settings: LlmProviderSettings | None = None,
         memory: MemoryStore | None = None,
+        checkpointer: FileCheckpointSaver | None = None,
     ) -> None:
         self.graph = graph
         self.settings = settings
@@ -219,6 +218,7 @@ class YoloStudioAgentClient:
         self._pending_confirmation_shadow: dict[str, Any] | None = None
         self._pending_review_shadow: dict[str, Any] = {}
         self.memory = memory or MemoryStore(settings.memory_root)
+        self.checkpointer = checkpointer
         self.context_builder = ContextBuilder(SYSTEM_PROMPT)
         self.event_retriever = EventRetriever(self.memory)
         self.session_state: SessionState = self.memory.load_state(settings.session_id)
@@ -531,18 +531,109 @@ class YoloStudioAgentClient:
         if not str(pending.tool_name or '').strip():
             self._clear_training_plan_draft()
 
+    def _startup_checkpoint_thread_ids(self) -> list[str]:
+        if self.checkpointer is None or not hasattr(self.checkpointer, 'thread_ids'):
+            return []
+        prefix = f"{self.session_state.session_id}-"
+        try:
+            return [
+                str(thread_id).strip()
+                for thread_id in self.checkpointer.thread_ids(prefix=prefix)
+                if str(thread_id).strip()
+            ]
+        except Exception:
+            return []
+
+    def _startup_graph_pending_candidates(self) -> list[dict[str, Any]]:
+        candidates: list[dict[str, Any]] = []
+        for thread_id in self._startup_checkpoint_thread_ids():
+            config = self._pending_config(thread_id)
+            pending = self._graph_pending_from_values(config) or self._graph_pending_from_interrupt(config)
+            if not pending:
+                continue
+            pending_source = str(pending.get('source') or 'synthetic').strip().lower() or 'synthetic'
+            if pending_source != 'graph':
+                continue
+            restored = dict(pending)
+            restored['thread_id'] = str(restored.get('thread_id') or thread_id).strip()
+            candidates.append(restored)
+        return candidates
+
+    def _hydrate_startup_pending_confirmation(self) -> None:
+        if self._pending_from_state():
+            return
+        candidates = self._startup_graph_pending_candidates()
+        if len(candidates) > 1:
+            self.memory.append_event(
+                self.session_state.session_id,
+                'startup_pending_restore_skipped',
+                {
+                    'reason': 'multiple_graph_pending_candidates',
+                    'candidate_count': len(candidates),
+                    'thread_ids': [str(candidate.get('thread_id') or '').strip() for candidate in candidates],
+                },
+            )
+            return
+        if len(candidates) != 1:
+            return
+        restored = candidates[0]
+        config = self._pending_config(str(restored.get('thread_id') or '').strip())
+        self._remember_pending_confirmation(restored, emit_event=False, persist_graph=False)
+        self._restore_training_plan_draft_from_context(config=config, pending=restored)
+        self.memory.append_event(
+            self.session_state.session_id,
+            'startup_graph_pending_restored',
+            {
+                'tool': str(restored.get('name') or restored.get('tool_name') or '').strip(),
+                'thread_id': str(restored.get('thread_id') or '').strip(),
+                'pending_source': str(restored.get('source') or 'graph').strip().lower() or 'graph',
+            },
+        )
+
     def _reconcile_startup_pending_confirmation(self) -> None:
         pending = self._pending_from_state()
         if not pending:
+            self._hydrate_startup_pending_confirmation()
             return
         pending_source = str(pending.get('source') or 'synthetic').strip().lower() or 'synthetic'
         if pending_source != 'graph':
+            candidates = self._startup_graph_pending_candidates()
+            if len(candidates) == 1:
+                restored = candidates[0]
+                config = self._pending_config(str(restored.get('thread_id') or '').strip())
+                self._clear_training_plan_draft()
+                self._remember_pending_confirmation(restored, emit_event=False, persist_graph=False)
+                self._restore_training_plan_draft_from_context(config=config, pending=restored)
+                self.memory.append_event(
+                    self.session_state.session_id,
+                    'startup_legacy_pending_replaced',
+                    {
+                        'previous_tool': str(pending.get('name') or pending.get('tool_name') or '').strip(),
+                        'previous_source': pending_source,
+                        'restored_tool': str(restored.get('name') or restored.get('tool_name') or '').strip(),
+                        'thread_id': str(restored.get('thread_id') or '').strip(),
+                    },
+                )
+                self.memory.append_event(
+                    self.session_state.session_id,
+                    'startup_graph_pending_restored',
+                    {
+                        'tool': str(restored.get('name') or restored.get('tool_name') or '').strip(),
+                        'thread_id': str(restored.get('thread_id') or '').strip(),
+                        'pending_source': str(restored.get('source') or 'graph').strip().lower() or 'graph',
+                    },
+                )
             return
         thread_id = str(pending.get('thread_id') or '').strip() or self._pending_confirmation_thread_id()
         resolved = self._resolve_pending_confirmation(
             thread_id=thread_id,
             config=self._pending_config(thread_id),
         )
+        if resolved is not None:
+            self._restore_training_plan_draft_from_context(
+                config=self._pending_config(thread_id),
+                pending=resolved,
+            )
         if resolved is None:
             self.memory.append_event(
                 self.session_state.session_id,
@@ -1426,23 +1517,6 @@ class YoloStudioAgentClient:
             return _DEFER_TO_GRAPH
         return None
 
-    async def _try_handle_training_context_requests(
-        self,
-        *,
-        user_text: str,
-        normalized_text: str,
-        wants_predict: bool,
-        training_command_like: bool,
-    ) -> dict[str, Any] | None:
-        return run_training_grounded_reply_flow(
-            self.session_state,
-            user_text=user_text,
-            normalized_text=normalized_text,
-            wants_predict=wants_predict,
-            training_command_like=training_command_like,
-            append_ai_message=lambda reply: self._messages.append(AIMessage(content=reply)),
-        )
-
     def _complete_training_entrypoint_result(self, entrypoint_result: dict[str, Any]) -> dict[str, Any] | object:
         draft = dict(entrypoint_result.get('draft') or {})
         reply = str(entrypoint_result.get('reply') or '').strip()
@@ -1548,12 +1622,6 @@ class YoloStudioAgentClient:
         )
         if prediction_request:
             return prediction_request
-
-        training_context_request = await self._try_handle_training_context_requests(
-            **dict(dispatch_payload.get('training_context_request_args') or {}),
-        )
-        if training_context_request:
-            return training_context_request
 
         training_entrypoint_request = await self._try_handle_training_entrypoints(
             thread_id=thread_id,
@@ -2455,6 +2523,72 @@ class YoloStudioAgentClient:
             if isinstance(review, dict):
                 return dict(review)
         return {}
+
+    def _graph_training_plan_context(self, config: dict[str, Any]) -> dict[str, Any] | None:
+        state = self._graph_state_snapshot(config)
+        values = getattr(state, 'values', {}) if state else {}
+        if not isinstance(values, dict):
+            return None
+        return extract_training_plan_context_from_state(values)
+
+    def _restore_training_plan_draft_from_context(
+        self,
+        *,
+        config: dict[str, Any],
+        pending: dict[str, Any],
+    ) -> None:
+        existing_draft = dict(self.session_state.active_training.training_plan_draft or {})
+        context = self._graph_training_plan_context(config) or {}
+        next_step_tool = str(context.get('next_step_tool') or '').strip()
+        pending_tool = str(pending.get('name') or pending.get('tool_name') or '').strip()
+        if not next_step_tool or next_step_tool != pending_tool:
+            return
+        draft_meaningful_keys = (
+            'dataset_path',
+            'execution_mode',
+            'reasoning_summary',
+            'data_summary',
+            'preflight_summary',
+            'planned_training_args',
+            'command_preview',
+            'warnings',
+            'risks',
+            'blockers',
+        )
+        restored_draft = {
+            'stage': str(context.get('stage') or ''),
+            'status': str(context.get('status') or ''),
+            'dataset_path': str(context.get('dataset_path') or ''),
+            'execution_mode': str(context.get('execution_mode') or ''),
+            'execution_backend': str(context.get('execution_backend') or ''),
+            'training_environment': str(context.get('training_environment') or ''),
+            'advanced_details_requested': bool(context.get('advanced_details_requested')),
+            'reasoning_summary': str(context.get('reasoning_summary') or ''),
+            'data_summary': str(context.get('data_summary') or ''),
+            'preflight_summary': str(context.get('preflight_summary') or ''),
+            'next_step_tool': next_step_tool,
+            'next_step_args': dict(context.get('next_step_args') or {}),
+            'planned_training_args': dict(context.get('planned_training_args') or {}),
+            'command_preview': list(context.get('command_preview') or []),
+            'blockers': [str(item).strip() for item in (context.get('blockers') or []) if str(item).strip()],
+            'warnings': [str(item).strip() for item in (context.get('warnings') or []) if str(item).strip()],
+            'risks': [str(item).strip() for item in (context.get('risks') or []) if str(item).strip()],
+        }
+        if not any(restored_draft.get(key) for key in draft_meaningful_keys):
+            return
+        if existing_draft and all(existing_draft.get(key) == restored_draft.get(key) for key in restored_draft):
+            return
+        self._save_training_plan_draft(restored_draft)
+        self.memory.append_event(
+            self.session_state.session_id,
+            'startup_training_plan_draft_restored',
+            {
+                'next_step_tool': next_step_tool,
+                'dataset_path': str(restored_draft.get('dataset_path') or '').strip(),
+                'status': str(restored_draft.get('status') or '').strip(),
+                'replaced_existing': bool(existing_draft),
+            },
+        )
 
     @staticmethod
     def _merge_pending_review_context(pending: dict[str, Any], review: dict[str, Any] | None) -> dict[str, Any]:
@@ -4398,6 +4532,7 @@ async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudi
     memory_store = MemoryStore(settings.memory_root)
     route_event_store = memory_store
     client_holder: dict[str, YoloStudioAgentClient] = {}
+    checkpointer = FileCheckpointSaver(_checkpoint_path(settings))
 
     def _record_post_hook_route(route: str, payload: dict[str, Any]) -> None:
         route_event_store.append_event(
@@ -4428,7 +4563,7 @@ async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudi
         helper_llm = None
     react_kwargs: dict[str, Any] = {
         'prompt': SYSTEM_PROMPT,
-        'checkpointer': FileCheckpointSaver(_checkpoint_path(settings)),
+        'checkpointer': checkpointer,
         'post_model_hook': _build_agent_post_model_hook(helper_llm, route_reporter=_record_post_hook_route),
         'state_schema': _AgentRuntimeGraphState,
     }
@@ -4452,6 +4587,7 @@ async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudi
         primary_llm_settings=primary_llm_settings,
         helper_llm_settings=helper_llm_settings,
         memory=memory_store,
+        checkpointer=checkpointer,
     )
     client_holder['client'] = client
     return client

@@ -82,6 +82,13 @@ class FileCheckpointSaver(InMemorySaver):
             super().delete_thread(thread_id)
             self._persist_unlocked()
 
+    def thread_ids(self, prefix: str = '') -> list[str]:
+        with self._lock:
+            ids = [str(thread_id) for thread_id in self.storage.keys()]
+        if prefix:
+            ids = [thread_id for thread_id in ids if thread_id.startswith(prefix)]
+        return sorted(ids)
+
     def reset(self) -> None:
         with self._lock:
             self.storage = defaultdict(lambda: defaultdict(dict))

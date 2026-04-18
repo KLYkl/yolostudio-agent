@@ -34,8 +34,19 @@ def main() -> None:
         config = {'configurable': {'thread_id': 'thread-1', 'checkpoint_ns': ''}}
         saved_config = saver.put(config, checkpoint, {'source': 'unit-test', 'step': 1}, {'messages': version})
         saver.put_writes(saved_config, [('messages', {'content': 'pending-tool'})], task_id='task-1')
+        other_checkpoint = empty_checkpoint()
+        other_checkpoint['channel_values'] = {'messages': [{'role': 'user', 'content': 'world'}]}
+        other_checkpoint['channel_versions'] = {'messages': version}
+        saver.put(
+            {'configurable': {'thread_id': 'session-2-turn-1', 'checkpoint_ns': ''}},
+            other_checkpoint,
+            {'source': 'unit-test', 'step': 2},
+            {'messages': version},
+        )
 
         reloaded = FileCheckpointSaver(path)
+        assert reloaded.thread_ids() == ['session-2-turn-1', 'thread-1']
+        assert reloaded.thread_ids(prefix='thread-') == ['thread-1']
         latest = reloaded.get_tuple({'configurable': {'thread_id': 'thread-1', 'checkpoint_ns': ''}})
         assert latest is not None
         assert latest.checkpoint['id'] == checkpoint['id']

@@ -183,11 +183,21 @@ async def _scenario_c47_provenance_question_uses_last_comparison() -> None:
         'signals': ['latest_run_regressed'],
     }
     client.memory.save_state(client.session_state)
+    client.graph = _ScriptedGraph(
+        {
+            '你基于哪次训练说的': (
+                [],
+                '我当前主要基于训练对比结果：train_log_new 对比 train_log_old。\n- 对比摘要: 最近一次训练相对上一次召回下降。',
+            )
+        }
+    )  # type: ignore[assignment]
 
+    assert await client._try_handle_mainline_intent('你基于哪次训练说的？', 'thread-chaos-p1-c47') is None
     turn = await client.chat('你基于哪次训练说的？')
     assert turn['status'] == 'completed', turn
     assert 'train_log_new' in turn['message']
     assert 'train_log_old' in turn['message']
+    assert client.graph.calls == []
 
 
 async def _scenario_c48_compare_followup_routes_compare_analysis() -> None:
@@ -277,12 +287,22 @@ async def _scenario_c50_evidence_question_uses_state_facts() -> None:
         'matched_rule_ids': ['workflow_fix_data'],
     }
     client.memory.save_state(client.session_state)
+    client.graph = _ScriptedGraph(
+        {
+            '刚才你说数据有问题，依据是什么': (
+                [],
+                '当前判断主要基于这些事实：\n- 训练事实: 训练已完成：precision=0.81 recall=0.43，召回明显偏低。\n- 训练信号: low_recall, completed_run\n- 分析结论: 当前更像数据质量问题，尤其是召回相关数据不足。\n- 分析信号: data_quality_risk, low_recall\n- 建议依据: 建议先补数据，再考虑微调参数。\n- 当前建议动作: fix_data_quality',
+            )
+        }
+    )  # type: ignore[assignment]
 
+    assert await client._try_handle_mainline_intent('刚才你说数据有问题，依据是什么？', 'thread-chaos-p1-c50') is None
     turn = await client.chat('刚才你说数据有问题，依据是什么？')
     assert turn['status'] == 'completed', turn
     assert '训练事实' in turn['message']
     assert '召回明显偏低' in turn['message']
     assert 'data_quality_risk' in turn['message']
+    assert client.graph.calls == []
     assert 'fix_data_quality' in turn['message']
 
 

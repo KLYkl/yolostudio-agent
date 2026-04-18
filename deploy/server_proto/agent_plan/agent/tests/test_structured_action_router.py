@@ -161,8 +161,6 @@ from yolostudio_agent.agent.client.mainline_route_support import (
     resolve_mainline_guardrail_reply,
     resolve_mainline_route_state_payload,
 )
-from yolostudio_agent.agent.client.training_followup_service import resolve_training_grounded_reply_kind
-from yolostudio_agent.agent.client.training_followup_service import run_training_grounded_reply_flow
 
 
 class _NoLLMGraph:
@@ -295,39 +293,11 @@ async def _scenario_training_run_query_signals_prior_statement_disables_compare_
         metric_signals=[],
         explicit_run_ids=['train_log_300'],
     )
-    grounded_reply_kind = resolve_training_grounded_reply_kind(
-        user_text='你上次不是说这次训练最好吗，基于哪次训练说的？',
-        normalized_text='你上次不是说这次训练最好吗，基于哪次训练说的？'.lower(),
-        wants_predict=False,
-        training_command_like=False,
-    )
-    assert grounded_reply_kind == 'provenance', grounded_reply_kind
     assert signals['wants_training_run_compare'] is False, signals
     assert signals['wants_best_training_run'] is False, signals
     assert signals['comparison_run_ids'] == [], signals
     assert signals['wants_training_run_inspect'] is False, signals
-
-
-async def _scenario_training_grounded_reply_flow_handles_provenance() -> None:
-    client = _make_client('training-grounded-reply-flow-provenance')
-    client.session_state.active_training.last_run_comparison = {
-        'left_run': {'run_id': 'train_log_200'},
-        'right_run': {'run_id': 'train_log_100'},
-        'summary': '新模型较旧模型更稳',
-    }
-    messages: list[str] = []
-    result = run_training_grounded_reply_flow(
-        client.session_state,
-        user_text='你上次不是说这次训练最好吗，基于哪次训练说的？',
-        normalized_text='你上次不是说这次训练最好吗，基于哪次训练说的？'.lower(),
-        wants_predict=False,
-        training_command_like=False,
-        append_ai_message=messages.append,
-    )
-    assert result is not None, result
-    assert result['status'] == 'completed', result
-    assert 'train_log_200' in str(result['message']), result
-    assert messages and 'train_log_100' in messages[0], messages
+    assert signals['wants_training_knowledge'] is True, signals
 
 
 async def _scenario_mainline_request_signals_remote_prediction_pipeline() -> None:
@@ -522,6 +492,7 @@ async def _scenario_resolve_mainline_dispatch_payload_helper_builds_request_args
     remote_request_args = dict(dispatch_payload.get('remote_request_args') or {})
     prediction_request_args = dict(dispatch_payload.get('prediction_request_args') or {})
     training_entrypoint_request_args = dict(dispatch_payload.get('training_entrypoint_request_args') or {})
+    assert 'training_context_request_args' not in dispatch_payload, dispatch_payload
     assert remote_request_args == {
         'wants_remote_profile_list': False,
         'wants_remote_upload': True,
@@ -560,7 +531,6 @@ async def _run() -> None:
         await _scenario_training_loop_route_falls_back_without_llm()
         await _scenario_training_run_query_signals_reuse_last_comparison()
         await _scenario_training_run_query_signals_prior_statement_disables_compare_and_best()
-        await _scenario_training_grounded_reply_flow_handles_provenance()
         await _scenario_mainline_request_signals_remote_prediction_pipeline()
         await _scenario_mainline_request_signals_training_entry()
         await _scenario_mainline_guard_reply_segmentation_training()

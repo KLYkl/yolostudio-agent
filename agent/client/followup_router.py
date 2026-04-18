@@ -9,6 +9,25 @@ from yolostudio_agent.agent.client.mainline_guard_policy import (
 from yolostudio_agent.agent.client.session_state import SessionState
 
 
+def _is_training_provenance_request(user_text: str, normalized_text: str) -> bool:
+    text = str(user_text or '')
+    normalized = str(normalized_text or '')
+    return any(token in text for token in (
+        '你基于哪次训练说的', '你是基于哪次训练说的', '基于哪次训练', '根据哪次训练', '依据哪次训练',
+        '你上次不是说', '你不是说过',
+    )) and any(
+        token in text or token in normalized
+        for token in ('训练', 'run', '最好', '最值得参考', '分析', '结论')
+    )
+
+
+def _is_training_evidence_request(user_text: str) -> bool:
+    text = str(user_text or '')
+    return any(token in text for token in (
+        '依据是什么', '根据什么说的', '为什么这么说', '为什么说数据有问题',
+    ))
+
+
 def resolve_mainline_request_signals(
     *,
     session_state: SessionState,
@@ -177,6 +196,7 @@ def resolve_training_run_query_signals(
     )
     wants_next_step_guidance = any(token in user_text for token in ('下一步', '先补数据还是先调参数', '先补数据', '先调参数', '怎么优化', '如何优化下一步训练', '下一轮怎么做'))
     wants_training_knowledge = bool(metric_signals) or (asks_metric_terms and any(token in user_text for token in ('说明什么', '什么意思', '意味着什么', '怎么看')))
+    wants_training_knowledge = wants_training_knowledge or _is_training_provenance_request(user_text, normalized_text) or _is_training_evidence_request(user_text)
     wants_training_outcome_analysis = wants_training_outcome_analysis or explicit_run_outcome_phrase
     return {
         'wants_training_outcome_analysis': wants_training_outcome_analysis,

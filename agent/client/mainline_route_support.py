@@ -268,12 +268,6 @@ def resolve_mainline_dispatch_payload(
             'training_command_like': bool(mainline_signals.get('training_command_like')),
             'wants_best_weight_prediction': bool(getattr(guard_policy, 'wants_best_weight_prediction', False)),
         },
-        'training_context_request_args': {
-            'user_text': str(mainline_context.get('user_text') or ''),
-            'normalized_text': normalized_text,
-            'wants_predict': bool(getattr(guard_policy, 'wants_predict', False)),
-            'training_command_like': bool(mainline_signals.get('training_command_like')),
-        },
         'training_entrypoint_request_args': {
             'normalized_text': normalized_text,
             'dataset_path': dataset_path,
