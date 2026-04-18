@@ -99,10 +99,16 @@ from yolostudio_agent.agent.client.tool_policy import (
 from yolostudio_agent.agent.client.tool_result_parser import parse_tool_message
 from yolostudio_agent.agent.client.training_workflow import sync_training_workflow_state
 from yolostudio_agent.agent.client.training_plan_service import (
+    resolve_training_recovery_bootstrap,
+    resolve_training_plan_dialogue_context,
+    resolve_training_plan_dialogue_existing_action,
+    resolve_training_plan_dialogue_flags,
     build_training_revision_draft,
     build_training_preflight_tool_args,
+    prepare_training_revision_context,
+    run_prepare_only_entrypoint,
+    run_training_recovery_entrypoint,
     run_training_request_entrypoint,
-    run_training_recovery_orchestration,
     build_training_loop_start_draft as build_training_loop_start_draft_service,
     build_training_loop_start_fallback_plan as build_training_loop_start_fallback_plan_service,
     render_training_plan_message as render_training_plan_message_service,
@@ -1316,42 +1322,6 @@ class YoloStudioAgentClient:
         if self.session_state.preferences.language != "zh-CN":
             self.session_state.preferences.language = "zh-CN"
 
-    async def _complete_cached_tool_result_reply(
-        self,
-        tool_name: str,
-        payload: dict[str, Any] | None,
-    ) -> dict[str, Any] | None:
-        if not payload:
-            return None
-        reply = await self._render_tool_result_message(tool_name, payload)
-        if not reply:
-            return None
-        self._messages.append(AIMessage(content=reply))
-        return {'status': 'completed', 'message': reply, 'tool_call': None}
-
-    async def _complete_cached_or_direct_tool_reply(
-        self,
-        tool_name: str,
-        *,
-        cached_result: tuple[str, dict[str, Any]] | None = None,
-        **kwargs: Any,
-    ) -> dict[str, Any]:
-        if cached_result:
-            cached_tool_name, payload = cached_result
-            cached_reply = await self._complete_cached_tool_result_reply(cached_tool_name, payload)
-            if cached_reply is not None:
-                return cached_reply
-        return await self._complete_direct_tool_reply(tool_name, **kwargs)
-
-    async def _complete_cached_tool_reply_if_available(
-        self,
-        cached_result: tuple[str, dict[str, Any]] | None,
-    ) -> dict[str, Any] | None:
-        if not cached_result:
-            return None
-        cached_tool_name, payload = cached_result
-        return await self._complete_cached_tool_result_reply(cached_tool_name, payload)
-
     async def _try_handle_prediction_requests(
         self,
         *,
@@ -1379,13 +1349,13 @@ class YoloStudioAgentClient:
         wants_remote_training_pipeline: bool,
     ) -> dict[str, Any] | object | None:
         if wants_remote_profile_list:
-            return await self._complete_cached_or_direct_tool_reply(
-                'list_remote_profiles',
-                cached_result=(
-                    ('list_remote_profiles', self.session_state.active_remote_transfer.last_profile_listing)
-                    if self.session_state.active_remote_transfer.last_profile_listing else None
-                ),
-            )
+            cached_listing = dict(self.session_state.active_remote_transfer.last_profile_listing or {})
+            if cached_listing:
+                reply = await self._render_tool_result_message('list_remote_profiles', cached_listing)
+                if reply:
+                    self._messages.append(AIMessage(content=reply))
+                    return {'status': 'completed', 'message': reply, 'tool_call': None}
+            return _DEFER_TO_GRAPH
 
         if wants_remote_prediction_pipeline:
             pipeline_args = self._build_remote_prediction_pipeline_args(user_text)
@@ -1441,47 +1411,11 @@ class YoloStudioAgentClient:
     async def _try_handle_training_context_requests(
         self,
         *,
-        user_text: str,
         wants_predict: bool,
         training_command_like: bool,
         wants_training_provenance: bool,
         wants_training_evidence: bool,
-        wants_training_summary: bool,
-        wants_training_status: bool,
-        wants_training_loop_list: bool,
-        wants_training_loop_status: bool,
-        wants_inspect_training_loop: bool,
-        wants_pause_training_loop: bool,
-        wants_resume_training_loop: bool,
-        wants_stop_training_loop: bool,
-        wants_training_loop_start: bool,
     ) -> dict[str, Any] | None:
-        if not wants_predict and not training_command_like and wants_training_summary:
-            cached_reply = await self._complete_cached_tool_reply_if_available(
-                self._training_summary_request_cached_result(),
-            )
-            if cached_reply is not None:
-                return cached_reply
-            return None
-
-        if (
-            wants_training_status
-            and not wants_predict
-            and not training_command_like
-            and not wants_training_loop_list
-            and not wants_training_loop_status
-            and not wants_inspect_training_loop
-            and not wants_pause_training_loop
-            and not wants_resume_training_loop
-            and not wants_stop_training_loop
-            and not wants_training_loop_start
-        ):
-            cached_result = self._training_status_request_cached_result()
-            cached_reply = await self._complete_cached_tool_reply_if_available(cached_result)
-            if cached_reply is not None:
-                return cached_reply
-            return None
-
         if not wants_predict and not training_command_like and wants_training_provenance:
             return self._complete_training_provenance_reply()
 
@@ -1594,7 +1528,6 @@ class YoloStudioAgentClient:
             return prediction_request
 
         training_context_request = await self._try_handle_training_context_requests(
-            user_text=user_text,
             **dict(dispatch_payload.get('training_context_request_args') or {}),
         )
         if training_context_request:
@@ -1677,18 +1610,6 @@ class YoloStudioAgentClient:
             return None
         self._messages.append(AIMessage(content=reply))
         return {'status': 'completed', 'message': reply, 'tool_call': None}
-
-    async def _complete_direct_tool_reply(self, tool_name: str, **kwargs: Any) -> dict[str, Any]:
-        parsed = await self.direct_tool(tool_name, **kwargs)
-        reply = await self._render_tool_result_message(canonical_tool_name(tool_name), parsed)
-        if not reply:
-            reply = parsed.get('summary') or parsed.get('message') or parsed.get('error') or '操作已完成'
-        self._messages.append(AIMessage(content=reply))
-        return {
-            'status': 'completed' if parsed.get('ok', True) else 'error',
-            'message': reply,
-            'tool_call': None,
-        }
 
     async def _execute_remote_prediction_pipeline(self, pipeline_args: dict[str, Any]) -> dict[str, Any]:
         upload_args = dict(pipeline_args.get('upload_args') or {})
@@ -2145,97 +2066,6 @@ class YoloStudioAgentClient:
                 return save_dir
         return ''
 
-    async def _complete_dataset_quality_reply(self, dataset_path: str) -> dict[str, Any]:
-        scan = await self.direct_tool('scan_dataset', img_dir=dataset_path)
-        validate = await self.direct_tool('validate_dataset', img_dir=dataset_path)
-        health = await self.direct_tool('run_dataset_health_check', dataset_path=dataset_path, include_duplicates=True, max_duplicate_groups=3)
-
-        reply = await self._render_multi_tool_result_message(
-            [
-                ('scan_dataset', scan),
-                ('validate_dataset', validate),
-                ('run_dataset_health_check', health),
-            ],
-            objective='数据集质量分析说明',
-        )
-        if not reply:
-            warnings: list[str] = []
-            for source in (scan, validate, health):
-                for item in source.get('warnings') or []:
-                    if item not in warnings:
-                        warnings.append(str(item))
-
-            lines = [validate.get('summary') or scan.get('summary') or health.get('summary') or '数据集质量分析完成']
-            if warnings:
-                lines.append('最值得注意的风险:')
-                lines.extend(f'- {item}' for item in warnings[:3])
-            classes = scan.get('classes') or []
-            if classes:
-                lines.append(f"涉及类别: {', '.join(str(item) for item in classes[:4])}")
-            if scan.get('detected_classes_txt'):
-                lines.append(f"类名来源: {scan.get('detected_classes_txt')}")
-            if health.get('duplicate_groups'):
-                lines.append(f"重复图片: {health.get('duplicate_groups')} 组，额外重复文件 {health.get('duplicate_extra_files', 0)} 个")
-            action_candidates = (
-                validate.get('action_candidates')
-                or scan.get('action_candidates')
-                or health.get('action_candidates')
-                or []
-            )
-            next_actions = validate.get('next_actions') or scan.get('next_actions') or health.get('next_actions') or []
-            if action_candidates:
-                lines.append('建议:')
-                for item in action_candidates[:2]:
-                    if not isinstance(item, dict):
-                        continue
-                    fragment = str(item.get('description') or item.get('reason') or item.get('tool') or '').strip()
-                    if fragment:
-                        lines.append(f'- {fragment}')
-            elif next_actions:
-                lines.append('建议:')
-                lines.extend(f'- {item}' for item in next_actions[:2])
-            reply = '\n'.join(lines)
-        self._messages.append(AIMessage(content=reply))
-        return {
-            'status': 'completed',
-            'message': reply,
-            'tool_call': None,
-        }
-
-    async def _complete_training_outcome_analysis_reply(self) -> dict[str, Any]:
-        training_summary = dict(
-            self.session_state.active_training.training_run_summary
-            or self.session_state.active_training.last_summary
-            or self.session_state.active_training.last_status
-            or {}
-        )
-        if not training_summary:
-            training_summary = await self.direct_tool('summarize_training_run')
-        result = await self.direct_tool(
-            'analyze_training_outcome',
-            metrics=training_summary,
-            data_quality=self.session_state.active_dataset.last_health_check or self.session_state.active_dataset.last_validate,
-            comparison=self.session_state.active_training.last_run_comparison,
-            prediction_summary=self.session_state.active_prediction.last_result,
-            model_family='yolo',
-            task_type='detection',
-        )
-        reply = await self._render_multi_tool_result_message(
-            [
-                ('summarize_training_run', training_summary),
-                ('analyze_training_outcome', result),
-            ],
-            objective='训练结果分析说明',
-        )
-        if not reply:
-            reply = str(result.get('summary') or training_summary.get('summary') or result.get('error') or '训练结果分析已完成')
-        self._messages.append(AIMessage(content=reply))
-        return {
-            'status': 'completed' if training_summary.get('ok', True) and result.get('ok', True) else 'error',
-            'message': reply,
-            'tool_call': None,
-        }
-
     def _complete_training_provenance_reply(self) -> dict[str, Any]:
         return complete_training_provenance_reply_service(
             self.session_state,
@@ -2324,55 +2154,29 @@ class YoloStudioAgentClient:
             self._clear_training_plan_draft()
             return {'status': 'completed', 'message': reply, 'tool_call': None}
 
-        readiness = await self.direct_tool('dataset_training_readiness', img_dir=dataset_path)
-        if not readiness.get('ok'):
-            reply = await self._render_tool_result_message('dataset_training_readiness', readiness)
-            if not reply:
-                reply = readiness.get('error') or '数据准备前检查失败'
-            self._messages.append(AIMessage(content=reply))
-            return {'status': 'error', 'message': reply, 'tool_call': None}
-
-        if readiness.get('ready') and str(readiness.get('resolved_data_yaml') or '').strip():
-            data_yaml = str(readiness.get('resolved_data_yaml') or '').strip()
-            reply = f'当前数据已经可训练，现成 data.yaml: {data_yaml}。如果你只是想准备数据，这一步已经完成。'
-            self._messages.append(AIMessage(content=reply))
-            self._clear_training_plan_draft()
-            return {'status': 'completed', 'message': reply, 'tool_call': None}
-
-        resolved_img_dir = str(readiness.get('resolved_img_dir') or '').strip()
-        resolved_label_dir = str(readiness.get('resolved_label_dir') or '').strip()
-        if not resolved_img_dir or not resolved_label_dir:
-            reply = (
-                f'我还没核实到可用的数据集结构：{dataset_path}。'
-                '当前没有确认到 images/ 和 labels/ 目录，请检查路径是否写对。'
-            )
-            self._messages.append(AIMessage(content=reply))
-            self._clear_training_plan_draft()
-            return {'status': 'completed', 'message': reply, 'tool_call': None}
-
-        prepare_args: dict[str, Any] = {'dataset_path': dataset_path}
-        classes_txt = str(intent_parsing.extract_classes_txt_from_text(user_text) or '').strip()
-        if classes_txt:
-            prepare_args['classes_txt'] = classes_txt
-        if any(token in user_text for token in ('按默认比例', '默认比例', '先划分', '划分训练集', '划分数据集', 'split')):
-            prepare_args['force_split'] = True
-
-        planned_training_args = self._collect_requested_training_args(
-            user_text,
-            data_yaml=None,
-        )
-        draft = self._build_training_plan_draft(
+        result = await run_prepare_only_entrypoint(
             user_text=user_text,
             dataset_path=dataset_path,
-            readiness=readiness,
-            preflight={},
-            next_tool_name='prepare_dataset_for_training',
-            next_tool_args=dict(prepare_args),
-            planned_training_args=planned_training_args,
+            direct_tool=self.direct_tool,
+            collect_requested_training_args=self._collect_requested_training_args,
+            build_training_plan_draft_fn=self._build_training_plan_draft,
+            render_tool_result_message=self._render_tool_result_message,
         )
-        draft['execution_mode'] = 'prepare_only'
-        self._save_training_plan_draft(draft)
-        return _DEFER_TO_GRAPH
+        if result.get('clear_draft'):
+            self._clear_training_plan_draft()
+        draft = dict(result.get('draft') or {})
+        if draft:
+            self._save_training_plan_draft(draft)
+        if result.get('defer_to_graph'):
+            return _DEFER_TO_GRAPH
+        reply = str(result.get('reply') or '')
+        if reply:
+            self._messages.append(AIMessage(content=reply))
+        return {
+            'status': str(result.get('status') or 'completed'),
+            'message': reply,
+            'tool_call': None,
+        }
 
     @staticmethod
     def _extract_training_run_ids_from_text(text: str) -> list[str]:
@@ -4034,39 +3838,6 @@ class YoloStudioAgentClient:
             loop_id=loop_id,
             classify_structured_action=self._classify_structured_action,
         )
-    def _training_status_request_cached_result(self) -> tuple[str, dict[str, Any]] | None:
-        training = self.session_state.active_training
-        payload = dict(training.last_status or {})
-        if not payload:
-            return None
-        run_state = str(
-            payload.get('run_state')
-            or (payload.get('status_overview') or {}).get('run_state')
-            or ''
-        ).strip().lower()
-        if training.running or run_state == 'running':
-            return None
-        return ('check_training_status', payload)
-
-    def _training_summary_request_cached_result(self) -> tuple[str, dict[str, Any]] | None:
-        payload = dict(
-            self.session_state.active_training.training_run_summary
-            or self.session_state.active_training.last_summary
-            or {}
-        )
-        if not payload:
-            return None
-        return ('summarize_training_run', payload)
-
-    def _knowledge_tool_cached_result(self, tool_name: str) -> tuple[str, dict[str, Any]] | None:
-        canonical_name = canonical_tool_name(tool_name)
-        knowledge = self.session_state.active_knowledge
-        if canonical_name == 'analyze_training_outcome' and knowledge.last_analysis:
-            return ('analyze_training_outcome', dict(knowledge.last_analysis))
-        if canonical_name == 'recommend_next_training_step' and knowledge.last_recommendation:
-            return ('recommend_next_training_step', dict(knowledge.last_recommendation))
-        return None
-
     @staticmethod
     def _extract_training_loop_max_rounds(text: str) -> int | None:
         patterns = [
@@ -4557,80 +4328,34 @@ class YoloStudioAgentClient:
         prepare_only = await self._try_handle_prepare_only_intent(user_text)
         if prepare_only is not None:
             return prepare_only
-        if self.session_state.active_training.running and explicit_run_ids and wants_resume_recent_training:
-            reply = '当前已有活动训练；如果你想恢复或切换到另一个历史 run，请先停止当前训练，再明确要恢复的 run。'
-            self._messages.append(AIMessage(content=reply))
-            return {'status': 'completed', 'message': reply, 'tool_call': None}
-        running_hot_update_intent = (
-            self.session_state.active_training.running
-            and not latest_dataset_path
-            and not explicit_run_ids
-            and not any(token in user_text for token in ('预测', '推理', '识别', '视频', '图片'))
-            and not any(token in user_text for token in ('第几轮', '训练到哪了', '训练到第几轮', '跑到第几轮', '训练状态', '训练进度', '当前进度', '还在训练吗', '还在跑吗', '现在状态'))
-            and (
-                any(token in normalized for token in ('batch', 'device', 'epochs', 'optimizer', 'freeze', 'lr0', 'resume', 'imgsz', 'fraction', 'classes', 'single_cls'))
-                or any(token in user_text for token in ('轮数', '轮', '优化器', '冻结', '学习率', '环境', 'GPU', '显卡'))
-            )
+        bootstrap = resolve_training_recovery_bootstrap(
+            session_state=self.session_state,
+            user_text=user_text,
+            normalized_text=normalized,
+            latest_dataset_path=latest_dataset_path,
+            explicit_run_ids=explicit_run_ids,
+            requested_execute=requested_execute,
+            wants_repeat_prepare=wants_repeat_prepare,
+            wants_retry_last_plan=wants_retry_last_plan,
+            wants_resume_recent_training=wants_resume_recent_training,
+            wants_analysis_only=wants_analysis_only,
         )
-        if running_hot_update_intent:
-            reply = (
-                '当前训练还在运行，不能直接热更新 batch、轮数、优化器或设备等核心参数。'
-                '如果要改参数，请先停止当前训练，再生成新的训练计划。'
-            )
-            self._messages.append(AIMessage(content=reply))
-            return {'status': 'completed', 'message': reply, 'tool_call': None}
-        if requested_execute and self.session_state.active_training.running:
-            reply = '当前训练已经在运行；如果要新开训练，请先停止当前训练，或明确给出新的数据集和模型。'
-            self._messages.append(AIMessage(content=reply))
-            return {'status': 'completed', 'message': reply, 'tool_call': None}
-        readiness = self.session_state.active_dataset.last_readiness or {}
-        data_yaml = str(self.session_state.active_dataset.data_yaml or '').strip()
-        if wants_repeat_prepare and readiness.get('ready') and data_yaml:
-            reply = f'当前数据集已经准备完成：{data_yaml}；不需要重复 prepare。你可以直接继续训练或重新规划。'
-            self._messages.append(AIMessage(content=reply))
-            return {'status': 'completed', 'message': reply, 'tool_call': None}
-        if not (wants_retry_last_plan or wants_resume_recent_training):
+        if bootstrap is None:
             return None
-        if wants_analysis_only:
-            if (
-                self.session_state.active_training.training_run_summary
-                or self.session_state.active_training.last_summary
-                or self.session_state.active_training.last_status
-            ):
-                return await self._complete_training_outcome_analysis_reply()
-            return None
-        tr = self.session_state.active_training
-        base_args = dict((tr.last_start_result or {}).get('resolved_args') or {})
-        if not str(base_args.get('model') or '').strip():
-            base_args['model'] = str(tr.model or '').strip()
-        if not str(base_args.get('data_yaml') or '').strip():
-            base_args['data_yaml'] = str(tr.data_yaml or self.session_state.active_dataset.data_yaml or '').strip()
-        if not str(base_args.get('training_environment') or '').strip() and str(tr.training_environment or '').strip():
-            base_args['training_environment'] = str(tr.training_environment).strip()
-        dataset_path = str(self.session_state.active_dataset.dataset_root or self.session_state.active_dataset.img_dir or '').strip()
-        if not dataset_path and str(base_args.get('data_yaml') or '').strip():
-            dataset_path = str(self.session_state.active_dataset.dataset_root or self.session_state.active_dataset.img_dir or '').strip()
-        if not str(base_args.get('model') or '').strip() or not str(base_args.get('data_yaml') or '').strip():
-            reply = '当前缺少足够的历史训练参数，暂时不能直接恢复这次训练计划；请先明确数据集和模型。'
-            self._messages.append(AIMessage(content=reply))
-            return {'status': 'completed', 'message': reply, 'tool_call': None}
-        run_state = str((tr.training_run_summary or {}).get('run_state') or (tr.last_summary or {}).get('run_state') or (tr.last_status or {}).get('run_state') or '').strip().lower()
-        if wants_resume_recent_training:
-            if run_state != 'stopped':
-                reply = '当前只有已停止的训练才适合按最近状态继续；失败或已完成的训练更适合按原计划重试或重新规划。'
+        if bootstrap.get('defer_to_graph'):
+            return _DEFER_TO_GRAPH
+        if not bootstrap.get('proceed'):
+            reply = str(bootstrap.get('reply') or '')
+            if reply:
                 self._messages.append(AIMessage(content=reply))
-                return {'status': 'completed', 'message': reply, 'tool_call': None}
-            base_args['resume'] = True
-        else:
-            base_args['resume'] = False
-        if dataset_path and not readiness:
-            readiness = await self.direct_tool('training_readiness', img_dir=dataset_path)
-        if not (tr.last_environment_probe or {}).get('environments'):
-            await self.direct_tool('list_training_environments')
-        plan_result = await run_training_recovery_orchestration(
+            return {'status': 'completed', 'message': reply, 'tool_call': None}
+
+        base_args = dict(bootstrap.get('base_args') or {})
+        dataset_path = str(bootstrap.get('dataset_path') or '')
+        plan_result = await run_training_recovery_entrypoint(
+            session_state=self.session_state,
             user_text=user_text,
             dataset_path=dataset_path,
-            readiness=readiness,
             base_args=base_args,
             direct_tool=self.direct_tool,
             build_training_plan_draft_fn=self._build_training_plan_draft,
@@ -4653,97 +4378,36 @@ class YoloStudioAgentClient:
         pending = self._pending_from_state()
         explicit_run_ids = self._extract_training_run_ids_from_text(user_text)
 
-        normalized = user_text.lower()
-        if any(token in user_text for token in ('环训练', '循环训练', '循环训', '循环跑', '自动复训', '自动续训')) or any(
-            token in normalized for token in ('training loop', 'loop training', 'auto retrain', 'auto training loop')
-        ):
+        dialogue_context = resolve_training_plan_dialogue_context(
+            user_text=user_text,
+            explicit_run_ids=explicit_run_ids,
+            is_training_discussion_only=self._is_training_discussion_only,
+        )
+        normalized = str(dialogue_context.get('normalized') or '')
+        if dialogue_context.get('is_loop_dialogue'):
             return None
         clear_fields = self._collect_training_clear_fields(user_text)
-        discussion_only_hint = self._is_training_discussion_only(user_text) or any(token in user_text for token in ('不执行', '不要执行', '暂不执行', '先不执行'))
-        training_readiness_question = any(
-            token in user_text
-            for token in (
-                '能不能直接训练',
-                '能否直接训练',
-                '可不可以直接训练',
-                '可以直接训练吗',
-                '是否可以直接训练',
-                '是否能直接训练',
-                '还能不能直接训练',
-                '可否直接训练',
-                '能直接训练吗',
-            )
-        )
-        contradictory_train_intent = not training_readiness_question and any(token in user_text for token in ('不要训练', '先不要训练', '不训练了')) and any(
-            token in user_text for token in ('开始训练', '启动训练', '直接训练', '直接开始训练', '开训', '执行')
-        )
-        requested_execute = (
-            any(token in user_text for token in ('执行', '开始吧', '就这样', '确认', '可以开始', '开训', '启动吧', '直接训练', '直接开始训练'))
-            or normalized.strip() in {'y', 'yes'}
-        ) and not discussion_only_hint and not contradictory_train_intent
-        if any(token in user_text for token in ('为什么', '原因', '依据', '怎么看')):
-            requested_execute = False
-        wants_repeat_prepare = any(token in user_text for token in ('再 prepare 一次', '再准备一次', '重新 prepare 一次', '重新准备一次', '再做一次准备', '重新准备一遍'))
-        wants_retry_last_plan = any(token in user_text for token in ('按原计划重试一次', '按原计划重试', '重试刚才那次训练', '重试上次训练', '按刚才的计划再来一次', '按原计划再来一次'))
-        wants_resume_recent_training = (
-            any(
-                token in user_text
-                for token in (
-                    '从最近状态继续训练',
-                    '从最近状态继续',
-                    '从最近状态恢复训练',
-                    '恢复刚才训练',
-                    '接着上次训练',
-                    '恢复上次训练',
-                    'resume 上次训练',
-                    'resume 刚才训练',
-                    'resume 另一个 run',
-                    'resume run',
-                    '继续另一个 run',
-                )
-            )
-            or (
-                'resume' in normalized
-                and (
-                    bool(explicit_run_ids)
-                    or any(token in user_text for token in ('上次', '刚才', '最近', '继续', '恢复', '另一个', '历史', 'run'))
-                )
-            )
-        )
-        wants_analysis_only = any(token in user_text for token in ('只分析', '只看结果', '不要接着训', '不要继续训', '不要继续训练'))
-        latest_dataset_path = intent_parsing.extract_dataset_path_from_text(user_text)
-        all_paths = intent_parsing.extract_all_paths_from_text(user_text)
-        project_path_hint = intent_parsing.extract_project_from_text(user_text)
-        custom_script_hint = intent_parsing.extract_custom_training_script_from_text(user_text)
-        dataset_candidates = [
-            item for item in all_paths
-            if not intent_parsing.looks_like_model_path(item)
-            and item != project_path_hint
-            and item != custom_script_hint
-        ]
-        if dataset_candidates and any(token in user_text for token in ('换成', '现在用', '改成', '改用')):
-            latest_dataset_path = dataset_candidates[-1]
-        if (
-            latest_dataset_path
-            and project_path_hint
-            and latest_dataset_path == project_path_hint
-            and not any(token in user_text for token in ('数据', 'dataset', 'img_dir', 'label_dir'))
-        ):
-            latest_dataset_path = ''
-        if (
-            latest_dataset_path
-            and custom_script_hint
-            and latest_dataset_path == custom_script_hint
-            and not any(token in user_text for token in ('数据', 'dataset', 'img_dir', 'label_dir'))
-        ):
-            latest_dataset_path = ''
-        dataset_path_revision_requested = bool(latest_dataset_path) and (
-            any(token in user_text for token in ('数据', '数据集', 'dataset', 'img_dir', 'label_dir'))
-            or any(token in user_text for token in ('现在用', '改用', '换成', '改成'))
-            or (
-                any(token in user_text for token in ('训练', '开训', '开始训练', '继续训练'))
-                and not any(token in user_text for token in ('预测', '推理', '识别', '抽帧', '提帧', '视频', '图片'))
-            )
+        discussion_only_hint = bool(dialogue_context.get('discussion_only_hint'))
+        training_readiness_question = bool(dialogue_context.get('training_readiness_question'))
+        contradictory_train_intent = bool(dialogue_context.get('contradictory_train_intent'))
+        requested_execute = bool(dialogue_context.get('requested_execute'))
+        wants_repeat_prepare = bool(dialogue_context.get('wants_repeat_prepare'))
+        wants_retry_last_plan = bool(dialogue_context.get('wants_retry_last_plan'))
+        wants_resume_recent_training = bool(dialogue_context.get('wants_resume_recent_training'))
+        wants_analysis_only = bool(dialogue_context.get('wants_analysis_only'))
+        latest_dataset_path = str(dialogue_context.get('latest_dataset_path') or '')
+        dataset_path_revision_requested = bool(dialogue_context.get('dataset_path_revision_requested'))
+        flag_context = resolve_training_plan_dialogue_flags(
+            user_text=user_text,
+            normalized_text=normalized,
+            draft=draft,
+            pending=pending,
+            requested_execute=requested_execute,
+            clear_fields=clear_fields,
+            wants_retry_last_plan=wants_retry_last_plan,
+            wants_resume_recent_training=wants_resume_recent_training,
+            dataset_path_revision_requested=dataset_path_revision_requested,
+            custom_training_script_requested=bool(intent_parsing.extract_custom_training_script_from_text(user_text)),
         )
         if contradictory_train_intent:
             reply = '你这句话里同时出现了“不要训练”和“开始训练”；我先按保守方式处理，只保留讨论态，不会直接执行。'
@@ -4769,76 +4433,39 @@ class YoloStudioAgentClient:
                 wants_resume_recent_training=wants_resume_recent_training,
                 wants_analysis_only=wants_analysis_only,
             )
-
-        has_revision = any(
-            token in normalized or token in user_text
-            for token in (
-                'batch', 'imgsz', 'device', 'epochs', '轮', '轮数', '优化器', 'optimizer', '冻结', 'freeze', 'resume',
-                'lr0', '学习率', 'patience', '早停', 'workers', '线程数', 'amp', '混合精度',
-                '模型', '权重', 'project', '输出目录', 'name', '实验名', '运行名',
-                'fraction', '全量数据', '抽样', 'classes', '类别', 'single_cls', '单类别',
-                '环境', '为什么', '原因', '依据', '先只做准备', '只做准备', '标准 yolo', '自定义脚本', 'trainer',
-                '高级参数', '高级配置', '展开参数', '详细参数',
-                '划分', '自动划分', '不划分', '不要划分', '默认比例',
-            )
-        ) or wants_retry_last_plan or wants_resume_recent_training or bool(intent_parsing.extract_custom_training_script_from_text(user_text)) or dataset_path_revision_requested
-        switching_prepare_only_to_train = bool(
-            pending
-            and pending.get('name') == 'prepare_dataset_for_training'
-            and str(draft.get('execution_mode') or '').strip().lower() == 'prepare_only'
-            and any(token in user_text for token in ('直接训练', '开始训练', '启动训练', '执行训练', '那就训练', '那你训练'))
+        readiness = self.session_state.active_dataset.last_readiness or {}
+        data_yaml = str(self.session_state.active_dataset.data_yaml or '').strip()
+        plan_action = resolve_training_plan_dialogue_existing_action(
+            draft=draft,
+            pending=pending,
+            flag_context=flag_context,
+            requested_execute=requested_execute,
+            wants_repeat_prepare=wants_repeat_prepare,
+            readiness=readiness,
+            data_yaml=data_yaml,
         )
-        has_revision = has_revision or switching_prepare_only_to_train
-        if (
-            any(token in user_text for token in ('取消', '算了', '先不做', '不用了', '先别开始训练', '先不要开始训练', '先别开训', '先不要开训', '先别开始', '先不要开始'))
-            and not clear_fields
-            and not requested_execute
-            and not has_revision
-            and not any(token in user_text for token in ('取消了', '已经取消', '刚才'))
-        ):
-            if pending:
-                return await self.confirm(thread_id, approved=False)
+        action = str(plan_action.get('action') or '').strip()
+        if action == 'cancel_pending':
+            return await self.confirm(thread_id, approved=False)
+        if action == 'cancel_draft':
             self._clear_training_plan_draft()
             self.memory.save_state(self.session_state)
             return {'status': 'cancelled', 'message': '已取消当前训练计划草案。', 'tool_call': None}
-        if (
-            not pending
-            and any(token in user_text for token in ('不要训练', '先不要训练', '不训练了'))
-            and any(token in user_text for token in ('重新检查', '检查一下', '能不能直接训练', '是否能直接训练'))
-        ):
+        if action == 'clear_and_recheck':
             self._clear_training_plan_draft()
             self.memory.save_state(self.session_state)
             return None
-        if pending and any(token in user_text for token in ('等等', '等一下', '先等等', '先等下', '稍等', '先稍等')):
+        if action == 'confirmation_message':
             return self._needs_confirmation_result(thread_id, pending, await self._build_confirmation_message(pending))
-        if (
-            pending
-            and pending.get('name') == 'prepare_dataset_for_training'
-            and any(token in user_text for token in ('data_yaml', 'yaml', '产物路径', '输出路径', '会生成到哪里'))
-        ):
-            dataset_path = str((pending.get('args') or {}).get('dataset_path') or draft.get('dataset_path') or '').strip()
-            expected_yaml = f'{dataset_path.rstrip("/")}/data.yaml' if dataset_path else '准备输出目录中的 data.yaml'
-            dataset_label = dataset_path or '<当前数据集>'
-            reply = (
-                f'如果继续 prepare，我会基于数据集 {dataset_label} 生成可训练产物；'
-                f'预期会产出可用的 data_yaml（通常是 {expected_yaml}），完成后我会把真实路径写回状态。'
-            )
+        if action == 'reply_with_pending':
+            reply = str(plan_action.get('reply') or '').strip()
             self._messages.append(AIMessage(content=reply))
             return self._needs_confirmation_result(thread_id, pending, reply)
-        if wants_repeat_prepare:
-            readiness = self.session_state.active_dataset.last_readiness or {}
-            data_yaml = str(self.session_state.active_dataset.data_yaml or '').strip()
-            if readiness.get('ready') and data_yaml:
-                if pending:
-                    return self._needs_confirmation_result(thread_id, pending, await self._build_confirmation_message(pending))
-                reply = f'当前数据集已经准备完成：{data_yaml}；不需要重复 prepare。你可以直接继续训练或重新规划。'
-                self._messages.append(AIMessage(content=reply))
-                return {'status': 'completed', 'message': reply, 'tool_call': None}
-        if (
-            any(token in user_text for token in ('先别执行', '先不要执行', '先别启动', '先不要启动', '先讨论', '先看看计划', '先给我计划', '想先看计划', '记一下我想先看计划'))
-            and not has_revision
-            and not requested_execute
-        ):
+        if action == 'reply':
+            reply = str(plan_action.get('reply') or '').strip()
+            self._messages.append(AIMessage(content=reply))
+            return {'status': 'completed', 'message': reply, 'tool_call': None}
+        if action == 'render_plan':
             if draft:
                 return {
                     'status': 'completed' if not pending else 'needs_confirmation',
@@ -4847,18 +4474,10 @@ class YoloStudioAgentClient:
                     'thread_id': thread_id if pending else None,
                 }
             return None
-
-        if (
-            draft
-            and not has_revision
-            and not requested_execute
-            and any(token in user_text for token in ('最开始那套呢', '最开始那个计划呢', '第一版计划呢', '最早那套呢', '最开始那版呢'))
-        ):
-            reply = (
-                '当前只保留最新训练计划草案；最开始那套已经被后续修订覆盖。'
-                '如果要回退，请直接说明要恢复的数据集、模型或关键参数。\n\n'
-                f"{await self._render_training_plan_message(draft, pending=bool(pending))}"
-            )
+        if action == 'render_original_plan':
+            preamble = str(plan_action.get('preamble') or '').strip()
+            rendered_plan = await self._render_training_plan_message(draft, pending=bool(pending))
+            reply = f'{preamble}\n\n{rendered_plan}' if preamble else rendered_plan
             self._messages.append(AIMessage(content=reply))
             return {
                 'status': 'completed' if not pending else 'needs_confirmation',
@@ -4866,75 +4485,42 @@ class YoloStudioAgentClient:
                 'tool_call': {'name': pending['name'], 'args': pending.get('args', {})} if pending else None,
                 'thread_id': thread_id if pending else None,
             }
-
-        if (
-            draft
-            and not has_revision
-            and not requested_execute
-            and any(token in user_text for token in ('训练计划继续', '继续刚才训练计划', '继续刚才的训练计划', '继续刚才那个训练计划', '刚才训练计划继续'))
-        ):
-            return {
-                'status': 'completed' if not pending else 'needs_confirmation',
-                'message': await self._render_training_plan_message(draft, pending=bool(pending)),
-                'tool_call': {'name': pending['name'], 'args': pending.get('args', {})} if pending else None,
-                'thread_id': thread_id if pending else None,
-            }
-
-        if requested_execute and not has_revision:
-            if pending:
-                return await self.confirm(thread_id, approved=True)
-            next_tool_name = str(draft.get('next_step_tool') or '').strip()
-            if not next_tool_name:
-                return {'status': 'completed', 'message': await self._render_training_plan_message(draft, pending=False), 'tool_call': None}
+        if action == 'approve_pending':
+            return await self.confirm(thread_id, approved=True)
+        if action == 'defer_to_graph':
             return _DEFER_TO_GRAPH
-
-        if not has_revision:
+        if action == 'render_draft':
+            return {'status': 'completed', 'message': await self._render_training_plan_message(draft, pending=False), 'tool_call': None}
+        if action == 'noop':
             return None
 
-        revised_draft = dict(draft or {})
-        planned_args = dict(revised_draft.get('planned_training_args') or {})
-        dataset_path = str(latest_dataset_path or revised_draft.get('dataset_path') or self.session_state.active_dataset.dataset_root or self.session_state.active_dataset.img_dir or '').strip()
-        readiness = self.session_state.active_dataset.last_readiness or {}
-        previous_dataset_path = str(revised_draft.get('dataset_path') or '').strip()
-        if latest_dataset_path and dataset_path and dataset_path != previous_dataset_path:
-            readiness = await self.direct_tool('training_readiness', img_dir=dataset_path)
-            await self.direct_tool('list_training_environments')
-            resolved_yaml = str(readiness.get('resolved_data_yaml') or '').strip()
-            if resolved_yaml:
-                planned_args['data_yaml'] = resolved_yaml
-            else:
-                planned_args.pop('data_yaml', None)
-        requested_data_yaml_hint: str | None = str(planned_args.get('data_yaml') or '').strip()
-        if not requested_data_yaml_hint:
-            requested_data_yaml_hint = None if latest_dataset_path else str(self.session_state.active_dataset.data_yaml or '').strip()
-        requested_args = self._collect_requested_training_args(
-            user_text,
-            data_yaml=requested_data_yaml_hint,
-        )
-        for field in clear_fields:
-            planned_args.pop(field, None)
-        planned_args.update(
-            {
-                key: value
-                for key, value in requested_args.items()
-                if value is not None and value != ''
-            }
-        )
-        execution_backend = self._extract_training_execution_backend_from_text(user_text)
-        advanced_requested = self._wants_training_advanced_details(user_text) or bool(revised_draft.get('advanced_details_requested'))
-        if switching_prepare_only_to_train:
-            revised_draft['execution_mode'] = 'prepare_then_train'
-        if any(token in user_text for token in ('只做准备', '只准备', '先准备不要训练')):
-            revised_draft['execution_mode'] = 'prepare_only'
-            revised_draft['next_step_tool'] = 'prepare_dataset_for_training'
-        if any(token in user_text for token in ('不要自动划分', '不要划分', '不划分')):
-            next_step_args = dict(revised_draft.get('next_step_args') or {})
-            next_step_args.pop('force_split', None)
-            revised_draft['next_step_args'] = next_step_args
+        has_revision = bool(flag_context.get('has_revision'))
+        switching_prepare_only_to_train = bool(flag_context.get('switching_prepare_only_to_train'))
 
-        next_tool_name = str(revised_draft.get('next_step_tool') or (pending or {}).get('name') or '').strip()
-        next_tool_args = dict(revised_draft.get('next_step_args') or (pending or {}).get('args') or {})
-        execution_mode = str(revised_draft.get('execution_mode') or '').strip().lower()
+        revision_context = await prepare_training_revision_context(
+            session_state=self.session_state,
+            user_text=user_text,
+            draft=draft,
+            pending=pending,
+            latest_dataset_path=latest_dataset_path,
+            clear_fields=clear_fields,
+            switching_prepare_only_to_train=switching_prepare_only_to_train,
+            wants_prepare_only=bool(flag_context.get('wants_prepare_only')),
+            wants_disable_split=bool(flag_context.get('wants_disable_split')),
+            collect_requested_training_args=self._collect_requested_training_args,
+            extract_training_execution_backend=self._extract_training_execution_backend_from_text,
+            wants_training_advanced_details=self._wants_training_advanced_details,
+            direct_tool=self.direct_tool,
+        )
+        revised_draft = dict(revision_context.get('revised_draft') or {})
+        planned_args = dict(revision_context.get('planned_args') or {})
+        dataset_path = str(revision_context.get('dataset_path') or '').strip()
+        readiness = dict(revision_context.get('readiness') or {})
+        next_tool_name = str(revision_context.get('next_tool_name') or '').strip()
+        next_tool_args = dict(revision_context.get('next_tool_args') or {})
+        execution_mode = str(revision_context.get('execution_mode') or '').strip().lower()
+        execution_backend = str(revision_context.get('execution_backend') or '').strip()
+        advanced_requested = bool(revision_context.get('advanced_requested'))
         revised_draft = await build_training_revision_draft(
             user_text=user_text,
             dataset_path=dataset_path,

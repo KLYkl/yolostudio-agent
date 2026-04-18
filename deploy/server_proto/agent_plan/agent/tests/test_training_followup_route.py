@@ -498,8 +498,11 @@ async def _scenario_cached_explicit_next_step_request_reuses_state() -> None:
     assert '漏标样本' in turn['message'], turn
 
 
-async def _scenario_cached_explicit_status_request_reuses_state() -> None:
+async def _scenario_cached_explicit_status_request_routes_through_graph() -> None:
     client = _make_client('status-request-cached')
+    graph = _ObservedToolGraph('check_training_status')
+    client.graph = graph  # type: ignore[assignment]
+    graph.bind(client)
     client.session_state.active_training.running = False
     client.session_state.active_training.last_status = {
         'summary': '训练已完成: epoch 10/10, map50=0.61',
@@ -509,19 +512,32 @@ async def _scenario_cached_explicit_status_request_reuses_state() -> None:
         'action_candidates': [{'tool': 'summarize_training_run', 'description': '继续查看训练总结'}],
     }
 
-    async def _unexpected_direct_tool(*args, **kwargs):
-        raise AssertionError('cached explicit status request should render from state, not call direct_tool')
+    calls: list[tuple[str, dict[str, Any]]] = []
 
-    client.direct_tool = _unexpected_direct_tool  # type: ignore[assignment]
+    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((tool_name, dict(kwargs)))
+        assert tool_name == 'check_training_status'
+        result = dict(client.session_state.active_training.last_status or {})
+        result.setdefault('ok', True)
+        client._apply_to_state(tool_name, result, kwargs)
+        return result
+
+    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+    assert await client._try_handle_mainline_intent('看下训练状态', 'thread-status-request-cached') is None
     turn = await client.chat('看下训练状态')
     assert turn['status'] == 'completed', turn
     assert '训练已完成' in turn['message'], turn
     assert 'run_state=completed' in turn['message'], turn
     assert '继续查看训练总结' in turn['message'], turn
+    assert calls == [('check_training_status', {})], calls
+    assert graph.calls == [('check_training_status', {})], graph.calls
 
 
-async def _scenario_cached_training_summary_request_reuses_state() -> None:
+async def _scenario_cached_training_summary_request_routes_through_graph() -> None:
     client = _make_client('training-summary-request-cached')
+    graph = _ObservedToolGraph('summarize_training_run')
+    client.graph = graph  # type: ignore[assignment]
+    graph.bind(client)
     client.session_state.active_training.running = False
     client.session_state.active_training.training_run_summary = {
         'ok': True,
@@ -531,14 +547,24 @@ async def _scenario_cached_training_summary_request_reuses_state() -> None:
         'action_candidates': [{'tool': 'analyze_training_outcome', 'description': '继续分析训练结果'}],
     }
 
-    async def _unexpected_direct_tool(*args, **kwargs):
-        raise AssertionError('training summary request should reuse cached state, not call direct_tool')
+    calls: list[tuple[str, dict[str, Any]]] = []
 
-    client.direct_tool = _unexpected_direct_tool  # type: ignore[assignment]
+    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((tool_name, dict(kwargs)))
+        assert tool_name == 'summarize_training_run'
+        result = dict(client.session_state.active_training.training_run_summary or {})
+        result.setdefault('ok', True)
+        client._apply_to_state(tool_name, result, kwargs)
+        return result
+
+    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+    assert await client._try_handle_mainline_intent('数据总结', 'thread-training-summary-request-cached') is None
     turn = await client.chat('数据总结')
     assert turn['status'] == 'completed', turn
     assert '训练结果汇总' in turn['message'], turn
     assert 'run_state=completed' in turn['message'], turn
+    assert calls == [('summarize_training_run', {})], calls
+    assert graph.calls == [('summarize_training_run', {})], graph.calls
 
 
 async def _scenario_generic_approval_after_training_summary_routes_to_analysis() -> None:
@@ -587,8 +613,8 @@ async def _run() -> None:
         await _scenario_next_step_followup_routes()
         await _scenario_cached_next_step_followup_reuses_state()
         await _scenario_cached_explicit_next_step_request_reuses_state()
-        await _scenario_cached_explicit_status_request_reuses_state()
-        await _scenario_cached_training_summary_request_reuses_state()
+        await _scenario_cached_explicit_status_request_routes_through_graph()
+        await _scenario_cached_training_summary_request_routes_through_graph()
         await _scenario_generic_approval_after_training_summary_routes_to_analysis()
         print('training followup route ok')
     finally:

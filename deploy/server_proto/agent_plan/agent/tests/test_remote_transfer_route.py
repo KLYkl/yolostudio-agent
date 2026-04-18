@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import sys
 import types
@@ -164,7 +165,7 @@ def _install_fake_test_dependencies() -> None:
 
 _install_fake_test_dependencies()
 
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
 from yolostudio_agent.agent.tests._coroutine_runner import run
 
@@ -187,6 +188,50 @@ class _GraphState:
         }
         self.tasks = ()
         self.interrupts = ()
+
+
+class _GraphWithCompletedTool:
+    def __init__(
+        self,
+        *,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        tool_result: dict[str, Any],
+        final_reply: str,
+    ) -> None:
+        self.tool_name = tool_name
+        self.tool_args = dict(tool_args)
+        self.tool_result = dict(tool_result)
+        self.final_reply = final_reply
+        self.tool_call_id = f'{tool_name}-call'
+        self._state: _GraphState | None = None
+        self.calls: list[tuple[str, str, dict[str, Any]]] = []
+
+    def get_state(self, config):
+        del config
+        return self._state
+
+    async def ainvoke(self, payload, config=None):
+        del config
+        assert isinstance(payload, dict), payload
+        messages = list((payload or {}).get('messages') or [])
+        messages.append(
+            AIMessage(
+                content='',
+                tool_calls=[{'id': self.tool_call_id, 'name': self.tool_name, 'args': dict(self.tool_args)}],
+            )
+        )
+        messages.append(
+            ToolMessage(
+                content=json.dumps(self.tool_result, ensure_ascii=False),
+                name=self.tool_name,
+                tool_call_id=self.tool_call_id,
+            )
+        )
+        messages.append(AIMessage(content=self.final_reply))
+        self._state = _GraphState(messages=messages, pending_confirmation=None)
+        self.calls.append(('invoke', self.tool_name, dict(self.tool_args)))
+        return {'messages': messages}
 
 
 class _GraphWithPendingTool:
@@ -285,12 +330,28 @@ async def _scenario_list_remote_profiles_route() -> None:
         return result
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+    client.graph = _GraphWithCompletedTool(
+        tool_name='list_remote_profiles',
+        tool_args={},
+        tool_result={
+            'ok': True,
+            'summary': '远端 profile 1 个 / SSH alias 1 个。 默认 profile: lab。',
+            'profiles_path': '/tmp/remote_profiles.json',
+            'default_profile': 'lab',
+            'profiles': [{'name': 'lab', 'target_label': 'lab', 'remote_root': '/srv/agent_stage', 'is_default': True}],
+            'ssh_aliases': [{'name': 'lab-ssh', 'hostname': 'demo-host', 'port': '22'}],
+        },
+        final_reply='当前默认可用服务器配置是 lab。',
+    )
     turn = await client.chat('先看看有哪些可用服务器配置')
     assert turn['status'] == 'completed', turn
-    assert calls == [('list_remote_profiles', {})], calls
+    assert calls == [], calls
     assert 'lab' in turn['message'], turn
     assert client.session_state.active_remote_transfer.profile_name == 'lab'
     assert client.session_state.active_remote_transfer.remote_root == '/srv/agent_stage'
+    assert client.graph.calls == [('invoke', 'list_remote_profiles', {})], client.graph.calls
+    routes = client.route_ownership_report()
+    assert any(item.get('route') == 'graph-selected-tool' for item in routes), routes
 
     before_cached = len(calls)
     turn2 = await client.chat('再列一下可用服务器配置')

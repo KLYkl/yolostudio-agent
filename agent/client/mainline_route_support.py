@@ -163,14 +163,11 @@ def resolve_mainline_guard_policy(
 
 def resolve_mainline_followup_flags(
     *,
-    training_status_phrase: bool,
     mainline_signals: dict[str, Any],
     training_run_signals: dict[str, Any],
     loop_route: dict[str, Any],
 ) -> dict[str, Any]:
     return {
-        'wants_training_status': training_status_phrase,
-        'wants_training_summary': bool(training_run_signals.get('wants_training_summary')),
         'wants_training_outcome_analysis': bool(training_run_signals.get('wants_training_outcome_analysis')),
         'wants_training_run_compare': bool(training_run_signals.get('wants_training_run_compare')),
         'wants_best_training_run': bool(training_run_signals.get('wants_best_training_run')),
@@ -212,13 +209,11 @@ def resolve_mainline_route_state_payload(
         user_text=user_text,
         normalized_text=normalized_text,
         has_training_context=has_training_context,
-        has_training_summary_context=bool(mainline_signals.get('has_training_summary_context')),
         asks_metric_terms=bool(mainline_signals.get('asks_metric_terms')),
         metric_signals=list(metric_signals),
         explicit_run_ids=list(explicit_run_ids or []),
     )
     followup_flags = resolve_mainline_followup_flags(
-        training_status_phrase=bool(mainline_signals.get('training_status_phrase')),
         mainline_signals=mainline_signals,
         training_run_signals=training_run_signals,
         loop_route=loop_route,
@@ -298,15 +293,6 @@ def resolve_mainline_dispatch_payload(
             'training_command_like': bool(mainline_signals.get('training_command_like')),
             'wants_training_provenance': bool(followup_flags.get('wants_training_provenance')),
             'wants_training_evidence': bool(followup_flags.get('wants_training_evidence')),
-            'wants_training_summary': bool(followup_flags.get('wants_training_summary')),
-            'wants_training_status': bool(followup_flags.get('wants_training_status')),
-            'wants_training_loop_list': bool(followup_flags.get('wants_training_loop_list')),
-            'wants_training_loop_status': bool(followup_flags.get('wants_training_loop_status')),
-            'wants_inspect_training_loop': bool(followup_flags.get('wants_inspect_training_loop')),
-            'wants_pause_training_loop': bool(followup_flags.get('wants_pause_training_loop')),
-            'wants_resume_training_loop': bool(followup_flags.get('wants_resume_training_loop')),
-            'wants_stop_training_loop': bool(followup_flags.get('wants_stop_training_loop')),
-            'wants_training_loop_start': bool(followup_flags.get('wants_training_loop_start')),
         },
         'training_entrypoint_request_args': {
             'normalized_text': normalized_text,

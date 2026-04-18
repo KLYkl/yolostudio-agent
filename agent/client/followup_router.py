@@ -51,13 +51,6 @@ def resolve_mainline_request_signals(
         wants_train=wants_train,
         wants_predict=wants_predict,
     )
-    has_training_summary_context = bool(
-        session_state.active_training.training_run_summary
-        or session_state.active_training.last_summary
-        or session_state.active_training.last_status
-        or session_state.active_training.last_start_result
-        or session_state.active_training.running
-    )
     wants_remote_profile_list = any(
         token in user_text
         for token in (
@@ -93,7 +86,6 @@ def resolve_mainline_request_signals(
         'no_train': no_train,
         'wants_readiness': wants_readiness,
         'wants_split': wants_split,
-        'has_training_summary_context': has_training_summary_context,
         'wants_remote_profile_list': wants_remote_profile_list,
         'wants_remote_upload': wants_remote_upload,
         'wants_remote_prediction_pipeline': wants_remote_prediction_pipeline,
@@ -113,41 +105,11 @@ def resolve_training_run_query_signals(
     user_text: str,
     normalized_text: str,
     has_training_context: bool,
-    has_training_summary_context: bool,
     asks_metric_terms: bool,
     metric_signals: list[str],
     explicit_run_ids: list[str] | None,
 ) -> dict[str, Any]:
     explicit_run_ids = list(explicit_run_ids or [])
-    wants_training_summary = (
-        any(
-            token in user_text
-            for token in (
-                '训练总结',
-                '训练摘要',
-                '训练汇总',
-                '训练结果汇总',
-                '训练结果总结',
-                '结果总结',
-            )
-        )
-        or (
-            has_training_summary_context
-            and '数据总结' in user_text
-            and not any(
-                token in user_text
-                for token in (
-                    '数据集质量',
-                    '数据质量',
-                    '类别分布',
-                    '有哪些类别',
-                    '缺失标签',
-                    '最少类别',
-                    '最多类别',
-                )
-            )
-        )
-    )
     wants_training_outcome_analysis = (
         any(token in user_text for token in ('训练效果怎么样', '这次训练效果怎么样', '训练结果怎么样', '训练效果如何', '结果更像', '训练效果'))
         or any(token in user_text for token in ('是不是已经收敛了', '已经收敛了吗', '收敛了吗'))
@@ -233,7 +195,6 @@ def resolve_training_run_query_signals(
     ))
     wants_training_outcome_analysis = wants_training_outcome_analysis or explicit_run_outcome_phrase
     return {
-        'wants_training_summary': wants_training_summary,
         'wants_training_outcome_analysis': wants_training_outcome_analysis,
         'wants_training_run_compare': wants_training_run_compare,
         'wants_best_training_run': wants_best_training_run,

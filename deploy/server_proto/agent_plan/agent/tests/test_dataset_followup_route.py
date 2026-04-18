@@ -209,6 +209,27 @@ class _DatasetGraph:
         self._last_state = _GraphState(messages)
         return {'messages': messages}
 
+    async def _multi_tool_reply(self, payload, tool_plan: list[tuple[str, dict[str, Any]]], *, objective: str) -> dict[str, Any]:
+        assert self.client is not None
+        applied_results: list[tuple[str, dict[str, Any]]] = []
+        tool_messages: list[Any] = []
+        for tool_name, kwargs in tool_plan:
+            observed = await self.client.direct_tool(tool_name, _state_mode='observe', **kwargs)
+            applied_results.append((tool_name, observed))
+            tool_call = {'id': f'tc-{len(payload["messages"])}-{len(applied_results)}', 'name': tool_name, 'args': kwargs}
+            tool_messages.extend(
+                [
+                    AIMessage(content='', tool_calls=[tool_call]),
+                    ToolMessage(content=json.dumps(observed, ensure_ascii=False), name=tool_name, tool_call_id=tool_call['id']),
+                ]
+            )
+        reply = await self.client._render_multi_tool_result_message(applied_results, objective=objective)
+        if not reply:
+            reply = str(applied_results[-1][1].get('summary') or applied_results[0][1].get('summary') or '操作已完成')
+        messages = list(payload['messages']) + tool_messages + [AIMessage(content=reply)]
+        self._last_state = _GraphState(messages)
+        return {'messages': messages}
+
     async def ainvoke(self, payload, config=None):
         del config
         assert self.client is not None
@@ -244,6 +265,17 @@ class _DatasetGraph:
             messages = list(payload['messages']) + [AIMessage(content=reply)]
             self._last_state = _GraphState(messages)
             return {'messages': messages}
+
+        if '数据集质量怎么样' in user_text or '先校验再回答' in user_text:
+            return await self._multi_tool_reply(
+                payload,
+                [
+                    ('scan_dataset', {'img_dir': '/data/dataset'}),
+                    ('validate_dataset', {'img_dir': '/data/dataset'}),
+                    ('run_dataset_health_check', {'dataset_path': '/data/dataset', 'include_duplicates': True, 'max_duplicate_groups': 3}),
+                ],
+                objective='数据集质量分析说明',
+            )
 
         if '健康检查结果再详细一点' in user_text:
             assert 'last_health_summary:' in summary
@@ -352,9 +384,10 @@ async def _run() -> None:
 
         client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
 
-        initial = await client._complete_dataset_quality_reply('/data/dataset')
+        initial = await client.chat('这个数据集质量怎么样？请先校验再回答。')
         assert initial['status'] == 'completed', initial
         assert '健康检查' in initial['message'] or '重复图片' in initial['message'] or '扫描完成' in initial['message'], initial
+        assert [name for name, _ in calls[:3]] == ['scan_dataset', 'validate_dataset', 'run_dataset_health_check'], calls
 
         routed = await client.chat('现在是什么情况了？我需要详细一点的数据集信息')
         assert routed['status'] == 'completed', routed

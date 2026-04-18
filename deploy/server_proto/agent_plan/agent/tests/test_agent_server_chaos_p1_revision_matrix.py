@@ -13,7 +13,7 @@ if __package__ in {None, ''}:
         if path not in sys.path:
             sys.path.insert(0, path)
 
-from yolostudio_agent.agent.tests._chaos_test_support import WORK as P0_WORK, _make_client
+from yolostudio_agent.agent.tests._chaos_test_support import WORK as P0_WORK, _ScriptedGraph, _make_client
 from yolostudio_agent.agent.tests._coroutine_runner import run
 
 
@@ -201,6 +201,25 @@ async def _scenario_c18_same_turn_conflict_stays_conservative() -> None:
 async def _scenario_c19_resume_but_analysis_only_does_not_restart() -> None:
     client = _fresh_client('chaos-p1-c19')
     calls = _install_ready_training_tools(client)
+    client.graph = _ScriptedGraph(
+        {
+            'resume 上次训练，但不要接着训，只分析就行。': (
+                [
+                    (
+                        'analyze_training_outcome',
+                        {
+                            'ok': True,
+                            'summary': '当前更适合先分析结果，不直接恢复训练。',
+                            'assessment': 'review_first',
+                            'signals': ['completed_run'],
+                            'matched_rule_ids': ['workflow_review_first'],
+                        },
+                    ),
+                ],
+                '当前更适合先分析结果，不直接恢复训练。',
+            )
+        }
+    )
     client.session_state.active_training.training_run_summary = {
         'summary': '最近训练已完成：precision=0.76 recall=0.54',
         'run_state': 'completed',
@@ -209,7 +228,8 @@ async def _scenario_c19_resume_but_analysis_only_does_not_restart() -> None:
     turn = await client.chat('resume 上次训练，但不要接着训，只分析就行。')
     assert turn['status'] == 'completed', turn
     assert '当前更适合先分析结果' in turn['message'] or '最近训练已完成' in turn['message']
-    assert [name for name, _ in calls] == ['analyze_training_outcome'], calls
+    assert calls == [], calls
+    assert client.graph.calls == [('analyze_training_outcome', {})], client.graph.calls
 
 
 async def _scenario_c20_project_and_name_can_be_cleared() -> None:
