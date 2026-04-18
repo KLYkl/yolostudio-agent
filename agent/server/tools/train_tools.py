@@ -1,11 +1,64 @@
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Annotated, Any, Callable
+
+from pydantic import Field
 
 from yolostudio_agent.agent.server.services.gpu_utils import get_effective_gpu_policy, get_gpu_status_summary, query_gpu_status, resolve_auto_device
 from yolostudio_agent.agent.server.services.train_service import TrainService
 
 service = TrainService()
+
+_DEVICE_PARAM = Annotated[
+    str,
+    Field(
+        description='训练设备。优先传 auto、cpu 或 GPU 索引字符串，如 0 / 0,1。',
+        examples=['auto', '0', '0,1', 'cpu'],
+    ),
+]
+_TRAINING_ENVIRONMENT_PARAM = Annotated[
+    str,
+    Field(
+        description='显式训练环境名。留空时由服务端自动选择默认训练环境。',
+        examples=['base', 'yolov8-gpu'],
+    ),
+]
+_TRAIN_CLASSES_PARAM = Annotated[
+    list[int] | str | None,
+    Field(
+        description='训练类别索引白名单。优先传整数数组；保留字符串输入仅为兼容旧调用。',
+        examples=[[0, 1, 2], '0,1,2'],
+    ),
+]
+_RUN_LIST_LIMIT_PARAM = Annotated[
+    int,
+    Field(
+        description='返回最近若干条训练记录。',
+        ge=1,
+        examples=[5, 10],
+    ),
+]
+_RUN_STATE_PARAM = Annotated[
+    str,
+    Field(
+        description='训练记录状态过滤。推荐值 running/completed/failed/stopped。',
+        examples=['running', 'completed', 'failed'],
+    ),
+]
+_ANALYSIS_READY_PARAM = Annotated[
+    bool | None,
+    Field(
+        description='是否只返回已具备分析条件的训练记录。',
+        examples=[True],
+    ),
+]
+_RUN_ID_PARAM = Annotated[
+    str,
+    Field(
+        description='训练记录 ID。留空时默认使用当前或最近一次训练。',
+        examples=['train_log_200'],
+    ),
+]
 
 
 def _tool_candidate(
@@ -57,14 +110,14 @@ def start_training(
     model: str,
     data_yaml: str = "",
     epochs: int = 100,
-    device: str = "auto",
-    training_environment: str = "",
+    device: _DEVICE_PARAM = "auto",
+    training_environment: _TRAINING_ENVIRONMENT_PARAM = "",
     project: str = "",
     name: str = "",
     batch: int | None = None,
     imgsz: int | None = None,
     fraction: float | None = None,
-    classes: list[int] | str | None = None,
+    classes: _TRAIN_CLASSES_PARAM = None,
     single_cls: bool | None = None,
     optimizer: str = "",
     freeze: int | None = None,
@@ -172,14 +225,14 @@ def training_preflight(
     model: str,
     data_yaml: str = "",
     epochs: int = 100,
-    device: str = "auto",
-    training_environment: str = "",
+    device: _DEVICE_PARAM = "auto",
+    training_environment: _TRAINING_ENVIRONMENT_PARAM = "",
     project: str = "",
     name: str = "",
     batch: int | None = None,
     imgsz: int | None = None,
     fraction: float | None = None,
-    classes: list[int] | str | None = None,
+    classes: _TRAIN_CLASSES_PARAM = None,
     single_cls: bool | None = None,
     optimizer: str = "",
     freeze: int | None = None,
@@ -240,9 +293,9 @@ def training_preflight(
 
 
 def list_training_runs(
-    limit: int = 5,
-    run_state: str = '',
-    analysis_ready: bool | None = None,
+    limit: _RUN_LIST_LIMIT_PARAM = 5,
+    run_state: _RUN_STATE_PARAM = '',
+    analysis_ready: _ANALYSIS_READY_PARAM = None,
     model_keyword: str = '',
     data_keyword: str = '',
 ) -> dict[str, Any]:
@@ -291,7 +344,7 @@ def list_training_runs(
     return result
 
 
-def inspect_training_run(run_id: str = '') -> dict[str, Any]:
+def inspect_training_run(run_id: _RUN_ID_PARAM = '') -> dict[str, Any]:
     """查看单条训练记录详情。
 
     适用: “看看 train_log_200 的详情”“最近一次训练具体情况”。
@@ -323,7 +376,7 @@ def inspect_training_run(run_id: str = '') -> dict[str, Any]:
     return result
 
 
-def compare_training_runs(left_run_id: str = '', right_run_id: str = '') -> dict[str, Any]:
+def compare_training_runs(left_run_id: _RUN_ID_PARAM = '', right_run_id: _RUN_ID_PARAM = '') -> dict[str, Any]:
     """对比两次训练记录的状态、关键指标和差异摘要。
 
     适用: “对比最近两次训练”“比较 train_log_200 和 train_log_100”。
@@ -343,7 +396,7 @@ def compare_training_runs(left_run_id: str = '', right_run_id: str = '') -> dict
     return result
 
 
-def select_best_training_run(limit: int = 5) -> dict[str, Any]:
+def select_best_training_run(limit: _RUN_LIST_LIMIT_PARAM = 5) -> dict[str, Any]:
     """从最近若干条训练记录里选出最值得参考的一次。
 
     适用: “最近哪次训练最好”“最值得参考的训练记录是哪次”。

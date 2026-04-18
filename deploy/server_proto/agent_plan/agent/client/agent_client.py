@@ -39,7 +39,6 @@ from yolostudio_agent.agent.client.context_builder import ContextBuilder
 from yolostudio_agent.agent.client.context_retention_policy import build_context_retention_decision
 from yolostudio_agent.agent.client.event_retriever import EventRetriever
 from yolostudio_agent.agent.client.followup_router import (
-    classify_training_loop_followup_action,
     resolve_mainline_request_signals,
     resolve_training_loop_route,
 )
@@ -3931,23 +3930,6 @@ class YoloStudioAgentClient:
             wants_predict=wants_predict,
             wants_stop_training=wants_stop_training,
             explicit_run_ids=explicit_run_ids,
-            classify_training_loop_followup_action_fn=self._classify_training_loop_followup_action,
-        )
-
-    async def _classify_training_loop_followup_action(
-        self,
-        *,
-        user_text: str,
-        normalized_text: str,
-        loop_id: str,
-    ) -> str:
-        return await classify_training_loop_followup_action(
-            planner_llm=self.planner_llm,
-            session_state=self.session_state,
-            user_text=user_text,
-            normalized_text=normalized_text,
-            loop_id=loop_id,
-            classify_structured_action=self._classify_structured_action,
         )
     @staticmethod
     def _extract_training_loop_max_rounds(text: str) -> int | None:

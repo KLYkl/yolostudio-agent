@@ -24,6 +24,12 @@ def main() -> None:
     tools = getattr(manager, '_tools', None)
     assert isinstance(tools, dict) and tools, 'missing registered tools'
 
+    def _schema_types(schema: dict) -> set[str]:
+        any_of = schema.get('anyOf') or []
+        if any_of:
+            return {item.get('type') for item in any_of}
+        return {str(schema.get('type') or '').strip()} if schema.get('type') else set()
+
     read_tool = tools['check_training_loop_status']
     assert read_tool.annotations is not None, read_tool
     assert read_tool.annotations.readOnlyHint is True, read_tool.annotations
@@ -42,6 +48,25 @@ def main() -> None:
     assert action_tool.annotations.readOnlyHint is False, action_tool.annotations
     assert action_tool.annotations.destructiveHint is False, action_tool.annotations
     assert action_tool.output_schema is not None, action_tool.output_schema
+    classes_schema = action_tool.parameters['properties']['classes']
+    class_types = {item.get('type') for item in classes_schema.get('anyOf', [])}
+    assert class_types == {'array', 'string', 'null'}, classes_schema
+    assert classes_schema.get('description'), classes_schema
+    assert classes_schema.get('examples'), classes_schema
+
+    preflight_tool = tools['training_preflight']
+    preflight_classes_schema = preflight_tool.parameters['properties']['classes']
+    preflight_class_types = {item.get('type') for item in preflight_classes_schema.get('anyOf', [])}
+    assert preflight_class_types == {'array', 'string', 'null'}, preflight_classes_schema
+    assert preflight_classes_schema.get('description'), preflight_classes_schema
+    assert preflight_classes_schema.get('examples'), preflight_classes_schema
+
+    list_runs_tool = tools['list_training_runs']
+    run_state_schema = list_runs_tool.parameters['properties']['run_state']
+    run_state_types = _schema_types(run_state_schema)
+    assert run_state_types == {'string'}, run_state_schema
+    assert run_state_schema.get('description'), run_state_schema
+    assert run_state_schema.get('examples'), run_state_schema
 
     knowledge_tool = tools['analyze_training_outcome']
     metrics_schema = knowledge_tool.parameters['properties']['metrics']

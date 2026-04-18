@@ -234,28 +234,8 @@ async def _scenario_generic_payload_uses_native_structured_output_for_ollama() -
     assert planner.schemas, 'expected with_structured_output to be used'
 
 
-async def _scenario_training_loop_followup_classifier_supports_control_actions() -> None:
-    client = _make_client('training-loop-followup-control')
-    planner = _FakeStructuredPlanner({'action': 'pause', 'reason': '用户要求下一轮先别跑'})
-    client.planner_llm = planner  # type: ignore[assignment]
-    client.session_state.active_training.active_loop_id = 'loop-123'
-    action = await client._classify_training_loop_followup_action(
-        user_text='这一轮结束后停住，下一轮先别跑。',
-        normalized_text='这一轮结束后停住，下一轮先别跑。'.lower(),
-        loop_id='loop-123',
-    )
-    assert action == 'pause', action
-    assert planner.schemas, 'expected with_structured_output to be used'
-    schema = planner.schemas[0]
-    props = dict(schema.get('properties') or {})
-    action_schema = dict(props.get('action') or {})
-    assert action_schema.get('enum') == ['inspect', 'pause', 'resume', 'status', 'stop'], schema
-
-
-async def _scenario_training_loop_route_prefers_classifier_for_control_actions() -> None:
-    client = _make_client('training-loop-route-classifier')
-    planner = _FakeStructuredPlanner({'action': 'resume', 'reason': '用户要求从下一轮开始继续'})
-    client.planner_llm = planner  # type: ignore[assignment]
+async def _scenario_training_loop_route_detects_control_followups_without_llm() -> None:
+    client = _make_client('training-loop-route-followup')
     client.session_state.active_training.active_loop_id = 'loop-456'
     route = await client._resolve_training_loop_route(
         user_text='从下一轮开始继续。',
@@ -264,9 +244,8 @@ async def _scenario_training_loop_route_prefers_classifier_for_control_actions()
         wants_stop_training=False,
         explicit_run_ids=[],
     )
-    assert route['action'] == 'resume', route
+    assert route['action'] == 'followup', route
     assert route['has_context'] is True, route
-    assert planner.schemas, 'expected structured classifier to be used'
 
 
 async def _scenario_training_loop_route_falls_back_without_llm() -> None:
@@ -280,7 +259,7 @@ async def _scenario_training_loop_route_falls_back_without_llm() -> None:
         wants_stop_training=False,
         explicit_run_ids=[],
     )
-    assert route == {'action': 'status', 'loop_id': 'loop-789', 'has_context': True}, route
+    assert route == {'action': 'followup', 'loop_id': 'loop-789', 'has_context': True}, route
 
 
 async def _scenario_training_run_query_signals_reuse_last_comparison() -> None:
@@ -408,12 +387,7 @@ async def _scenario_mainline_guard_policy_blocks_training_start_for_history_and_
         wants_stopped_training_run_list=False,
         wants_running_training_run_list=False,
         wants_analysis_ready_run_list=False,
-        wants_training_loop_list=False,
-        wants_training_loop_status=True,
-        wants_inspect_training_loop=False,
-        wants_pause_training_loop=False,
-        wants_resume_training_loop=False,
-        wants_stop_training_loop=False,
+        wants_training_loop_followup=True,
     )
     assert policy.blocks_training_start is True, policy
     assert policy.wants_train is False, policy
@@ -481,14 +455,14 @@ async def _scenario_resolve_mainline_route_state_payload_helper_aggregates_follo
         ),
         metric_signals=list(mainline_context.get('metric_signals') or []),
         explicit_run_ids=list(mainline_context.get('explicit_run_ids') or []),
-        loop_route={'action': 'status'},
+        loop_route={'action': 'followup'},
     )
     followup_flags = dict(route_state.get('followup_flags') or {})
     guard_policy = route_state.get('guard_policy')
     training_run_signals = dict(route_state.get('training_run_signals') or {})
     assert training_run_signals['wants_training_run_list'] is True, training_run_signals
     assert followup_flags['wants_training_run_list'] is True, followup_flags
-    assert followup_flags['wants_training_loop_status'] is True, followup_flags
+    assert followup_flags['wants_training_loop_followup'] is True, followup_flags
     assert bool(guard_policy.blocks_training_start) is True, guard_policy
 
 
@@ -542,7 +516,7 @@ async def _scenario_resolve_mainline_route_state_aggregates_followups() -> None:
     followup_flags = dict(route_state.get('followup_flags') or {})
     guard_policy = route_state.get('guard_policy')
     assert followup_flags['wants_training_run_list'] is True, followup_flags
-    assert followup_flags['wants_training_loop_status'] is True, followup_flags
+    assert followup_flags['wants_training_loop_followup'] is True, followup_flags
     assert bool(guard_policy.blocks_training_start) is True, guard_policy
 
 
@@ -552,8 +526,7 @@ async def _run() -> None:
     try:
         await _scenario_uses_native_structured_output_for_ollama()
         await _scenario_generic_payload_uses_native_structured_output_for_ollama()
-        await _scenario_training_loop_followup_classifier_supports_control_actions()
-        await _scenario_training_loop_route_prefers_classifier_for_control_actions()
+        await _scenario_training_loop_route_detects_control_followups_without_llm()
         await _scenario_training_loop_route_falls_back_without_llm()
         await _scenario_training_run_query_signals_reuse_last_comparison()
         await _scenario_training_run_query_signals_prior_statement_disables_compare_and_best()

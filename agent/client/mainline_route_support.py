@@ -123,12 +123,7 @@ def resolve_mainline_guard_policy(
     wants_stopped_training_run_list: bool,
     wants_running_training_run_list: bool,
     wants_analysis_ready_run_list: bool,
-    wants_training_loop_list: bool,
-    wants_training_loop_status: bool,
-    wants_inspect_training_loop: bool,
-    wants_pause_training_loop: bool,
-    wants_resume_training_loop: bool,
-    wants_stop_training_loop: bool,
+    wants_training_loop_followup: bool,
 ) -> TrainPredictGuardPolicy:
     return build_train_predict_guard_policy(
         user_text=user_text,
@@ -151,12 +146,7 @@ def resolve_mainline_guard_policy(
             wants_stopped_training_run_list,
             wants_running_training_run_list,
             wants_analysis_ready_run_list,
-            wants_training_loop_list,
-            wants_training_loop_status,
-            wants_inspect_training_loop,
-            wants_pause_training_loop,
-            wants_resume_training_loop,
-            wants_stop_training_loop,
+            wants_training_loop_followup,
         ),
     )
 
@@ -167,17 +157,13 @@ def resolve_mainline_followup_flags(
     training_run_signals: dict[str, Any],
     loop_route: dict[str, Any],
 ) -> dict[str, Any]:
+    loop_action = str(loop_route.get('action') or '').strip()
     return {
         'wants_training_outcome_analysis': bool(training_run_signals.get('wants_training_outcome_analysis')),
         'wants_training_run_compare': bool(training_run_signals.get('wants_training_run_compare')),
         'wants_best_training_run': bool(training_run_signals.get('wants_best_training_run')),
-        'wants_training_loop_start': loop_route.get('action') == 'start',
-        'wants_training_loop_status': loop_route.get('action') == 'status',
-        'wants_training_loop_list': loop_route.get('action') == 'list',
-        'wants_pause_training_loop': loop_route.get('action') == 'pause',
-        'wants_resume_training_loop': loop_route.get('action') == 'resume',
-        'wants_stop_training_loop': loop_route.get('action') == 'stop',
-        'wants_inspect_training_loop': loop_route.get('action') == 'inspect',
+        'wants_training_loop_start': loop_action == 'start',
+        'wants_training_loop_followup': loop_action == 'followup',
         'wants_training_revision': bool(mainline_signals.get('wants_training_revision')),
         'wants_training_run_list': bool(training_run_signals.get('wants_training_run_list')),
         'wants_failed_training_run_list': bool(training_run_signals.get('wants_failed_training_run_list')),
@@ -236,12 +222,7 @@ def resolve_mainline_route_state_payload(
         wants_stopped_training_run_list=bool(followup_flags.get('wants_stopped_training_run_list')),
         wants_running_training_run_list=bool(followup_flags.get('wants_running_training_run_list')),
         wants_analysis_ready_run_list=bool(followup_flags.get('wants_analysis_ready_run_list')),
-        wants_training_loop_list=bool(followup_flags.get('wants_training_loop_list')),
-        wants_training_loop_status=bool(followup_flags.get('wants_training_loop_status')),
-        wants_inspect_training_loop=bool(followup_flags.get('wants_inspect_training_loop')),
-        wants_pause_training_loop=bool(followup_flags.get('wants_pause_training_loop')),
-        wants_resume_training_loop=bool(followup_flags.get('wants_resume_training_loop')),
-        wants_stop_training_loop=bool(followup_flags.get('wants_stop_training_loop')),
+        wants_training_loop_followup=bool(followup_flags.get('wants_training_loop_followup')),
     )
     return {
         'mainline_signals': mainline_signals,
