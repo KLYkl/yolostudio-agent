@@ -8,6 +8,9 @@ from yolostudio_agent.agent.client.training_contracts import (
     PrepareOnlyRequestContext,
     PrepareOnlyResult,
     TrainingPlanFollowupAction,
+    TrainingRequestContext,
+    TrainingRequestGuard,
+    TrainingRequestResult,
 )
 from yolostudio_agent.agent.client.session_state import SessionState
 from yolostudio_agent.agent.client.training_plan_service import run_training_request_orchestration
@@ -223,7 +226,7 @@ def resolve_training_request_entrypoint_guard(
     blocks_training_start: bool,
     explicit_run_ids: list[str] | None,
     extract_model_from_text: ModelPathExtractor,
-) -> dict[str, Any]:
+) -> TrainingRequestGuard:
     explicit_run_ids = list(explicit_run_ids or [])
     active_training = session_state.active_training
     if (
@@ -306,7 +309,7 @@ async def prepare_training_request_context(
     frame_followup_path: str,
     direct_tool: DirectToolInvoker,
     collect_requested_training_args: TrainingArgsCollector,
-) -> dict[str, Any]:
+) -> TrainingRequestContext:
     active_training = session_state.active_training
     readiness = await direct_tool('training_readiness', img_dir=dataset_path)
     await direct_tool('list_training_environments')
@@ -354,7 +357,7 @@ async def run_training_request_entrypoint(
     extract_training_execution_backend: TrainingExecutionBackendExtractor,
     build_training_plan_draft_fn: TrainingPlanDraftBuilder,
     render_training_plan_message: TrainingPlanMessageRenderer,
-) -> dict[str, Any] | None:
+) -> TrainingRequestResult | None:
     guard = resolve_training_request_entrypoint_guard(
         session_state=session_state,
         user_text=user_text,

@@ -70,6 +70,7 @@ from yolostudio_agent.agent.client.mcp_connection import (
     load_mcp_tools_with_recovery,
 )
 from yolostudio_agent.agent.client.memory_store import MemoryStore
+from yolostudio_agent.agent.client.execution_contracts import PredictionRequestFollowupAction
 from yolostudio_agent.agent.client.prediction_request_service import resolve_prediction_request_followup_action
 from yolostudio_agent.agent.client.prediction_execution_service import (
     run_remote_prediction_pipeline_flow,
@@ -550,17 +551,25 @@ class YoloStudioAgentClient:
         )
 
     def _startup_checkpoint_thread_ids(self) -> list[str]:
+        thread_ids: set[str] = set()
         if self.checkpointer is None or not hasattr(self.checkpointer, 'thread_ids'):
-            return []
-        prefix = f"{self.session_state.session_id}-"
-        try:
-            return [
-                str(thread_id).strip()
-                for thread_id in self.checkpointer.thread_ids(prefix=prefix)
-                if str(thread_id).strip()
-            ]
-        except Exception:
-            return []
+            pass
+        else:
+            prefix = f"{self.session_state.session_id}-"
+            try:
+                thread_ids.update(
+                    str(thread_id).strip()
+                    for thread_id in self.checkpointer.thread_ids(prefix=prefix)
+                    if str(thread_id).strip()
+                )
+            except Exception:
+                pass
+        startup_pending = self._startup_pending_from_session()
+        if startup_pending and str(startup_pending.get('source') or '').strip().lower() == 'graph':
+            hinted_thread_id = str(startup_pending.get('thread_id') or '').strip()
+            if hinted_thread_id:
+                thread_ids.add(hinted_thread_id)
+        return sorted(thread_ids)
 
     def _startup_graph_pending_candidates(self) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
@@ -612,6 +621,23 @@ class YoloStudioAgentClient:
         pending = self._pending_from_state()
         if not pending:
             self._hydrate_startup_pending_confirmation()
+            restored = self._pending_from_state()
+            if restored is not None:
+                return
+            startup_pending = self._startup_pending_from_session()
+            if startup_pending and str(startup_pending.get('source') or '').strip().lower() == 'graph':
+                thread_id = str(startup_pending.get('thread_id') or '').strip()
+                self._clear_pending_confirmation(thread_id=thread_id, persist_graph=False)
+                self._clear_training_plan_draft()
+                self.memory.append_event(
+                    self.session_state.session_id,
+                    'startup_stale_pending_cleared',
+                    {
+                        'tool': str(startup_pending.get('name') or startup_pending.get('tool_name') or '').strip(),
+                        'thread_id': thread_id,
+                        'pending_source': 'graph',
+                    },
+                )
             return
         pending_source = str(pending.get('source') or 'synthetic').strip().lower() or 'synthetic'
         if pending_source != 'graph':
@@ -1470,7 +1496,7 @@ class YoloStudioAgentClient:
         if self.session_state.preferences.language != "zh-CN":
             self.session_state.preferences.language = "zh-CN"
 
-    def _apply_prediction_request_action(self, followup_action: dict[str, Any] | None) -> dict[str, Any] | None:
+    def _apply_prediction_request_action(self, followup_action: PredictionRequestFollowupAction | None) -> dict[str, Any] | None:
         followup_action = dict(followup_action or {})
         action = str(followup_action.get('action') or '').strip()
         if action == 'none':
@@ -2528,7 +2554,13 @@ class YoloStudioAgentClient:
     def _bootstrap_pending_confirmation_state(self) -> None:
         legacy_pending = self._startup_pending_from_session()
         if not legacy_pending:
+            self._pending_confirmation_shadow = None
+            self._pending_review_shadow = {}
             self._mirror_pending_confirmation(None)
+            return
+        if str(legacy_pending.get('source') or 'synthetic').strip().lower() == 'graph':
+            self._pending_confirmation_shadow = None
+            self._pending_review_shadow = {}
             return
         self._pending_confirmation_shadow = dict(legacy_pending)
         self._pending_review_shadow = dict(legacy_pending.get('decision_context') or {})

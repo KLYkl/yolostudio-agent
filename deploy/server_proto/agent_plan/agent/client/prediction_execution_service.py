@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Awaitable, Callable
 
+from yolostudio_agent.agent.client.execution_contracts import RemotePredictionPipelineFlowResult
+
 DirectToolInvoker = Callable[..., Awaitable[dict[str, Any]]]
 PredictionInputResolver = Callable[[dict[str, Any]], dict[str, Any]]
 RemoteOutputDirBuilder = Callable[[dict[str, Any]], str]
@@ -13,7 +15,7 @@ async def run_remote_prediction_pipeline_flow(
     direct_tool: DirectToolInvoker,
     resolve_prediction_remote_inputs: PredictionInputResolver,
     build_remote_output_dir: RemoteOutputDirBuilder,
-) -> dict[str, Any]:
+) -> RemotePredictionPipelineFlowResult:
     pipeline_args = dict(pipeline_args or {})
     upload_args = dict(pipeline_args.get('upload_args') or {})
     upload_result = await direct_tool('upload_assets_to_remote', **upload_args)

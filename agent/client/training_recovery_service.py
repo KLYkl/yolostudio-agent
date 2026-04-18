@@ -5,6 +5,7 @@ from typing import Any, Awaitable, Callable
 from yolostudio_agent.agent.client.training_contracts import (
     TrainingPlanFollowupAction,
     TrainingRecoveryBootstrap,
+    TrainingRecoveryOrchestrationResult,
 )
 from yolostudio_agent.agent.client.session_state import SessionState
 from yolostudio_agent.agent.client.training_plan_service import (
@@ -285,7 +286,7 @@ async def run_training_recovery_orchestration(
     direct_tool: DirectToolInvoker,
     build_training_plan_draft_fn: TrainingPlanDraftBuilder,
     render_training_plan_message: TrainingPlanMessageRenderer,
-) -> dict[str, Any]:
+) -> TrainingRecoveryOrchestrationResult:
     readiness = dict(readiness or {})
     base_args = dict(base_args or {})
     preflight_args = build_training_preflight_tool_args(base_args)
@@ -317,7 +318,7 @@ async def run_training_recovery_entrypoint(
     direct_tool: DirectToolInvoker,
     build_training_plan_draft_fn: TrainingPlanDraftBuilder,
     render_training_plan_message: TrainingPlanMessageRenderer,
-) -> dict[str, Any]:
+) -> TrainingRecoveryOrchestrationResult:
     readiness = dict(session_state.active_dataset.last_readiness or {})
     if dataset_path and not readiness:
         readiness = await direct_tool('training_readiness', img_dir=dataset_path)

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from yolostudio_agent.agent.client.execution_contracts import PredictionRequestFollowupAction
+
 
 def resolve_prediction_request_followup_action(
     *,
@@ -9,7 +11,7 @@ def resolve_prediction_request_followup_action(
     training_command_like: bool,
     wants_best_weight_prediction: bool,
     best_run_selection: dict[str, Any] | None,
-) -> dict[str, Any]:
+) -> PredictionRequestFollowupAction:
     if wants_best_weight_prediction and wants_predict and not training_command_like:
         best_selection = dict(best_run_selection or {})
         best_run = dict(best_selection.get('best_run') or {})

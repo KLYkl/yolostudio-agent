@@ -4,6 +4,12 @@ import asyncio
 import time
 from typing import Any, Awaitable, Callable
 
+from yolostudio_agent.agent.client.execution_contracts import (
+    PostPrepareTrainingStartResult,
+    RemoteTrainingPipelineFlowResult,
+    RemoteTrainingStartResult,
+    RemoteTrainingWaitResult,
+)
 from yolostudio_agent.agent.client.training_plan_service import (
     build_training_preflight_tool_args,
     resolve_training_start_args,
@@ -28,7 +34,7 @@ async def run_post_prepare_training_start_flow(
     direct_tool: DirectToolInvoker,
     build_training_plan_draft_fn: TrainingPlanDraftBuilder,
     render_prepare_followup_message: PrepareFollowupMessageRenderer,
-) -> dict[str, Any]:
+) -> PostPrepareTrainingStartResult:
     followup_args = dict((synthetic_followup or {}).get('args') or {})
     prepare_parsed = dict(prepare_parsed or {})
     preflight_args = build_training_preflight_tool_args(followup_args)
@@ -72,7 +78,7 @@ async def run_remote_training_start_flow(
     resolved_inputs: dict[str, Any] | None,
     direct_tool: DirectToolInvoker,
     collect_requested_training_args: TrainingArgsCollector,
-) -> dict[str, Any]:
+) -> RemoteTrainingStartResult:
     pipeline_args = dict(pipeline_args or {})
     resolved_inputs = dict(resolved_inputs or {})
     dataset_path = str(resolved_inputs.get('dataset_path') or '')
@@ -153,7 +159,7 @@ async def wait_for_remote_training_terminal_state(
     poll_interval_seconds: int = 15,
     max_wait_seconds: int = 7200,
     sleep: SleepInvoker = asyncio.sleep,
-) -> dict[str, Any]:
+) -> RemoteTrainingWaitResult:
     started = time.monotonic()
     status_checks: list[dict[str, Any]] = []
     interval = max(0, int(poll_interval_seconds))
@@ -209,7 +215,7 @@ async def run_remote_training_pipeline_flow(
     collect_requested_training_args: TrainingArgsCollector,
     wait_for_remote_training_terminal_state: TrainingWaitInvoker,
     resolve_remote_training_result_path: RemoteResultPathResolver,
-) -> dict[str, Any]:
+) -> RemoteTrainingPipelineFlowResult:
     pipeline_args = dict(pipeline_args or {})
     upload_args = dict(pipeline_args.get('upload_args') or {})
     upload_result = await direct_tool('upload_assets_to_remote', **upload_args)

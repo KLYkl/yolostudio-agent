@@ -34,6 +34,12 @@ class TrainingRecoveryBootstrap(TypedDict, total=False):
     dataset_path: str
 
 
+class TrainingRecoveryOrchestrationResult(TypedDict):
+    draft: dict[str, Any]
+    reply: str
+    defer_to_graph: bool
+
+
 class TrainingRevisionResult(TypedDict, total=False):
     revised_draft: dict[str, Any]
     followup_action: TrainingPlanFollowupAction
@@ -42,3 +48,22 @@ class TrainingRevisionResult(TypedDict, total=False):
 class TrainingPlanDialogueFlowResult(TypedDict, total=False):
     draft_to_save: dict[str, Any]
     followup_action: TrainingPlanFollowupAction
+
+
+class TrainingRequestGuard(TypedDict, total=False):
+    reply: str
+    draft: dict[str, Any] | None
+    defer_to_graph: bool
+    proceed: bool
+    return_none: bool
+
+
+class TrainingRequestContext(TypedDict):
+    readiness: dict[str, Any]
+    requested_args: dict[str, Any]
+
+
+class TrainingRequestResult(TypedDict, total=False):
+    reply: str
+    draft: dict[str, Any] | None
+    defer_to_graph: bool
