@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-import json
-import shutil
 import sys
 import types
 from pathlib import Path
@@ -146,102 +143,55 @@ def _install_fake_test_dependencies() -> None:
 
 _install_fake_test_dependencies()
 
-from langchain_core.messages import AIMessage, ToolMessage
-
-from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
-
-
-WORK = Path(__file__).resolve().parent / '_tmp_route_ownership_logging'
-
-
-class _GraphWithHandledToolError:
-    def get_state(self, config):
-        del config
-        return None
-
-    async def ainvoke(self, payload, config=None):
-        del config
-        messages = list(payload['messages'])
-        messages.append(
-            AIMessage(
-                content='',
-                tool_calls=[{'id': 'tc-route-1', 'name': 'list_remote_profiles', 'args': {}}],
-            )
-        )
-        messages.append(
-            ToolMessage(
-                content=json.dumps({'ok': False, 'error': 'mock failure'}, ensure_ascii=False),
-                name='list_remote_profiles',
-                tool_call_id='tc-route-1',
-            )
-        )
-        messages.append(AIMessage(content='工具失败已被兜底处理。'))
-        return {'messages': messages}
-
-
-class _FakePlannerResponse:
-    def __init__(self, content: str) -> None:
-        self.content = content
-
-
-class _FakePlannerLlm:
-    async def ainvoke(self, messages):
-        text = '\n'.join(str(getattr(message, 'content', '')) for message in messages)
-        if 'list_remote_profiles' in text:
-            return _FakePlannerResponse('当前默认可用服务器配置是 lab。')
-        return _FakePlannerResponse('')
-
-
-async def _run() -> None:
-    shutil.rmtree(WORK, ignore_errors=True)
-    WORK.mkdir(parents=True, exist_ok=True)
-
-    graph_client = YoloStudioAgentClient(
-        graph=_GraphWithHandledToolError(),
-        settings=AgentSettings(session_id='route-graph', memory_root=str(WORK / 'graph')),
-        tool_registry={},
-        planner_llm=None,
-    )
-
-    async def _never_bypass(user_text: str, thread_id: str):
-        del user_text, thread_id
-        return None
-
-    graph_client._try_handle_mainline_intent = _never_bypass  # type: ignore[assignment]
-    graph_result = await graph_client.chat('你好')
-    assert graph_result['status'] == 'completed', graph_result
-    graph_routes = graph_client.route_ownership_report()
-    graph_route_names = [str(item.get('route') or '') for item in graph_routes]
-    assert 'graph-selected-tool' in graph_route_names, graph_routes
-    assert 'tool-error-recovery' in graph_route_names, graph_routes
-
-    bypass_client = YoloStudioAgentClient(
-        graph=_GraphWithHandledToolError(),
-        settings=AgentSettings(session_id='route-bypass', memory_root=str(WORK / 'bypass')),
-        tool_registry={},
-        planner_llm=None,
-    )
-
-    async def _bypass_mainline(user_text: str, thread_id: str):
-        del user_text
-        return {
-            'status': 'completed',
-            'message': '旁路已处理',
-            'tool_call': {'name': 'scan_dataset', 'args': {'img_dir': '/data/demo'}},
-            'thread_id': thread_id,
-        }
-
-    bypass_client._try_handle_mainline_intent = _bypass_mainline  # type: ignore[assignment]
-    bypass_result = await bypass_client.chat('扫描这个数据集')
-    assert bypass_result['status'] == 'completed', bypass_result
-    bypass_routes = bypass_client.route_ownership_report()
-    assert any(item.get('route') == 'graph-external-bypass' for item in bypass_routes), bypass_routes
-
-    print('route ownership logging ok')
+import yolostudio_agent.agent.client.agent_client as agent_client
 
 
 def main() -> None:
-    asyncio.run(_run())
+    original_modules = {
+        name: sys.modules.get(name)
+        for name in ('langgraph.errors', 'langgraph.prebuilt.tool_node')
+    }
+    tool_node_mod = types.ModuleType('langgraph.prebuilt.tool_node')
+    errors_mod = types.ModuleType('langgraph.errors')
+
+    class _FakeToolNode:
+        def __init__(self, tools, handle_tool_errors=False, awrap_tool_call=None):
+            self.tools = list(tools)
+            self.tools_by_name = {}
+            self._handle_tool_errors = handle_tool_errors
+            self._wrap_tool_call = None
+            self._awrap_tool_call = awrap_tool_call
+
+    class _GraphBubbleUp(Exception):
+        pass
+
+    tool_node_mod.ToolNode = _FakeToolNode
+    tool_node_mod.ToolCallRequest = dict
+    tool_node_mod._handle_tool_error = lambda exc, flag=None: str(exc)
+    errors_mod.GraphBubbleUp = _GraphBubbleUp
+    sys.modules['langgraph.prebuilt.tool_node'] = tool_node_mod
+    sys.modules['langgraph.errors'] = errors_mod
+    try:
+        try:
+            agent_client._build_graph_tool_surface(  # type: ignore[attr-defined]
+                [],
+                confirmation_mode='manual',
+                tool_policy_resolver=lambda _: types.SimpleNamespace(confirmation_required=False),
+                client_getter=lambda: None,
+            )
+        except RuntimeError as exc:
+            message = str(exc)
+            assert 'LangGraph ToolNode private API is incompatible' in message, message
+            assert '_execute_tool_sync' in message, message
+        else:
+            raise AssertionError('expected incompatible ToolNode contract to fail loudly')
+    finally:
+        for name, module in original_modules.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+    print('graph tool private api guard ok')
 
 
 if __name__ == '__main__':

@@ -16,7 +16,7 @@ if __package__ in {None, ''}:
             sys.path.insert(0, path)
 
 try:
-    import langchain_openai  # type: ignore  # noqa: F401
+    __import__('langchain_openai')
 except Exception:
     fake_mod = types.ModuleType('langchain_openai')
 
@@ -29,7 +29,7 @@ except Exception:
     sys.modules['langchain_openai'] = fake_mod
 
 try:
-    import langchain_ollama  # type: ignore  # noqa: F401
+    __import__('langchain_ollama')
 except Exception:
     fake_mod = types.ModuleType('langchain_ollama')
 
@@ -42,7 +42,7 @@ except Exception:
     sys.modules['langchain_ollama'] = fake_mod
 
 try:
-    import langchain_core.messages  # type: ignore  # noqa: F401
+    __import__('langchain_core.messages')
 except Exception:
     core_mod = types.ModuleType('langchain_core')
     messages_mod = types.ModuleType('langchain_core.messages')
@@ -100,7 +100,7 @@ except Exception:
     sys.modules['langchain_core.tools'] = tools_mod
 
 try:
-    import langchain_mcp_adapters.client  # type: ignore  # noqa: F401
+    __import__('langchain_mcp_adapters.client')
 except Exception:
     client_mod = types.ModuleType('langchain_mcp_adapters.client')
 
@@ -116,7 +116,7 @@ except Exception:
     sys.modules['langchain_mcp_adapters.client'] = client_mod
 
 try:
-    import pydantic  # type: ignore  # noqa: F401
+    __import__('pydantic')
 except Exception:
     pyd_mod = types.ModuleType('pydantic')
 
@@ -134,9 +134,9 @@ except Exception:
     sys.modules['pydantic'] = pyd_mod
 
 try:
-    import langgraph.prebuilt  # type: ignore  # noqa: F401
-    import langgraph.types  # type: ignore  # noqa: F401
-    import langgraph.checkpoint.memory  # type: ignore  # noqa: F401
+    __import__('langgraph.prebuilt')
+    __import__('langgraph.types')
+    __import__('langgraph.checkpoint.memory')
 except Exception:
     prebuilt_mod = types.ModuleType('langgraph.prebuilt')
     types_mod = types.ModuleType('langgraph.types')
@@ -422,6 +422,19 @@ async def _scenario_synthetic_pending_ignores_graph_pending() -> None:
     assert graph.resume_calls == [], graph.resume_calls
 
 
+async def _scenario_runtime_ignores_manual_pending_session_mutation() -> None:
+    scenario_root = WORK / 'runtime-ignores-manual-session-pending'
+    settings = AgentSettings(session_id='runtime-ignore-manual-session', memory_root=str(scenario_root))
+    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+    client.session_state.pending_confirmation.thread_id = 'manual-session-pending-turn-1'
+    client.session_state.pending_confirmation.tool_name = 'start_training'
+    client.session_state.pending_confirmation.tool_args = {'model': 'yolov8n.pt', 'epochs': 40}
+    client.session_state.pending_confirmation.source = 'synthetic'
+    client.session_state.pending_confirmation.summary = '手工改 dataclass 的旧 pending'
+    assert client._pending_from_state() is None
+    assert client.get_pending_action() is None
+
+
 async def _run() -> None:
     shutil.rmtree(WORK, ignore_errors=True)
     WORK.mkdir(parents=True, exist_ok=True)
@@ -433,6 +446,7 @@ async def _run() -> None:
         await _scenario_review_approve()
         await _scenario_stale_graph_pending_is_cleared()
         await _scenario_synthetic_pending_ignores_graph_pending()
+        await _scenario_runtime_ignores_manual_pending_session_mutation()
         print('agent runtime interrupts ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)

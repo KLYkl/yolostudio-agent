@@ -15,7 +15,7 @@ if __package__ in {None, ''}:
             sys.path.insert(0, path)
 
 try:
-    import langchain_openai  # type: ignore  # noqa: F401
+    __import__('langchain_openai')
 except Exception:
     fake_mod = types.ModuleType('langchain_openai')
 
@@ -28,7 +28,7 @@ except Exception:
     sys.modules['langchain_openai'] = fake_mod
 
 try:
-    import langchain_ollama  # type: ignore  # noqa: F401
+    __import__('langchain_ollama')
 except Exception:
     fake_mod = types.ModuleType('langchain_ollama')
 
@@ -41,7 +41,7 @@ except Exception:
     sys.modules['langchain_ollama'] = fake_mod
 
 try:
-    import langchain_mcp_adapters.client  # type: ignore  # noqa: F401
+    __import__('langchain_mcp_adapters.client')
 except Exception:
     client_mod = types.ModuleType('langchain_mcp_adapters.client')
 
@@ -55,6 +55,163 @@ except Exception:
 
     client_mod.MultiServerMCPClient = _FakeMCPClient
     sys.modules['langchain_mcp_adapters.client'] = client_mod
+
+try:
+    __import__('langchain_core.messages')
+except Exception:
+    core_mod = sys.modules.get('langchain_core')
+    if core_mod is None:
+        core_mod = types.ModuleType('langchain_core')
+        sys.modules['langchain_core'] = core_mod
+    messages_mod = types.ModuleType('langchain_core.messages')
+
+    class _BaseMessage:
+        def __init__(self, content=''):
+            self.content = content
+
+    class _AIMessage(_BaseMessage):
+        def __init__(self, content='', tool_calls=None):
+            super().__init__(content)
+            self.tool_calls = tool_calls or []
+
+    class _HumanMessage(_BaseMessage):
+        pass
+
+    class _SystemMessage(_BaseMessage):
+        pass
+
+    class _ToolMessage(_BaseMessage):
+        def __init__(self, content='', name='', tool_call_id='', status='success'):
+            super().__init__(content)
+            self.name = name
+            self.tool_call_id = tool_call_id
+            self.status = status
+
+    messages_mod.AIMessage = _AIMessage
+    messages_mod.BaseMessage = _BaseMessage
+    messages_mod.HumanMessage = _HumanMessage
+    messages_mod.SystemMessage = _SystemMessage
+    messages_mod.ToolMessage = _ToolMessage
+    core_mod.messages = messages_mod
+    sys.modules['langchain_core.messages'] = messages_mod
+
+try:
+    __import__('pydantic')
+except Exception:
+    pyd_mod = types.ModuleType('pydantic')
+
+    class _BaseModel:
+        def __init__(self, **kwargs):
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+
+    def _Field(default=None, **kwargs):
+        del kwargs
+        return default
+
+    pyd_mod.BaseModel = _BaseModel
+    pyd_mod.Field = _Field
+    sys.modules['pydantic'] = pyd_mod
+
+try:
+    from langchain_core.tools import StructuredTool
+except Exception:
+    core_mod = sys.modules.get('langchain_core')
+    if core_mod is None:
+        core_mod = types.ModuleType('langchain_core')
+        sys.modules['langchain_core'] = core_mod
+    tools_mod = types.ModuleType('langchain_core.tools')
+
+    class _BaseTool:
+        name = 'fake'
+        description = 'fake'
+        args_schema = None
+
+    class _StructuredTool:
+        @classmethod
+        def from_function(cls, func=None, coroutine=None, name='', description='', args_schema=None, return_direct=False):
+            tool = cls()
+            tool.func = func
+            tool.coroutine = coroutine
+            tool.name = name
+            tool.description = description
+            tool.args_schema = args_schema
+            tool.return_direct = return_direct
+            return tool
+
+    tools_mod.BaseTool = _BaseTool
+    tools_mod.StructuredTool = _StructuredTool
+    core_mod.tools = tools_mod
+    sys.modules['langchain_core.tools'] = tools_mod
+    StructuredTool = _StructuredTool
+
+try:
+    __import__('langgraph.prebuilt')
+    __import__('langgraph.types')
+    __import__('langgraph.checkpoint.memory')
+except Exception:
+    prebuilt_mod = types.ModuleType('langgraph.prebuilt')
+    tool_node_mod = types.ModuleType('langgraph.prebuilt.tool_node')
+    types_mod = types.ModuleType('langgraph.types')
+    checkpoint_mod = types.ModuleType('langgraph.checkpoint.memory')
+    errors_mod = types.ModuleType('langgraph.errors')
+
+    def _fake_create_react_agent(*args, **kwargs):
+        return {'args': args, 'kwargs': kwargs}
+
+    class _ToolCallRequest:
+        def __init__(self, tool_call, tool, state, runtime):
+            self.tool_call = tool_call
+            self.tool = tool
+            self.state = state
+            self.runtime = runtime
+
+    class _ToolNode:
+        def __init__(self, tools, handle_tool_errors=False, wrap_tool_call=None, awrap_tool_call=None):
+            self.tools = list(tools)
+            self.tools_by_name = {tool.name: tool for tool in self.tools}
+            self._handle_tool_errors = handle_tool_errors
+            self._wrap_tool_call = wrap_tool_call
+            self._awrap_tool_call = awrap_tool_call
+
+        def _execute_tool_sync(self, request, input_type, config):
+            del input_type, config
+            args = dict(getattr(request, 'tool_call', {}).get('args') or {})
+            if getattr(request.tool, 'func', None) is not None:
+                return request.tool.func(**args)
+            return None
+
+        async def _execute_tool_async(self, request, input_type, config):
+            del input_type, config
+            args = dict(getattr(request, 'tool_call', {}).get('args') or {})
+            if getattr(request.tool, 'coroutine', None) is not None:
+                return await request.tool.coroutine(**args)
+            if getattr(request.tool, 'func', None) is not None:
+                return request.tool.func(**args)
+            return None
+
+    class _Command:
+        def __init__(self, resume=None):
+            self.resume = resume
+
+    class _InMemorySaver:
+        def __init__(self, *args, **kwargs):
+            self.storage = {}
+            self.writes = {}
+            self.blobs = {}
+
+    prebuilt_mod.create_react_agent = _fake_create_react_agent
+    tool_node_mod.ToolNode = _ToolNode
+    tool_node_mod.ToolCallRequest = _ToolCallRequest
+    tool_node_mod._handle_tool_error = lambda exc, flag=None: str(exc)
+    types_mod.Command = _Command
+    checkpoint_mod.InMemorySaver = _InMemorySaver
+    sys.modules['langgraph.prebuilt'] = prebuilt_mod
+    sys.modules['langgraph.prebuilt.tool_node'] = tool_node_mod
+    sys.modules['langgraph.types'] = types_mod
+    sys.modules['langgraph.checkpoint.memory'] = checkpoint_mod
+    errors_mod.GraphBubbleUp = type('GraphBubbleUp', (Exception,), {})
+    sys.modules['langgraph.errors'] = errors_mod
 
 import yolostudio_agent.agent.client.agent_client as agent_client
 
@@ -83,7 +240,7 @@ async def _run() -> None:
         del dataset_path, from_format, to_format
         return 'ok'
 
-    tool = agent_client.StructuredTool.from_function(
+    tool = StructuredTool.from_function(
         func=_convert_format,
         name='convert_format',
         description='fake',

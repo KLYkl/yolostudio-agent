@@ -12,9 +12,7 @@ if __package__ in {None, ''}:
         if path not in sys.path:
             sys.path.insert(0, path)
 
-try:
-    import langchain_openai  # type: ignore  # noqa: F401
-except Exception:
+def _install_fake_test_dependencies() -> None:
     fake_mod = types.ModuleType('langchain_openai')
 
     class _FakeChatOpenAI:
@@ -25,9 +23,6 @@ except Exception:
     fake_mod.ChatOpenAI = _FakeChatOpenAI
     sys.modules['langchain_openai'] = fake_mod
 
-try:
-    import langchain_ollama  # type: ignore  # noqa: F401
-except Exception:
     fake_mod = types.ModuleType('langchain_ollama')
 
     class _FakeChatOllama:
@@ -38,9 +33,37 @@ except Exception:
     fake_mod.ChatOllama = _FakeChatOllama
     sys.modules['langchain_ollama'] = fake_mod
 
+    core_mod = types.ModuleType('langchain_core')
+    messages_mod = types.ModuleType('langchain_core.messages')
+
+    class _BaseMessage:
+        def __init__(self, content='', **kwargs):
+            self.content = content
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+
+    class _AIMessage(_BaseMessage):
+        pass
+
+    class _HumanMessage(_BaseMessage):
+        pass
+
+    class _SystemMessage(_BaseMessage):
+        pass
+
+    messages_mod.AIMessage = _AIMessage
+    messages_mod.HumanMessage = _HumanMessage
+    messages_mod.SystemMessage = _SystemMessage
+    core_mod.messages = messages_mod
+    sys.modules['langchain_core'] = core_mod
+    sys.modules['langchain_core.messages'] = messages_mod
+
+
+_install_fake_test_dependencies()
+
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from yolostudio_agent.agent.client.agent_client import _dataset_fact_post_model_hook
+from yolostudio_agent.agent.client.middleware.fact_validation_middleware import build_fact_validation_middleware
 
 
 def main() -> None:
@@ -68,7 +91,12 @@ def main() -> None:
         'dataset_fact_context': snapshot,
     }
 
-    update = _dataset_fact_post_model_hook(state)
+    hook = build_fact_validation_middleware(
+        replace_last_ai_message=lambda messages, replacement: {
+            'messages': [*messages[:-1], AIMessage(content=replacement)],
+        }
+    )
+    update = hook(state)
     assert update == {}, update
     print('dataset fact post model hook ok')
 

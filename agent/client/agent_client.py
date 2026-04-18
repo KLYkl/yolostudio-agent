@@ -648,6 +648,7 @@ class YoloStudioAgentClient:
     def _sync_training_workflow_state(self, *, reason: str = '') -> None:
         sync_training_workflow_state(
             self.session_state,
+            pending_confirmation=dict(self._pending_confirmation_shadow or {}) if self._pending_confirmation_shadow else None,
             append_event=lambda event_type, payload: self.memory.append_event(
                 self.session_state.session_id,
                 event_type,
@@ -707,7 +708,19 @@ class YoloStudioAgentClient:
         rt.last_profile_listing = {}
         rt.last_upload = {}
         rt.last_download = {}
-        sync_training_workflow_state(state)
+        pending = state.pending_confirmation
+        pending.thread_id = ""
+        pending.tool_name = ""
+        pending.tool_args = {}
+        pending.source = 'synthetic'
+        pending.interrupt_kind = 'tool_approval'
+        pending.objective = ''
+        pending.summary = ''
+        pending.allowed_decisions = ['approve', 'reject', 'edit', 'clarify']
+        pending.review_config = {}
+        pending.decision_context = {}
+        pending.created_at = ""
+        sync_training_workflow_state(state, pending_confirmation={})
         return state
 
     def _should_reuse_history_context(self, user_text: str) -> bool:
@@ -971,7 +984,7 @@ class YoloStudioAgentClient:
 
 
     def _pending_confirmation_thread_id(self) -> str:
-        pending = self._pending_confirmation_shadow or self._compat_pending_from_session() or {}
+        pending = self._pending_confirmation_shadow or {}
         return str(pending.get('thread_id') or '').strip() or f"{self.session_state.session_id}-pending"
 
     def get_pending_action(self) -> dict[str, Any] | None:
@@ -2450,7 +2463,7 @@ class YoloStudioAgentClient:
             sort_keys=True,
         )
 
-    def _compat_pending_from_session(self) -> dict[str, Any] | None:
+    def _startup_pending_from_session(self) -> dict[str, Any] | None:
         pc = self.session_state.pending_confirmation
         if not pc.tool_name:
             return None
@@ -2495,7 +2508,7 @@ class YoloStudioAgentClient:
         pc.created_at = str(pending.get('created_at') or utc_now()).strip()
 
     def _bootstrap_pending_confirmation_state(self) -> None:
-        legacy_pending = self._compat_pending_from_session()
+        legacy_pending = self._startup_pending_from_session()
         if not legacy_pending:
             self._mirror_pending_confirmation(None)
             return
@@ -2786,11 +2799,37 @@ class YoloStudioAgentClient:
             persist_graph=True,
         )
 
+    def _update_pending_confirmation_args(self, thread_id: str, updates: dict[str, Any]) -> bool:
+        pending = self._resolve_pending_confirmation(thread_id=thread_id, config=self._pending_config(thread_id))
+        if not pending:
+            return False
+        normalized_updates = dict(updates or {})
+        if not normalized_updates:
+            return True
+        updated_pending = dict(pending)
+        updated_args = dict(updated_pending.get('args') or updated_pending.get('tool_args') or {})
+        updated_args.update(normalized_updates)
+        updated_pending['args'] = dict(updated_args)
+        updated_pending['tool_args'] = dict(updated_args)
+        self._remember_pending_confirmation(
+            updated_pending,
+            emit_event=False,
+            persist_graph=False,
+        )
+        resolved_thread_id = str(updated_pending.get('thread_id') or thread_id or '').strip()
+        if resolved_thread_id:
+            self._update_graph_pending_state(
+                thread_id=resolved_thread_id,
+                pending=updated_pending,
+                review=self._pending_review_shadow,
+            )
+        self.memory.save_state(self.session_state)
+        return True
+
     def _clear_pending_confirmation(self, *, thread_id: str = '', persist_graph: bool = True) -> None:
         resolved_thread_id = str(
             thread_id
             or (self._pending_confirmation_shadow or {}).get('thread_id')
-            or (self._compat_pending_from_session() or {}).get('thread_id')
             or ''
         ).strip()
         self._pending_confirmation_shadow = None
@@ -2803,12 +2842,7 @@ class YoloStudioAgentClient:
     def _pending_from_state(self) -> dict[str, Any] | None:
         if self._pending_confirmation_shadow:
             return self._merge_pending_review_context(self._pending_confirmation_shadow, self._pending_review_shadow)
-        legacy = self._compat_pending_from_session()
-        if not legacy:
-            return None
-        self._pending_confirmation_shadow = dict(legacy)
-        self._pending_review_shadow = dict(legacy.get('decision_context') or {})
-        return self._merge_pending_review_context(legacy, self._pending_review_shadow)
+        return None
 
     def _resolve_pending_confirmation(
         self,
@@ -4530,19 +4564,8 @@ def _tool_rejection_command(*, tool_name: str, tool_call_id: str, message: str) 
 async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudioAgentClient:
     settings = settings or AgentSettings()
     memory_store = MemoryStore(settings.memory_root)
-    route_event_store = memory_store
     client_holder: dict[str, YoloStudioAgentClient] = {}
     checkpointer = FileCheckpointSaver(_checkpoint_path(settings))
-
-    def _record_post_hook_route(route: str, payload: dict[str, Any]) -> None:
-        route_event_store.append_event(
-            settings.session_id,
-            'route_ownership',
-            {
-                'route': str(route or '').strip(),
-                **dict(payload or {}),
-            },
-        )
 
     raw_tools = await load_mcp_tools_with_recovery(
         settings.mcp_url,
@@ -4564,7 +4587,6 @@ async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudi
     react_kwargs: dict[str, Any] = {
         'prompt': SYSTEM_PROMPT,
         'checkpointer': checkpointer,
-        'post_model_hook': _build_agent_post_model_hook(helper_llm, route_reporter=_record_post_hook_route),
         'state_schema': _AgentRuntimeGraphState,
     }
     graph_tools = _build_graph_tool_surface(
@@ -4656,6 +4678,12 @@ def _build_graph_tool_surface(
         from langgraph.prebuilt.tool_node import ToolCallRequest, _handle_tool_error
     except Exception:
         return ToolNode(tools, handle_tool_errors=True)
+    contract_error = _interruptible_tool_node_contract_error(ToolNode)
+    if contract_error:
+        raise RuntimeError(
+            'LangGraph ToolNode private API is incompatible with interruptible approvals: '
+            f'{contract_error}'
+        )
     manual_confirmation = str(confirmation_mode or 'manual').strip().lower() == 'manual'
 
     async def _awrap_tool_call(request: Any, execute: Callable[[Any], Awaitable[Any]]) -> Any:
@@ -4681,6 +4709,12 @@ def _build_graph_tool_surface(
             return _tool_response_with_pending_clear(response)
         return await execute(request)
 
+    # LangGraph does not currently expose a public hook that lets us pause a
+    # tool call at the ToolNode execution boundary and still resume through the
+    # graph checkpoint contract. We therefore override the private _run_one /
+    # _arun_one methods so the interrupt-aware wrap hooks are applied before the
+    # tool body executes. Keep _interruptible_tool_node_contract_error() in sync
+    # with these assumptions so upstream LangGraph drift fails loudly.
     class InterruptibleToolNode(ToolNode):
         def _run_one(self, call: Any, input_type: str, tool_runtime: Any) -> Any:
             tool = self.tools_by_name.get(call["name"])
@@ -4750,6 +4784,37 @@ def _build_graph_tool_surface(
     return InterruptibleToolNode(tools, handle_tool_errors=True, awrap_tool_call=_awrap_tool_call)
 
 
+def _interruptible_tool_node_contract_error(tool_node_cls: type[Any]) -> str | None:
+    try:
+        init_signature = inspect.signature(tool_node_cls.__init__)
+    except (TypeError, ValueError):
+        return 'ToolNode.__init__ signature is unavailable'
+    init_parameters = init_signature.parameters
+    missing_init = [
+        name for name in ('handle_tool_errors', 'awrap_tool_call')
+        if name not in init_parameters
+    ]
+    if missing_init:
+        return f"ToolNode.__init__ is missing parameters: {', '.join(missing_init)}"
+    missing_class_attrs = [
+        name for name in ('_execute_tool_sync', '_execute_tool_async')
+        if not hasattr(tool_node_cls, name)
+    ]
+    if missing_class_attrs:
+        return f"ToolNode is missing methods: {', '.join(missing_class_attrs)}"
+    try:
+        probe = tool_node_cls([], handle_tool_errors=True, awrap_tool_call=None)
+    except Exception as exc:
+        return f'ToolNode probe construction failed: {exc}'
+    missing_instance_attrs = [
+        name for name in ('tools_by_name', '_handle_tool_errors', '_wrap_tool_call', '_awrap_tool_call')
+        if not hasattr(probe, name)
+    ]
+    if missing_instance_attrs:
+        return f"ToolNode instance is missing attrs: {', '.join(missing_instance_attrs)}"
+    return None
+
+
 def _message_text_static(content: Any) -> str:
     if isinstance(content, str):
         return content.strip()
@@ -4786,25 +4851,6 @@ def _replace_last_ai_message(messages: list[Any], reply: str) -> dict[str, Any]:
     except Exception:
         return {'messages': [*messages[:-1], replacement]}
     return {'messages': [RemoveMessage(id=REMOVE_ALL_MESSAGES), *messages[:-1], replacement]}
-
-
-def _dataset_fact_post_model_hook(state: dict[str, Any]) -> dict[str, Any]:
-    del state
-    return {}
-
-
-def _build_agent_post_model_hook(
-    planner_llm: Any,
-    *,
-    route_reporter: Callable[[str, dict[str, Any]], None] | None = None,
-) -> Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]:
-    del planner_llm, route_reporter
-
-    async def _post_model_hook(state: dict[str, Any]) -> dict[str, Any]:
-        del state
-        return {}
-
-    return _post_model_hook
 
 
 async def build_agent():

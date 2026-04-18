@@ -221,6 +221,7 @@ async def _run() -> None:
     manual_kwargs = captured[-1]['kwargs']  # type: ignore[index]
     assert getattr(manual_tools, 'handle_tool_errors', False) is True
     assert 'interrupt_before' not in manual_kwargs, manual_kwargs
+    assert 'post_model_hook' not in manual_kwargs, manual_kwargs
     assert manual_kwargs.get('state_schema') is not None, manual_kwargs
     assert getattr(manual, 'checkpointer', None) is manual_kwargs.get('checkpointer')
     assert len(_RecordingMemoryStore.instances) - before_manual == 1, _RecordingMemoryStore.instances
@@ -234,6 +235,7 @@ async def _run() -> None:
     auto_kwargs = captured[-1]['kwargs']  # type: ignore[index]
     assert getattr(auto_tools, 'handle_tool_errors', False) is True
     assert 'interrupt_before' not in auto_kwargs, auto_kwargs
+    assert 'post_model_hook' not in auto_kwargs, auto_kwargs
     assert auto_kwargs.get('state_schema') is not None, auto_kwargs
     assert getattr(auto, 'checkpointer', None) is auto_kwargs.get('checkpointer')
     assert len(_RecordingMemoryStore.instances) - before_auto == 1, _RecordingMemoryStore.instances

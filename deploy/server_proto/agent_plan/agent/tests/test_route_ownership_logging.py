@@ -4,6 +4,7 @@ import asyncio
 import json
 import shutil
 import sys
+import types
 from pathlib import Path
 
 if __package__ in {None, ''}:
@@ -14,12 +15,140 @@ if __package__ in {None, ''}:
         if path not in sys.path:
             sys.path.insert(0, path)
 
+
+def _install_fake_test_dependencies() -> None:
+    fake_openai = types.ModuleType('langchain_openai')
+    fake_ollama = types.ModuleType('langchain_ollama')
+
+    class _FakeChatOpenAI:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+    class _FakeChatOllama:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+    fake_openai.ChatOpenAI = _FakeChatOpenAI
+    fake_ollama.ChatOllama = _FakeChatOllama
+    sys.modules['langchain_openai'] = fake_openai
+    sys.modules['langchain_ollama'] = fake_ollama
+
+    core_mod = types.ModuleType('langchain_core')
+    messages_mod = types.ModuleType('langchain_core.messages')
+    tools_mod = types.ModuleType('langchain_core.tools')
+
+    class _BaseMessage:
+        def __init__(self, content=''):
+            self.content = content
+
+    class _AIMessage(_BaseMessage):
+        def __init__(self, content='', tool_calls=None):
+            super().__init__(content)
+            self.tool_calls = tool_calls or []
+
+    class _HumanMessage(_BaseMessage):
+        pass
+
+    class _SystemMessage(_BaseMessage):
+        pass
+
+    class _ToolMessage(_BaseMessage):
+        def __init__(self, content='', name='', tool_call_id='', status='success'):
+            super().__init__(content)
+            self.name = name
+            self.tool_call_id = tool_call_id
+            self.status = status
+
+    class _BaseTool:
+        name = 'fake'
+        description = 'fake'
+        args_schema = None
+
+    class _StructuredTool(_BaseTool):
+        @classmethod
+        def from_function(cls, func=None, coroutine=None, name='', description='', args_schema=None, return_direct=False):
+            tool = cls()
+            tool.func = func
+            tool.coroutine = coroutine
+            tool.name = name
+            tool.description = description
+            tool.args_schema = args_schema
+            tool.return_direct = return_direct
+            return tool
+
+    messages_mod.AIMessage = _AIMessage
+    messages_mod.BaseMessage = _BaseMessage
+    messages_mod.HumanMessage = _HumanMessage
+    messages_mod.SystemMessage = _SystemMessage
+    messages_mod.ToolMessage = _ToolMessage
+    tools_mod.BaseTool = _BaseTool
+    tools_mod.StructuredTool = _StructuredTool
+    core_mod.messages = messages_mod
+    core_mod.tools = tools_mod
+    sys.modules['langchain_core'] = core_mod
+    sys.modules['langchain_core.messages'] = messages_mod
+    sys.modules['langchain_core.tools'] = tools_mod
+
+    client_mod = types.ModuleType('langchain_mcp_adapters.client')
+
+    class _FakeMCPClient:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+        async def get_tools(self):
+            return []
+
+    client_mod.MultiServerMCPClient = _FakeMCPClient
+    sys.modules['langchain_mcp_adapters.client'] = client_mod
+
+    pyd_mod = types.ModuleType('pydantic')
+
+    class _BaseModel:
+        def __init__(self, **kwargs):
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+
+    def _Field(default=None, **kwargs):
+        del kwargs
+        return default
+
+    pyd_mod.BaseModel = _BaseModel
+    pyd_mod.Field = _Field
+    sys.modules['pydantic'] = pyd_mod
+
+    prebuilt_mod = types.ModuleType('langgraph.prebuilt')
+    types_mod = types.ModuleType('langgraph.types')
+    checkpoint_mod = types.ModuleType('langgraph.checkpoint.memory')
+
+    def _fake_create_react_agent(*args, **kwargs):
+        return {'args': args, 'kwargs': kwargs}
+
+    class _Command:
+        def __init__(self, resume=None):
+            self.resume = resume
+
+    class _InMemorySaver:
+        def __init__(self, *args, **kwargs):
+            self.storage = {}
+            self.writes = {}
+            self.blobs = {}
+
+    prebuilt_mod.create_react_agent = _fake_create_react_agent
+    types_mod.Command = _Command
+    checkpoint_mod.InMemorySaver = _InMemorySaver
+    sys.modules['langgraph.prebuilt'] = prebuilt_mod
+    sys.modules['langgraph.types'] = types_mod
+    sys.modules['langgraph.checkpoint.memory'] = checkpoint_mod
+
+
+_install_fake_test_dependencies()
+
 from langchain_core.messages import AIMessage, ToolMessage
 
-from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient, _build_agent_post_model_hook
-from yolostudio_agent.agent.client.cached_tool_reply_service import build_cached_tool_context_payload
-from yolostudio_agent.agent.client.memory_store import MemoryStore
-from yolostudio_agent.agent.client.session_state import SessionState
+from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
 
 
 WORK = Path(__file__).resolve().parent / '_tmp_route_ownership_logging'
@@ -107,59 +236,6 @@ async def _run() -> None:
     assert bypass_result['status'] == 'completed', bypass_result
     bypass_routes = bypass_client.route_ownership_report()
     assert any(item.get('route') == 'graph-external-bypass' for item in bypass_routes), bypass_routes
-
-    hook_store = MemoryStore(WORK / 'hook')
-
-    def _report_route(route: str, payload: dict[str, object]) -> None:
-        hook_store.append_event('route-hook', 'route_ownership', {'route': route, **dict(payload)})
-
-    state = SessionState(session_id='route-hook')
-    state.active_remote_transfer.last_profile_listing = {
-        'ok': True,
-        'summary': '远端 profile 1 个 / SSH alias 1 个。 默认 profile: lab。',
-        'default_profile': 'lab',
-        'profiles': [{'name': 'lab', 'target_label': 'lab'}],
-    }
-    cached_tool_context = build_cached_tool_context_payload(state)
-    assert cached_tool_context is not None
-
-    hook = _build_agent_post_model_hook(_FakePlannerLlm(), route_reporter=_report_route)
-    hook_update = await hook(
-        {
-            'messages': [
-                AIMessage(content='previous'),
-                AIMessage(content='', tool_calls=[{'id': 'tc-hook-1', 'name': 'list_remote_profiles', 'args': {}}]),
-            ],
-        }
-    )
-    assert hook_update == {}, hook_update
-
-    hook_update = await hook(
-        {
-            'messages': [
-                AIMessage(content='previous'),
-                ToolMessage(content='ignored', name='noop', tool_call_id='noop'),
-            ]
-        }
-    )
-    assert hook_update == {}, hook_update
-
-    from langchain_core.messages import HumanMessage, SystemMessage
-
-    hook_update = await hook(
-        {
-            'messages': [
-                SystemMessage(content='system'),
-                SystemMessage(content='summary'),
-                HumanMessage(content='再列一下可用服务器配置'),
-                AIMessage(content='', tool_calls=[{'id': 'tc-hook-2', 'name': 'list_remote_profiles', 'args': {}}]),
-            ],
-            'cached_tool_context': cached_tool_context,
-        }
-    )
-    assert hook_update == {}, hook_update
-    hook_routes = hook_store.read_events_by_type('route-hook', 'route_ownership')
-    assert not any(item.get('route') == 'post-hook-override' for item in hook_routes), hook_routes
 
     print('route ownership logging ok')
 

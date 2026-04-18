@@ -4,6 +4,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+SESSION_STATE_SCHEMA_VERSION = 2
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -140,6 +142,7 @@ class UserPreferences:
 @dataclass(slots=True)
 class SessionState:
     session_id: str
+    schema_version: int = SESSION_STATE_SCHEMA_VERSION
     created_at: str = field(default_factory=utc_now)
     updated_at: str = field(default_factory=utc_now)
     active_dataset: DatasetContext = field(default_factory=DatasetContext)
@@ -157,9 +160,11 @@ class SessionState:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> 'SessionState':
+    def from_dict(cls, data: dict[str, Any], *, session_id_fallback: str = '') -> 'SessionState':
+        data = migrate_session_state_payload(data, session_id_fallback=session_id_fallback)
         return cls(
             session_id=data['session_id'],
+            schema_version=int(data.get('schema_version') or SESSION_STATE_SCHEMA_VERSION),
             created_at=data.get('created_at', utc_now()),
             updated_at=data.get('updated_at', utc_now()),
             active_dataset=DatasetContext(**data.get('active_dataset', {})),
@@ -170,3 +175,48 @@ class SessionState:
             pending_confirmation=PendingConfirmation(**data.get('pending_confirmation', {})),
             preferences=UserPreferences(**data.get('preferences', {})),
         )
+
+
+def migrate_session_state_payload(data: dict[str, Any] | None, *, session_id_fallback: str = '') -> dict[str, Any]:
+    payload = dict(data or {})
+    raw_version = payload.get('schema_version')
+    try:
+        schema_version = int(raw_version)
+    except (TypeError, ValueError):
+        schema_version = 1
+
+    payload['session_id'] = str(payload.get('session_id') or session_id_fallback or '').strip()
+    if not payload['session_id']:
+        raise KeyError('session_id')
+
+    for field_name in (
+        'active_dataset',
+        'active_training',
+        'active_prediction',
+        'active_knowledge',
+        'active_remote_transfer',
+        'pending_confirmation',
+        'preferences',
+    ):
+        if not isinstance(payload.get(field_name), dict):
+            payload[field_name] = {}
+
+    if schema_version < 2:
+        pending = dict(payload.get('pending_confirmation') or {})
+        if not isinstance(pending.get('allowed_decisions'), list) or not pending.get('allowed_decisions'):
+            pending['allowed_decisions'] = ["approve", "reject", "edit", "clarify"]
+        if not isinstance(pending.get('review_config'), dict):
+            pending['review_config'] = {}
+        if not isinstance(pending.get('decision_context'), dict):
+            pending['decision_context'] = {}
+        if not str(pending.get('source') or '').strip():
+            pending['source'] = 'synthetic'
+        payload['pending_confirmation'] = pending
+
+        active_training = dict(payload.get('active_training') or {})
+        if not isinstance(active_training.get('training_plan_draft'), dict):
+            active_training['training_plan_draft'] = {}
+        payload['active_training'] = active_training
+
+    payload['schema_version'] = SESSION_STATE_SCHEMA_VERSION
+    return payload

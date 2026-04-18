@@ -832,8 +832,10 @@ async def _scenario_remote_training_pipeline_waits_and_downloads() -> None:
     assert any(item.get('route') == 'graph-selected-tool' for item in routes), routes
 
     local_result_root = Path(turn['tool_call']['args']['local_result_root'])
-    client.session_state.pending_confirmation.tool_args['poll_interval_seconds'] = 0
-    client.session_state.pending_confirmation.tool_args['max_wait_seconds'] = 1
+    assert client._update_pending_confirmation_args(
+        turn['thread_id'],
+        {'poll_interval_seconds': 0, 'max_wait_seconds': 1},
+    ) is True
 
     original_sleep = asyncio.sleep
 

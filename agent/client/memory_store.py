@@ -4,7 +4,12 @@ import json
 from pathlib import Path
 from typing import Any
 
-from yolostudio_agent.agent.client.session_state import SessionState, utc_now
+from yolostudio_agent.agent.client.session_state import (
+    SESSION_STATE_SCHEMA_VERSION,
+    SessionState,
+    migrate_session_state_payload,
+    utc_now,
+)
 
 
 class MemoryStore:
@@ -19,10 +24,27 @@ class MemoryStore:
         path = self.sessions_dir / f'{session_id}.json'
         if not path.exists():
             return SessionState(session_id=session_id)
-        return SessionState.from_dict(json.loads(path.read_text(encoding='utf-8')))
+        raw_payload = json.loads(path.read_text(encoding='utf-8'))
+        try:
+            from_version = int(raw_payload.get('schema_version'))
+        except (TypeError, ValueError):
+            from_version = 1
+        migrated_payload = migrate_session_state_payload(raw_payload, session_id_fallback=session_id)
+        if raw_payload != migrated_payload:
+            path.write_text(json.dumps(migrated_payload, ensure_ascii=False, indent=2), encoding='utf-8')
+            self.append_event(
+                session_id,
+                'state_schema_migrated',
+                {
+                    'from_version': from_version,
+                    'to_version': int(migrated_payload.get('schema_version') or SESSION_STATE_SCHEMA_VERSION),
+                },
+            )
+        return SessionState.from_dict(migrated_payload, session_id_fallback=session_id)
 
     def save_state(self, state: SessionState) -> None:
         state.touch()
+        state.schema_version = SESSION_STATE_SCHEMA_VERSION
         path = self.sessions_dir / f'{state.session_id}.json'
         path.write_text(json.dumps(state.to_dict(), ensure_ascii=False, indent=2), encoding='utf-8')
 

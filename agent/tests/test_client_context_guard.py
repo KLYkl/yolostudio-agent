@@ -246,6 +246,31 @@ async def _scenario_stale_training_plan_draft_is_cleared_on_startup() -> None:
     assert client.session_state.active_training.training_plan_draft == {}
 
 
+def _scenario_strip_ephemeral_context_clears_pending_mirror() -> None:
+    state = SessionState(session_id='strip-ephemeral-pending')
+    state.pending_confirmation.thread_id = 'strip-ephemeral-pending-turn-1'
+    state.pending_confirmation.tool_name = 'start_training'
+    state.pending_confirmation.tool_args = {'model': 'yolov8n.pt', 'epochs': 40}
+    state.pending_confirmation.source = 'graph'
+    state.pending_confirmation.summary = '等待启动训练确认'
+    state.active_training.training_plan_draft = {
+        'next_step_tool': 'start_training',
+        'planned_training_args': {'model': 'yolov8n.pt', 'epochs': 40},
+    }
+    state.active_training.workflow_state = 'pending_confirmation'
+
+    stripped = YoloStudioAgentClient._strip_ephemeral_context(SessionState.from_dict(state.to_dict()))
+    assert stripped.pending_confirmation.tool_name == ''
+    assert stripped.pending_confirmation.thread_id == ''
+    assert stripped.pending_confirmation.tool_args == {}
+    assert stripped.active_training.training_plan_draft == {}
+    assert stripped.active_training.workflow_state == 'idle'
+
+    assert state.pending_confirmation.tool_name == 'start_training'
+    assert state.pending_confirmation.thread_id == 'strip-ephemeral-pending-turn-1'
+    assert state.active_training.training_plan_draft != {}
+
+
 async def _scenario_stale_graph_pending_is_cleared_on_startup() -> None:
     root = WORK / 'startup-stale-pending'
     store = MemoryStore(root)
@@ -626,6 +651,31 @@ async def _scenario_legacy_synthetic_pending_is_replaced_by_single_graph_pending
     ), events
 
 
+async def _scenario_legacy_synthetic_pending_is_bootstrapped_without_graph() -> None:
+    root = WORK / 'startup-legacy-synthetic-bootstrap'
+    store = MemoryStore(root)
+    state = SessionState(session_id='startup-legacy-synthetic-bootstrap')
+    state.pending_confirmation.thread_id = 'legacy-synthetic-bootstrap-turn-1'
+    state.pending_confirmation.tool_name = 'start_training'
+    state.pending_confirmation.tool_args = {'model': 'yolov8n.pt', 'epochs': 30}
+    state.pending_confirmation.source = 'synthetic'
+    state.pending_confirmation.summary = '等待本地训练确认'
+    state.pending_confirmation.objective = '启动训练'
+    state.pending_confirmation.decision_context = {'decision': 'clarify'}
+    store.save_state(state)
+
+    settings = AgentSettings(session_id='startup-legacy-synthetic-bootstrap', memory_root=str(root))
+    client = YoloStudioAgentClient(graph=_NoGraph(), settings=settings, tool_registry={})
+    pending = client.get_pending_action()
+    assert pending is not None
+    assert pending['tool_name'] == 'start_training'
+    assert pending['tool_args']['epochs'] == 30
+    assert pending['decision_context'] == {'decision': 'clarify'}
+    assert client.session_state.pending_confirmation.tool_name == 'start_training'
+    assert client.session_state.pending_confirmation.thread_id == 'legacy-synthetic-bootstrap-turn-1'
+    assert client.session_state.pending_confirmation.source == 'synthetic'
+
+
 async def _scenario_best_weight_path_is_visible_to_graph_handoff() -> None:
     root = WORK / 'best-weight-handoff'
     capture_graph = _CaptureGraph()
@@ -657,6 +707,7 @@ async def _run() -> None:
     shutil.rmtree(WORK, ignore_errors=True)
     WORK.mkdir(parents=True, exist_ok=True)
     try:
+        _scenario_strip_ephemeral_context_clears_pending_mirror()
         await _scenario_observe_mode_does_not_pollute_state()
         await _scenario_stale_training_plan_draft_is_cleared_on_startup()
         await _scenario_stale_graph_pending_is_cleared_on_startup()
@@ -666,6 +717,7 @@ async def _run() -> None:
         await _scenario_existing_graph_pending_rehydrates_missing_draft()
         await _scenario_existing_graph_pending_refreshes_stale_same_tool_draft()
         await _scenario_legacy_synthetic_pending_is_replaced_by_single_graph_pending()
+        await _scenario_legacy_synthetic_pending_is_bootstrapped_without_graph()
         await _scenario_best_weight_path_is_visible_to_graph_handoff()
         print('client context guard ok')
     finally:

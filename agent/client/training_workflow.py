@@ -67,10 +67,23 @@ def _first_non_empty(*values: object) -> str:
     return ''
 
 
-def derive_training_workflow_state(session_state: SessionState) -> str:
+def _pending_tool_name(pending_confirmation: dict[str, Any] | None, session_state: SessionState) -> str:
+    if pending_confirmation is not None:
+        return _first_non_empty(
+            pending_confirmation.get('tool_name'),
+            pending_confirmation.get('name'),
+        )
+    return _normalized(session_state.pending_confirmation.tool_name)
+
+
+def derive_training_workflow_state(
+    session_state: SessionState,
+    *,
+    pending_confirmation: dict[str, Any] | None = None,
+) -> str:
     ds = session_state.active_dataset
     tr = session_state.active_training
-    pending_tool = _normalized(session_state.pending_confirmation.tool_name)
+    pending_tool = _pending_tool_name(pending_confirmation, session_state)
     run_state = _first_non_empty(
         tr.last_status.get('run_state'),
         tr.training_run_summary.get('run_state'),
@@ -122,13 +135,17 @@ def derive_training_loop_workflow_state(session_state: SessionState) -> str:
 def sync_training_workflow_state(
     session_state: SessionState,
     *,
+    pending_confirmation: dict[str, Any] | None = None,
     append_event: Callable[[str, dict[str, Any]], None] | None = None,
     reason: str = '',
 ) -> WorkflowSyncResult:
     tr = session_state.active_training
     previous_training_state = _normalized(tr.workflow_state) or TrainingWorkflowState.IDLE.value
     previous_loop_state = _normalized(tr.loop_workflow_state) or TrainingLoopWorkflowState.LOOP_IDLE.value
-    next_training_state = derive_training_workflow_state(session_state)
+    next_training_state = derive_training_workflow_state(
+        session_state,
+        pending_confirmation=pending_confirmation,
+    )
     next_loop_state = derive_training_loop_workflow_state(session_state)
     training_changed = previous_training_state != next_training_state
     loop_changed = previous_loop_state != next_loop_state
@@ -148,7 +165,7 @@ def sync_training_workflow_state(
                     tr.training_run_summary.get('run_state'),
                     tr.last_summary.get('run_state'),
                 ),
-                'pending_tool': _normalized(session_state.pending_confirmation.tool_name),
+                'pending_tool': _pending_tool_name(pending_confirmation, session_state),
             },
         )
     if append_event is not None and loop_changed:
