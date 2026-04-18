@@ -7,6 +7,14 @@ from yolostudio_agent.agent.client.training_plan_service import (
     build_training_preflight_tool_args,
     resolve_training_start_args,
 )
+from yolostudio_agent.agent.client.training_request_service import (
+    DatasetPathExtractor,
+    LocalPathExistenceChecker,
+    PrepareOnlyRequestChecker,
+    ToolResultMessageRenderer,
+    TrainingArgsCollector,
+    run_prepare_only_flow,
+)
 
 DirectToolInvoker = Callable[..., Awaitable[dict[str, Any]]]
 TrainingPlanDraftBuilder = Callable[..., dict[str, Any]]
@@ -132,6 +140,136 @@ def resolve_training_recovery_bootstrap(
         'base_args': base_args,
         'dataset_path': dataset_path,
     }
+
+
+def resolve_training_recovery_followup_action(
+    *,
+    bootstrap: dict[str, Any] | None,
+    plan_result: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    bootstrap = dict(bootstrap or {})
+    if not bootstrap:
+        return {'action': 'none'}
+    if bootstrap.get('defer_to_graph'):
+        return {'action': 'defer_to_graph'}
+    if not bootstrap.get('proceed'):
+        return {'action': 'reply', 'reply': str(bootstrap.get('reply') or '')}
+    if plan_result is None:
+        return {'action': 'build_plan'}
+    plan_result = dict(plan_result or {})
+    action = 'save_draft_and_reply'
+    if plan_result.get('defer_to_graph'):
+        action = 'save_draft_and_handoff'
+    return {
+        'action': action,
+        'draft': dict(plan_result.get('draft') or {}),
+        'reply': str(plan_result.get('reply') or ''),
+    }
+
+
+async def run_training_recovery_bootstrap_flow(
+    *,
+    session_state: SessionState,
+    user_text: str,
+    normalized_text: str,
+    latest_dataset_path: str,
+    explicit_run_ids: list[str] | None,
+    requested_execute: bool,
+    wants_repeat_prepare: bool,
+    wants_retry_last_plan: bool,
+    wants_resume_recent_training: bool,
+    wants_analysis_only: bool,
+    direct_tool: DirectToolInvoker,
+    build_training_plan_draft_fn: TrainingPlanDraftBuilder,
+    render_training_plan_message: TrainingPlanMessageRenderer,
+) -> dict[str, Any]:
+    bootstrap = resolve_training_recovery_bootstrap(
+        session_state=session_state,
+        user_text=user_text,
+        normalized_text=normalized_text,
+        latest_dataset_path=latest_dataset_path,
+        explicit_run_ids=explicit_run_ids,
+        requested_execute=requested_execute,
+        wants_repeat_prepare=wants_repeat_prepare,
+        wants_retry_last_plan=wants_retry_last_plan,
+        wants_resume_recent_training=wants_resume_recent_training,
+        wants_analysis_only=wants_analysis_only,
+    )
+    followup_action = resolve_training_recovery_followup_action(bootstrap=bootstrap)
+    if str(followup_action.get('action') or '').strip() != 'build_plan':
+        return followup_action
+    bootstrap = dict(bootstrap or {})
+    plan_result = await run_training_recovery_entrypoint(
+        session_state=session_state,
+        user_text=user_text,
+        dataset_path=str(bootstrap.get('dataset_path') or ''),
+        base_args=dict(bootstrap.get('base_args') or {}),
+        direct_tool=direct_tool,
+        build_training_plan_draft_fn=build_training_plan_draft_fn,
+        render_training_plan_message=render_training_plan_message,
+    )
+    return resolve_training_recovery_followup_action(
+        bootstrap=bootstrap,
+        plan_result=plan_result,
+    )
+
+
+async def run_training_plan_bootstrap_flow(
+    *,
+    session_state: SessionState,
+    user_text: str,
+    normalized_text: str,
+    latest_dataset_path: str,
+    explicit_run_ids: list[str] | None,
+    requested_execute: bool,
+    wants_repeat_prepare: bool,
+    wants_retry_last_plan: bool,
+    wants_resume_recent_training: bool,
+    wants_analysis_only: bool,
+    looks_like_prepare_only_request: PrepareOnlyRequestChecker,
+    extract_dataset_path: DatasetPathExtractor,
+    local_path_exists: LocalPathExistenceChecker,
+    direct_tool: DirectToolInvoker,
+    collect_requested_training_args: TrainingArgsCollector,
+    build_training_plan_draft_fn: TrainingPlanDraftBuilder,
+    render_tool_result_message: ToolResultMessageRenderer,
+    render_training_plan_message: TrainingPlanMessageRenderer,
+) -> dict[str, Any] | None:
+    prepare_only_followup = await run_prepare_only_flow(
+        user_text=user_text,
+        looks_like_prepare_only_request=looks_like_prepare_only_request,
+        extract_dataset_path=extract_dataset_path,
+        local_path_exists=local_path_exists,
+        direct_tool=direct_tool,
+        collect_requested_training_args=collect_requested_training_args,
+        build_training_plan_draft_fn=build_training_plan_draft_fn,
+        render_tool_result_message=render_tool_result_message,
+    )
+    if prepare_only_followup is not None:
+        result = dict(prepare_only_followup)
+        if str(result.get('action') or '').strip() == 'save_draft_and_handoff':
+            result['handoff_mode'] = 'defer'
+        return result
+
+    recovery_followup = await run_training_recovery_bootstrap_flow(
+        session_state=session_state,
+        user_text=user_text,
+        normalized_text=normalized_text,
+        latest_dataset_path=latest_dataset_path,
+        explicit_run_ids=explicit_run_ids,
+        requested_execute=requested_execute,
+        wants_repeat_prepare=wants_repeat_prepare,
+        wants_retry_last_plan=wants_retry_last_plan,
+        wants_resume_recent_training=wants_resume_recent_training,
+        wants_analysis_only=wants_analysis_only,
+        direct_tool=direct_tool,
+        build_training_plan_draft_fn=build_training_plan_draft_fn,
+        render_training_plan_message=render_training_plan_message,
+    )
+    result = dict(recovery_followup or {})
+    if str(result.get('action') or '').strip() == 'save_draft_and_handoff':
+        result['handoff_mode'] = 'handoff'
+    return result
 
 
 async def run_training_recovery_orchestration(

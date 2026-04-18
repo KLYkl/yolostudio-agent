@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable
 
 from yolostudio_agent.agent.client import intent_parsing
+from yolostudio_agent.agent.client.training_recovery_service import run_training_plan_bootstrap_flow
 from yolostudio_agent.agent.client.session_state import SessionState
 from yolostudio_agent.agent.client.training_plan_service import (
     build_training_preflight_tool_args,
@@ -15,6 +16,11 @@ TrainingArgsCollector = Callable[..., dict[str, Any]]
 TrainingDiscussionChecker = Callable[[str], bool]
 TrainingExecutionBackendExtractor = Callable[[str], str]
 TrainingAdvancedDetailsChecker = Callable[[str], bool]
+TrainingPlanMessageRenderer = Callable[[dict[str, Any], bool], Awaitable[str]]
+ToolResultMessageRenderer = Callable[[str, dict[str, Any]], Awaitable[str]]
+PrepareOnlyRequestChecker = Callable[[str], bool]
+DatasetPathExtractor = Callable[[str], str]
+LocalPathExistenceChecker = Callable[[str], bool]
 
 
 def resolve_training_plan_dialogue_context(
@@ -288,6 +294,94 @@ def resolve_training_plan_dialogue_existing_action(
     return {'action': 'proceed_revision'}
 
 
+def resolve_training_plan_dialogue_route(
+    *,
+    user_text: str,
+    draft: dict[str, Any] | None,
+    pending: dict[str, Any] | None,
+    explicit_run_ids: list[str] | None,
+    clear_fields: list[str] | None,
+    readiness: dict[str, Any] | None,
+    data_yaml: str,
+    is_training_discussion_only: TrainingDiscussionChecker,
+    custom_training_script_requested: bool,
+) -> dict[str, Any]:
+    draft = dict(draft or {})
+    pending = dict(pending or {})
+    clear_fields = list(clear_fields or [])
+    readiness = dict(readiness or {})
+    data_yaml = str(data_yaml or '').strip()
+
+    dialogue_context = resolve_training_plan_dialogue_context(
+        user_text=user_text,
+        explicit_run_ids=explicit_run_ids,
+        is_training_discussion_only=is_training_discussion_only,
+    )
+    normalized = str(dialogue_context.get('normalized') or '')
+    if dialogue_context.get('is_loop_dialogue'):
+        return {'route': 'skip_loop'}
+
+    contradictory_train_intent = bool(dialogue_context.get('contradictory_train_intent'))
+    requested_execute = bool(dialogue_context.get('requested_execute'))
+    wants_repeat_prepare = bool(dialogue_context.get('wants_repeat_prepare'))
+    wants_retry_last_plan = bool(dialogue_context.get('wants_retry_last_plan'))
+    wants_resume_recent_training = bool(dialogue_context.get('wants_resume_recent_training'))
+    wants_analysis_only = bool(dialogue_context.get('wants_analysis_only'))
+    latest_dataset_path = str(dialogue_context.get('latest_dataset_path') or '')
+    dataset_path_revision_requested = bool(dialogue_context.get('dataset_path_revision_requested'))
+
+    flag_context = resolve_training_plan_dialogue_flags(
+        user_text=user_text,
+        normalized_text=normalized,
+        draft=draft,
+        pending=pending,
+        requested_execute=requested_execute,
+        clear_fields=clear_fields,
+        wants_retry_last_plan=wants_retry_last_plan,
+        wants_resume_recent_training=wants_resume_recent_training,
+        dataset_path_revision_requested=dataset_path_revision_requested,
+        custom_training_script_requested=custom_training_script_requested,
+    )
+    if contradictory_train_intent:
+        return {'route': 'contradictory'}
+    if not draft and not pending:
+        return {
+            'route': 'bootstrap',
+            'normalized': normalized,
+            'latest_dataset_path': latest_dataset_path,
+            'requested_execute': requested_execute,
+            'wants_repeat_prepare': wants_repeat_prepare,
+            'wants_retry_last_plan': wants_retry_last_plan,
+            'wants_resume_recent_training': wants_resume_recent_training,
+            'wants_analysis_only': wants_analysis_only,
+        }
+
+    plan_action = resolve_training_plan_dialogue_existing_action(
+        draft=draft,
+        pending=pending,
+        flag_context=flag_context,
+        requested_execute=requested_execute,
+        wants_repeat_prepare=wants_repeat_prepare,
+        readiness=readiness,
+        data_yaml=data_yaml,
+    )
+    action = str(plan_action.get('action') or '').strip()
+    if action != 'proceed_revision':
+        return {
+            'route': 'existing_action',
+            'plan_action': plan_action,
+        }
+    return {
+        'route': 'revision',
+        'flag_context': flag_context,
+        'latest_dataset_path': latest_dataset_path,
+        'requested_execute': requested_execute,
+        'wants_retry_last_plan': wants_retry_last_plan,
+        'wants_resume_recent_training': wants_resume_recent_training,
+        'clear_fields': clear_fields,
+    }
+
+
 async def prepare_training_revision_context(
     *,
     session_state: SessionState,
@@ -385,6 +479,169 @@ def resolve_training_revision_followup_action(
             return {'action': 'defer_to_graph'}
         return {'action': 'refresh_confirmation'}
     return {'action': 'render_completed'}
+
+
+async def run_training_revision_flow(
+    *,
+    session_state: SessionState,
+    user_text: str,
+    draft: dict[str, Any] | None,
+    pending: dict[str, Any] | None,
+    latest_dataset_path: str,
+    clear_fields: list[str] | None,
+    switching_prepare_only_to_train: bool,
+    wants_prepare_only: bool,
+    wants_disable_split: bool,
+    requested_execute: bool,
+    wants_retry_last_plan: bool,
+    wants_resume_recent_training: bool,
+    collect_requested_training_args: TrainingArgsCollector,
+    extract_training_execution_backend: TrainingExecutionBackendExtractor,
+    wants_training_advanced_details: TrainingAdvancedDetailsChecker,
+    direct_tool: DirectToolInvoker,
+    build_training_plan_draft_fn: TrainingPlanDraftBuilder,
+) -> dict[str, Any]:
+    revision_context = await prepare_training_revision_context(
+        session_state=session_state,
+        user_text=user_text,
+        draft=draft,
+        pending=pending,
+        latest_dataset_path=latest_dataset_path,
+        clear_fields=clear_fields,
+        switching_prepare_only_to_train=switching_prepare_only_to_train,
+        wants_prepare_only=wants_prepare_only,
+        wants_disable_split=wants_disable_split,
+        collect_requested_training_args=collect_requested_training_args,
+        extract_training_execution_backend=extract_training_execution_backend,
+        wants_training_advanced_details=wants_training_advanced_details,
+        direct_tool=direct_tool,
+    )
+    revised_draft = await build_training_revision_draft(
+        user_text=user_text,
+        dataset_path=str(revision_context.get('dataset_path') or '').strip(),
+        readiness=dict(revision_context.get('readiness') or {}),
+        planned_args=dict(revision_context.get('planned_args') or {}),
+        next_tool_name=str(revision_context.get('next_tool_name') or '').strip(),
+        next_tool_args=dict(revision_context.get('next_tool_args') or {}),
+        execution_mode=str(revision_context.get('execution_mode') or '').strip().lower(),
+        execution_backend=str(revision_context.get('execution_backend') or '').strip(),
+        advanced_requested=bool(revision_context.get('advanced_requested')),
+        direct_tool=direct_tool,
+        build_training_plan_draft_fn=build_training_plan_draft_fn,
+    )
+    followup_action = resolve_training_revision_followup_action(
+        revised_draft=revised_draft,
+        pending=pending,
+        requested_execute=requested_execute,
+        wants_retry_last_plan=wants_retry_last_plan,
+        wants_resume_recent_training=wants_resume_recent_training,
+    )
+    return {
+        'revised_draft': revised_draft,
+        'followup_action': followup_action,
+    }
+
+
+async def run_training_plan_dialogue_flow(
+    *,
+    session_state: SessionState,
+    user_text: str,
+    draft: dict[str, Any] | None,
+    pending: dict[str, Any] | None,
+    explicit_run_ids: list[str] | None,
+    clear_fields: list[str] | None,
+    readiness: dict[str, Any] | None,
+    data_yaml: str,
+    is_training_discussion_only: TrainingDiscussionChecker,
+    custom_training_script_requested: bool,
+    looks_like_prepare_only_request: PrepareOnlyRequestChecker,
+    extract_dataset_path: DatasetPathExtractor,
+    local_path_exists: LocalPathExistenceChecker,
+    collect_requested_training_args: TrainingArgsCollector,
+    extract_training_execution_backend: TrainingExecutionBackendExtractor,
+    wants_training_advanced_details: TrainingAdvancedDetailsChecker,
+    direct_tool: DirectToolInvoker,
+    build_training_plan_draft_fn: TrainingPlanDraftBuilder,
+    render_tool_result_message: ToolResultMessageRenderer,
+    render_training_plan_message: TrainingPlanMessageRenderer,
+) -> dict[str, Any]:
+    route_state = resolve_training_plan_dialogue_route(
+        user_text=user_text,
+        draft=draft,
+        pending=pending,
+        explicit_run_ids=explicit_run_ids,
+        clear_fields=clear_fields,
+        readiness=readiness,
+        data_yaml=data_yaml,
+        is_training_discussion_only=is_training_discussion_only,
+        custom_training_script_requested=custom_training_script_requested,
+    )
+    route = str(route_state.get('route') or '').strip()
+    if route == 'bootstrap':
+        return {
+            'followup_action': await run_training_plan_bootstrap_flow(
+                session_state=session_state,
+                user_text=user_text,
+                normalized_text=str(route_state.get('normalized') or ''),
+                latest_dataset_path=str(route_state.get('latest_dataset_path') or ''),
+                explicit_run_ids=explicit_run_ids,
+                requested_execute=bool(route_state.get('requested_execute')),
+                wants_repeat_prepare=bool(route_state.get('wants_repeat_prepare')),
+                wants_retry_last_plan=bool(route_state.get('wants_retry_last_plan')),
+                wants_resume_recent_training=bool(route_state.get('wants_resume_recent_training')),
+                wants_analysis_only=bool(route_state.get('wants_analysis_only')),
+                looks_like_prepare_only_request=looks_like_prepare_only_request,
+                extract_dataset_path=extract_dataset_path,
+                local_path_exists=local_path_exists,
+                direct_tool=direct_tool,
+                collect_requested_training_args=collect_requested_training_args,
+                build_training_plan_draft_fn=build_training_plan_draft_fn,
+                render_tool_result_message=render_tool_result_message,
+                render_training_plan_message=render_training_plan_message,
+            ),
+        }
+
+    if route == 'contradictory':
+        return {
+            'followup_action': {
+                'action': 'render_plan',
+                'preamble': '你这句话里同时出现了“不要训练”和“开始训练”；我先按保守方式处理，只保留讨论态，不会直接执行。',
+                'append_message': True,
+            },
+        }
+
+    if route == 'existing_action':
+        return {
+            'followup_action': dict(route_state.get('plan_action') or {}),
+        }
+
+    if route != 'revision':
+        return {'followup_action': {'action': 'none'}}
+
+    flag_context = dict(route_state.get('flag_context') or {})
+    revision_result = await run_training_revision_flow(
+        session_state=session_state,
+        user_text=user_text,
+        draft=draft,
+        pending=pending,
+        latest_dataset_path=str(route_state.get('latest_dataset_path') or ''),
+        clear_fields=list(route_state.get('clear_fields') or clear_fields or []),
+        switching_prepare_only_to_train=bool(flag_context.get('switching_prepare_only_to_train')),
+        wants_prepare_only=bool(flag_context.get('wants_prepare_only')),
+        wants_disable_split=bool(flag_context.get('wants_disable_split')),
+        requested_execute=bool(route_state.get('requested_execute')),
+        wants_retry_last_plan=bool(route_state.get('wants_retry_last_plan')),
+        wants_resume_recent_training=bool(route_state.get('wants_resume_recent_training')),
+        collect_requested_training_args=collect_requested_training_args,
+        extract_training_execution_backend=extract_training_execution_backend,
+        wants_training_advanced_details=wants_training_advanced_details,
+        direct_tool=direct_tool,
+        build_training_plan_draft_fn=build_training_plan_draft_fn,
+    )
+    return {
+        'draft_to_save': dict(revision_result.get('revised_draft') or {}),
+        'followup_action': dict(revision_result.get('followup_action') or {}),
+    }
 
 
 async def build_training_revision_draft(

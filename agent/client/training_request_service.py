@@ -20,6 +20,42 @@ DatasetPathExtractor = Callable[[str], str]
 LocalPathExistenceChecker = Callable[[str], bool]
 
 
+async def run_prepare_only_flow(
+    *,
+    user_text: str,
+    looks_like_prepare_only_request: PrepareOnlyRequestChecker,
+    extract_dataset_path: DatasetPathExtractor,
+    local_path_exists: LocalPathExistenceChecker,
+    direct_tool: DirectToolInvoker,
+    collect_requested_training_args: TrainingArgsCollector,
+    build_training_plan_draft_fn: TrainingPlanDraftBuilder,
+    render_tool_result_message: ToolResultMessageRenderer,
+) -> dict[str, Any] | None:
+    request_context = resolve_prepare_only_request_context(
+        user_text=user_text,
+        looks_like_prepare_only_request=looks_like_prepare_only_request,
+        extract_dataset_path=extract_dataset_path,
+    )
+    if not request_context.get('matches'):
+        return None
+    dataset_path = str(request_context.get('dataset_path') or '').strip()
+    local_path_result = resolve_prepare_only_local_path_result(
+        dataset_path=dataset_path,
+        local_path_exists=local_path_exists,
+    )
+    if local_path_result is not None:
+        return resolve_prepare_only_followup_action(result=local_path_result)
+    result = await run_prepare_only_entrypoint(
+        user_text=user_text,
+        dataset_path=dataset_path,
+        direct_tool=direct_tool,
+        collect_requested_training_args=collect_requested_training_args,
+        build_training_plan_draft_fn=build_training_plan_draft_fn,
+        render_tool_result_message=render_tool_result_message,
+    )
+    return resolve_prepare_only_followup_action(result=result)
+
+
 async def run_prepare_only_entrypoint(
     *,
     user_text: str,
@@ -93,6 +129,40 @@ async def run_prepare_only_entrypoint(
         'draft': draft,
         'clear_draft': False,
         'defer_to_graph': True,
+    }
+
+
+def resolve_prepare_only_followup_action(
+    *,
+    result: dict[str, Any] | None,
+) -> dict[str, Any]:
+    result = dict(result or {})
+    if not result:
+        return {'action': 'none'}
+    draft = dict(result.get('draft') or {})
+    if result.get('defer_to_graph'):
+        return {
+            'action': 'save_draft_and_handoff',
+            'draft': draft,
+            'reply': str(result.get('reply') or ''),
+        }
+    if draft:
+        return {
+            'action': 'save_draft_and_reply',
+            'draft': draft,
+            'reply': str(result.get('reply') or ''),
+            'status': str(result.get('status') or 'completed'),
+        }
+    if result.get('clear_draft'):
+        return {
+            'action': 'clear_draft_and_reply',
+            'reply': str(result.get('reply') or ''),
+            'status': str(result.get('status') or 'completed'),
+        }
+    return {
+        'action': 'reply',
+        'reply': str(result.get('reply') or ''),
+        'status': str(result.get('status') or 'completed'),
     }
 
 

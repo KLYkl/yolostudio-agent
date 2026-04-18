@@ -99,22 +99,10 @@ from yolostudio_agent.agent.client.tool_policy import (
 from yolostudio_agent.agent.client.tool_result_parser import parse_tool_message
 from yolostudio_agent.agent.client.training_workflow import sync_training_workflow_state
 from yolostudio_agent.agent.client.training_request_service import (
-    resolve_prepare_only_local_path_result,
-    resolve_prepare_only_request_context,
-    run_prepare_only_entrypoint,
     run_training_request_entrypoint,
 )
-from yolostudio_agent.agent.client.training_recovery_service import (
-    resolve_training_recovery_bootstrap,
-    run_training_recovery_entrypoint,
-)
 from yolostudio_agent.agent.client.training_dialogue_service import (
-    resolve_training_plan_dialogue_context,
-    resolve_training_plan_dialogue_existing_action,
-    resolve_training_plan_dialogue_flags,
-    resolve_training_revision_followup_action,
-    build_training_revision_draft,
-    prepare_training_revision_context,
+    run_training_plan_dialogue_flow,
 )
 from yolostudio_agent.agent.client.training_plan_service import (
     build_training_preflight_tool_args,
@@ -158,9 +146,6 @@ SYSTEM_PROMPT = """你是 YoloStudio Agent，负责帮助用户解决数据准�
 - 如果问题本身不需要工具，直接回答。"""
 
 _DEFER_TO_GRAPH = object()
-_UNHANDLED_DIALOGUE_ACTION = object()
-_PENDING_BOOTSTRAP_PLAN = object()
-
 GPU_SENSITIVE_TOOLS = {
     "check_gpu_status",
     "prepare_dataset_for_training",
@@ -2152,47 +2137,119 @@ class YoloStudioAgentClient:
             return False
         return bool(intent_parsing.extract_dataset_path_from_text(text))
 
-    async def _try_handle_prepare_only_intent(self, user_text: str) -> dict[str, Any] | None:
-        request_context = resolve_prepare_only_request_context(
-            user_text=user_text,
-            looks_like_prepare_only_request=self._looks_like_prepare_only_request,
-            extract_dataset_path=intent_parsing.extract_dataset_path_from_text,
-        )
-        if not request_context.get('matches'):
-            return None
-        dataset_path = str(request_context.get('dataset_path') or '').strip()
-        local_path_result = resolve_prepare_only_local_path_result(
-            dataset_path=dataset_path,
-            local_path_exists=lambda path: Path(path).expanduser().exists(),
-        )
-        if local_path_result is not None:
-            if local_path_result.get('clear_draft'):
-                self._clear_training_plan_draft()
-            return self._complete_dialogue_text(str(local_path_result.get('reply') or ''))
+    def _complete_training_plan_followup_text(
+        self,
+        reply: str,
+        *,
+        status: str = 'completed',
+    ) -> dict[str, Any]:
+        result = self._complete_dialogue_text(reply)
+        result['status'] = str(status or 'completed')
+        return result
 
-        result = await run_prepare_only_entrypoint(
-            user_text=user_text,
-            dataset_path=dataset_path,
-            direct_tool=self.direct_tool,
-            collect_requested_training_args=self._collect_requested_training_args,
-            build_training_plan_draft_fn=self._build_training_plan_draft,
-            render_tool_result_message=self._render_tool_result_message,
-        )
-        if result.get('clear_draft'):
+    async def _apply_training_plan_followup_action(
+        self,
+        *,
+        followup_action: dict[str, Any] | None,
+        thread_id: str | None = None,
+        user_text: str = '',
+        handoff_mode: str = 'defer',
+        pending: dict[str, Any] | None = None,
+        draft: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | object | None:
+        followup_action = dict(followup_action or {})
+        pending = dict(pending or {})
+        draft = dict(draft or {})
+        thread_id = str(thread_id or '')
+        action = str(followup_action.get('action') or '').strip()
+        if action == 'none':
+            return None
+        if action == 'cancel_pending':
+            return await self.confirm(thread_id, approved=False)
+        if action == 'cancel_draft':
             self._clear_training_plan_draft()
-        draft = dict(result.get('draft') or {})
-        if draft:
-            self._save_training_plan_draft(draft)
-        if result.get('defer_to_graph'):
-            return _DEFER_TO_GRAPH
-        reply = str(result.get('reply') or '')
-        if reply:
+            self.memory.save_state(self.session_state)
+            return {'status': 'cancelled', 'message': '已取消当前训练计划草案。', 'tool_call': None}
+        if action == 'clear_and_recheck':
+            self._clear_training_plan_draft()
+            self.memory.save_state(self.session_state)
+            return None
+        if action == 'confirmation_message':
+            return self._needs_confirmation_result(thread_id, pending, await self._build_confirmation_message(pending))
+        if action == 'reply_with_pending':
+            reply = str(followup_action.get('reply') or '').strip()
             self._messages.append(AIMessage(content=reply))
-        return {
-            'status': str(result.get('status') or 'completed'),
-            'message': reply,
-            'tool_call': None,
-        }
+            return self._needs_confirmation_result(thread_id, pending, reply)
+        if action == 'reply':
+            return self._complete_dialogue_text(str(followup_action.get('reply') or ''))
+        if action == 'defer_to_graph':
+            return _DEFER_TO_GRAPH
+        if action == 'render_plan':
+            if not draft:
+                return None
+            return await self._render_training_plan_dialogue_response(
+                draft=draft,
+                pending=pending,
+                thread_id=thread_id,
+                preamble=str(followup_action.get('preamble') or ''),
+                append_message=bool(followup_action.get('append_message')),
+            )
+        if action == 'render_original_plan':
+            return await self._render_training_plan_dialogue_response(
+                draft=draft,
+                pending=pending,
+                thread_id=thread_id,
+                preamble=str(followup_action.get('preamble') or ''),
+                append_message=True,
+            )
+        if action == 'approve_pending':
+            return await self.confirm(thread_id, approved=True)
+        if action == 'render_draft':
+            return await self._render_training_plan_dialogue_response(
+                draft=draft,
+                pending=None,
+                thread_id=thread_id,
+            )
+        if action == 'noop':
+            return None
+        if action == 'build_plan':
+            return None
+        if action == 'refresh_confirmation':
+            return await self._refresh_training_plan_confirmation_via_graph(
+                thread_id=thread_id,
+                pending=pending,
+                revised_draft=draft,
+                user_text_hint='请按更新后的训练草案进入确认。',
+            )
+        if action == 'render_completed':
+            self.memory.save_state(self.session_state)
+            return await self._render_training_plan_dialogue_response(
+                draft=draft,
+                pending=None,
+                thread_id=thread_id,
+            )
+        if action == 'save_draft_and_reply' or action == 'save_draft_and_handoff':
+            draft = dict(followup_action.get('draft') or {})
+            if draft:
+                self._save_training_plan_draft(draft)
+        elif action == 'clear_draft_and_reply':
+            self._clear_training_plan_draft()
+
+        if action == 'save_draft_and_handoff':
+            if handoff_mode == 'handoff' and thread_id:
+                return await self._handoff_current_runtime_to_graph(
+                    thread_id=thread_id,
+                    user_text_hint=user_text,
+                    auto_approve=False,
+                )
+            return _DEFER_TO_GRAPH
+
+        if action == 'clear_draft_and_reply' or action == 'save_draft_and_reply':
+            return self._complete_training_plan_followup_text(
+                str(followup_action.get('reply') or ''),
+                status=str(followup_action.get('status') or 'completed'),
+            )
+        return None
 
     @staticmethod
     def _extract_training_run_ids_from_text(text: str) -> list[str]:
@@ -4250,120 +4307,6 @@ class YoloStudioAgentClient:
             self._messages.append(AIMessage(content=reply))
         return {'status': 'completed', 'message': reply, 'tool_call': None}
 
-    async def _dispatch_training_plan_dialogue_action(
-        self,
-        *,
-        action: str,
-        thread_id: str,
-        draft: dict[str, Any] | None,
-        pending: dict[str, Any] | None,
-        plan_action: dict[str, Any] | None,
-    ) -> dict[str, Any] | object | None:
-        draft = dict(draft or {})
-        pending = dict(pending or {})
-        plan_action = dict(plan_action or {})
-        if action == 'cancel_pending':
-            return await self.confirm(thread_id, approved=False)
-        if action == 'cancel_draft':
-            self._clear_training_plan_draft()
-            self.memory.save_state(self.session_state)
-            return {'status': 'cancelled', 'message': '已取消当前训练计划草案。', 'tool_call': None}
-        if action == 'clear_and_recheck':
-            self._clear_training_plan_draft()
-            self.memory.save_state(self.session_state)
-            return None
-        if action == 'confirmation_message':
-            return self._needs_confirmation_result(thread_id, pending, await self._build_confirmation_message(pending))
-        if action == 'reply_with_pending':
-            reply = str(plan_action.get('reply') or '').strip()
-            self._messages.append(AIMessage(content=reply))
-            return self._needs_confirmation_result(thread_id, pending, reply)
-        if action == 'reply':
-            return self._complete_dialogue_text(str(plan_action.get('reply') or ''))
-        if action == 'render_plan':
-            if not draft:
-                return None
-            return await self._render_training_plan_dialogue_response(
-                draft=draft,
-                pending=pending,
-                thread_id=thread_id,
-            )
-        if action == 'render_original_plan':
-            return await self._render_training_plan_dialogue_response(
-                draft=draft,
-                pending=pending,
-                thread_id=thread_id,
-                preamble=str(plan_action.get('preamble') or ''),
-                append_message=True,
-            )
-        if action == 'approve_pending':
-            return await self.confirm(thread_id, approved=True)
-        if action == 'defer_to_graph':
-            return _DEFER_TO_GRAPH
-        if action == 'render_draft':
-            return await self._render_training_plan_dialogue_response(
-                draft=draft,
-                pending=None,
-                thread_id=thread_id,
-            )
-        if action == 'noop':
-            return None
-        return _UNHANDLED_DIALOGUE_ACTION
-
-    async def _finalize_training_plan_revision_followup(
-        self,
-        *,
-        thread_id: str,
-        pending: dict[str, Any] | None,
-        revised_draft: dict[str, Any],
-        revision_followup: dict[str, Any] | None,
-    ) -> dict[str, Any] | object:
-        revision_followup = dict(revision_followup or {})
-        followup_action = str(revision_followup.get('action') or '').strip()
-        if followup_action == 'defer_to_graph':
-            return _DEFER_TO_GRAPH
-        if followup_action == 'refresh_confirmation':
-            return await self._refresh_training_plan_confirmation_via_graph(
-                thread_id=thread_id,
-                pending=pending,
-                revised_draft=revised_draft,
-                user_text_hint='请按更新后的训练草案进入确认。',
-            )
-        self.memory.save_state(self.session_state)
-        return await self._render_training_plan_dialogue_response(
-            draft=revised_draft,
-            pending=None,
-            thread_id=thread_id,
-        )
-
-    async def _finalize_training_plan_bootstrap_result(
-        self,
-        *,
-        thread_id: str,
-        user_text: str,
-        bootstrap: dict[str, Any] | None,
-        plan_result: dict[str, Any] | None = None,
-    ) -> dict[str, Any] | object | None:
-        bootstrap = dict(bootstrap or {})
-        if not bootstrap:
-            return None
-        if bootstrap.get('defer_to_graph'):
-            return _DEFER_TO_GRAPH
-        if not bootstrap.get('proceed'):
-            return self._complete_dialogue_text(str(bootstrap.get('reply') or ''))
-        if plan_result is None:
-            return _PENDING_BOOTSTRAP_PLAN
-        plan_result = dict(plan_result or {})
-        rebuilt_draft = dict(plan_result.get('draft') or {})
-        self._save_training_plan_draft(rebuilt_draft)
-        if plan_result.get('defer_to_graph'):
-            return await self._handoff_current_runtime_to_graph(
-                thread_id=thread_id,
-                user_text_hint=user_text,
-                auto_approve=False,
-            )
-        return self._complete_dialogue_text(str(plan_result.get('reply') or ''))
-
     async def _build_confirmation_message(self, tool_call: dict[str, Any]) -> str:
         return await build_confirmation_message_reply(
             self.session_state,
@@ -4514,190 +4457,45 @@ class YoloStudioAgentClient:
             merge_grounded_sections=self._merge_grounded_sections,
         )
 
-    async def _try_handle_training_plan_bootstrap(
-        self,
-        user_text: str,
-        thread_id: str,
-        *,
-        explicit_run_ids: list[str],
-        normalized: str,
-        latest_dataset_path: str,
-        requested_execute: bool,
-        wants_repeat_prepare: bool,
-        wants_retry_last_plan: bool,
-        wants_resume_recent_training: bool,
-        wants_analysis_only: bool,
-    ) -> dict[str, Any] | None:
-        prepare_only = await self._try_handle_prepare_only_intent(user_text)
-        if prepare_only is not None:
-            return prepare_only
-        bootstrap = resolve_training_recovery_bootstrap(
-            session_state=self.session_state,
-            user_text=user_text,
-            normalized_text=normalized,
-            latest_dataset_path=latest_dataset_path,
-            explicit_run_ids=explicit_run_ids,
-            requested_execute=requested_execute,
-            wants_repeat_prepare=wants_repeat_prepare,
-            wants_retry_last_plan=wants_retry_last_plan,
-            wants_resume_recent_training=wants_resume_recent_training,
-            wants_analysis_only=wants_analysis_only,
-        )
-        bootstrap_result = await self._finalize_training_plan_bootstrap_result(
-            thread_id=thread_id,
-            user_text=user_text,
-            bootstrap=bootstrap,
-        )
-        if bootstrap_result is not _PENDING_BOOTSTRAP_PLAN:
-            return bootstrap_result
-
-        base_args = dict(bootstrap.get('base_args') or {})
-        dataset_path = str(bootstrap.get('dataset_path') or '')
-        plan_result = await run_training_recovery_entrypoint(
-            session_state=self.session_state,
-            user_text=user_text,
-            dataset_path=dataset_path,
-            base_args=base_args,
-            direct_tool=self.direct_tool,
-            build_training_plan_draft_fn=self._build_training_plan_draft,
-            render_training_plan_message=self._render_training_plan_message,
-        )
-        return await self._finalize_training_plan_bootstrap_result(
-            thread_id=thread_id,
-            user_text=user_text,
-            bootstrap=bootstrap,
-            plan_result=plan_result,
-        )
-
     async def _try_handle_training_plan_dialogue(self, user_text: str, thread_id: str) -> dict[str, Any] | None:
         draft = dict(self.session_state.active_training.training_plan_draft or {})
         pending = self._pending_from_state()
         explicit_run_ids = self._extract_training_run_ids_from_text(user_text)
-
-        dialogue_context = resolve_training_plan_dialogue_context(
-            user_text=user_text,
-            explicit_run_ids=explicit_run_ids,
-            is_training_discussion_only=self._is_training_discussion_only,
-        )
-        normalized = str(dialogue_context.get('normalized') or '')
-        if dialogue_context.get('is_loop_dialogue'):
-            return None
         clear_fields = self._collect_training_clear_fields(user_text)
-        contradictory_train_intent = bool(dialogue_context.get('contradictory_train_intent'))
-        requested_execute = bool(dialogue_context.get('requested_execute'))
-        wants_repeat_prepare = bool(dialogue_context.get('wants_repeat_prepare'))
-        wants_retry_last_plan = bool(dialogue_context.get('wants_retry_last_plan'))
-        wants_resume_recent_training = bool(dialogue_context.get('wants_resume_recent_training'))
-        wants_analysis_only = bool(dialogue_context.get('wants_analysis_only'))
-        latest_dataset_path = str(dialogue_context.get('latest_dataset_path') or '')
-        dataset_path_revision_requested = bool(dialogue_context.get('dataset_path_revision_requested'))
-        flag_context = resolve_training_plan_dialogue_flags(
-            user_text=user_text,
-            normalized_text=normalized,
-            draft=draft,
-            pending=pending,
-            requested_execute=requested_execute,
-            clear_fields=clear_fields,
-            wants_retry_last_plan=wants_retry_last_plan,
-            wants_resume_recent_training=wants_resume_recent_training,
-            dataset_path_revision_requested=dataset_path_revision_requested,
-            custom_training_script_requested=bool(intent_parsing.extract_custom_training_script_from_text(user_text)),
-        )
-        if contradictory_train_intent:
-            return await self._render_training_plan_dialogue_response(
-                draft=draft,
-                pending=pending,
-                thread_id=thread_id,
-                preamble='你这句话里同时出现了“不要训练”和“开始训练”；我先按保守方式处理，只保留讨论态，不会直接执行。',
-                append_message=True,
-            )
-        if not draft and not pending:
-            return await self._try_handle_training_plan_bootstrap(
-                user_text,
-                thread_id,
-                explicit_run_ids=explicit_run_ids,
-                normalized=normalized,
-                latest_dataset_path=latest_dataset_path,
-                requested_execute=requested_execute,
-                wants_repeat_prepare=wants_repeat_prepare,
-                wants_retry_last_plan=wants_retry_last_plan,
-                wants_resume_recent_training=wants_resume_recent_training,
-                wants_analysis_only=wants_analysis_only,
-            )
-        readiness = self.session_state.active_dataset.last_readiness or {}
-        data_yaml = str(self.session_state.active_dataset.data_yaml or '').strip()
-        plan_action = resolve_training_plan_dialogue_existing_action(
-            draft=draft,
-            pending=pending,
-            flag_context=flag_context,
-            requested_execute=requested_execute,
-            wants_repeat_prepare=wants_repeat_prepare,
-            readiness=readiness,
-            data_yaml=data_yaml,
-        )
-        action = str(plan_action.get('action') or '').strip()
-        action_result = await self._dispatch_training_plan_dialogue_action(
-            action=action,
-            thread_id=thread_id,
-            draft=draft,
-            pending=pending,
-            plan_action=plan_action,
-        )
-        if action_result is not _UNHANDLED_DIALOGUE_ACTION:
-            return action_result
-
-        switching_prepare_only_to_train = bool(flag_context.get('switching_prepare_only_to_train'))
-
-        revision_context = await prepare_training_revision_context(
+        dialogue_result = await run_training_plan_dialogue_flow(
             session_state=self.session_state,
             user_text=user_text,
             draft=draft,
             pending=pending,
-            latest_dataset_path=latest_dataset_path,
+            explicit_run_ids=explicit_run_ids,
             clear_fields=clear_fields,
-            switching_prepare_only_to_train=switching_prepare_only_to_train,
-            wants_prepare_only=bool(flag_context.get('wants_prepare_only')),
-            wants_disable_split=bool(flag_context.get('wants_disable_split')),
+            readiness=self.session_state.active_dataset.last_readiness or {},
+            data_yaml=str(self.session_state.active_dataset.data_yaml or '').strip(),
+            is_training_discussion_only=self._is_training_discussion_only,
+            custom_training_script_requested=bool(intent_parsing.extract_custom_training_script_from_text(user_text)),
+            looks_like_prepare_only_request=self._looks_like_prepare_only_request,
+            extract_dataset_path=intent_parsing.extract_dataset_path_from_text,
+            local_path_exists=lambda path: Path(path).expanduser().exists(),
             collect_requested_training_args=self._collect_requested_training_args,
             extract_training_execution_backend=self._extract_training_execution_backend_from_text,
             wants_training_advanced_details=self._wants_training_advanced_details,
             direct_tool=self.direct_tool,
-        )
-        revised_draft = dict(revision_context.get('revised_draft') or {})
-        planned_args = dict(revision_context.get('planned_args') or {})
-        dataset_path = str(revision_context.get('dataset_path') or '').strip()
-        readiness = dict(revision_context.get('readiness') or {})
-        next_tool_name = str(revision_context.get('next_tool_name') or '').strip()
-        next_tool_args = dict(revision_context.get('next_tool_args') or {})
-        execution_mode = str(revision_context.get('execution_mode') or '').strip().lower()
-        execution_backend = str(revision_context.get('execution_backend') or '').strip()
-        advanced_requested = bool(revision_context.get('advanced_requested'))
-        revised_draft = await build_training_revision_draft(
-            user_text=user_text,
-            dataset_path=dataset_path,
-            readiness=readiness,
-            planned_args=planned_args,
-            next_tool_name=next_tool_name,
-            next_tool_args=next_tool_args,
-            execution_mode=execution_mode,
-            execution_backend=execution_backend,
-            advanced_requested=advanced_requested,
-            direct_tool=self.direct_tool,
             build_training_plan_draft_fn=self._build_training_plan_draft,
+            render_tool_result_message=self._render_tool_result_message,
+            render_training_plan_message=self._render_training_plan_message,
         )
-        self._save_training_plan_draft(revised_draft)
-        revision_followup = resolve_training_revision_followup_action(
-            revised_draft=revised_draft,
-            pending=pending,
-            requested_execute=requested_execute,
-            wants_retry_last_plan=wants_retry_last_plan,
-            wants_resume_recent_training=wants_resume_recent_training,
-        )
-        return await self._finalize_training_plan_revision_followup(
+        followup_action = dict(dialogue_result.get('followup_action') or {})
+        draft_to_save = dict(dialogue_result.get('draft_to_save') or {})
+        if draft_to_save:
+            self._save_training_plan_draft(draft_to_save)
+            draft = draft_to_save
+        return await self._apply_training_plan_followup_action(
+            followup_action=followup_action,
             thread_id=thread_id,
+            user_text=user_text,
+            handoff_mode=str(followup_action.get('handoff_mode') or 'defer'),
             pending=pending,
-            revised_draft=revised_draft,
-            revision_followup=revision_followup,
+            draft=draft,
         )
 
     def _build_confirmation_prompt(self, tool_call: dict[str, Any]) -> str:
