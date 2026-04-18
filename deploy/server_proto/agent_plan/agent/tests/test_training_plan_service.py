@@ -37,24 +37,30 @@ except Exception:
     sys.modules['langchain_core.messages'] = messages_mod
 
 from yolostudio_agent.agent.client.training_plan_service import (
-    resolve_prepare_only_local_path_result,
-    resolve_prepare_only_request_context,
-    build_training_recovery_base_args,
-    build_training_revision_draft,
     build_training_preflight_tool_args,
-    prepare_training_request_context,
+    run_training_request_orchestration,
+    resolve_training_start_args,
+)
+from yolostudio_agent.agent.client.training_dialogue_service import (
+    build_training_revision_draft,
     prepare_training_revision_context,
-    resolve_training_recovery_bootstrap,
     resolve_training_plan_dialogue_context,
     resolve_training_plan_dialogue_existing_action,
-    resolve_training_request_entrypoint_guard,
     resolve_training_revision_followup_action,
+)
+from yolostudio_agent.agent.client.training_request_service import (
+    resolve_prepare_only_local_path_result,
+    resolve_prepare_only_request_context,
+    prepare_training_request_context,
+    resolve_training_request_entrypoint_guard,
     run_prepare_only_entrypoint,
-    run_training_recovery_entrypoint,
     run_training_request_entrypoint,
-    run_training_request_orchestration,
+)
+from yolostudio_agent.agent.client.training_recovery_service import (
+    build_training_recovery_base_args,
+    resolve_training_recovery_bootstrap,
+    run_training_recovery_entrypoint,
     run_training_recovery_orchestration,
-    resolve_training_start_args,
 )
 from yolostudio_agent.agent.client.session_state import SessionState
 

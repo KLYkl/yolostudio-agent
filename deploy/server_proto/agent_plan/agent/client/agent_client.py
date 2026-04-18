@@ -98,20 +98,26 @@ from yolostudio_agent.agent.client.tool_policy import (
 )
 from yolostudio_agent.agent.client.tool_result_parser import parse_tool_message
 from yolostudio_agent.agent.client.training_workflow import sync_training_workflow_state
-from yolostudio_agent.agent.client.training_plan_service import (
+from yolostudio_agent.agent.client.training_request_service import (
     resolve_prepare_only_local_path_result,
     resolve_prepare_only_request_context,
+    run_prepare_only_entrypoint,
+    run_training_request_entrypoint,
+)
+from yolostudio_agent.agent.client.training_recovery_service import (
     resolve_training_recovery_bootstrap,
+    run_training_recovery_entrypoint,
+)
+from yolostudio_agent.agent.client.training_dialogue_service import (
     resolve_training_plan_dialogue_context,
     resolve_training_plan_dialogue_existing_action,
     resolve_training_plan_dialogue_flags,
     resolve_training_revision_followup_action,
     build_training_revision_draft,
-    build_training_preflight_tool_args,
     prepare_training_revision_context,
-    run_prepare_only_entrypoint,
-    run_training_recovery_entrypoint,
-    run_training_request_entrypoint,
+)
+from yolostudio_agent.agent.client.training_plan_service import (
+    build_training_preflight_tool_args,
     build_training_loop_start_draft as build_training_loop_start_draft_service,
     build_training_loop_start_fallback_plan as build_training_loop_start_fallback_plan_service,
     render_training_plan_message as render_training_plan_message_service,
