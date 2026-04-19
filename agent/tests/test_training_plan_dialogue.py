@@ -271,6 +271,98 @@ class _TextOnlyTrainingPlanGraph:
         }
 
 
+class _TextOnlyPrepareQuestionGraph:
+    def __init__(self) -> None:
+        self.client: YoloStudioAgentClient | None = None
+
+    def bind(self, client: YoloStudioAgentClient) -> None:
+        self.client = client
+
+    def get_state(self, config):
+        del config
+        return None
+
+    async def ainvoke(self, payload, config=None):
+        del config
+        assert self.client is not None
+        messages = list(payload['messages'])
+        return {
+            'messages': messages + [
+                AIMessage(
+                    content=(
+                        '现在开始准备数据集吗？'
+                        '我会先补齐 data.yaml 和划分产物，完成后再继续进入训练。'
+                    )
+                )
+            ]
+        }
+
+
+class _CountingDummyGraph(_DummyGraph):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+
+    async def ainvoke(self, payload, config=None):
+        self.calls += 1
+        return await super().ainvoke(payload, config=config)
+
+
+class _GraphPrepareApproveWithStaleStartGraph:
+    def __init__(self) -> None:
+        self.client: YoloStudioAgentClient | None = None
+        self.calls = 0
+
+    def bind(self, client: YoloStudioAgentClient) -> None:
+        self.client = client
+
+    def get_state(self, config):
+        del config
+        return None
+
+    async def ainvoke(self, payload, config=None):
+        del config
+        self.calls += 1
+        assert self.client is not None
+        if getattr(payload, 'resume', None) == {'decision': 'approve'}:
+            prepare_result = {
+                'ok': True,
+                'ready': True,
+                'summary': '数据准备完成: 当前数据集可直接训练，data_yaml 已就绪',
+                'dataset_root': '/home/kly/ct_loop/data_ct',
+                'img_dir': '/home/kly/ct_loop/data_ct/images',
+                'label_dir': '/home/kly/ct_loop/data_ct/labels',
+                'data_yaml': '/home/kly/ct_loop/data_ct/images_split(graph)/data.yaml',
+                'steps_completed': [{'step': 'generate_yaml', 'status': 'completed'}],
+                'next_actions': ['如需训练，可继续 start_training'],
+            }
+            return {
+                'messages': [
+                    AIMessage(content='', tool_calls=[{
+                        'id': 'prepare-1',
+                        'name': 'prepare_dataset_for_training',
+                        'args': {'dataset_path': '/home/kly/ct_loop/data_ct'},
+                    }]),
+                    ToolMessage(
+                        content=json.dumps(prepare_result, ensure_ascii=False),
+                        name='prepare_dataset_for_training',
+                        tool_call_id='prepare-1',
+                    ),
+                    AIMessage(content='按图继续启动训练。', tool_calls=[{
+                        'id': 'start-1',
+                        'name': 'start_training',
+                        'args': {
+                            'model': '/home/kly/yolov8n.pt',
+                            'data_yaml': '/home/kly/ct_loop/data_ct/images_split(graph)/data.yaml',
+                            'epochs': 100,
+                            'training_environment': 'yolodo',
+                        },
+                    }]),
+                ]
+            }
+        raise AssertionError(f'unexpected graph payload: {payload!r}')
+
+
 WORK = Path(__file__).resolve().parent / '_tmp_training_plan_dialogue'
 
 
@@ -1660,6 +1752,223 @@ async def _scenario_text_only_training_plan_materializes_pending() -> None:
     assert captured.get('raw_user_text') == '没问题，开始训练', captured
 
 
+async def _scenario_text_only_prepare_question_materializes_pending() -> None:
+    scenario_root = WORK / 'text_only_prepare_question_materializes_pending'
+    graph = _TextOnlyPrepareQuestionGraph()
+    client = YoloStudioAgentClient(
+        graph=graph,
+        settings=AgentSettings(session_id='training-plan-dialogue-prepare-question-materialize', memory_root=str(scenario_root)),
+        tool_registry={},
+    )
+    graph.bind(client)
+
+    turn = await client.chat('用 /home/kly/yolov8n.pt 训练一下 /home/kly/ct_loop/data_ct')
+    assert turn['status'] == 'needs_confirmation', turn
+    assert turn['tool_call']['name'] == 'prepare_dataset_for_training', turn
+    assert '训练计划草案：' in turn['message'], turn
+    assert '执行方式: 先准备再训练' in turn['message'], turn
+    draft = dict(client.session_state.active_training.training_plan_draft or {})
+    assert draft.get('next_step_tool') == 'prepare_dataset_for_training', draft
+    assert client.get_pending_action() is not None
+
+
+async def _scenario_text_only_prepare_question_restore_edit_stays_local() -> None:
+    scenario_root = WORK / 'text_only_prepare_question_restore_edit_stays_local'
+    seed_graph = _TextOnlyPrepareQuestionGraph()
+    seeded = YoloStudioAgentClient(
+        graph=seed_graph,
+        settings=AgentSettings(session_id='training-plan-dialogue-prepare-question-restore', memory_root=str(scenario_root)),
+        tool_registry={},
+    )
+    seed_graph.bind(seeded)
+
+    turn1 = await seeded.chat('用 /home/kly/yolov8n.pt 训练一下 /home/kly/ct_loop/data_ct')
+    assert turn1['status'] == 'needs_confirmation', turn1
+    assert turn1['tool_call']['name'] == 'prepare_dataset_for_training', turn1
+
+    restored = YoloStudioAgentClient(
+        graph=_DummyGraph(),
+        settings=AgentSettings(session_id='training-plan-dialogue-prepare-question-restore', memory_root=str(scenario_root)),
+        tool_registry={},
+    )
+    turn2 = await restored.chat('把 batch 改成 12 再继续')
+    pending = restored.get_pending_action()
+    draft = dict(restored.session_state.active_training.training_plan_draft or {})
+    assert turn2['status'] == 'needs_confirmation', turn2
+    assert pending is not None, turn2
+    assert pending['tool_name'] == 'prepare_dataset_for_training', pending
+    assert pending['tool_args'] == {'dataset_path': '/home/kly/ct_loop/data_ct'}, pending
+    assert pending['decision_context']['decision'] == 'edit', pending
+    assert (draft.get('planned_training_args') or {}).get('batch') == 12, draft
+    assert 'batch' not in pending['tool_args'], pending
+
+
+async def _scenario_post_prepare_ready_start_confirmation_stays_local() -> None:
+    scenario_root = WORK / 'post_prepare_ready_start_confirmation_stays_local'
+    graph = _CountingDummyGraph()
+    client = YoloStudioAgentClient(
+        graph=graph,
+        settings=AgentSettings(session_id='training-plan-dialogue-post-prepare-local-start', memory_root=str(scenario_root)),
+        tool_registry={},
+    )
+    graph.bind(client)
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((tool_name, dict(kwargs)))
+        if tool_name == 'training_readiness':
+            result = {
+                'ok': True,
+                'summary': '当前还不能直接训练：缺少可用的 data_yaml；但当前数据集可以先进入 prepare_dataset_for_training',
+                'dataset_root': '/home/kly/ct_loop/data_ct',
+                'resolved_img_dir': '/home/kly/ct_loop/data_ct/images',
+                'resolved_label_dir': '/home/kly/ct_loop/data_ct/labels',
+                'resolved_data_yaml': '',
+                'ready': False,
+                'preparable': True,
+                'primary_blocker_type': 'missing_yaml',
+                'warnings': [],
+                'blockers': ['缺少可用的 data_yaml'],
+            }
+        elif tool_name == 'list_training_environments':
+            result = {
+                'ok': True,
+                'summary': '发现 1 个可用训练环境，默认将使用 yolodo',
+                'environments': [{'name': 'yolodo', 'display_name': 'yolodo', 'selected_by_default': True}],
+                'default_environment': {'name': 'yolodo', 'display_name': 'yolodo'},
+            }
+        elif tool_name == 'prepare_dataset_for_training':
+            result = {
+                'ok': True,
+                'ready': True,
+                'summary': '数据准备完成: 当前数据集可直接训练，data_yaml 已就绪',
+                'dataset_root': '/home/kly/ct_loop/data_ct',
+                'img_dir': '/home/kly/ct_loop/data_ct/images',
+                'label_dir': '/home/kly/ct_loop/data_ct/labels',
+                'data_yaml': '/home/kly/ct_loop/data_ct/data.yaml',
+                'steps_completed': [{'step': 'generate_yaml', 'status': 'completed'}],
+                'next_actions': ['如需训练，可继续 start_training'],
+            }
+        elif tool_name == 'training_preflight':
+            result = {
+                'ok': True,
+                'ready_to_start': True,
+                'summary': '训练预检通过：将使用 yolodo，device=auto',
+                'training_environment': {'name': 'yolodo', 'display_name': 'yolodo'},
+                'resolved_args': {
+                    'model': kwargs['model'],
+                    'data_yaml': kwargs['data_yaml'],
+                    'epochs': kwargs['epochs'],
+                    'device': kwargs.get('device', 'auto') or 'auto',
+                    'training_environment': 'yolodo',
+                },
+                'command_preview': ['yolo', 'train'],
+                'blockers': [],
+                'warnings': [],
+            }
+        else:
+            raise AssertionError(f'unexpected tool call: {tool_name}')
+        client._apply_to_state(tool_name, result, kwargs)
+        return result
+
+    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+
+    turn1 = await client.chat('用 /home/kly/yolov8n.pt 训练一下 /home/kly/ct_loop/data_ct')
+    assert turn1['status'] == 'needs_confirmation', turn1
+    assert turn1['tool_call']['name'] == 'prepare_dataset_for_training', turn1
+    graph_calls_after_turn1 = graph.calls
+
+    turn2 = await client.confirm(turn1['thread_id'], approved=True)
+    assert turn2['status'] == 'needs_confirmation', turn2
+    assert turn2['tool_call']['name'] == 'start_training', turn2
+    assert turn2['tool_call']['args']['model'] == '/home/kly/yolov8n.pt', turn2
+    assert turn2['tool_call']['args']['data_yaml'] == '/home/kly/ct_loop/data_ct/data.yaml', turn2
+    assert '当前数据已具备训练条件' in turn2['message'], turn2
+    assert graph.calls == graph_calls_after_turn1, graph.calls
+    assert [name for name, _ in calls].count('prepare_dataset_for_training') == 1
+    assert [name for name, _ in calls].count('training_preflight') == 1
+
+
+async def _scenario_graph_prepare_approve_prefers_local_post_prepare_refresh() -> None:
+    scenario_root = WORK / 'graph_prepare_approve_prefers_local_refresh'
+    graph = _GraphPrepareApproveWithStaleStartGraph()
+    client = YoloStudioAgentClient(
+        graph=graph,
+        settings=AgentSettings(session_id='training-plan-dialogue-graph-post-prepare-local', memory_root=str(scenario_root)),
+        tool_registry={},
+    )
+    graph.bind(client)
+    client.session_state.active_dataset.dataset_root = '/home/kly/ct_loop/data_ct'
+    client.session_state.active_training.training_plan_draft = {
+        'dataset_path': '/home/kly/ct_loop/data_ct',
+        'execution_mode': 'prepare_then_train',
+        'execution_backend': 'standard_yolo',
+        'next_step_tool': 'prepare_dataset_for_training',
+        'next_step_args': {'dataset_path': '/home/kly/ct_loop/data_ct'},
+        'planned_training_args': {
+            'model': '/home/kly/yolov8n.pt',
+            'epochs': 100,
+        },
+        'reasoning_summary': '当前数据还不能直接训练，但可以先自动准备到可训练状态。',
+        'data_summary': '当前还不能直接训练: 缺少可用的 data_yaml；但当前数据集可以先进入 prepare_dataset_for_training',
+    }
+    client.memory.save_state(client.session_state)
+    client._remember_pending_confirmation(
+        {
+            'thread_id': 'graph-prepare-turn-1',
+            'name': 'prepare_dataset_for_training',
+            'args': {'dataset_path': '/home/kly/ct_loop/data_ct'},
+            'id': 'prepare-graph',
+            'synthetic': False,
+            'source': 'graph',
+        },
+        emit_event=False,
+        persist_graph=False,
+    )
+
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((tool_name, dict(kwargs)))
+        if tool_name != 'training_preflight':
+            raise AssertionError(f'unexpected tool call: {tool_name}')
+        return {
+            'ok': True,
+            'ready_to_start': True,
+            'summary': '训练预检通过：将使用 yolodo，device=auto',
+            'training_environment': {'name': 'yolodo', 'display_name': 'yolodo'},
+            'resolved_args': {
+                'model': kwargs['model'],
+                'data_yaml': kwargs['data_yaml'],
+                'epochs': kwargs['epochs'],
+                'device': kwargs.get('device', 'auto') or 'auto',
+                'training_environment': 'yolodo',
+            },
+            'command_preview': ['yolo', 'train'],
+            'blockers': [],
+            'warnings': [],
+        }
+
+    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+
+    turn = await client.confirm('graph-prepare-turn-1', approved=True)
+    assert turn['status'] == 'needs_confirmation', turn
+    assert turn['tool_call']['name'] == 'start_training', turn
+    assert turn['tool_call']['args']['model'] == '/home/kly/yolov8n.pt', turn
+    assert turn['tool_call']['args']['data_yaml'] == '/home/kly/ct_loop/data_ct/images_split(graph)/data.yaml', turn
+    assert '训练计划草案：' in turn['message'], turn
+    assert '执行方式: 直接训练' in turn['message'], turn
+    assert len(calls) == 1, calls
+    assert calls[0][0] == 'training_preflight', calls
+    assert calls[0][1]['model'] == '/home/kly/yolov8n.pt', calls
+    assert calls[0][1]['data_yaml'] == '/home/kly/ct_loop/data_ct/images_split(graph)/data.yaml', calls
+    assert calls[0][1]['epochs'] == 100, calls
+    pending = client.get_pending_action()
+    assert pending is not None, turn
+    assert pending['tool_name'] == 'start_training', pending
+    assert pending['tool_args']['data_yaml'] == '/home/kly/ct_loop/data_ct/images_split(graph)/data.yaml', pending
+
+
 async def _run() -> None:
     shutil.rmtree(WORK, ignore_errors=True)
     WORK.mkdir(parents=True, exist_ok=True)
@@ -1677,6 +1986,10 @@ async def _run() -> None:
         await _scenario_pending_prepare_then_train_uses_structured_surface_even_with_planner()
         await _scenario_prepare_only_with_planner_keeps_natural_surface()
         await _scenario_text_only_training_plan_materializes_pending()
+        await _scenario_text_only_prepare_question_materializes_pending()
+        await _scenario_text_only_prepare_question_restore_edit_stays_local()
+        await _scenario_post_prepare_ready_start_confirmation_stays_local()
+        await _scenario_graph_prepare_approve_prefers_local_post_prepare_refresh()
         await _scenario_cancel_then_replan()
         await _scenario_cancel_prepare_then_rebuild()
         await _scenario_preparable_backend_switch()

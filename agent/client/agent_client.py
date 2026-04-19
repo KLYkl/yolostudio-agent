@@ -910,15 +910,8 @@ class YoloStudioAgentClient:
         thread_id = f"{self.session_state.session_id}-turn-{self._turn_index}"
 
         pending_dialogue = await self._try_handle_pending_confirmation_dialogue(user_text, stream_handler=stream_handler)
-        if pending_dialogue is _DEFER_TO_GRAPH:
-            return await self._handoff_current_runtime_to_graph(
-                thread_id=thread_id,
-                user_text_hint=user_text,
-                auto_approve=auto_approve,
-                ignore_existing_pending=True,
-                stream_handler=stream_handler,
-            )
-        if pending_dialogue is not None:
+        pending_passthrough_requested = pending_dialogue is _DEFER_TO_GRAPH
+        if pending_dialogue is not None and not pending_passthrough_requested:
             self._trim_history()
             self.memory.save_state(self.session_state)
             progressed = await self._maybe_auto_progress(pending_dialogue, stream_handler=stream_handler)
@@ -933,6 +926,17 @@ class YoloStudioAgentClient:
             self.memory.save_state(self.session_state)
             progressed = await self._maybe_auto_progress(routed, stream_handler=stream_handler)
             return progressed or routed
+
+        if pending_passthrough_requested:
+            return await self._handoff_current_runtime_to_graph(
+                thread_id=thread_id,
+                user_text_hint=user_text,
+                auto_approve=auto_approve,
+                ignore_existing_pending=True,
+                suppress_training_plan_context=True,
+                suppress_ephemeral_state_context=True,
+                stream_handler=stream_handler,
+            )
 
         unresolved_pending = self._resolve_pending_confirmation(thread_id=self._pending_confirmation_thread_id())
         if unresolved_pending is not None:
@@ -1069,13 +1073,10 @@ class YoloStudioAgentClient:
         self._record_graph_selected_tools(result["messages"], thread_id=thread_id, built_messages_len=0)
         self._record_tool_error_recovery(result["messages"], thread_id=thread_id, built_messages_len=0)
         self._record_graph_text_response(result["messages"], thread_id=thread_id, built_messages_len=0)
-        next_pending = self._resolve_pending_confirmation(thread_id=thread_id, config=config)
-        if next_pending is not None:
-            self.memory.save_state(self.session_state)
-            return self._needs_confirmation_result(thread_id, next_pending, await self._build_confirmation_message(next_pending))
-        applied_results = self._apply_tool_results(result["messages"], built_messages_len=0)
+        applied_results: list[tuple[str, dict[str, Any]]] | None = None
 
         if pending.get("name") == "prepare_dataset_for_training":
+            applied_results = self._apply_tool_results(result["messages"], built_messages_len=0)
             prepare_parsed = self._find_applied_tool_result(applied_results, 'prepare_dataset_for_training') or {
                 'ok': True,
                 'summary': '数据准备已完成',
@@ -1088,6 +1089,13 @@ class YoloStudioAgentClient:
             )
             if post_prepare_followup is not None:
                 return post_prepare_followup
+
+        next_pending = self._resolve_pending_confirmation(thread_id=thread_id, config=config)
+        if next_pending is not None:
+            self.memory.save_state(self.session_state)
+            return self._needs_confirmation_result(thread_id, next_pending, await self._build_confirmation_message(next_pending))
+        if applied_results is None:
+            applied_results = self._apply_tool_results(result["messages"], built_messages_len=0)
 
         final_text = self._compose_final_reply(result["messages"], applied_results)
         self._messages.append(AIMessage(content=final_text))
@@ -1195,6 +1203,8 @@ class YoloStudioAgentClient:
             return 'edit'
         if heuristic == 'clarify':
             return 'status'
+        if self._looks_like_pending_passthrough_request(user_text):
+            return 'passthrough'
         decision = await self._classify_confirmation_reply(user_text, pending)
         if decision == 'approve':
             return 'approve'
@@ -1212,8 +1222,6 @@ class YoloStudioAgentClient:
         )
         if pending_followup_action == 'status_or_detail' or self._looks_like_pending_status_or_detail_query(user_text):
             return 'status'
-        if self._looks_like_pending_passthrough_request(user_text):
-            return 'passthrough'
         return 'restate'
 
     def _record_pending_action_review(
@@ -3243,11 +3251,18 @@ class YoloStudioAgentClient:
         *,
         thread_id: str,
         user_text_hint: str,
+        suppress_training_plan_context: bool = False,
+        suppress_ephemeral_state_context: bool = False,
         stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any], int]:
         config = {"configurable": {"thread_id": thread_id}}
         self._trim_history()
-        state_for_model, include_history_context, recent_messages_for_model = self._state_for_model(user_text_hint)
+        if suppress_ephemeral_state_context:
+            stripped_state = self._strip_ephemeral_context(SessionState.from_dict(self.session_state.to_dict()))
+            state_for_model, include_history_context = stripped_state, False
+            recent_messages_for_model = list(self._messages[-1:]) if self._messages else []
+        else:
+            state_for_model, include_history_context, recent_messages_for_model = self._state_for_model(user_text_hint)
         digest = self.event_retriever.build_digest(
             self.session_state.session_id,
             state_for_model,
@@ -3258,7 +3273,7 @@ class YoloStudioAgentClient:
             "messages": built_messages,
             "cached_tool_context": build_cached_tool_context_payload(self.session_state),
             "dataset_fact_context": build_dataset_fact_context_payload(self.session_state),
-            "training_plan_context": build_training_plan_context_payload(self.session_state),
+            "training_plan_context": None if suppress_training_plan_context else build_training_plan_context_payload(self.session_state),
         }
         result = await self._graph_invoke(graph_input, config=config, stream_handler=stream_handler)
         built_messages_len = len(built_messages)
@@ -3274,11 +3289,15 @@ class YoloStudioAgentClient:
         user_text_hint: str,
         auto_approve: bool = False,
         ignore_existing_pending: bool = False,
+        suppress_training_plan_context: bool = False,
+        suppress_ephemeral_state_context: bool = False,
         stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
     ) -> dict[str, Any]:
         graph_result, config, built_messages_len = await self._invoke_graph_from_current_runtime(
             thread_id=thread_id,
             user_text_hint=user_text_hint,
+            suppress_training_plan_context=suppress_training_plan_context,
+            suppress_ephemeral_state_context=suppress_ephemeral_state_context,
             stream_handler=stream_handler,
         )
         if ignore_existing_pending:
@@ -3403,8 +3422,20 @@ class YoloStudioAgentClient:
             build_training_plan_draft_fn=self._build_training_plan_draft,
             render_prepare_followup_message=self._render_prepare_followup_message,
         )
+        followup_action = dict(flow_result.get('followup_action') or {})
+        followup_draft = dict(flow_result.get('draft') or followup_action.get('draft') or {})
+        if self._should_localize_post_prepare_start_confirmation(
+            followup_action=followup_action,
+            draft=followup_draft,
+        ):
+            return await self._refresh_training_plan_confirmation_locally(
+                thread_id=f"{thread_id}-post-prepare-start",
+                pending=None,
+                revised_draft=followup_draft,
+                user_text_hint='当前数据已具备训练条件，确认后即可启动训练。',
+            )
         result = await self._apply_training_plan_followup_action(
-            followup_action=dict(flow_result.get('followup_action') or {}),
+            followup_action=followup_action,
             thread_id=f"{thread_id}-post-prepare-start",
             user_text=self._recent_user_text(),
             handoff_mode='handoff',
@@ -3417,6 +3448,23 @@ class YoloStudioAgentClient:
             "tool_call": synthetic_followup,
             "approved": True,
         }
+
+    @staticmethod
+    def _should_localize_post_prepare_start_confirmation(
+        *,
+        followup_action: dict[str, Any] | None,
+        draft: dict[str, Any] | None,
+    ) -> bool:
+        followup_action = dict(followup_action or {})
+        draft = dict(draft or {})
+        if str(followup_action.get('action') or '').strip() != 'save_draft_and_handoff':
+            return False
+        if canonical_tool_name(str(draft.get('next_step_tool') or '').strip()) != 'start_training':
+            return False
+        execution_backend = str(draft.get('execution_backend') or '').strip().lower()
+        if execution_backend and execution_backend != 'standard_yolo':
+            return False
+        return True
 
     @staticmethod
     def _find_applied_tool_result(
@@ -3701,9 +3749,22 @@ class YoloStudioAgentClient:
             '开始训练',
             '启动训练',
             '数据准备',
+            '准备数据集',
+            '准备数据',
+            '准备训练数据',
             'prepare',
             'data.yaml',
         )
+        explicit_prepare_question_patterns = (
+            r'(?:现在|先)?开始准备(?:数据集|数据|训练数据)?吗',
+            r'是否(?:现在|先)?开始准备(?:数据集|数据|训练数据)?',
+            r'要不要(?:先)?准备(?:数据集|数据|训练数据)?',
+            r'先准备(?:数据集|数据|训练数据)?吗',
+        )
+        if any(re.search(pattern, content) or re.search(pattern, lowered) for pattern in explicit_prepare_question_patterns) and any(
+            token in content or token in lowered for token in execution_tokens
+        ):
+            return True
         return any(token in content or token in lowered for token in confirmation_tokens) and any(
             token in content or token in lowered for token in execution_tokens
         )
@@ -3793,6 +3854,68 @@ class YoloStudioAgentClient:
         }
         return rebuilt_draft, pending
 
+    def _ensure_materialized_training_state_context(self, *, draft: dict[str, Any]) -> None:
+        draft = dict(draft or {})
+        if not draft:
+            return
+        dataset_path = str(
+            draft.get('dataset_path')
+            or self.session_state.active_dataset.dataset_root
+            or self.session_state.active_dataset.img_dir
+            or ''
+        ).strip()
+        planned_training_args = dict(draft.get('planned_training_args') or {})
+        next_tool_name = str(draft.get('next_step_tool') or '').strip()
+        next_tool_args = dict(draft.get('next_step_args') or {})
+        data_yaml = str(
+            next_tool_args.get('data_yaml')
+            or planned_training_args.get('data_yaml')
+            or self.session_state.active_dataset.data_yaml
+            or ''
+        ).strip()
+        model = str(
+            planned_training_args.get('model')
+            or self.session_state.active_training.model
+            or ''
+        ).strip()
+
+        if dataset_path and not str(self.session_state.active_dataset.dataset_root or '').strip():
+            self.session_state.active_dataset.dataset_root = dataset_path
+        if data_yaml:
+            self.session_state.active_dataset.data_yaml = data_yaml
+        if model:
+            self.session_state.active_training.model = model
+
+        readiness = dict(self.session_state.active_dataset.last_readiness or {})
+        summary = str(draft.get('data_summary') or draft.get('reasoning_summary') or '').strip()
+        warnings = [str(item).strip() for item in (draft.get('warnings') or []) if str(item).strip()]
+        blockers = [str(item).strip() for item in (draft.get('blockers') or []) if str(item).strip()]
+        if not blockers and next_tool_name == 'prepare_dataset_for_training' and not data_yaml:
+            blockers = ['缺少可用的 data_yaml']
+
+        if dataset_path and not str(readiness.get('dataset_root') or '').strip():
+            readiness['dataset_root'] = dataset_path
+        if data_yaml and not str(readiness.get('resolved_data_yaml') or '').strip():
+            readiness['resolved_data_yaml'] = data_yaml
+        if warnings and not readiness.get('warnings'):
+            readiness['warnings'] = warnings
+        if blockers and not readiness.get('blockers'):
+            readiness['blockers'] = blockers
+        if summary and not str(readiness.get('summary') or '').strip():
+            readiness['summary'] = summary
+
+        if next_tool_name == 'prepare_dataset_for_training':
+            readiness.setdefault('ok', True)
+            readiness.setdefault('ready', False)
+            readiness.setdefault('preparable', True)
+        elif next_tool_name == 'start_training':
+            readiness.setdefault('ok', True)
+            readiness.setdefault('ready', True)
+            readiness.setdefault('preparable', False)
+
+        if readiness:
+            self.session_state.active_dataset.last_readiness = readiness
+
     async def _maybe_materialize_text_only_training_confirmation(
         self,
         *,
@@ -3814,6 +3937,7 @@ class YoloStudioAgentClient:
         if materialized is None:
             return None
         rebuilt_draft, pending = materialized
+        self._ensure_materialized_training_state_context(draft=rebuilt_draft)
         self._save_training_plan_draft(rebuilt_draft)
         self._set_pending_confirmation(thread_id, pending)
         self.memory.append_event(

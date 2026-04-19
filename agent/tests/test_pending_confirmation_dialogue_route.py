@@ -145,6 +145,7 @@ def _install_fake_test_dependencies() -> None:
 _install_fake_test_dependencies()
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from langchain_core.messages import AIMessage
 
 
 class _NoLLMGraph:
@@ -170,6 +171,21 @@ class _CountingGraph:
         payload = args[0] if args else {}
         messages = list((payload or {}).get('messages') or [])
         return {'messages': messages + [AIMessage(content='graph-called')]}
+
+
+class _LoopListGraph:
+    def __init__(self) -> None:
+        self.payloads: list[dict[str, object]] = []
+
+    def get_state(self, config):
+        del config
+        return None
+
+    async def ainvoke(self, payload, *args, **kwargs):
+        del args, kwargs
+        self.payloads.append(dict(payload or {}))
+        messages = list((payload or {}).get('messages') or [])
+        return {'messages': messages + [AIMessage(content='找到 2 条环训练记录')]}
 
 
 WORK = Path(__file__).resolve().parent / '_tmp_pending_confirmation_dialogue_route'
@@ -396,6 +412,37 @@ async def _scenario_prepare_pending_edit_restored_session_stays_local() -> None:
     assert 'batch' not in pending['tool_args'], pending
 
 
+async def _scenario_pending_loop_list_passthrough_strips_plan_context() -> None:
+    graph = _LoopListGraph()
+    client = _make_prepare_revision_client('pending-loop-list-passthrough', graph=graph)
+    turn = await client.chat('最近有哪些环训练')
+    pending = client.get_pending_action()
+    assert turn['status'] == 'completed', turn
+    assert turn['message'] == '找到 2 条环训练记录', turn
+    assert pending is not None, turn
+    assert len(graph.payloads) == 1, graph.payloads
+    payload = dict(graph.payloads[0] or {})
+    assert payload.get('training_plan_context') is None, payload
+    messages = list(payload.get('messages') or [])
+    assert messages, messages
+    assert getattr(messages[-1], 'content', '') == '最近有哪些环训练', messages
+
+
+async def _scenario_pending_loop_list_passthrough_beats_clarify_classifier() -> None:
+    graph = _LoopListGraph()
+    client = _make_prepare_revision_client('pending-loop-list-passthrough-clf', graph=graph)
+
+    async def _fake_classify_confirmation_reply(user_text, pending):
+        del user_text, pending
+        return 'clarify'
+
+    client._classify_confirmation_reply = _fake_classify_confirmation_reply  # type: ignore[assignment]
+    turn = await client.chat('最近有哪些环训练')
+    assert turn['status'] == 'completed', turn
+    assert turn['message'] == '找到 2 条环训练记录', turn
+    assert len(graph.payloads) == 1, graph.payloads
+
+
 async def _run() -> None:
     shutil.rmtree(WORK, ignore_errors=True)
     WORK.mkdir(parents=True, exist_ok=True)
@@ -410,6 +457,8 @@ async def _run() -> None:
         await _scenario_prepare_start_phrase_with_punctuation_routes_to_approve()
         await _scenario_prepare_pending_edit_refreshes_locally()
         await _scenario_prepare_pending_edit_restored_session_stays_local()
+        await _scenario_pending_loop_list_passthrough_strips_plan_context()
+        await _scenario_pending_loop_list_passthrough_beats_clarify_classifier()
         print('pending confirmation dialogue route ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)
