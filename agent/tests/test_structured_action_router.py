@@ -389,6 +389,111 @@ async def _scenario_handoff_formats_training_confirmation_interrupt() -> None:
     assert result['tool_call']['name'] == 'start_training_loop', result
 
 
+async def _scenario_render_plan_uses_local_training_interrupt_payload() -> None:
+    client = _make_client('render-plan-local-training-interrupt')
+    result = await client._apply_training_plan_followup_action(
+        followup_action={'action': 'render_plan'},
+        thread_id='render-plan-local-training-interrupt-turn-1',
+        draft={
+            'dataset_path': '/data/demo',
+            'execution_mode': 'prepare_then_train',
+            'next_step_tool': 'prepare_dataset_for_training',
+            'planned_training_args': {
+                'model': 'yolov8n.pt',
+                'epochs': 20,
+                'batch': 12,
+            },
+            'reasoning_summary': '当前数据先准备后再训练。',
+        },
+    )
+    interrupt_payload = dict(client.session_state.active_training.training_confirmation_interrupt or {})
+    assert result['status'] == 'needs_confirmation', result
+    assert interrupt_payload.get('type') == 'training_confirmation', interrupt_payload
+    assert interrupt_payload.get('phase') == 'prepare', interrupt_payload
+    assert interrupt_payload.get('plan', {}).get('epochs') == 20, interrupt_payload
+
+
+async def _scenario_local_training_interrupt_edit_updates_plan() -> None:
+    client = _make_client('local-training-interrupt-edit')
+    client.session_state.active_training.training_confirmation_interrupt = {
+        'type': 'training_confirmation',
+        'phase': 'start',
+        'thread_id': 'local-training-interrupt-edit-turn-1',
+        'plan': {
+            'mode': 'train',
+            'dataset_path': '/data/demo',
+            'model': 'yolov8n.pt',
+            'epochs': 100,
+            'batch': 16,
+        },
+    }
+    planner = _FakeStructuredPlanner({'action': 'edit', 'reason': '把 batch 改成 12，epochs 改成 20', 'edits': {'batch': 12, 'epochs': 20}})
+    client.planner_llm = planner  # type: ignore[assignment]
+    result = await client.chat('batch 改成 12，epochs 改成 20')
+    payload = dict(client.session_state.active_training.training_confirmation_interrupt or {})
+    assert result['status'] == 'needs_confirmation', result
+    assert payload.get('plan', {}).get('batch') == 12, payload
+    assert payload.get('plan', {}).get('epochs') == 20, payload
+
+
+async def _scenario_local_training_interrupt_approve_handoffs_to_graph() -> None:
+    client = _make_client('local-training-interrupt-approve')
+    client.session_state.active_training.training_confirmation_interrupt = {
+        'type': 'training_confirmation',
+        'phase': 'prepare',
+        'thread_id': 'local-training-interrupt-approve-turn-1',
+        'plan': {
+            'mode': 'train',
+            'dataset_path': '/data/demo',
+            'model': 'yolov8n.pt',
+            'epochs': 20,
+            'batch': 12,
+        },
+    }
+    planner = _FakeStructuredPlanner({'action': 'approve', 'reason': '开始准备'})
+    client.planner_llm = planner  # type: ignore[assignment]
+    handoff_calls: list[dict[str, object]] = []
+
+    async def _fake_handoff(**kwargs):
+        handoff_calls.append(dict(kwargs))
+        return {'status': 'completed', 'message': 'handoff-ok', 'tool_call': None}
+
+    client._handoff_current_runtime_to_graph = _fake_handoff  # type: ignore[method-assign]
+    result = await client.chat('好，继续')
+    assert result['message'] == 'handoff-ok', result
+    assert handoff_calls and handoff_calls[0]['auto_approve'] is True, handoff_calls
+    assert client.session_state.active_training.training_confirmation_interrupt == {}, client.session_state.active_training.training_confirmation_interrupt
+
+
+async def _scenario_local_training_interrupt_new_task_routes_mainline() -> None:
+    client = _make_client('local-training-interrupt-new-task')
+    client.session_state.active_training.training_confirmation_interrupt = {
+        'type': 'training_confirmation',
+        'phase': 'start',
+        'thread_id': 'local-training-interrupt-new-task-turn-1',
+        'plan': {
+            'mode': 'loop',
+            'dataset_path': '/data/demo',
+            'model': 'yolov8n.pt',
+            'max_rounds': 5,
+            'epochs_per_round': 10,
+            'loop_name': 'ctxloop5',
+        },
+    }
+    planner = _FakeStructuredPlanner({'action': 'new_task', 'reason': '最近有哪些环训练'})
+    client.planner_llm = planner  # type: ignore[assignment]
+
+    async def _fake_mainline(user_text, thread_id, skip_training_plan_dialogue=False):
+        assert user_text == '最近有哪些环训练'
+        assert skip_training_plan_dialogue is True
+        return {'status': 'completed', 'message': '找到 2 条环训练', 'tool_call': None}
+
+    client._try_handle_mainline_intent = _fake_mainline  # type: ignore[method-assign]
+    result = await client.chat('最近有哪些环训练')
+    assert result['message'] == '找到 2 条环训练', result
+    assert client.session_state.active_training.training_confirmation_interrupt == {}, client.session_state.active_training.training_confirmation_interrupt
+
+
 async def _scenario_training_loop_route_detects_control_followups_without_llm() -> None:
     client = _make_client('training-loop-route-followup')
     client.session_state.active_training.active_loop_id = 'loop-456'
@@ -686,6 +791,10 @@ async def _run() -> None:
         await _scenario_parse_user_decision_falls_back_to_unclear()
         await _scenario_chat_resumes_training_confirmation_interrupt()
         await _scenario_handoff_formats_training_confirmation_interrupt()
+        await _scenario_render_plan_uses_local_training_interrupt_payload()
+        await _scenario_local_training_interrupt_edit_updates_plan()
+        await _scenario_local_training_interrupt_approve_handoffs_to_graph()
+        await _scenario_local_training_interrupt_new_task_routes_mainline()
         await _scenario_training_loop_route_detects_control_followups_without_llm()
         await _scenario_training_loop_route_falls_back_without_llm()
         await _scenario_training_run_query_signals_reuse_last_comparison()

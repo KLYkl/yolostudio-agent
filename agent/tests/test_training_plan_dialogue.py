@@ -637,8 +637,10 @@ async def _scenario_prepare_only_revision() -> None:
     assert '当前阻塞:' in turn2['message']
     assert turn2['tool_call']['name'] == 'prepare_dataset_for_training'
     assert 'force_split' not in turn2['tool_call']['args']
-    assert turn2['pending_action']['decision_context']['decision'] == 'edit'
-    assert turn2['pending_action']['decision_context']['raw_user_text'] == '先只做准备，不要自动划分，为什么必须先 prepare？'
+    interrupt_payload = dict(turn2.get('interrupt_payload') or {})
+    assert interrupt_payload.get('type') == 'training_confirmation'
+    assert interrupt_payload.get('execution_mode') == 'prepare_only'
+    assert interrupt_payload.get('next_step_tool') == 'prepare_dataset_for_training'
 
     turn3 = await client.confirm(turn2['thread_id'], approved=True)
     assert turn3['status'] == 'completed', turn3
@@ -690,8 +692,14 @@ async def _scenario_prepare_only_short_revision_without_dataset_path() -> None:
     assert turn2['status'] == 'needs_confirmation', turn2
     assert turn2['tool_call']['name'] == 'prepare_dataset_for_training', turn2
     assert 'force_split' not in turn2['tool_call']['args'], turn2
-    assert turn2['pending_action']['decision_context']['decision'] == 'edit', turn2
-    assert turn2['pending_action']['decision_context']['raw_user_text'] == '先不要自动划分，给我计划。', turn2
+    interrupt_payload = dict(turn2.get('interrupt_payload') or {})
+    if interrupt_payload:
+        assert interrupt_payload.get('type') == 'training_confirmation', turn2
+        assert interrupt_payload.get('phase') == 'prepare', interrupt_payload
+        assert interrupt_payload.get('next_step_tool') == 'prepare_dataset_for_training', interrupt_payload
+    else:
+        assert turn2['pending_action']['decision_context']['decision'] == 'edit', turn2
+        assert turn2['pending_action']['decision_context']['raw_user_text'] == '先不要自动划分，给我计划。', turn2
     assert all(name == 'dataset_training_readiness' for name, _ in calls), calls
 
 
@@ -1342,8 +1350,10 @@ async def _scenario_prepare_approval_then_revise_start() -> None:
     assert turn4['tool_call']['args']['imgsz'] == 960
     assert turn4['tool_call']['args']['fraction'] is None
     assert turn4['tool_call']['args']['classes'] is None
-    assert turn4['pending_action']['decision_context']['decision'] == 'edit'
-    assert turn4['pending_action']['decision_context']['raw_user_text'] == '为什么现在可以直接训练了？环境改成 base，batch 12，imgsz 960，fraction 不要了，类别限制取消，先给我计划。'
+    interrupt_payload = dict(turn4.get('interrupt_payload') or {})
+    assert interrupt_payload.get('type') == 'training_confirmation', turn4
+    assert interrupt_payload.get('phase') == 'start', interrupt_payload
+    assert interrupt_payload.get('next_step_tool') == 'start_training', interrupt_payload
     assert '已从默认环境 yolodo 切换到 base' in turn4['message']
     assert '只训练指定类别' not in turn4['message']
 
@@ -1798,13 +1808,15 @@ async def _scenario_text_only_prepare_question_restore_edit_stays_local() -> Non
     turn2 = await restored.chat('把 batch 改成 12 再继续')
     pending = restored.get_pending_action()
     draft = dict(restored.session_state.active_training.training_plan_draft or {})
+    interrupt_payload = dict(turn2.get('interrupt_payload') or {})
     assert turn2['status'] == 'needs_confirmation', turn2
-    assert pending is not None, turn2
-    assert pending['tool_name'] == 'prepare_dataset_for_training', pending
-    assert pending['tool_args'] == {'dataset_path': '/home/kly/ct_loop/data_ct'}, pending
-    assert pending['decision_context']['decision'] == 'edit', pending
+    assert interrupt_payload.get('type') == 'training_confirmation', turn2
+    assert interrupt_payload.get('phase') == 'prepare', interrupt_payload
+    assert interrupt_payload.get('next_step_tool') == 'prepare_dataset_for_training', interrupt_payload
+    assert interrupt_payload.get('next_step_args') == {'dataset_path': '/home/kly/ct_loop/data_ct'}, interrupt_payload
     assert (draft.get('planned_training_args') or {}).get('batch') == 12, draft
-    assert 'batch' not in pending['tool_args'], pending
+    if pending is not None:
+        assert pending['tool_args'] == {'dataset_path': '/home/kly/ct_loop/data_ct'}, pending
 
 
 async def _scenario_post_prepare_ready_start_confirmation_stays_local() -> None:

@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-SESSION_STATE_SCHEMA_VERSION = 2
+SESSION_STATE_SCHEMA_VERSION = 3
 
 
 def utc_now() -> str:
@@ -107,6 +107,7 @@ class TrainingContext:
     last_run_comparison: dict[str, Any] = field(default_factory=dict)
     best_run_selection: dict[str, Any] = field(default_factory=dict)
     training_plan_draft: dict[str, Any] = field(default_factory=dict)
+    training_confirmation_interrupt: dict[str, Any] = field(default_factory=dict)
     last_remote_roundtrip: dict[str, Any] = field(default_factory=dict)
     active_loop_id: str = ""
     active_loop_name: str = ""
@@ -216,6 +217,12 @@ def migrate_session_state_payload(data: dict[str, Any] | None, *, session_id_fal
         active_training = dict(payload.get('active_training') or {})
         if not isinstance(active_training.get('training_plan_draft'), dict):
             active_training['training_plan_draft'] = {}
+        payload['active_training'] = active_training
+
+    if schema_version < 3:
+        active_training = dict(payload.get('active_training') or {})
+        if not isinstance(active_training.get('training_confirmation_interrupt'), dict):
+            active_training['training_confirmation_interrupt'] = {}
         payload['active_training'] = active_training
 
     payload['schema_version'] = SESSION_STATE_SCHEMA_VERSION

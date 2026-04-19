@@ -53,14 +53,46 @@ class LoopTrainPlan(_BaseTrainingPlan):
 TrainingPlan = TrainPlan | LoopTrainPlan
 
 
+def _model_validate_compat(model_cls: type[BaseModel], payload: dict[str, Any]) -> BaseModel:
+    validator = getattr(model_cls, 'model_validate', None)
+    if callable(validator):
+        return validator(payload)
+    parser = getattr(model_cls, 'parse_obj', None)
+    if callable(parser):
+        return parser(payload)
+    return model_cls(**payload)
+
+
+def _model_dump_compat(model: BaseModel, *, exclude_none: bool = True) -> dict[str, Any]:
+    dumper = getattr(model, 'model_dump', None)
+    if callable(dumper):
+        try:
+            return dumper(exclude_none=exclude_none)
+        except TypeError:
+            return dumper()
+    return model.dict(exclude_none=exclude_none)
+
+
+def _model_copy_compat(model: BaseModel, *, update: dict[str, Any]) -> BaseModel:
+    copier = getattr(model, 'model_copy', None)
+    if callable(copier):
+        return copier(update=update)
+    legacy_copy = getattr(model, 'copy', None)
+    if callable(legacy_copy):
+        return legacy_copy(update=update)
+    merged = _model_dump_compat(model, exclude_none=False)
+    merged.update(update)
+    return model.__class__(**merged)
+
+
 def coerce_training_plan(value: TrainingPlan | dict[str, Any]) -> TrainingPlan:
     if isinstance(value, (TrainPlan, LoopTrainPlan)):
         return value
     payload = dict(value or {})
     mode = str(payload.get('mode') or '').strip().lower()
     if mode == 'loop' or any(key in payload for key in ('max_rounds', 'epochs_per_round', 'loop_name')):
-        return LoopTrainPlan.model_validate(payload)
-    return TrainPlan.model_validate(payload)
+        return _model_validate_compat(LoopTrainPlan, payload)
+    return _model_validate_compat(TrainPlan, payload)
 
 
 def merge_training_plan_edits(plan: TrainingPlan | dict[str, Any], edits: TrainingEdits | dict[str, Any] | None) -> TrainingPlan:
@@ -68,17 +100,17 @@ def merge_training_plan_edits(plan: TrainingPlan | dict[str, Any], edits: Traini
     if edits is None:
         return normalized_plan
     if isinstance(edits, TrainingEdits):
-        edit_payload = edits.model_dump(exclude_none=True)
+        edit_payload = _model_dump_compat(edits)
     else:
         edit_payload = {key: value for key, value in dict(edits or {}).items() if value is not None}
     if isinstance(normalized_plan, LoopTrainPlan):
         if 'epochs' in edit_payload and 'epochs_per_round' not in edit_payload:
             edit_payload['epochs_per_round'] = edit_payload.pop('epochs')
-        return normalized_plan.model_copy(update=edit_payload)
+        return _model_copy_compat(normalized_plan, update=edit_payload)
     edit_payload.pop('max_rounds', None)
     edit_payload.pop('epochs_per_round', None)
     edit_payload.pop('loop_name', None)
-    return normalized_plan.model_copy(update=edit_payload)
+    return _model_copy_compat(normalized_plan, update=edit_payload)
 
 
 def update_plan_after_prepare(
@@ -117,4 +149,4 @@ def update_plan_after_prepare(
         update['prepare_summary'] = prepare_summary
     if 'training_environment' in prepare_payload and str(prepare_payload.get('training_environment') or '').strip():
         update['training_environment'] = str(prepare_payload.get('training_environment') or '').strip()
-    return normalized_plan.model_copy(update=update)
+    return _model_copy_compat(normalized_plan, update=update)

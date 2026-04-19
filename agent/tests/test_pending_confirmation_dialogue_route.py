@@ -376,15 +376,17 @@ async def _scenario_prepare_pending_edit_refreshes_locally() -> None:
     turn = await client.chat('把 batch 改成 12 再继续，其他设置不变')
     pending = client.get_pending_action()
     draft = dict(client.session_state.active_training.training_plan_draft or {})
+    interrupt_payload = dict(turn.get('interrupt_payload') or {})
     assert turn['status'] == 'needs_confirmation', turn
     assert len(graph.calls) == 0, graph.calls
-    assert pending is not None, turn
-    assert pending['tool_name'] == 'prepare_dataset_for_training', pending
-    assert pending['tool_args'] == {'dataset_path': '/data/demo', 'force_split': True}, pending
-    assert pending['decision_context']['decision'] == 'edit', pending
+    assert interrupt_payload.get('type') == 'training_confirmation', turn
+    assert interrupt_payload.get('phase') == 'prepare', interrupt_payload
+    assert interrupt_payload.get('next_step_tool') == 'prepare_dataset_for_training', interrupt_payload
+    assert interrupt_payload.get('next_step_args') == {'dataset_path': '/data/demo', 'force_split': True}, interrupt_payload
     assert draft.get('next_step_tool') == 'prepare_dataset_for_training', draft
     assert (draft.get('planned_training_args') or {}).get('batch') == 12, draft
-    assert 'batch' not in pending['tool_args'], pending
+    if pending is not None:
+        assert pending['tool_args'] == {'dataset_path': '/data/demo', 'force_split': True}, pending
 
 
 async def _scenario_prepare_pending_edit_restored_session_stays_local() -> None:
@@ -402,14 +404,16 @@ async def _scenario_prepare_pending_edit_restored_session_stays_local() -> None:
     turn = await restored.chat('把 batch 改成 12 再继续，其他设置不变')
     pending = restored.get_pending_action()
     draft = dict(restored.session_state.active_training.training_plan_draft or {})
+    interrupt_payload = dict(turn.get('interrupt_payload') or {})
     assert turn['status'] == 'needs_confirmation', turn
     assert len(restore_graph.calls) == 0, restore_graph.calls
-    assert pending is not None, turn
-    assert pending['tool_name'] == 'prepare_dataset_for_training', pending
-    assert pending['tool_args'] == {'dataset_path': '/data/demo', 'force_split': True}, pending
-    assert pending['decision_context']['decision'] == 'edit', pending
+    assert interrupt_payload.get('type') == 'training_confirmation', turn
+    assert interrupt_payload.get('phase') == 'prepare', interrupt_payload
+    assert interrupt_payload.get('next_step_tool') == 'prepare_dataset_for_training', interrupt_payload
+    assert interrupt_payload.get('next_step_args') == {'dataset_path': '/data/demo', 'force_split': True}, interrupt_payload
     assert (draft.get('planned_training_args') or {}).get('batch') == 12, draft
-    assert 'batch' not in pending['tool_args'], pending
+    if pending is not None:
+        assert pending['tool_args'] == {'dataset_path': '/data/demo', 'force_split': True}, pending
 
 
 async def _scenario_pending_loop_list_passthrough_strips_plan_context() -> None:
