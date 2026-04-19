@@ -1111,6 +1111,31 @@ class YoloStudioAgentClient:
             return None
         return self._build_pending_action_payload(pending, thread_id=self._pending_confirmation_thread_id())
 
+    def _looks_like_pending_approve_request(self, user_text: str) -> bool:
+        normalized = self._normalize_confirmation_text(user_text)
+        if not normalized:
+            return False
+        if self._classify_confirmation_reply_fallback(user_text) != 'approve':
+            return False
+        if any(token in normalized for token in ('不', '别', '先不', '不要', '取消', '算了')):
+            return False
+        strong_approve_tokens = (
+            '继续',
+            '继续执行',
+            '开始训练',
+            '启动训练',
+            '开始循环训练',
+            '启动循环训练',
+            '确认开始训练',
+            '确认启动训练',
+            '就这样',
+            '按这个来',
+            '没问题',
+            '可以开始',
+            '执行吧',
+        )
+        return any(token in normalized for token in strong_approve_tokens)
+
     def _looks_like_pending_edit_request(self, user_text: str, pending: dict[str, Any]) -> bool:
         text = str(user_text or '').strip()
         normalized = text.lower()
@@ -1123,15 +1148,20 @@ class YoloStudioAgentClient:
             return False
         training_like_tools = {'start_training', 'prepare_dataset_for_training', 'start_training_loop'}
         if tool_name in training_like_tools:
-            if self._collect_training_clear_fields(text):
-                return True
-            if self._collect_requested_training_args(text, data_yaml=None):
-                return True
+            clear_fields = self._collect_training_clear_fields(text)
+            requested_training_args = self._collect_requested_training_args(text, data_yaml=None)
             split_tokens = (
                 '自动划分', '不划分', '不要划分', '默认比例', '按默认比例', 'force_split', 'split',
                 '只做准备', '先做准备', 'prepare only',
             )
-            if any(token in text or token in normalized for token in split_tokens):
+            split_requested = any(token in text or token in normalized for token in split_tokens)
+            if self._looks_like_pending_approve_request(text) and not clear_fields and not requested_training_args and not split_requested:
+                return False
+            if clear_fields:
+                return True
+            if requested_training_args:
+                return True
+            if split_requested:
                 return True
         generic_revision_markers = (
             '改成', '换成', '换个', '调整', '改一下', '去掉', '取消类别', '类别限制',
@@ -1605,7 +1635,7 @@ class YoloStudioAgentClient:
         text = str(user_text or '').strip().lower()
         if not text:
             return 'unclear'
-        normalized = re.sub(r'\s+', '', text)
+        normalized = YoloStudioAgentClient._normalize_confirmation_text(text)
         restate_tokens = {
             '再说一遍', '再说一次', '重说一遍', '重说一次', '重复一下', '重复一遍', '重新说一下', '再讲一遍', '再讲一次'
         }
@@ -1621,6 +1651,8 @@ class YoloStudioAgentClient:
             '同意', '确认', '继续', '继续吧', '是', '好的', '可以', '行', '执行', '开始', '开始吧',
             '开始训练', '启动训练', '开始循环训练', '启动循环训练',
             '就这样', '按这个来', '没问题', '好',
+            '可以继续', '好继续', '没问题开始训练', '没问题开始训练吧',
+            '开始训练吧', '确认开始训练', '确认启动训练', '可以开始训练', '可以继续执行',
         }
         if normalized in deny_exact:
             return 'deny'
@@ -1636,11 +1668,21 @@ class YoloStudioAgentClient:
         approve_markers = (
             '继续吧', '继续执行', '可以开始', '可以执行', '确认执行', '同意执行', '按这个来', '就这样',
             '开始训练', '启动训练', '开始循环训练', '启动循环训练',
-            '开始吧', '执行吧', '没问题', '可以', '行', '继续', '确认'
+            '开始吧', '执行吧', '没问题', '可以', '行', '继续', '确认',
+            '可以继续', '好继续', '确认开始训练', '确认启动训练',
         )
         if any(marker in normalized for marker in approve_markers) and not any(token in normalized for token in ('不', '别', '先不', '不要', '取消', '算了')):
             return 'approve'
         return 'unclear'
+
+    @staticmethod
+    def _normalize_confirmation_text(value: Any) -> str:
+        text = str(value or '').strip().lower()
+        if not text:
+            return ''
+        text = re.sub(r'\s+', '', text)
+        text = re.sub(r'[，。,\.!！?？、；;：:“”\"\'‘’（）()\[\]{}<>《》]+', '', text)
+        return text
     def _sync_preferences(self) -> None:
         if self.session_state.preferences.default_model == self.primary_llm_settings.model:
             self.session_state.preferences.default_model = ""

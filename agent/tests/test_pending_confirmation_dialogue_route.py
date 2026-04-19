@@ -299,6 +299,22 @@ async def _scenario_continue_phrase_routes_to_approve() -> None:
     assert captured.get('raw_user_text') == '可以，继续', captured
 
 
+async def _scenario_continue_phrase_with_punctuation_routes_to_approve() -> None:
+    client = _make_client('pending-continue-approve-punct')
+    captured: dict[str, object] = {}
+
+    async def _fake_review_pending_action(decision_payload, *, stream_handler=None):
+        del stream_handler
+        captured.update(dict(decision_payload))
+        return {'status': 'completed', 'message': 'captured-approve', 'tool_call': None}
+
+    client.review_pending_action = _fake_review_pending_action  # type: ignore[assignment]
+    turn = await client.chat('好，继续。')
+    assert turn['status'] == 'completed', turn
+    assert captured.get('decision') == 'approve', captured
+    assert captured.get('raw_user_text') == '好，继续。', captured
+
+
 async def _scenario_edit_phrase_marks_pending_as_edit() -> None:
     client = _make_client('pending-edit')
     turn = await client.chat('把 batch 改成 12 再继续')
@@ -320,6 +336,22 @@ async def _scenario_clarify_phrase_reuses_confirmation_message() -> None:
     turn = await client.chat('为什么这样安排？')
     assert turn['status'] == 'needs_confirmation', turn
     assert turn['message'] == '当前待确认的是准备数据集：会先生成 data.yaml 再决定是否进入训练。', turn
+
+
+async def _scenario_prepare_start_phrase_with_punctuation_routes_to_approve() -> None:
+    client = _make_prepare_client('pending-prepare-approve-punct')
+    captured: dict[str, object] = {}
+
+    async def _fake_review_pending_action(decision_payload, *, stream_handler=None):
+        del stream_handler
+        captured.update(dict(decision_payload))
+        return {'status': 'completed', 'message': 'captured-approve', 'tool_call': None}
+
+    client.review_pending_action = _fake_review_pending_action  # type: ignore[assignment]
+    turn = await client.chat('没问题，开始训练吧。')
+    assert turn['status'] == 'completed', turn
+    assert captured.get('decision') == 'approve', captured
+    assert captured.get('raw_user_text') == '没问题，开始训练吧。', captured
 
 
 async def _scenario_prepare_pending_edit_refreshes_locally() -> None:
@@ -372,8 +404,10 @@ async def _run() -> None:
         await _scenario_generic_text_reuses_confirmation_message()
         await _scenario_prepare_start_like_phrase_routes_to_approve()
         await _scenario_continue_phrase_routes_to_approve()
+        await _scenario_continue_phrase_with_punctuation_routes_to_approve()
         await _scenario_edit_phrase_marks_pending_as_edit()
         await _scenario_clarify_phrase_reuses_confirmation_message()
+        await _scenario_prepare_start_phrase_with_punctuation_routes_to_approve()
         await _scenario_prepare_pending_edit_refreshes_locally()
         await _scenario_prepare_pending_edit_restored_session_stays_local()
         print('pending confirmation dialogue route ok')
