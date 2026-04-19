@@ -1,14 +1,27 @@
 # Agent Client 重构报告（2026-04-14）
 
+> **当前状态：仍有效，但定位是“重构判断依据”，不是“当前代码逐行导航图”。**
+>
+> 这份文档最有价值的部分是：
+>
+> - 为什么问题重点在 `agent/client`
+> - 为什么要推 LLM-first / tool-grounded
+> - 为什么要压缩 pre-LLM code intercept 和 narrative-heavy fallback
+>
+> 需要注意：
+>
+> - 文中提到的部分函数行号、位置描述会随着后续提交漂移
+> - 判断当前 runtime 接口与审批契约时，应优先同时参考 `docs/agent-runtime-contract.md`
+
 ## 1. 结论
 
 当前问题不在 `agent/server` 的训练/预测/数据工具层，而在 `agent/client` 的编排层。
 
 现状是：
 
-- `D:\yolodo2.0\agent_plan\agent\client\agent_client.py` 在进入 LangGraph 之前，已经用大量 `_try_handle_*` 把自然语言主路由截流。
-- `D:\yolodo2.0\agent_plan\agent\client\context_builder.py` 和 `D:\yolodo2.0\agent_plan\agent\client\event_retriever.py` 会向模型灌入过重且容易串味的状态。
-- `D:\yolodo2.0\agent_plan\agent\client\grounded_reply_builder.py` 直接替模型组织最终回复，导致 Agent 退化成“规则壳 + 模板机”。
+- `agent/client/agent_client.py` 在进入 LangGraph 之前，已经用大量 `_try_handle_*` 把自然语言主路由截流。
+- `agent/client/context_builder.py` 和 `agent/client/event_retriever.py` 会向模型灌入过重且容易串味的状态。
+- `agent/client/grounded_reply_builder.py` 直接替模型组织最终回复，导致 Agent 退化成“规则壳 + 模板机”。
 
 因此，当前系统的核心问题不是“模型不够强”，而是：
 
@@ -81,18 +94,21 @@ Anthropic 当前公开资料更接近：
 
 文件：
 
-- `D:\yolodo2.0\agent_plan\agent\client\agent_client.py`
+- `agent/client/agent_client.py`
 
 关键位置：
 
-- `SYSTEM_PROMPT`：约第 80 行
-- `chat()`：约第 309 行
-- `_try_handle_guardrail_intent()`：约第 1460 行
-- `_try_handle_prepare_only_intent()`：约第 2320 行
-- `_try_handle_training_plan_dialogue()`：约第 3490 行
-- `_try_handle_mainline_intent()`：约第 578 行
-- `_build_training_plan_draft()`：约第 3292 行
-- `_build_confirmation_prompt()`：约第 4050 行
+- `SYSTEM_PROMPT`：当前约第 130 行
+- `chat()`：当前约第 956 行
+- `_try_handle_mainline_intent()`：当前约第 1986 行
+- `_try_handle_guardrail_intent()`：当前约第 2018 行
+- `_build_training_plan_draft()`：当前约第 4647 行
+- `_try_handle_training_plan_dialogue()`：当前约第 5092 行
+- `_build_confirmation_prompt()`：当前约第 5133 行
+
+补充说明：
+
+- 旧文中的 `_try_handle_prepare_only_intent()` 已不再是当前代码里的独立前置入口，可视为已被并入/消化到更新后的 mainline / training-plan 流程中。
 
 现状：
 
@@ -104,8 +120,8 @@ Anthropic 当前公开资料更接近：
 
 文件：
 
-- `D:\yolodo2.0\agent_plan\agent\client\context_builder.py`
-- `D:\yolodo2.0\agent_plan\agent\client\event_retriever.py`
+- `agent/client/context_builder.py`
+- `agent/client/event_retriever.py`
 
 现状：
 
@@ -117,7 +133,7 @@ Anthropic 当前公开资料更接近：
 
 文件：
 
-- `D:\yolodo2.0\agent_plan\agent\client\grounded_reply_builder.py`
+- `agent/client/grounded_reply_builder.py`
 
 现状：
 
@@ -243,9 +259,12 @@ Anthropic 当前公开资料更接近：
 
 砍薄：
 
-- `_try_handle_prepare_only_intent`
 - `_try_handle_training_plan_dialogue`
 - `_try_handle_mainline_intent`
+
+补充说明：
+
+- `_try_handle_prepare_only_intent` 作为独立前置分支已经不是当前代码主干的一部分，因此后续重点不再是“删掉这个旧函数名本身”，而是继续减少剩余 pre-LLM intercept 的职责和覆盖面。
 
 原则：
 
@@ -269,8 +288,8 @@ Anthropic 当前公开资料更接近：
 
 重构：
 
-- `D:\yolodo2.0\agent_plan\agent\client\context_builder.py`
-- `D:\yolodo2.0\agent_plan\agent\client\event_retriever.py`
+- `agent/client/context_builder.py`
+- `agent/client/event_retriever.py`
 
 默认只给模型：
 
@@ -486,8 +505,8 @@ prepare-only 不再混进训练阻塞。
 
 当前 server 工具层大体可保留：
 
-- `D:\yolodo2.0\agent_plan\agent\server\tools\*.py`
-- `D:\yolodo2.0\agent_plan\agent\server\services\*.py`
+- `agent/server/tools/*.py`
+- `agent/server/services/*.py`
 
 重点是把 client 改薄。
 

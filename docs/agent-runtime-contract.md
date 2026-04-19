@@ -4,7 +4,7 @@
 
 ## 1. 目标
 
-定义 `D:\yolodo2.0\agent_plan\agent\client` 的运行时边界，确保：
+定义 `agent/client` 的运行时边界，确保：
 
 - CLI 只做 chat shell
 - runtime 负责 model 驱动的 workflow continuation

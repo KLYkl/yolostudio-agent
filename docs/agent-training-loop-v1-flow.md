@@ -10,8 +10,8 @@
 >
 > 当前如果要判断系统该怎么改、怎么测，请优先看：
 >
-> - `/absolute/path/D:/yolodo2.0/agent_plan/docs/agent-client-refactor-report.md`
+> - `docs/agent-client-refactor-report.md`
 >
 > 历史原文已移到：
 >
-> - `/absolute/path/D:/yolodo2.0/agent_plan/docs/archive/pre-llm-agent/agent-training-loop-v1-flow.md`
+> - `docs/archive/pre-llm-agent/agent-training-loop-v1-flow.md`
