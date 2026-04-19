@@ -1889,6 +1889,117 @@ async def _scenario_post_prepare_ready_start_confirmation_stays_local() -> None:
     assert [name for name, _ in calls].count('training_preflight') == 1
 
 
+async def _scenario_post_prepare_blocked_followup_uses_grounded_surface() -> None:
+    scenario_root = WORK / 'post_prepare_blocked_followup_uses_grounded_surface'
+    graph = _CountingDummyGraph()
+    client = YoloStudioAgentClient(
+        graph=graph,
+        settings=AgentSettings(session_id='training-plan-dialogue-post-prepare-blocked', memory_root=str(scenario_root)),
+        tool_registry={},
+    )
+    graph.bind(client)
+    client.planner_llm = object()
+
+    async def _unexpected_renderer(**_: Any) -> str:
+        raise AssertionError('blocked post-prepare followup should not call llm renderer')
+
+    client._invoke_renderer_text = _unexpected_renderer  # type: ignore[assignment]
+    async def _simple_tool_result_message(tool_name: str, parsed: dict[str, Any]) -> str:
+        del tool_name
+        return str(parsed.get('summary') or parsed.get('error') or 'done')
+
+    client._render_tool_result_message = _simple_tool_result_message  # type: ignore[assignment]
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((tool_name, dict(kwargs)))
+        if tool_name == 'training_readiness':
+            result = {
+                'ok': True,
+                'summary': '当前还不能直接训练：缺少可用的 data_yaml；但当前数据集可以先进入 prepare_dataset_for_training',
+                'dataset_root': '/home/kly/ct_loop/data_ct',
+                'resolved_img_dir': '/home/kly/ct_loop/data_ct/images',
+                'resolved_label_dir': '/home/kly/ct_loop/data_ct/labels',
+                'resolved_data_yaml': '',
+                'ready': False,
+                'preparable': True,
+                'primary_blocker_type': 'missing_yaml',
+                'warnings': [],
+                'blockers': ['缺少可用的 data_yaml'],
+            }
+        elif tool_name == 'list_training_environments':
+            result = {
+                'ok': True,
+                'summary': '发现 1 个可用训练环境，默认将使用 yolodo',
+                'environments': [{'name': 'yolodo', 'display_name': 'yolodo', 'selected_by_default': True}],
+                'default_environment': {'name': 'yolodo', 'display_name': 'yolodo'},
+            }
+        elif tool_name == 'prepare_dataset_for_training':
+            result = {
+                'ok': True,
+                'ready': True,
+                'summary': '数据准备完成: 当前数据集可直接训练，data_yaml 已就绪',
+                'dataset_root': '/home/kly/ct_loop/data_ct',
+                'img_dir': '/home/kly/ct_loop/data_ct/images',
+                'label_dir': '/home/kly/ct_loop/data_ct/labels',
+                'data_yaml': '/home/kly/ct_loop/data_ct/data.yaml',
+                'warnings': ['发现 209 张图片缺少标签（占比 6.1%），训练结果可能受到明显影响'],
+                'steps_completed': [{'step': 'generate_yaml', 'status': 'completed'}],
+                'next_actions': ['如需训练，可继续 start_training'],
+            }
+        elif tool_name == 'training_preflight':
+            result = {
+                'ok': True,
+                'ready_to_start': False,
+                'summary': '当前还不能直接训练: 当前没有空闲 GPU',
+                'training_environment': {'name': 'yolodo', 'display_name': 'yolodo'},
+                'resolved_args': {
+                    'model': kwargs['model'],
+                    'data_yaml': kwargs['data_yaml'],
+                    'epochs': kwargs['epochs'],
+                    'device': kwargs.get('device', 'auto') or 'auto',
+                    'training_environment': 'yolodo',
+                },
+                'blockers': ['当前没有空闲 GPU'],
+                'warnings': ['发现 209 张图片缺少标签（占比 6.1%），训练结果可能受到明显影响'],
+            }
+        else:
+            raise AssertionError(f'unexpected tool call: {tool_name}')
+        client._apply_to_state(tool_name, result, kwargs)
+        return result
+
+    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+
+    turn1 = await client.chat('用 /home/kly/yolov8n.pt 训练一下 /home/kly/ct_loop/data_ct')
+    assert turn1['status'] == 'needs_confirmation', turn1
+    assert turn1['tool_call']['name'] == 'prepare_dataset_for_training', turn1
+    graph_calls_after_turn1 = graph.calls
+
+    turn2 = await client.confirm(turn1['thread_id'], approved=True)
+    assert turn2['status'] == 'error', turn2
+    assert '数据准备完成' in turn2['message'], turn2
+    assert '已准备好的 YAML: /home/kly/ct_loop/data_ct/data.yaml' in turn2['message'], turn2
+    assert '当前还不能直接训练: 当前没有空闲 GPU' in turn2['message'], turn2
+    assert '阻塞项:' in turn2['message'], turn2
+    assert '当前没有空闲 GPU' in turn2['message'], turn2
+    assert '请问您希望' not in turn2['message'], turn2
+    assert '根据您提供的指令' not in turn2['message'], turn2
+    assert graph.calls == graph_calls_after_turn1, graph.calls
+    assert [name for name, _ in calls].count('prepare_dataset_for_training') == 1
+    assert [name for name, _ in calls].count('training_preflight') == 1
+    events = client.memory.read_events(client.session_state.session_id)
+    assert any(
+        event.get('type') == 'post_prepare_followup_resolved'
+        and event.get('ready_to_start') is False
+        for event in events
+    ), events
+    assert any(
+        event.get('type') == 'post_prepare_followup_rendered'
+        and event.get('mode') == 'grounded'
+        for event in events
+    ), events
+
+
 async def _scenario_graph_prepare_approve_prefers_local_post_prepare_refresh() -> None:
     scenario_root = WORK / 'graph_prepare_approve_prefers_local_refresh'
     graph = _GraphPrepareApproveWithStaleStartGraph()
@@ -1951,7 +2062,21 @@ async def _scenario_graph_prepare_approve_prefers_local_post_prepare_refresh() -
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
 
-    turn = await client.confirm('graph-prepare-turn-1', approved=True)
+    original_graph_invoke = client._graph_invoke
+    graph_stream_handlers: list[Any] = []
+
+    async def _wrapped_graph_invoke(payload: Any, config: dict[str, Any], stream_handler: Any = None) -> dict[str, Any]:
+        graph_stream_handlers.append(stream_handler)
+        return await original_graph_invoke(payload, config, stream_handler=stream_handler)
+
+    client._graph_invoke = _wrapped_graph_invoke  # type: ignore[assignment]
+
+    streamed_events: list[dict[str, Any]] = []
+
+    async def _capture_stream(event: dict[str, Any]) -> None:
+        streamed_events.append(dict(event))
+
+    turn = await client.confirm('graph-prepare-turn-1', approved=True, stream_handler=_capture_stream)
     assert turn['status'] == 'needs_confirmation', turn
     assert turn['tool_call']['name'] == 'start_training', turn
     assert turn['tool_call']['args']['model'] == '/home/kly/yolov8n.pt', turn
@@ -1963,6 +2088,8 @@ async def _scenario_graph_prepare_approve_prefers_local_post_prepare_refresh() -
     assert calls[0][1]['model'] == '/home/kly/yolov8n.pt', calls
     assert calls[0][1]['data_yaml'] == '/home/kly/ct_loop/data_ct/images_split(graph)/data.yaml', calls
     assert calls[0][1]['epochs'] == 100, calls
+    assert graph_stream_handlers == [None], graph_stream_handlers
+    assert streamed_events == [], streamed_events
     pending = client.get_pending_action()
     assert pending is not None, turn
     assert pending['tool_name'] == 'start_training', pending
@@ -1989,6 +2116,7 @@ async def _run() -> None:
         await _scenario_text_only_prepare_question_materializes_pending()
         await _scenario_text_only_prepare_question_restore_edit_stays_local()
         await _scenario_post_prepare_ready_start_confirmation_stays_local()
+        await _scenario_post_prepare_blocked_followup_uses_grounded_surface()
         await _scenario_graph_prepare_approve_prefers_local_post_prepare_refresh()
         await _scenario_cancel_then_replan()
         await _scenario_cancel_prepare_then_rebuild()

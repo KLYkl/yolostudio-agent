@@ -1124,7 +1124,14 @@ class YoloStudioAgentClient:
                 stream_handler=stream_handler,
             )
 
-        result = await self._graph_invoke(Command(resume={'decision': 'approve'}), config=config, stream_handler=stream_handler)
+        graph_stream_handler = stream_handler
+        if pending.get('name') == 'prepare_dataset_for_training':
+            graph_stream_handler = None
+        result = await self._graph_invoke(
+            Command(resume={'decision': 'approve'}),
+            config=config,
+            stream_handler=graph_stream_handler,
+        )
         self._record_graph_selected_tools(result["messages"], thread_id=thread_id, built_messages_len=0)
         self._record_tool_error_recovery(result["messages"], thread_id=thread_id, built_messages_len=0)
         self._record_graph_text_response(result["messages"], thread_id=thread_id, built_messages_len=0)
@@ -3486,6 +3493,20 @@ class YoloStudioAgentClient:
         )
         followup_action = dict(flow_result.get('followup_action') or {})
         followup_draft = dict(flow_result.get('draft') or followup_action.get('draft') or {})
+        preflight = dict(flow_result.get('preflight') or {})
+        self.memory.append_event(
+            self.session_state.session_id,
+            'post_prepare_followup_resolved',
+            {
+                'thread_id': thread_id,
+                'action': str(followup_action.get('action') or '').strip(),
+                'status': str(followup_action.get('status') or '').strip(),
+                'next_step_tool': str(followup_draft.get('next_step_tool') or '').strip(),
+                'ready_to_start': bool(preflight.get('ready_to_start')),
+                'blocker_count': len([str(item).strip() for item in (preflight.get('blockers') or []) if str(item).strip()]),
+                'warning_count': len([str(item).strip() for item in (preflight.get('warnings') or []) if str(item).strip()]),
+            },
+        )
         if self._should_localize_post_prepare_start_confirmation(
             followup_action=followup_action,
             draft=followup_draft,
@@ -5026,7 +5047,34 @@ class YoloStudioAgentClient:
     def _tool_result_render_error(self, tool_name: str, parsed: dict[str, Any], error: Exception | None = None) -> str:
         return tool_result_render_error(tool_name, parsed, error=error)
 
+    def _build_grounded_prepare_followup_message(self, prepare_parsed: dict[str, Any], preflight: dict[str, Any]) -> str:
+        sections: list[str] = []
+        for tool_name, parsed in (
+            ('prepare_dataset_for_training', prepare_parsed),
+            ('training_preflight', preflight),
+        ):
+            text = self._build_grounded_tool_reply([(tool_name, parsed)])
+            if not text:
+                text = str(parsed.get('summary') or parsed.get('message') or parsed.get('error') or '').strip()
+            if text:
+                sections.append(text)
+        return self._merge_grounded_sections(sections)
+
     async def _render_prepare_followup_message(self, prepare_parsed: dict[str, Any], preflight: dict[str, Any]) -> str:
+        grounded_text = self._build_grounded_prepare_followup_message(prepare_parsed, preflight)
+        if not preflight.get('ready_to_start'):
+            self.memory.append_event(
+                self.session_state.session_id,
+                'post_prepare_followup_rendered',
+                {
+                    'mode': 'grounded',
+                    'ready_to_start': False,
+                    'blockers': [str(item).strip() for item in (preflight.get('blockers') or []) if str(item).strip()][:4],
+                    'warnings': [str(item).strip() for item in (preflight.get('warnings') or []) if str(item).strip()][:4],
+                },
+            )
+            if grounded_text:
+                return grounded_text
         if self.planner_llm is None:
             return await self._render_multi_tool_result_message(
                 [
@@ -5069,8 +5117,17 @@ class YoloStudioAgentClient:
             failure_payload={'ready_to_start': bool(preflight.get('ready_to_start'))},
         )
         if text:
+            self.memory.append_event(
+                self.session_state.session_id,
+                'post_prepare_followup_rendered',
+                {
+                    'mode': 'llm',
+                    'ready_to_start': bool(preflight.get('ready_to_start')),
+                    'blockers': [str(item).strip() for item in (preflight.get('blockers') or []) if str(item).strip()][:4],
+                },
+            )
             return text
-        return await self._render_multi_tool_result_message(
+        return grounded_text or await self._render_multi_tool_result_message(
             [
                 ('prepare_dataset_for_training', prepare_parsed),
                 ('training_preflight', preflight),
