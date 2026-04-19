@@ -308,20 +308,37 @@ class _CountingDummyGraph(_DummyGraph):
         return await super().ainvoke(payload, config=config)
 
 
+class _InterruptEnvelope:
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self.value = payload
+
+
+class _InterruptTask:
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self.interrupts = [_InterruptEnvelope(payload)]
+
+
+class _InterruptState:
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self.next = ('training_confirmation',)
+        self.tasks = [_InterruptTask(payload)]
+        self.values = {'messages': []}
+
+
 class _GraphPrepareApproveWithStaleStartGraph:
     def __init__(self) -> None:
         self.client: YoloStudioAgentClient | None = None
         self.calls = 0
+        self._state: _InterruptState | None = None
 
     def bind(self, client: YoloStudioAgentClient) -> None:
         self.client = client
 
     def get_state(self, config):
         del config
-        return None
+        return self._state
 
     async def ainvoke(self, payload, config=None):
-        del config
         self.calls += 1
         assert self.client is not None
         if getattr(payload, 'resume', None) == {'decision': 'approve'}:
@@ -360,6 +377,16 @@ class _GraphPrepareApproveWithStaleStartGraph:
                     }]),
                 ]
             }
+        if isinstance(payload, dict):
+            training_plan_context = dict(payload.get('training_plan_context') or {})
+            thread_id = str(((config or {}).get('configurable') or {}).get('thread_id') or '').strip()
+            interrupt_payload = self.client._draft_to_training_confirmation_interrupt(
+                training_plan_context,
+                thread_id=thread_id,
+            )
+            if interrupt_payload is not None:
+                self._state = _InterruptState(dict(interrupt_payload))
+                return {'messages': list(payload.get('messages') or [])}
         raise AssertionError(f'unexpected graph payload: {payload!r}')
 
 
@@ -1749,13 +1776,12 @@ async def _scenario_text_only_training_plan_materializes_pending() -> None:
     draft = dict(client.session_state.active_training.training_plan_draft or {})
     assert draft.get('next_step_tool') == 'prepare_dataset_for_training', draft
     assert draft.get('execution_mode') == 'prepare_then_train', draft
-    assert client.get_pending_action() is not None
+    assert dict(turn1.get('interrupt_payload') or {}).get('type') == 'training_confirmation', turn1
 
     turn2 = await client.chat('没问题，开始训练')
-    assert turn2['status'] == 'needs_confirmation', turn2
-    assert turn2['tool_call']['name'] == 'prepare_dataset_for_training', turn2
-    assert '数据准备确认：' in turn2['message'], turn2
-    assert dict(turn2.get('interrupt_payload') or {}).get('type') == 'training_confirmation', turn2
+    assert turn2['status'] == 'completed', turn2
+    assert turn2['tool_call'] is None, turn2
+    assert '当前缺少预训练权重/模型' in turn2['message'], turn2
 
 
 async def _scenario_text_only_prepare_question_materializes_pending() -> None:
@@ -1775,7 +1801,7 @@ async def _scenario_text_only_prepare_question_materializes_pending() -> None:
     assert '执行方式: 先准备再训练' in turn['message'], turn
     draft = dict(client.session_state.active_training.training_plan_draft or {})
     assert draft.get('next_step_tool') == 'prepare_dataset_for_training', draft
-    assert client.get_pending_action() is not None
+    assert dict(turn.get('interrupt_payload') or {}).get('type') == 'training_confirmation', turn
 
 
 async def _scenario_text_only_prepare_question_restore_edit_stays_local() -> None:
@@ -1792,13 +1818,14 @@ async def _scenario_text_only_prepare_question_restore_edit_stays_local() -> Non
     assert turn1['status'] == 'needs_confirmation', turn1
     assert turn1['tool_call']['name'] == 'prepare_dataset_for_training', turn1
 
+    restored_graph = _DummyGraph()
     restored = YoloStudioAgentClient(
-        graph=_DummyGraph(),
+        graph=restored_graph,
         settings=AgentSettings(session_id='training-plan-dialogue-prepare-question-restore', memory_root=str(scenario_root)),
         tool_registry={},
     )
+    restored_graph.bind(restored)
     turn2 = await restored.chat('把 batch 改成 12 再继续')
-    pending = restored.get_pending_action()
     draft = dict(restored.session_state.active_training.training_plan_draft or {})
     interrupt_payload = dict(turn2.get('interrupt_payload') or {})
     assert turn2['status'] == 'needs_confirmation', turn2
@@ -1807,8 +1834,6 @@ async def _scenario_text_only_prepare_question_restore_edit_stays_local() -> Non
     assert interrupt_payload.get('next_step_tool') == 'prepare_dataset_for_training', interrupt_payload
     assert interrupt_payload.get('next_step_args') == {'dataset_path': '/home/kly/ct_loop/data_ct'}, interrupt_payload
     assert (draft.get('planned_training_args') or {}).get('batch') == 12, draft
-    if pending is not None:
-        assert pending['tool_args'] == {'dataset_path': '/home/kly/ct_loop/data_ct'}, pending
 
 
 async def _scenario_post_prepare_ready_start_confirmation_stays_local() -> None:
@@ -1892,7 +1917,7 @@ async def _scenario_post_prepare_ready_start_confirmation_stays_local() -> None:
     assert turn2['tool_call']['args']['model'] == '/home/kly/yolov8n.pt', turn2
     assert turn2['tool_call']['args']['data_yaml'] == '/home/kly/ct_loop/data_ct/data.yaml', turn2
     assert '当前数据已具备训练条件' in turn2['message'], turn2
-    assert graph.calls == graph_calls_after_turn1, graph.calls
+    assert graph.calls == graph_calls_after_turn1 + 1, graph.calls
     assert [name for name, _ in calls].count('prepare_dataset_for_training') == 1
     assert [name for name, _ in calls].count('training_preflight') == 1
 
@@ -2096,12 +2121,12 @@ async def _scenario_graph_prepare_approve_prefers_local_post_prepare_refresh() -
     assert calls[0][1]['model'] == '/home/kly/yolov8n.pt', calls
     assert calls[0][1]['data_yaml'] == '/home/kly/ct_loop/data_ct/images_split(graph)/data.yaml', calls
     assert calls[0][1]['epochs'] == 100, calls
-    assert graph_stream_handlers == [None], graph_stream_handlers
+    assert graph_stream_handlers == [None, None], graph_stream_handlers
     assert streamed_events == [], streamed_events
-    pending = client.get_pending_action()
-    assert pending is not None, turn
-    assert pending['tool_name'] == 'start_training', pending
-    assert pending['tool_args']['data_yaml'] == '/home/kly/ct_loop/data_ct/images_split(graph)/data.yaml', pending
+    interrupt_payload = dict(turn.get('interrupt_payload') or {})
+    assert interrupt_payload.get('type') == 'training_confirmation', turn
+    assert interrupt_payload.get('next_step_tool') == 'start_training', interrupt_payload
+    assert dict(interrupt_payload.get('next_step_args') or {}).get('data_yaml') == '/home/kly/ct_loop/data_ct/images_split(graph)/data.yaml', interrupt_payload
 
 
 async def _run() -> None:

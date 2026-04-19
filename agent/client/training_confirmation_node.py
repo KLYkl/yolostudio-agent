@@ -5,7 +5,12 @@ from typing import Any, Mapping
 try:
     from langgraph.types import Command, interrupt
 except Exception:
-    from langgraph.types import Command
+    class Command:  # type: ignore[override]
+        def __init__(self, *, update: Any = None, goto: str | None = None, resume: Any = None, graph: Any = None):
+            self.update = update
+            self.goto = goto
+            self.resume = resume
+            self.graph = graph
 
     def interrupt(value: Any) -> Any:
         return value
@@ -36,10 +41,18 @@ def training_confirmation_node(state: Mapping[str, Any]) -> Any:
     plan = coerce_training_plan(_state_value(state, 'training_plan', {}))
     phase = str(_state_value(state, 'training_phase', 'prepare') or 'prepare').strip().lower() or 'prepare'
     suspended_plan = _state_value(state, 'suspended_training_plan')
+    next_step_tool = str(_state_value(state, 'training_next_step_tool', '') or '').strip()
+    next_step_args = dict(_state_value(state, 'training_next_step_args', {}) or {})
+    execution_mode = str(_state_value(state, 'training_execution_mode', '') or '').strip()
+    status_reply = str(_state_value(state, 'training_status_reply', '') or '').strip()
     payload = {
         'type': 'training_confirmation',
         'phase': phase,
+        'execution_mode': execution_mode,
         'plan': plan.model_dump(),
+        'next_step_tool': next_step_tool,
+        'next_step_args': next_step_args,
+        'status_reply': status_reply,
         'suspended_training_plan': dict(suspended_plan or {}) if isinstance(suspended_plan, Mapping) else None,
     }
     decision = _normalize_decision(interrupt(payload))
@@ -60,15 +73,32 @@ def training_confirmation_node(state: Mapping[str, Any]) -> Any:
 
     if action == 'edit':
         updated = merge_training_plan_edits(plan, decision.edits)
+        updated_args = dict(next_step_args)
+        if phase == 'prepare':
+            if updated.dataset_path:
+                updated_args['dataset_path'] = updated.dataset_path
+        else:
+            updated_args = updated.model_dump()
+            if next_step_tool == 'start_training_loop' and 'epochs_per_round' in updated_args and 'epochs' not in updated_args:
+                updated_args['epochs'] = updated_args['epochs_per_round']
         return Command(update={
             'training_plan': updated.model_dump(),
             'training_phase': phase,
+            'training_next_step_tool': next_step_tool,
+            'training_next_step_args': updated_args,
+            'training_execution_mode': execution_mode,
             'training_status_reply': '',
-        }, goto='training_confirmation')
+        }, goto='refresh_training_start_after_edit' if phase == 'start' else 'training_confirmation')
 
     if action == 'new_task':
         return Command(update={
-            'suspended_training_plan': plan.model_dump(),
+            'suspended_training_plan': {
+                'plan': plan.model_dump(),
+                'phase': phase,
+                'execution_mode': execution_mode,
+                'next_step_tool': next_step_tool,
+                'next_step_args': next_step_args,
+            },
             'pending_new_task': str(decision.reason or '').strip(),
             'training_phase': phase,
             'training_status_reply': '',
@@ -92,11 +122,17 @@ def post_prepare_node(state: Mapping[str, Any]) -> Command:
     updated = update_plan_after_prepare(
         plan,
         prepare_result=_state_value(state, 'prepare_result', {}),
-        readiness=_state_value(state, 'training_readiness', {}),
+        readiness=_state_value(state, 'training_preflight', {}) or _state_value(state, 'training_readiness', {}),
     )
+    resolved_args = dict(_state_value(state, 'training_preflight', {}) or {}).get('resolved_args') or updated.model_dump()
+    next_tool_name = 'start_training_loop' if getattr(updated, 'mode', 'train') == 'loop' else 'start_training'
+    if next_tool_name == 'start_training_loop' and 'epochs_per_round' in resolved_args and 'epochs' not in resolved_args:
+        resolved_args['epochs'] = resolved_args['epochs_per_round']
     return Command(update={
         'training_plan': updated.model_dump(),
         'training_phase': 'start',
+        'training_next_step_tool': next_tool_name,
+        'training_next_step_args': resolved_args,
         'training_status_reply': '',
     }, goto='training_confirmation')
 

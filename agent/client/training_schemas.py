@@ -32,6 +32,18 @@ class _BaseTrainingPlan(BaseModel):
     device: str = ''
     training_environment: str = ''
     data_yaml: str = ''
+    project: str = ''
+    name: str = ''
+    fraction: float | None = None
+    classes: list[int] = Field(default_factory=list)
+    single_cls: bool | None = None
+    optimizer: str = ''
+    freeze: int | list[int] | None = None
+    resume: bool | str | None = None
+    lr0: float | None = None
+    patience: int | None = None
+    workers: int | None = None
+    amp: bool | None = None
     blockers: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     readiness_summary: str = ''

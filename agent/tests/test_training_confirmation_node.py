@@ -85,7 +85,8 @@ def _scenario_training_confirmation_new_task_suspends_plan() -> None:
         _assert_equal(getattr(command, 'goto', None), 'route_new_task', 'new_task goto')
         update = dict(getattr(command, 'update', {}) or {})
         suspended = dict(update.get('suspended_training_plan') or {})
-        _assert_equal(suspended.get('mode'), 'loop', 'suspended loop mode')
+        _assert_equal(dict(suspended.get('plan') or {}).get('mode'), 'loop', 'suspended loop mode')
+        _assert_equal(suspended.get('next_step_tool'), '', 'suspended next step defaults empty')
         _assert_equal(update.get('pending_new_task'), '最近有哪些环训练', 'pending_new_task')
     finally:
         confirmation_mod.interrupt = original_interrupt

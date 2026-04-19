@@ -378,7 +378,7 @@ async def _scenario_prepare_pending_edit_refreshes_locally() -> None:
     draft = dict(client.session_state.active_training.training_plan_draft or {})
     interrupt_payload = dict(turn.get('interrupt_payload') or {})
     assert turn['status'] == 'needs_confirmation', turn
-    assert len(graph.calls) == 0, graph.calls
+    assert len(graph.calls) == 1, graph.calls
     assert interrupt_payload.get('type') == 'training_confirmation', turn
     assert interrupt_payload.get('phase') == 'prepare', interrupt_payload
     assert interrupt_payload.get('next_step_tool') == 'prepare_dataset_for_training', interrupt_payload
@@ -406,7 +406,7 @@ async def _scenario_prepare_pending_edit_restored_session_stays_local() -> None:
     draft = dict(restored.session_state.active_training.training_plan_draft or {})
     interrupt_payload = dict(turn.get('interrupt_payload') or {})
     assert turn['status'] == 'needs_confirmation', turn
-    assert len(restore_graph.calls) == 0, restore_graph.calls
+    assert len(restore_graph.calls) == 1, restore_graph.calls
     assert interrupt_payload.get('type') == 'training_confirmation', turn
     assert interrupt_payload.get('phase') == 'prepare', interrupt_payload
     assert interrupt_payload.get('next_step_tool') == 'prepare_dataset_for_training', interrupt_payload

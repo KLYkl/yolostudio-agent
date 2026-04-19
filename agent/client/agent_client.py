@@ -31,6 +31,12 @@ except Exception:
     def interrupt(value: Any) -> Any:
         return value
 try:
+    from langgraph.graph import END, START, StateGraph
+except Exception:
+    END = '__end__'  # type: ignore[assignment]
+    START = '__start__'  # type: ignore[assignment]
+    StateGraph = None  # type: ignore[assignment]
+try:
     from langgraph.prebuilt.tool_node import ToolRuntime as InjectedToolRuntime
 except Exception:
     InjectedToolRuntime = Any  # type: ignore[misc,assignment]
@@ -125,6 +131,11 @@ from yolostudio_agent.agent.client.training_plan_service import (
 from yolostudio_agent.agent.client.training_plan_context_service import (
     build_training_plan_context_payload,
     extract_training_plan_context_from_state,
+)
+from yolostudio_agent.agent.client.training_confirmation_node import (
+    answer_training_status_node,
+    post_prepare_node,
+    training_confirmation_node,
 )
 from yolostudio_agent.agent.client.training_schemas import (
     PendingTurnIntent,
@@ -989,16 +1000,6 @@ class YoloStudioAgentClient:
                 self.memory.save_state(self.session_state)
                 return response
 
-        local_training_interrupt = self._current_local_training_confirmation_interrupt()
-        if local_training_interrupt is not None:
-            return await self._handle_local_training_confirmation_interrupt(
-                user_text=user_text,
-                thread_id=str(local_training_interrupt.get('thread_id') or thread_id).strip() or thread_id,
-                payload=local_training_interrupt,
-                auto_approve=auto_approve,
-                stream_handler=stream_handler,
-            )
-
         pending_dialogue = await self._try_handle_pending_confirmation_dialogue(user_text, stream_handler=stream_handler)
         pending_passthrough_requested = pending_dialogue is _DEFER_TO_GRAPH
         if pending_dialogue is not None and not pending_passthrough_requested:
@@ -1120,25 +1121,28 @@ class YoloStudioAgentClient:
         )
 
     async def confirm(self, thread_id: str, approved: bool, stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None) -> dict[str, Any]:
-        local_training_interrupt = self._current_local_training_confirmation_interrupt()
-        local_interrupt_thread = str((local_training_interrupt or {}).get('thread_id') or '').strip()
-        if local_training_interrupt and (not local_interrupt_thread or local_interrupt_thread == str(thread_id or '').strip()):
-            if approved:
-                self._clear_local_training_confirmation_interrupt()
-                return await self._handoff_current_runtime_to_graph(
-                    thread_id=thread_id,
-                    user_text_hint='请继续执行当前训练确认。',
-                    auto_approve=True,
-                    suppress_training_plan_context=False,
+        active_interrupt = self._active_graph_interrupt(preferred_thread_id=thread_id)
+        if active_interrupt is not None:
+            interrupt_thread_id, interrupt_payload = active_interrupt
+            if self._is_training_confirmation_interrupt_payload(interrupt_payload):
+                decision = {
+                    'action': 'approve' if approved else 'reject',
+                    'reason': 'confirm() resume',
+                }
+                graph_result = await self._graph_invoke(
+                    Command(resume=decision),
+                    config=self._pending_config(interrupt_thread_id),
                     stream_handler=stream_handler,
                 )
-            self._clear_local_training_confirmation_interrupt()
-            self._clear_training_plan_draft()
-            message = '已取消当前训练计划。'
-            self._messages.append(AIMessage(content=message))
-            self._trim_history()
-            self.memory.save_state(self.session_state)
-            return {'status': 'cancelled', 'message': message, 'tool_call': None}
+                next_interrupt = self._active_graph_interrupt(preferred_thread_id=interrupt_thread_id)
+                response = self._format_interrupt_or_result(
+                    graph_result,
+                    thread_id=interrupt_thread_id,
+                    interrupt_payload=next_interrupt[1] if next_interrupt is not None else None,
+                )
+                self._trim_history()
+                self.memory.save_state(self.session_state)
+                return response
 
         config = self._pending_config(thread_id)
         pending = self._resolve_pending_confirmation(thread_id=thread_id, config=config)
@@ -1235,9 +1239,10 @@ class YoloStudioAgentClient:
         return str(pending.get('thread_id') or '').strip() or f"{self.session_state.session_id}-pending"
 
     def get_pending_action(self) -> dict[str, Any] | None:
-        local_interrupt = self._current_local_training_confirmation_interrupt()
-        if local_interrupt is not None:
-            payload = self._pending_action_from_training_confirmation_interrupt(local_interrupt)
+        active_interrupt = self._active_graph_interrupt()
+        if active_interrupt is not None:
+            _, interrupt_payload = active_interrupt
+            payload = self._pending_action_from_training_confirmation_interrupt(interrupt_payload)
             if payload is not None:
                 return payload
         pending = self._resolve_pending_confirmation(thread_id=self._pending_confirmation_thread_id())
@@ -2637,24 +2642,22 @@ class YoloStudioAgentClient:
         if action == 'none':
             return None
         if action == 'cancel_pending':
-            self._clear_local_training_confirmation_interrupt()
             return await self.confirm(thread_id, approved=False)
         if action == 'cancel_draft':
-            self._clear_local_training_confirmation_interrupt()
             self._clear_training_plan_draft()
             self.memory.save_state(self.session_state)
             return {'status': 'cancelled', 'message': '已取消当前训练计划草案。', 'tool_call': None}
         if action == 'clear_and_recheck':
-            self._clear_local_training_confirmation_interrupt()
             self._clear_training_plan_draft()
             self.memory.save_state(self.session_state)
             return None
         if action == 'confirmation_message':
-            interrupt_payload = self._draft_to_training_confirmation_interrupt(draft, thread_id=thread_id)
-            if interrupt_payload is not None:
-                self._activate_local_training_confirmation_interrupt(interrupt_payload, thread_id=thread_id)
-                self.memory.save_state(self.session_state)
-                return self._format_interrupt_or_result({}, thread_id=thread_id, interrupt_payload=interrupt_payload)
+            if draft and thread_id:
+                return await self._enter_graph_training_confirmation(
+                    draft=draft,
+                    thread_id=thread_id,
+                    user_text_hint=user_text or '请进入当前训练确认。',
+                )
             return self._needs_confirmation_result(thread_id, pending, await self._build_confirmation_message(pending))
         if action == 'reply_with_pending':
             reply = str(followup_action.get('reply') or '').strip()
@@ -2667,11 +2670,12 @@ class YoloStudioAgentClient:
         if action == 'render_plan':
             if not draft:
                 return None
-            interrupt_payload = self._draft_to_training_confirmation_interrupt(draft, thread_id=thread_id)
-            if interrupt_payload is not None:
-                self._activate_local_training_confirmation_interrupt(interrupt_payload, thread_id=thread_id)
-                self.memory.save_state(self.session_state)
-                return self._format_interrupt_or_result({}, thread_id=thread_id, interrupt_payload=interrupt_payload)
+            if thread_id:
+                return await self._enter_graph_training_confirmation(
+                    draft=draft,
+                    thread_id=thread_id,
+                    user_text_hint=user_text or '请按当前训练方案进入确认。',
+                )
             return await self._render_training_plan_dialogue_response(
                 draft=draft,
                 pending=pending,
@@ -2680,11 +2684,12 @@ class YoloStudioAgentClient:
                 append_message=bool(followup_action.get('append_message')),
             )
         if action == 'render_original_plan':
-            interrupt_payload = self._draft_to_training_confirmation_interrupt(draft, thread_id=thread_id)
-            if interrupt_payload is not None:
-                self._activate_local_training_confirmation_interrupt(interrupt_payload, thread_id=thread_id)
-                self.memory.save_state(self.session_state)
-                return self._format_interrupt_or_result({}, thread_id=thread_id, interrupt_payload=interrupt_payload)
+            if draft and thread_id:
+                return await self._enter_graph_training_confirmation(
+                    draft=draft,
+                    thread_id=thread_id,
+                    user_text_hint=user_text or '请回到原始训练方案确认。',
+                )
             return await self._render_training_plan_dialogue_response(
                 draft=draft,
                 pending=pending,
@@ -2693,14 +2698,14 @@ class YoloStudioAgentClient:
                 append_message=True,
             )
         if action == 'approve_pending':
-            self._clear_local_training_confirmation_interrupt()
             return await self.confirm(thread_id, approved=True)
         if action == 'render_draft':
-            interrupt_payload = self._draft_to_training_confirmation_interrupt(draft, thread_id=thread_id)
-            if interrupt_payload is not None:
-                self._activate_local_training_confirmation_interrupt(interrupt_payload, thread_id=thread_id)
-                self.memory.save_state(self.session_state)
-                return self._format_interrupt_or_result({}, thread_id=thread_id, interrupt_payload=interrupt_payload)
+            if draft and thread_id:
+                return await self._enter_graph_training_confirmation(
+                    draft=draft,
+                    thread_id=thread_id,
+                    user_text_hint=user_text or '请按当前训练草案进入确认。',
+                )
             return await self._render_training_plan_dialogue_response(
                 draft=draft,
                 pending=None,
@@ -2711,11 +2716,12 @@ class YoloStudioAgentClient:
         if action == 'build_plan':
             return None
         if action == 'refresh_confirmation':
-            interrupt_payload = self._draft_to_training_confirmation_interrupt(draft, thread_id=thread_id)
-            if interrupt_payload is not None:
-                self._activate_local_training_confirmation_interrupt(interrupt_payload, thread_id=thread_id)
-                self.memory.save_state(self.session_state)
-                return self._format_interrupt_or_result({}, thread_id=thread_id, interrupt_payload=interrupt_payload)
+            if draft and thread_id:
+                return await self._enter_graph_training_confirmation(
+                    draft=draft,
+                    thread_id=thread_id,
+                    user_text_hint='请按更新后的训练草案进入确认。',
+                )
             if self._should_refresh_training_plan_confirmation_locally(pending, draft):
                 return await self._refresh_training_plan_confirmation_locally(
                     thread_id=thread_id,
@@ -2730,7 +2736,6 @@ class YoloStudioAgentClient:
                 user_text_hint='请按更新后的训练草案进入确认。',
             )
         if action == 'render_completed':
-            self._clear_local_training_confirmation_interrupt()
             self.memory.save_state(self.session_state)
             return await self._render_training_plan_dialogue_response(
                 draft=draft,
@@ -2745,11 +2750,12 @@ class YoloStudioAgentClient:
             self._clear_training_plan_draft()
 
         if action == 'save_draft_and_handoff':
-            interrupt_payload = self._draft_to_training_confirmation_interrupt(draft, thread_id=thread_id)
-            if interrupt_payload is not None:
-                self._activate_local_training_confirmation_interrupt(interrupt_payload, thread_id=thread_id)
-                self.memory.save_state(self.session_state)
-                return self._format_interrupt_or_result({}, thread_id=thread_id, interrupt_payload=interrupt_payload)
+            if draft and thread_id:
+                return await self._enter_graph_training_confirmation(
+                    draft=draft,
+                    thread_id=thread_id,
+                    user_text_hint=user_text,
+                )
             if handoff_mode == 'handoff' and thread_id:
                 return await self._handoff_current_runtime_to_graph(
                     thread_id=thread_id,
@@ -2759,8 +2765,6 @@ class YoloStudioAgentClient:
             return _DEFER_TO_GRAPH
 
         if action == 'clear_draft_and_reply' or action == 'save_draft_and_reply':
-            if action == 'clear_draft_and_reply':
-                self._clear_local_training_confirmation_interrupt()
             return self._complete_training_plan_followup_text(
                 str(followup_action.get('reply') or ''),
                 status=str(followup_action.get('status') or 'completed'),
@@ -3418,10 +3422,15 @@ class YoloStudioAgentClient:
             thread_id=str(payload.get('thread_id') or '').strip() or None,
         )
 
-    def _render_plan_for_cli(self, plan_payload: dict[str, Any], phase: str = '', execution_mode: str = '') -> str:
+    def _render_plan_for_cli(self, plan_payload: dict[str, Any], phase: str = '', execution_mode: str = '', status_reply: str = '') -> str:
         plan = coerce_training_plan(dict(plan_payload or {}))
         phase_text = '数据准备确认' if str(phase or '').strip().lower() == 'prepare' else '训练启动确认'
-        lines = [f'{phase_text}：']
+        lines: list[str] = []
+        status_reply = str(status_reply or '').strip()
+        if status_reply:
+            lines.append(status_reply)
+            lines.append('')
+        lines.append(f'{phase_text}：')
         mode = getattr(plan, 'mode', 'train')
         lines.append(f"- 类型: {'循环训练' if mode == 'loop' else '普通训练'}")
         lines.append(f'- 数据集: {plan.dataset_path}')
@@ -3481,10 +3490,12 @@ class YoloStudioAgentClient:
                         payload = dict(raw_value)
                         break
         if self._is_training_confirmation_interrupt_payload(payload):
+            self._sync_training_draft_from_interrupt_payload(dict(payload or {}))
             message = self._render_plan_for_cli(
                 dict((payload or {}).get('plan') or {}),
                 str((payload or {}).get('phase') or ''),
                 str((payload or {}).get('execution_mode') or ''),
+                status_reply=str((payload or {}).get('status_reply') or '').strip(),
             )
             pending_action = self._pending_action_from_training_confirmation_interrupt(payload or {})
             if message:
@@ -3506,22 +3517,6 @@ class YoloStudioAgentClient:
             'message': final_text,
             'tool_call': None,
         }
-
-    def _current_local_training_confirmation_interrupt(self) -> dict[str, Any] | None:
-        payload = dict(self.session_state.active_training.training_confirmation_interrupt or {})
-        return payload or None
-
-    def _set_local_training_confirmation_interrupt(self, payload: dict[str, Any] | None) -> None:
-        self.session_state.active_training.training_confirmation_interrupt = dict(payload or {})
-
-    def _clear_local_training_confirmation_interrupt(self) -> None:
-        self.session_state.active_training.training_confirmation_interrupt = {}
-
-    def _activate_local_training_confirmation_interrupt(self, payload: dict[str, Any], *, thread_id: str) -> None:
-        self._set_local_training_confirmation_interrupt(payload)
-        self._sync_training_draft_from_interrupt_payload(payload)
-        if thread_id:
-            self._clear_pending_confirmation(thread_id=thread_id, persist_graph=False)
 
     def _draft_to_training_confirmation_interrupt(
         self,
@@ -3560,6 +3555,18 @@ class YoloStudioAgentClient:
             'device': str(planned_training_args.get('device') or planned_loop_args.get('device') or draft.get('device') or '').strip(),
             'training_environment': str(draft.get('training_environment') or '').strip(),
             'data_yaml': str(planned_training_args.get('data_yaml') or planned_loop_args.get('data_yaml') or self.session_state.active_training.data_yaml or '').strip(),
+            'project': str(planned_training_args.get('project') or planned_loop_args.get('project') or '').strip(),
+            'name': str(planned_training_args.get('name') or planned_loop_args.get('name') or '').strip(),
+            'fraction': planned_training_args.get('fraction', planned_loop_args.get('fraction')),
+            'classes': list(planned_training_args.get('classes') or planned_loop_args.get('classes') or []),
+            'single_cls': planned_training_args.get('single_cls', planned_loop_args.get('single_cls')),
+            'optimizer': str(planned_training_args.get('optimizer') or planned_loop_args.get('optimizer') or '').strip(),
+            'freeze': planned_training_args.get('freeze', planned_loop_args.get('freeze')),
+            'resume': planned_training_args.get('resume', planned_loop_args.get('resume')),
+            'lr0': planned_training_args.get('lr0', planned_loop_args.get('lr0')),
+            'patience': planned_training_args.get('patience', planned_loop_args.get('patience')),
+            'workers': planned_training_args.get('workers', planned_loop_args.get('workers')),
+            'amp': planned_training_args.get('amp', planned_loop_args.get('amp')),
             'blockers': [str(item).strip() for item in (draft.get('blockers') or []) if str(item).strip()],
             'warnings': [str(item).strip() for item in (draft.get('warnings') or []) if str(item).strip()],
             'readiness_summary': str(draft.get('preflight_summary') or draft.get('data_summary') or '').strip(),
@@ -3616,6 +3623,18 @@ class YoloStudioAgentClient:
                 'batch': getattr(plan, 'batch', None),
                 'imgsz': getattr(plan, 'imgsz', None),
                 'device': str(getattr(plan, 'device', '') or '').strip(),
+                'project': str(getattr(plan, 'project', '') or '').strip(),
+                'name': str(getattr(plan, 'name', '') or '').strip(),
+                'fraction': getattr(plan, 'fraction', None),
+                'classes': list(getattr(plan, 'classes', None) or []),
+                'single_cls': getattr(plan, 'single_cls', None),
+                'optimizer': str(getattr(plan, 'optimizer', '') or '').strip(),
+                'freeze': getattr(plan, 'freeze', None),
+                'resume': getattr(plan, 'resume', None),
+                'lr0': getattr(plan, 'lr0', None),
+                'patience': getattr(plan, 'patience', None),
+                'workers': getattr(plan, 'workers', None),
+                'amp': getattr(plan, 'amp', None),
                 'max_rounds': getattr(plan, 'max_rounds', None),
                 'epochs_per_round': getattr(plan, 'epochs_per_round', None),
                 'loop_name': str(getattr(plan, 'loop_name', '') or '').strip(),
@@ -3628,170 +3647,47 @@ class YoloStudioAgentClient:
                 'batch': getattr(plan, 'batch', None),
                 'imgsz': getattr(plan, 'imgsz', None),
                 'device': str(getattr(plan, 'device', '') or '').strip(),
+                'project': str(getattr(plan, 'project', '') or '').strip(),
+                'name': str(getattr(plan, 'name', '') or '').strip(),
+                'fraction': getattr(plan, 'fraction', None),
+                'classes': list(getattr(plan, 'classes', None) or []),
+                'single_cls': getattr(plan, 'single_cls', None),
+                'optimizer': str(getattr(plan, 'optimizer', '') or '').strip(),
+                'freeze': getattr(plan, 'freeze', None),
+                'resume': getattr(plan, 'resume', None),
+                'lr0': getattr(plan, 'lr0', None),
+                'patience': getattr(plan, 'patience', None),
+                'workers': getattr(plan, 'workers', None),
+                'amp': getattr(plan, 'amp', None),
                 'epochs': getattr(plan, 'epochs', None),
             }
         self._save_training_plan_draft(draft)
 
-    async def _refresh_start_training_interrupt_after_edit(self, payload: dict[str, Any]) -> dict[str, Any]:
-        next_step_tool = canonical_tool_name(str(payload.get('next_step_tool') or '').strip())
-        if next_step_tool != 'start_training':
-            return payload
-        next_step_args = dict(payload.get('next_step_args') or {})
-        required_fields = ('model', 'data_yaml', 'epochs')
-        if not all(str(next_step_args.get(field) or '').strip() for field in required_fields):
-            return payload
-        try:
-            preflight = await self.direct_tool('training_preflight', **next_step_args)
-        except Exception:
-            return payload
-        if not isinstance(preflight, dict):
-            return payload
-        resolved_args = dict(preflight.get('resolved_args') or {})
-        if resolved_args:
-            merged_args = dict(next_step_args)
-            merged_args.update({key: value for key, value in resolved_args.items()})
-            payload['next_step_args'] = merged_args
-            next_step_args = merged_args
-        plan_payload = dict(payload.get('plan') or {})
-        env_payload = dict(preflight.get('training_environment') or {})
-        training_environment = str(
-            env_payload.get('display_name')
-            or env_payload.get('name')
-            or next_step_args.get('training_environment')
-            or plan_payload.get('training_environment')
-            or ''
-        ).strip()
-        if training_environment:
-            plan_payload['training_environment'] = training_environment
-        if str(next_step_args.get('data_yaml') or '').strip():
-            plan_payload['data_yaml'] = str(next_step_args.get('data_yaml') or '').strip()
-        if next_step_args.get('batch') not in (None, ''):
-            plan_payload['batch'] = next_step_args.get('batch')
-        if next_step_args.get('imgsz') not in (None, ''):
-            plan_payload['imgsz'] = next_step_args.get('imgsz')
-        if next_step_args.get('epochs') not in (None, ''):
-            plan_payload['epochs'] = next_step_args.get('epochs')
-        if str(next_step_args.get('device') or '').strip():
-            plan_payload['device'] = str(next_step_args.get('device') or '').strip()
-        plan_payload['warnings'] = [str(item).strip() for item in (preflight.get('warnings') or []) if str(item).strip()]
-        plan_payload['blockers'] = [str(item).strip() for item in (preflight.get('blockers') or []) if str(item).strip()]
-        plan_payload['readiness_summary'] = str(preflight.get('summary') or '').strip()
-        payload['plan'] = plan_payload
-        return payload
-
-    async def _handle_local_training_confirmation_interrupt(
+    async def _enter_graph_training_confirmation(
         self,
         *,
-        user_text: str,
+        draft: dict[str, Any],
         thread_id: str,
-        payload: dict[str, Any],
-        auto_approve: bool = False,
+        user_text_hint: str,
         stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
     ) -> dict[str, Any]:
-        decision = await self._parse_user_decision(user_text=user_text, interrupt_payload=payload)
-        action = str(decision.get('action') or 'unclear').strip().lower()
-        if action == 'edit':
-            plan = merge_training_plan_edits(dict(payload.get('plan') or {}), dict(decision.get('edits') or {}))
-            updated_payload = dict(payload)
-            updated_payload['plan'] = self._model_dump_compat(plan)
-            next_step_tool = canonical_tool_name(str(updated_payload.get('next_step_tool') or '').strip())
-            next_step_args = dict(updated_payload.get('next_step_args') or {})
-            if next_step_tool in {'start_training', 'start_training_loop'}:
-                for key, value in dict(decision.get('edits') or {}).items():
-                    if value is None:
-                        next_step_args[key] = None
-                    else:
-                        next_step_args[key] = value
-                if next_step_tool == 'start_training_loop' and 'epochs' in next_step_args and 'epochs_per_round' not in next_step_args:
-                    next_step_args['epochs_per_round'] = next_step_args.pop('epochs')
-                updated_payload['next_step_args'] = next_step_args
-            updated_payload = await self._refresh_start_training_interrupt_after_edit(updated_payload)
-            self._activate_local_training_confirmation_interrupt(updated_payload, thread_id=thread_id)
-            message = self._render_plan_for_cli(
-                dict(updated_payload.get('plan') or {}),
-                str(updated_payload.get('phase') or ''),
-                str(updated_payload.get('execution_mode') or ''),
-            )
-            self._messages.append(AIMessage(content=message))
-            self._trim_history()
-            self.memory.save_state(self.session_state)
-            return {
-                'status': 'needs_confirmation',
-                'message': message,
-                'tool_call': self._training_confirmation_tool_call(updated_payload),
-                'thread_id': thread_id,
-                'interrupt_payload': updated_payload,
-            }
-        if action == 'status':
-            plan_message = self._render_plan_for_cli(
-                dict(payload.get('plan') or {}),
-                str(payload.get('phase') or ''),
-                str(payload.get('execution_mode') or ''),
-            )
-            answer = str(decision.get('reason') or '').strip()
-            message = answer if not plan_message else f'{answer}\n\n{plan_message}' if answer else plan_message
-            self._messages.append(AIMessage(content=message))
-            self._trim_history()
-            self.memory.save_state(self.session_state)
-            return {
-                'status': 'needs_confirmation',
-                'message': message,
-                'tool_call': self._training_confirmation_tool_call(payload),
-                'thread_id': thread_id,
-                'interrupt_payload': payload,
-            }
-        if action == 'reject':
-            self._clear_local_training_confirmation_interrupt()
-            self._clear_training_plan_draft()
-            message = '已取消当前训练计划。'
-            self._messages.append(AIMessage(content=message))
-            self._trim_history()
-            self.memory.save_state(self.session_state)
-            return {'status': 'cancelled', 'message': message, 'tool_call': None}
-        if action == 'new_task':
-            self._clear_local_training_confirmation_interrupt()
-            routed = await self._try_handle_mainline_intent(
-                user_text,
-                thread_id,
-                skip_training_plan_dialogue=True,
-            )
-            if routed is not None and routed is not _DEFER_TO_GRAPH:
-                self._record_bypass_route(thread_id, routed)
-                self._trim_history()
-                self.memory.save_state(self.session_state)
-                progressed = await self._maybe_auto_progress(routed, stream_handler=stream_handler)
-                return progressed or routed
-            return await self._handoff_current_runtime_to_graph(
-                thread_id=thread_id,
-                user_text_hint=user_text,
-                auto_approve=auto_approve,
-                suppress_training_plan_context=False,
-                stream_handler=stream_handler,
-            )
-        if action == 'approve':
-            self._clear_local_training_confirmation_interrupt()
-            return await self._handoff_current_runtime_to_graph(
-                thread_id=thread_id,
-                user_text_hint=user_text,
-                auto_approve=True,
-                suppress_training_plan_context=False,
-                stream_handler=stream_handler,
-            )
-        message = self._render_plan_for_cli(
-            dict(payload.get('plan') or {}),
-            str(payload.get('phase') or ''),
-            str(payload.get('execution_mode') or ''),
+        draft = dict(draft or {})
+        if draft:
+            self._save_training_plan_draft(draft)
+        handoff = await self._handoff_current_runtime_to_graph(
+            thread_id=thread_id,
+            user_text_hint=user_text_hint,
+            auto_approve=False,
+            suppress_training_plan_context=False,
+            skip_text_only_training_confirmation=True,
+            stream_handler=stream_handler,
         )
-        self._messages.append(AIMessage(content=message))
-        self._trim_history()
-        self.memory.save_state(self.session_state)
-        return {
-            'status': 'needs_confirmation',
-            'message': message,
-            'tool_call': self._training_confirmation_tool_call(payload),
-            'thread_id': thread_id,
-            'interrupt_payload': payload,
-        }
+        if self._is_training_confirmation_interrupt_payload(dict(handoff.get('interrupt_payload') or {})):
+            return handoff
+        interrupt_payload = self._draft_to_training_confirmation_interrupt(draft, thread_id=thread_id)
+        if interrupt_payload is not None:
+            return self._format_interrupt_or_result({}, thread_id=thread_id, interrupt_payload=interrupt_payload)
+        return handoff
 
     def _update_graph_pending_state(
         self,
@@ -4156,6 +4052,7 @@ class YoloStudioAgentClient:
         ignore_existing_pending: bool = False,
         suppress_training_plan_context: bool = False,
         suppress_ephemeral_state_context: bool = False,
+        skip_text_only_training_confirmation: bool = False,
         stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
     ) -> dict[str, Any]:
         graph_result, config, built_messages_len = await self._invoke_graph_from_current_runtime(
@@ -4195,16 +4092,18 @@ class YoloStudioAgentClient:
 
         applied_results = self._apply_tool_results(graph_result["messages"], built_messages_len=built_messages_len)
         final_text = self._compose_final_reply(graph_result["messages"], applied_results)
-        materialized_confirmation = await self._maybe_materialize_text_only_training_confirmation(
-            thread_id=thread_id,
-            user_text_hint=user_text_hint,
-            final_text=final_text,
-            applied_results=applied_results,
-        )
-        if materialized_confirmation is not None:
-            self._trim_history()
-            self.memory.save_state(self.session_state)
-            return materialized_confirmation
+        if not skip_text_only_training_confirmation:
+            materialized_confirmation = await self._maybe_materialize_text_only_training_confirmation(
+                thread_id=thread_id,
+                user_text_hint=user_text_hint,
+                final_text=final_text,
+                applied_results=applied_results,
+                stream_handler=stream_handler,
+            )
+            if materialized_confirmation is not None:
+                self._trim_history()
+                self.memory.save_state(self.session_state)
+                return materialized_confirmation
         self._messages.append(AIMessage(content=final_text))
         self._trim_history()
         self.memory.save_state(self.session_state)
@@ -4512,9 +4411,7 @@ class YoloStudioAgentClient:
         ).strip() or thread_id
         self._save_training_plan_draft(rebuilt_draft)
         interrupt_payload = self._draft_to_training_confirmation_interrupt(rebuilt_draft, thread_id=confirmation_thread_id)
-        if interrupt_payload is not None:
-            self._activate_local_training_confirmation_interrupt(interrupt_payload, thread_id=confirmation_thread_id)
-        else:
+        if interrupt_payload is None:
             self._set_pending_confirmation(confirmation_thread_id, refreshed_pending)
         self.memory.append_event(
             self.session_state.session_id,
@@ -4527,7 +4424,11 @@ class YoloStudioAgentClient:
         )
         self.memory.save_state(self.session_state)
         if interrupt_payload is not None:
-            return self._format_interrupt_or_result({}, thread_id=confirmation_thread_id, interrupt_payload=interrupt_payload)
+            return await self._enter_graph_training_confirmation(
+                draft=rebuilt_draft,
+                thread_id=confirmation_thread_id,
+                user_text_hint='请按更新后的训练草案进入确认。',
+            )
         return self._needs_confirmation_result(
             confirmation_thread_id,
             self._pending_from_state() or refreshed_pending,
@@ -4822,6 +4723,7 @@ class YoloStudioAgentClient:
         user_text_hint: str,
         final_text: str,
         applied_results: list[tuple[str, dict[str, Any]]],
+        stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
     ) -> dict[str, Any] | None:
         if applied_results:
             return None
@@ -4839,9 +4741,7 @@ class YoloStudioAgentClient:
         self._ensure_materialized_training_state_context(draft=rebuilt_draft)
         self._save_training_plan_draft(rebuilt_draft)
         interrupt_payload = self._draft_to_training_confirmation_interrupt(rebuilt_draft, thread_id=thread_id)
-        if interrupt_payload is not None:
-            self._activate_local_training_confirmation_interrupt(interrupt_payload, thread_id=thread_id)
-        else:
+        if interrupt_payload is None:
             self._set_pending_confirmation(thread_id, pending)
         self.memory.append_event(
             self.session_state.session_id,
@@ -4853,7 +4753,12 @@ class YoloStudioAgentClient:
             },
         )
         if interrupt_payload is not None:
-            return self._format_interrupt_or_result({}, thread_id=thread_id, interrupt_payload=interrupt_payload)
+            return await self._enter_graph_training_confirmation(
+                draft=rebuilt_draft,
+                thread_id=thread_id,
+                user_text_hint=user_text_hint or self._recent_user_text(),
+                stream_handler=stream_handler,
+            )
         return self._needs_confirmation_result(
             thread_id,
             pending,
@@ -6080,6 +5985,16 @@ try:
         training_plan_context: dict[str, Any] | None
         pending_confirmation: dict[str, Any] | None
         pending_review: dict[str, Any] | None
+        training_plan: dict[str, Any] | None
+        training_phase: str | None
+        training_execution_mode: str | None
+        training_next_step_tool: str | None
+        training_next_step_args: dict[str, Any] | None
+        suspended_training_plan: dict[str, Any] | None
+        pending_new_task: str | None
+        training_status_reply: str | None
+        prepare_result: dict[str, Any] | None
+        training_preflight: dict[str, Any] | None
 
 except Exception:
     class _AgentRuntimeGraphState(TypedDict, total=False):
@@ -6090,6 +6005,16 @@ except Exception:
         training_plan_context: dict[str, Any] | None
         pending_confirmation: dict[str, Any] | None
         pending_review: dict[str, Any] | None
+        training_plan: dict[str, Any] | None
+        training_phase: str | None
+        training_execution_mode: str | None
+        training_next_step_tool: str | None
+        training_next_step_args: dict[str, Any] | None
+        suspended_training_plan: dict[str, Any] | None
+        pending_new_task: str | None
+        training_status_reply: str | None
+        prepare_result: dict[str, Any] | None
+        training_preflight: dict[str, Any] | None
 
 
 def _normalize_confirmation_resume_value(value: Any) -> str:
@@ -6158,6 +6083,41 @@ def _tool_rejection_command(*, tool_name: str, tool_call_id: str, message: str) 
     )
 
 
+def _training_state_update_from_interrupt_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
+    payload = dict(payload or {})
+    return {
+        'training_plan': dict(payload.get('plan') or {}) or None,
+        'training_phase': str(payload.get('phase') or '').strip() or None,
+        'training_execution_mode': str(payload.get('execution_mode') or '').strip() or None,
+        'training_next_step_tool': str(payload.get('next_step_tool') or '').strip() or None,
+        'training_next_step_args': dict(payload.get('next_step_args') or {}) or None,
+        'suspended_training_plan': dict(payload.get('suspended_training_plan') or {}) or None,
+        'pending_new_task': str(payload.get('pending_new_task') or '').strip() or None,
+        'training_status_reply': str(payload.get('status_reply') or '').strip() or None,
+        'training_plan_context': None,
+        'pending_confirmation': None,
+        'pending_review': {},
+    }
+
+
+def _latest_human_text_from_messages(messages: list[Any] | None) -> str:
+    for message in reversed(list(messages or [])):
+        if isinstance(message, HumanMessage) and isinstance(message.content, str):
+            return message.content.strip()
+    return ''
+
+
+def _tool_result_message(tool_name: str, *, parsed: dict[str, Any], tool_call_id: str = '', status: str = '') -> ToolMessage:
+    kwargs: dict[str, Any] = {
+        'content': json.dumps(parsed, ensure_ascii=False),
+        'name': tool_name,
+        'tool_call_id': tool_call_id,
+    }
+    if status:
+        kwargs['status'] = status
+    return ToolMessage(**kwargs)
+
+
 async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudioAgentClient:
     settings = settings or AgentSettings()
     memory_store = MemoryStore(settings.memory_root)
@@ -6183,20 +6143,264 @@ async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudi
         helper_llm = None
     react_kwargs: dict[str, Any] = {
         'prompt': SYSTEM_PROMPT,
-        'checkpointer': checkpointer,
         'state_schema': _AgentRuntimeGraphState,
     }
+    if StateGraph is None:
+        react_kwargs['checkpointer'] = checkpointer
     graph_tools = _build_graph_tool_surface(
         tools,
         confirmation_mode=settings.confirmation_mode,
         tool_policy_resolver=lambda tool_name: resolve_tool_execution_policy(tool_name, tool_registry={tool.name: tool for tool in raw_tools}),
         client_getter=lambda: client_holder.get('client'),
     )
-    graph = create_react_agent(
+    react_graph = create_react_agent(
         llm,
         graph_tools,
         **react_kwargs,
     )
+
+    def _thread_id_from_config(config: Any) -> str:
+        if isinstance(config, dict):
+            configurable = dict(config.get('configurable') or {})
+            return str(configurable.get('thread_id') or '').strip()
+        configurable = dict(getattr(config, 'configurable', {}) or {})
+        return str(configurable.get('thread_id') or '').strip()
+
+    def _update_plan_from_preflight(
+        client: YoloStudioAgentClient,
+        *,
+        plan_payload: dict[str, Any],
+        preflight: dict[str, Any],
+        next_tool_name: str,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        updated_plan = dict(plan_payload or {})
+        resolved_args = dict(preflight.get('resolved_args') or {})
+        if next_tool_name == 'start_training_loop' and 'epochs' in resolved_args and 'epochs_per_round' not in resolved_args:
+            resolved_args['epochs_per_round'] = resolved_args.get('epochs')
+        if next_tool_name == 'start_training_loop':
+            resolved_args.pop('epochs', None)
+        for key in (
+            'model',
+            'data_yaml',
+            'batch',
+            'imgsz',
+            'device',
+            'training_environment',
+            'project',
+            'name',
+            'fraction',
+            'classes',
+            'single_cls',
+            'optimizer',
+            'freeze',
+            'resume',
+            'lr0',
+            'patience',
+            'workers',
+            'amp',
+        ):
+            value = resolved_args.get(key)
+            if value not in (None, ''):
+                updated_plan[key] = value
+            elif key in {'fraction', 'classes', 'single_cls', 'freeze', 'resume', 'lr0', 'patience', 'workers', 'amp'}:
+                updated_plan[key] = [] if key == 'classes' and value is None else value
+        if str(updated_plan.get('mode') or '').strip().lower() == 'loop':
+            for key in ('max_rounds', 'epochs_per_round', 'loop_name'):
+                value = resolved_args.get(key)
+                if value not in (None, ''):
+                    updated_plan[key] = value
+        else:
+            epochs_value = resolved_args.get('epochs')
+            if epochs_value not in (None, ''):
+                updated_plan['epochs'] = epochs_value
+        blockers = [str(item).strip() for item in (preflight.get('blockers') or []) if str(item).strip()]
+        warnings = [str(item).strip() for item in (preflight.get('warnings') or []) if str(item).strip()]
+        summary = str(preflight.get('summary') or '').strip()
+        updated_plan['blockers'] = blockers
+        updated_plan['warnings'] = warnings
+        updated_plan['readiness_summary'] = summary
+        return updated_plan, (resolved_args or dict(plan_payload or {}))
+
+    async def _route_training_entry(state: _AgentRuntimeGraphState, config: Any = None) -> Command:
+        client = client_holder.get('client')
+        if client is None:
+            return Command(goto='agent_runtime')
+        context = extract_training_plan_context_from_state(dict(state or {})) or {}
+        if not context:
+            return Command(goto='agent_runtime')
+        interrupt_payload = client._draft_to_training_confirmation_interrupt(
+            context,
+            thread_id=_thread_id_from_config(config),
+        )
+        if not interrupt_payload:
+            return Command(goto='agent_runtime')
+        return Command(
+            update=_training_state_update_from_interrupt_payload(interrupt_payload),
+            goto='training_confirmation',
+        )
+
+    async def _refresh_training_start_after_edit(state: _AgentRuntimeGraphState, config: Any = None) -> Command:
+        del config
+        client = client_holder.get('client')
+        if client is None:
+            return Command(goto='training_confirmation')
+        plan_payload = dict((state or {}).get('training_plan') or {})
+        if not plan_payload:
+            return Command(goto='training_confirmation')
+        next_tool_name = canonical_tool_name(str((state or {}).get('training_next_step_tool') or '').strip())
+        if next_tool_name not in {'start_training', 'start_training_loop'}:
+            return Command(goto='training_confirmation')
+        preflight_args = dict((state or {}).get('training_next_step_args') or plan_payload)
+        preflight = await client.direct_tool('training_preflight', **preflight_args)
+        updated_plan, resolved_args = _update_plan_from_preflight(
+            client,
+            plan_payload=plan_payload,
+            preflight=preflight,
+            next_tool_name=next_tool_name,
+        )
+        return Command(
+            update={
+                'training_plan': updated_plan,
+                'training_next_step_tool': next_tool_name,
+                'training_next_step_args': resolved_args,
+                'training_preflight': preflight,
+                'training_status_reply': '',
+            },
+            goto='training_confirmation',
+        )
+
+    async def _execute_prepare(state: _AgentRuntimeGraphState, config: Any = None) -> Command:
+        del config
+        client = client_holder.get('client')
+        if client is None:
+            return Command(goto='training_confirmation')
+        plan_payload = dict((state or {}).get('training_plan') or {})
+        if not plan_payload:
+            return Command(goto='training_confirmation')
+        plan = coerce_training_plan(plan_payload)
+        next_args = dict((state or {}).get('training_next_step_args') or {'dataset_path': plan.dataset_path})
+        prepare_result = await client.direct_tool('prepare_dataset_for_training', **next_args)
+        messages: list[Any] = [_tool_result_message('prepare_dataset_for_training', parsed=prepare_result)]
+        if not prepare_result.get('ok'):
+            failed_plan = dict(plan_payload)
+            failed_plan['blockers'] = [str(prepare_result.get('error') or prepare_result.get('summary') or '数据准备失败').strip()]
+            failed_plan['prepare_summary'] = str(prepare_result.get('summary') or prepare_result.get('error') or '').strip()
+            return Command(
+                update={
+                    'messages': messages,
+                    'training_plan': failed_plan,
+                    'training_status_reply': failed_plan['prepare_summary'],
+                },
+                goto='training_confirmation',
+            )
+        preflight_args = client._model_dump_compat(plan)
+        prepared_yaml = str(prepare_result.get('data_yaml') or prepare_result.get('resolved_data_yaml') or '').strip()
+        if prepared_yaml:
+            preflight_args['data_yaml'] = prepared_yaml
+        if getattr(plan, 'mode', 'train') == 'loop':
+            preflight_args.setdefault('epochs', getattr(plan, 'epochs_per_round', None))
+        preflight = await client.direct_tool('training_preflight', **preflight_args)
+        messages.append(_tool_result_message('training_preflight', parsed=preflight))
+        return Command(
+            update={
+                'messages': messages,
+                'prepare_result': prepare_result,
+                'training_preflight': preflight,
+                'training_status_reply': '',
+            },
+            goto='post_prepare',
+        )
+
+    async def _execute_training(state: _AgentRuntimeGraphState, config: Any = None) -> Command:
+        del config
+        client = client_holder.get('client')
+        if client is None:
+            return Command(goto='training_confirmation')
+        plan_payload = dict((state or {}).get('training_plan') or {})
+        if not plan_payload:
+            return Command(goto='training_confirmation')
+        plan = coerce_training_plan(plan_payload)
+        next_tool_name = canonical_tool_name(str((state or {}).get('training_next_step_tool') or '').strip())
+        if next_tool_name not in {'start_training', 'start_training_loop'}:
+            next_tool_name = 'start_training_loop' if getattr(plan, 'mode', 'train') == 'loop' else 'start_training'
+        next_args = dict((state or {}).get('training_next_step_args') or client._model_dump_compat(plan))
+        parsed = await client.direct_tool(next_tool_name, **next_args)
+        reply = await client._render_tool_result_message(next_tool_name, parsed)
+        messages: list[Any] = [_tool_result_message(next_tool_name, parsed=parsed)]
+        if reply:
+            messages.append(AIMessage(content=reply))
+        if parsed.get('ok'):
+            return Command(
+                update={
+                    'messages': messages,
+                    'training_plan': None,
+                    'training_phase': None,
+                    'training_execution_mode': None,
+                    'training_next_step_tool': None,
+                    'training_next_step_args': None,
+                    'suspended_training_plan': None,
+                    'pending_new_task': None,
+                    'training_status_reply': '',
+                    'training_plan_context': None,
+                },
+                goto=END,
+            )
+        failed_plan = dict(plan_payload)
+        failed_plan['blockers'] = [str(parsed.get('error') or parsed.get('summary') or '训练启动失败').strip()]
+        failed_plan['readiness_summary'] = str(parsed.get('summary') or parsed.get('error') or '').strip()
+        return Command(
+            update={
+                'messages': messages,
+                'training_plan': failed_plan,
+                'training_status_reply': str(reply or failed_plan['readiness_summary']).strip(),
+            },
+            goto='training_confirmation',
+        )
+
+    async def _route_new_task(state: _AgentRuntimeGraphState, config: Any = None) -> Command:
+        del config
+        pending_new_task = str((state or {}).get('pending_new_task') or '').strip()
+        if not pending_new_task:
+            suspended = dict((state or {}).get('suspended_training_plan') or {})
+            if suspended:
+                return Command(
+                    update={
+                        'training_plan': dict(suspended.get('plan') or {}) or None,
+                        'training_phase': str(suspended.get('phase') or '').strip() or None,
+                        'training_execution_mode': str(suspended.get('execution_mode') or '').strip() or None,
+                        'training_next_step_tool': str(suspended.get('next_step_tool') or '').strip() or None,
+                        'training_next_step_args': dict(suspended.get('next_step_args') or {}) or None,
+                        'suspended_training_plan': None,
+                        'training_status_reply': '',
+                    },
+                    goto='training_confirmation',
+                )
+            return Command(goto='agent_runtime')
+        return Command(
+            update={
+                'messages': [HumanMessage(content=pending_new_task)],
+                'pending_new_task': None,
+                'training_status_reply': '',
+            },
+            goto='agent_runtime',
+        )
+
+    if StateGraph is not None:
+        workflow = StateGraph(_AgentRuntimeGraphState)
+        workflow.add_node('route_training_entry', _route_training_entry)
+        workflow.add_node('agent_runtime', react_graph)
+        workflow.add_node('training_confirmation', training_confirmation_node)
+        workflow.add_node('refresh_training_start_after_edit', _refresh_training_start_after_edit)
+        workflow.add_node('execute_prepare', _execute_prepare)
+        workflow.add_node('post_prepare', post_prepare_node)
+        workflow.add_node('execute_training', _execute_training)
+        workflow.add_node('answer_training_status', answer_training_status_node)
+        workflow.add_node('route_new_task', _route_new_task)
+        workflow.add_edge(START, 'route_training_entry')
+        workflow.add_edge('agent_runtime', END)
+        graph = workflow.compile(checkpointer=checkpointer)
+    else:
+        graph = react_graph
     tool_registry = {tool.name: tool for tool in raw_tools}
     client = YoloStudioAgentClient(
         graph=graph,

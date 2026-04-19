@@ -204,9 +204,16 @@ class _TrainingInterruptState:
 
 
 class _TrainingInterruptGraph:
-    def __init__(self, initial_payload: dict[str, object], next_payload: dict[str, object] | None = None) -> None:
+    def __init__(
+        self,
+        initial_payload: dict[str, object],
+        next_payload: dict[str, object] | None = None,
+        *,
+        resume_handler=None,
+    ) -> None:
         self._state = _TrainingInterruptState(initial_payload)
         self.next_payload = next_payload
+        self.resume_handler = resume_handler
         self.resume_payloads: list[object] = []
 
     def get_state(self, config):
@@ -215,7 +222,13 @@ class _TrainingInterruptGraph:
 
     async def ainvoke(self, payload, config=None):
         del config
-        self.resume_payloads.append(getattr(payload, 'resume', payload))
+        resume = getattr(payload, 'resume', payload)
+        self.resume_payloads.append(resume)
+        if self.resume_handler is not None:
+            result = self.resume_handler(self, resume)
+            if asyncio.iscoroutine(result):
+                return await result
+            return result
         if self.next_payload is not None:
             self._state = _TrainingInterruptState(self.next_payload)
             return {'messages': []}
@@ -389,11 +402,27 @@ async def _scenario_handoff_formats_training_confirmation_interrupt() -> None:
     assert result['tool_call']['name'] == 'start_training_loop', result
 
 
-async def _scenario_render_plan_uses_local_training_interrupt_payload() -> None:
-    client = _make_client('render-plan-local-training-interrupt')
+async def _scenario_render_plan_handoffs_into_graph_interrupt() -> None:
+    interrupt_payload = {
+        'type': 'training_confirmation',
+        'phase': 'prepare',
+        'execution_mode': 'prepare_then_train',
+        'plan': {
+            'mode': 'train',
+            'dataset_path': '/data/demo',
+            'model': 'yolov8n.pt',
+            'epochs': 20,
+            'batch': 12,
+        },
+    }
+    graph = _TrainingInterruptGraph(interrupt_payload, next_payload=interrupt_payload)
+    root = WORK / 'render-plan-graph-interrupt'
+    settings = AgentSettings(session_id='render-plan-graph-interrupt', memory_root=str(root))
+    client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
     result = await client._apply_training_plan_followup_action(
         followup_action={'action': 'render_plan'},
-        thread_id='render-plan-local-training-interrupt-turn-1',
+        thread_id='render-plan-graph-interrupt-turn-1',
+        user_text='请继续当前训练确认',
         draft={
             'dataset_path': '/data/demo',
             'execution_mode': 'prepare_then_train',
@@ -406,19 +435,15 @@ async def _scenario_render_plan_uses_local_training_interrupt_payload() -> None:
             'reasoning_summary': '当前数据先准备后再训练。',
         },
     )
-    interrupt_payload = dict(client.session_state.active_training.training_confirmation_interrupt or {})
     assert result['status'] == 'needs_confirmation', result
-    assert interrupt_payload.get('type') == 'training_confirmation', interrupt_payload
-    assert interrupt_payload.get('phase') == 'prepare', interrupt_payload
-    assert interrupt_payload.get('plan', {}).get('epochs') == 20, interrupt_payload
+    assert result['interrupt_payload']['type'] == 'training_confirmation', result
+    assert result['interrupt_payload']['phase'] == 'prepare', result
 
 
-async def _scenario_local_training_interrupt_edit_updates_plan() -> None:
-    client = _make_client('local-training-interrupt-edit')
-    client.session_state.active_training.training_confirmation_interrupt = {
+async def _scenario_graph_training_interrupt_edit_updates_plan() -> None:
+    interrupt_payload = {
         'type': 'training_confirmation',
         'phase': 'start',
-        'thread_id': 'local-training-interrupt-edit-turn-1',
         'plan': {
             'mode': 'train',
             'dataset_path': '/data/demo',
@@ -427,50 +452,33 @@ async def _scenario_local_training_interrupt_edit_updates_plan() -> None:
             'batch': 16,
         },
     }
+
+    def _resume_handler(graph, resume):
+        payload = dict(interrupt_payload)
+        edits = dict((resume or {}).get('edits') or {})
+        plan = dict(payload.get('plan') or {})
+        plan.update(edits)
+        payload['plan'] = plan
+        graph._state = _TrainingInterruptState(payload)
+        return {'messages': []}
+
+    graph = _TrainingInterruptGraph(interrupt_payload, resume_handler=_resume_handler)
+    root = WORK / 'graph-training-interrupt-edit'
+    settings = AgentSettings(session_id='graph-training-interrupt-edit', memory_root=str(root))
+    client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
     planner = _FakeStructuredPlanner({'action': 'edit', 'reason': '把 batch 改成 12，epochs 改成 20', 'edits': {'batch': 12, 'epochs': 20}})
     client.planner_llm = planner  # type: ignore[assignment]
     result = await client.chat('batch 改成 12，epochs 改成 20')
-    payload = dict(client.session_state.active_training.training_confirmation_interrupt or {})
+    payload = dict(result.get('interrupt_payload') or {})
     assert result['status'] == 'needs_confirmation', result
     assert payload.get('plan', {}).get('batch') == 12, payload
     assert payload.get('plan', {}).get('epochs') == 20, payload
 
 
-async def _scenario_local_training_interrupt_approve_handoffs_to_graph() -> None:
-    client = _make_client('local-training-interrupt-approve')
-    client.session_state.active_training.training_confirmation_interrupt = {
-        'type': 'training_confirmation',
-        'phase': 'prepare',
-        'thread_id': 'local-training-interrupt-approve-turn-1',
-        'plan': {
-            'mode': 'train',
-            'dataset_path': '/data/demo',
-            'model': 'yolov8n.pt',
-            'epochs': 20,
-            'batch': 12,
-        },
-    }
-    planner = _FakeStructuredPlanner({'action': 'approve', 'reason': '开始准备'})
-    client.planner_llm = planner  # type: ignore[assignment]
-    handoff_calls: list[dict[str, object]] = []
-
-    async def _fake_handoff(**kwargs):
-        handoff_calls.append(dict(kwargs))
-        return {'status': 'completed', 'message': 'handoff-ok', 'tool_call': None}
-
-    client._handoff_current_runtime_to_graph = _fake_handoff  # type: ignore[method-assign]
-    result = await client.chat('好，继续')
-    assert result['message'] == 'handoff-ok', result
-    assert handoff_calls and handoff_calls[0]['auto_approve'] is True, handoff_calls
-    assert client.session_state.active_training.training_confirmation_interrupt == {}, client.session_state.active_training.training_confirmation_interrupt
-
-
-async def _scenario_local_training_interrupt_new_task_routes_mainline() -> None:
-    client = _make_client('local-training-interrupt-new-task')
-    client.session_state.active_training.training_confirmation_interrupt = {
+async def _scenario_graph_training_interrupt_new_task_returns_result() -> None:
+    interrupt_payload = {
         'type': 'training_confirmation',
         'phase': 'start',
-        'thread_id': 'local-training-interrupt-new-task-turn-1',
         'plan': {
             'mode': 'loop',
             'dataset_path': '/data/demo',
@@ -480,18 +488,19 @@ async def _scenario_local_training_interrupt_new_task_routes_mainline() -> None:
             'loop_name': 'ctxloop5',
         },
     }
+
+    def _resume_handler(graph, resume):
+        graph._state = None
+        return {'messages': [AIMessage(content='找到 2 条环训练')]}
+
+    graph = _TrainingInterruptGraph(interrupt_payload, resume_handler=_resume_handler)
+    root = WORK / 'graph-training-interrupt-new-task'
+    settings = AgentSettings(session_id='graph-training-interrupt-new-task', memory_root=str(root))
+    client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
     planner = _FakeStructuredPlanner({'action': 'new_task', 'reason': '最近有哪些环训练'})
     client.planner_llm = planner  # type: ignore[assignment]
-
-    async def _fake_mainline(user_text, thread_id, skip_training_plan_dialogue=False):
-        assert user_text == '最近有哪些环训练'
-        assert skip_training_plan_dialogue is True
-        return {'status': 'completed', 'message': '找到 2 条环训练', 'tool_call': None}
-
-    client._try_handle_mainline_intent = _fake_mainline  # type: ignore[method-assign]
     result = await client.chat('最近有哪些环训练')
     assert result['message'] == '找到 2 条环训练', result
-    assert client.session_state.active_training.training_confirmation_interrupt == {}, client.session_state.active_training.training_confirmation_interrupt
 
 
 async def _scenario_training_loop_route_detects_control_followups_without_llm() -> None:
@@ -791,10 +800,9 @@ async def _run() -> None:
         await _scenario_parse_user_decision_falls_back_to_unclear()
         await _scenario_chat_resumes_training_confirmation_interrupt()
         await _scenario_handoff_formats_training_confirmation_interrupt()
-        await _scenario_render_plan_uses_local_training_interrupt_payload()
-        await _scenario_local_training_interrupt_edit_updates_plan()
-        await _scenario_local_training_interrupt_approve_handoffs_to_graph()
-        await _scenario_local_training_interrupt_new_task_routes_mainline()
+        await _scenario_render_plan_handoffs_into_graph_interrupt()
+        await _scenario_graph_training_interrupt_edit_updates_plan()
+        await _scenario_graph_training_interrupt_new_task_returns_result()
         await _scenario_training_loop_route_detects_control_followups_without_llm()
         await _scenario_training_loop_route_falls_back_without_llm()
         await _scenario_training_run_query_signals_reuse_last_comparison()
