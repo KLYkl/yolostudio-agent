@@ -155,6 +155,23 @@ class _NoLLMGraph:
         raise AssertionError('pending confirmation dialogue should stay on routed flows, not fallback to graph')
 
 
+class _CountingGraph:
+    def __init__(self) -> None:
+        self.calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def get_state(self, config):
+        del config
+        return None
+
+    async def ainvoke(self, *args, **kwargs):
+        self.calls.append((args, dict(kwargs)))
+        from langchain_core.messages import AIMessage
+
+        payload = args[0] if args else {}
+        messages = list((payload or {}).get('messages') or [])
+        return {'messages': messages + [AIMessage(content='graph-called')]}
+
+
 WORK = Path(__file__).resolve().parent / '_tmp_pending_confirmation_dialogue_route'
 
 
@@ -183,6 +200,44 @@ def _make_prepare_client(session_id: str) -> YoloStudioAgentClient:
         'synthetic': True,
     }
     client._set_pending_confirmation(f'{session_id}-pending', pending)
+    return client
+
+
+def _seed_prepare_training_plan(client: YoloStudioAgentClient) -> None:
+    client.session_state.active_training.training_plan_draft = {
+        'dataset_path': '/data/demo',
+        'execution_mode': 'prepare_then_train',
+        'next_step_tool': 'prepare_dataset_for_training',
+        'next_step_args': {'dataset_path': '/data/demo', 'force_split': True},
+        'planned_training_args': {'model': 'yolov8n.pt', 'epochs': 100},
+        'reasoning_summary': '当前数据还不能直接训练，但可以先自动准备到可训练状态。',
+        'data_summary': '当前还不能直接训练: 缺少可用的 data_yaml；但当前数据集可以先进入 prepare_dataset_for_training',
+    }
+    client.session_state.active_dataset.dataset_root = '/data/demo'
+    client.session_state.active_dataset.last_readiness = {
+        'ok': True,
+        'ready': False,
+        'preparable': True,
+        'dataset_root': '/data/demo',
+        'resolved_data_yaml': '',
+        'blockers': ['缺少可用的 data_yaml'],
+        'summary': '当前还不能直接训练: 缺少可用的 data_yaml；但当前数据集可以先进入 prepare_dataset_for_training',
+    }
+    client.memory.save_state(client.session_state)
+
+
+def _make_prepare_revision_client(session_id: str, graph=None) -> YoloStudioAgentClient:
+    root = WORK / session_id
+    settings = AgentSettings(session_id=session_id, memory_root=str(root))
+    client = YoloStudioAgentClient(graph=graph or _NoLLMGraph(), settings=settings, tool_registry={})
+    pending = {
+        'name': 'prepare_dataset_for_training',
+        'args': {'dataset_path': '/data/demo', 'force_split': True},
+        'id': None,
+        'synthetic': True,
+    }
+    client._set_pending_confirmation(f'{session_id}-pending', pending)
+    _seed_prepare_training_plan(client)
     return client
 
 
@@ -267,6 +322,48 @@ async def _scenario_clarify_phrase_reuses_confirmation_message() -> None:
     assert turn['message'] == '当前待确认的是准备数据集：会先生成 data.yaml 再决定是否进入训练。', turn
 
 
+async def _scenario_prepare_pending_edit_refreshes_locally() -> None:
+    graph = _CountingGraph()
+    client = _make_prepare_revision_client('pending-prepare-edit-local', graph=graph)
+    turn = await client.chat('把 batch 改成 12 再继续，其他设置不变')
+    pending = client.get_pending_action()
+    draft = dict(client.session_state.active_training.training_plan_draft or {})
+    assert turn['status'] == 'needs_confirmation', turn
+    assert len(graph.calls) == 0, graph.calls
+    assert pending is not None, turn
+    assert pending['tool_name'] == 'prepare_dataset_for_training', pending
+    assert pending['tool_args'] == {'dataset_path': '/data/demo', 'force_split': True}, pending
+    assert pending['decision_context']['decision'] == 'edit', pending
+    assert draft.get('next_step_tool') == 'prepare_dataset_for_training', draft
+    assert (draft.get('planned_training_args') or {}).get('batch') == 12, draft
+    assert 'batch' not in pending['tool_args'], pending
+
+
+async def _scenario_prepare_pending_edit_restored_session_stays_local() -> None:
+    scenario_id = 'pending-prepare-edit-restore'
+    seed_graph = _CountingGraph()
+    seeded = _make_prepare_revision_client(scenario_id, graph=seed_graph)
+    seeded.memory.save_state(seeded.session_state)
+
+    restore_graph = _CountingGraph()
+    restored = YoloStudioAgentClient(
+        graph=restore_graph,
+        settings=AgentSettings(session_id=scenario_id, memory_root=str(WORK / scenario_id)),
+        tool_registry={},
+    )
+    turn = await restored.chat('把 batch 改成 12 再继续，其他设置不变')
+    pending = restored.get_pending_action()
+    draft = dict(restored.session_state.active_training.training_plan_draft or {})
+    assert turn['status'] == 'needs_confirmation', turn
+    assert len(restore_graph.calls) == 0, restore_graph.calls
+    assert pending is not None, turn
+    assert pending['tool_name'] == 'prepare_dataset_for_training', pending
+    assert pending['tool_args'] == {'dataset_path': '/data/demo', 'force_split': True}, pending
+    assert pending['decision_context']['decision'] == 'edit', pending
+    assert (draft.get('planned_training_args') or {}).get('batch') == 12, draft
+    assert 'batch' not in pending['tool_args'], pending
+
+
 async def _run() -> None:
     shutil.rmtree(WORK, ignore_errors=True)
     WORK.mkdir(parents=True, exist_ok=True)
@@ -277,6 +374,8 @@ async def _run() -> None:
         await _scenario_continue_phrase_routes_to_approve()
         await _scenario_edit_phrase_marks_pending_as_edit()
         await _scenario_clarify_phrase_reuses_confirmation_message()
+        await _scenario_prepare_pending_edit_refreshes_locally()
+        await _scenario_prepare_pending_edit_restored_session_stays_local()
         print('pending confirmation dialogue route ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)

@@ -205,6 +205,41 @@ async def run_training_request_orchestration(
             render_training_plan_message=render_training_plan_message,
         )
 
+    readiness_error = str(readiness.get('error') or '').strip()
+    readiness_unavailable = (not readiness) or (
+        readiness.get('ok') is False
+        and any(token in readiness_error.lower() for token in ('未找到工具', 'tool not found', 'unknown tool'))
+    )
+    if readiness_unavailable and dataset_path and requested_model and not discussion_only:
+        fallback_args = dict(requested_args)
+        fallback_data_yaml = str(fallback_args.get('data_yaml') or '').strip()
+        if fallback_data_yaml:
+            fallback_args['data_yaml'] = fallback_data_yaml
+            next_tool_name = 'start_training'
+            next_tool_args = dict(fallback_args)
+        else:
+            next_tool_name = 'prepare_dataset_for_training'
+            next_tool_args = {'dataset_path': dataset_path}
+            if wants_split:
+                next_tool_args['force_split'] = True
+            explicit_classes_txt = str(fallback_args.get('classes_txt') or '').strip()
+            if explicit_classes_txt:
+                next_tool_args['classes_txt'] = explicit_classes_txt
+        draft = build_training_plan_draft_fn(
+            user_text=user_text,
+            dataset_path=dataset_path,
+            readiness={},
+            preflight={},
+            next_tool_name=next_tool_name,
+            next_tool_args=next_tool_args,
+            planned_training_args=fallback_args,
+        )
+        return await _render_orchestration_result(
+            draft,
+            pending=True,
+            render_training_plan_message=render_training_plan_message,
+        )
+
     draft = build_training_plan_draft_fn(
         user_text=user_text,
         dataset_path=dataset_path,

@@ -244,6 +244,33 @@ class _ObservedStatusGraph:
         }
 
 
+class _TextOnlyTrainingPlanGraph:
+    def __init__(self) -> None:
+        self.client: YoloStudioAgentClient | None = None
+
+    def bind(self, client: YoloStudioAgentClient) -> None:
+        self.client = client
+
+    def get_state(self, config):
+        del config
+        return None
+
+    async def ainvoke(self, payload, config=None):
+        del config
+        assert self.client is not None
+        messages = list(payload['messages'])
+        return {
+            'messages': messages + [
+                AIMessage(
+                    content=(
+                        '根据当前情况，训练前还缺少可用的 data.yaml。'
+                        '确认执行吗？如果你同意，我将开始执行数据准备步骤，完成后自动衔接训练。'
+                    )
+                )
+            ]
+        }
+
+
 WORK = Path(__file__).resolve().parent / '_tmp_training_plan_dialogue'
 
 
@@ -1599,6 +1626,40 @@ async def _scenario_prepare_only_with_planner_keeps_natural_surface() -> None:
     assert calls[0][0] == 'dataset_training_readiness', calls
 
 
+async def _scenario_text_only_training_plan_materializes_pending() -> None:
+    scenario_root = WORK / 'text_only_training_plan_materializes_pending'
+    graph = _TextOnlyTrainingPlanGraph()
+    client = YoloStudioAgentClient(
+        graph=graph,
+        settings=AgentSettings(session_id='training-plan-dialogue-text-only-materialize', memory_root=str(scenario_root)),
+        tool_registry={},
+    )
+    graph.bind(client)
+
+    turn1 = await client.chat('用 /home/kly/yolov8n.pt 训练一下 /home/kly/ct_loop/data_ct')
+    assert turn1['status'] == 'needs_confirmation', turn1
+    assert turn1['tool_call']['name'] == 'prepare_dataset_for_training', turn1
+    assert '训练计划草案：' in turn1['message'], turn1
+    assert '执行方式: 先准备再训练' in turn1['message'], turn1
+    draft = dict(client.session_state.active_training.training_plan_draft or {})
+    assert draft.get('next_step_tool') == 'prepare_dataset_for_training', draft
+    assert draft.get('execution_mode') == 'prepare_then_train', draft
+    assert client.get_pending_action() is not None
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_review_pending_action(decision_payload, *, stream_handler=None):
+        del stream_handler
+        captured.update(dict(decision_payload))
+        return {'status': 'completed', 'message': 'captured-approve', 'tool_call': None}
+
+    client.review_pending_action = _fake_review_pending_action  # type: ignore[assignment]
+    turn2 = await client.chat('没问题，开始训练')
+    assert turn2['status'] == 'completed', turn2
+    assert captured.get('decision') == 'approve', captured
+    assert captured.get('raw_user_text') == '没问题，开始训练', captured
+
+
 async def _run() -> None:
     shutil.rmtree(WORK, ignore_errors=True)
     WORK.mkdir(parents=True, exist_ok=True)
@@ -1615,6 +1676,7 @@ async def _run() -> None:
         await _scenario_prepare_then_train_preserves_explicit_classes_txt()
         await _scenario_pending_prepare_then_train_uses_structured_surface_even_with_planner()
         await _scenario_prepare_only_with_planner_keeps_natural_surface()
+        await _scenario_text_only_training_plan_materializes_pending()
         await _scenario_cancel_then_replan()
         await _scenario_cancel_prepare_then_rebuild()
         await _scenario_preparable_backend_switch()

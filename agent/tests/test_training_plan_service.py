@@ -147,6 +147,41 @@ async def _run_async() -> None:
         'classes_txt': '/data/preparable/classes.txt',
     }, pending_result
 
+    unknown_readiness_result = await run_training_request_orchestration(
+        user_text='用 /data/unknown 和 yolov8n.pt 训练，执行。',
+        dataset_path='/data/unknown',
+        readiness={},
+        requested_args={'model': 'yolov8n.pt'},
+        wants_split=False,
+        discussion_only=False,
+        execution_backend='standard_yolo',
+        direct_tool=_fake_request_tool,
+        build_training_plan_draft_fn=_build_training_plan_draft,
+        render_training_plan_message=_render_training_plan_message,
+    )
+    assert unknown_readiness_result['defer_to_graph'] is True, unknown_readiness_result
+    assert unknown_readiness_result['reply'] == 'pending:prepare_dataset_for_training', unknown_readiness_result
+    assert unknown_readiness_result['draft']['next_step_tool'] == 'prepare_dataset_for_training', unknown_readiness_result
+    assert unknown_readiness_result['draft']['next_step_args'] == {
+        'dataset_path': '/data/unknown',
+    }, unknown_readiness_result
+
+    missing_tool_readiness_result = await run_training_request_orchestration(
+        user_text='用 /data/tool-missing 和 yolov8n.pt 训练，执行。',
+        dataset_path='/data/tool-missing',
+        readiness={'ok': False, 'error': '未找到工具: training_readiness'},
+        requested_args={'model': 'yolov8n.pt'},
+        wants_split=False,
+        discussion_only=False,
+        execution_backend='standard_yolo',
+        direct_tool=_fake_request_tool,
+        build_training_plan_draft_fn=_build_training_plan_draft,
+        render_training_plan_message=_render_training_plan_message,
+    )
+    assert missing_tool_readiness_result['defer_to_graph'] is True, missing_tool_readiness_result
+    assert missing_tool_readiness_result['reply'] == 'pending:prepare_dataset_for_training', missing_tool_readiness_result
+    assert missing_tool_readiness_result['draft']['next_step_tool'] == 'prepare_dataset_for_training', missing_tool_readiness_result
+
     assert request_calls == [
         ('training_preflight', {
             'model': 'yolov8n.pt',

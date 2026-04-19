@@ -212,6 +212,17 @@ class _LoopOpsGraph:
         execution_mode = str(plan_context.get('execution_mode') or '').strip().lower()
         reasoning_summary = str(plan_context.get('reasoning_summary') or '').strip()
         loop_request_tokens = ('环训练', '循环训练', '循环训', 'loop training', 'training loop', '自动复训', '自动续训')
+        loop_followup_query_tokens = (
+            '最近环训练有哪些',
+            '最近有哪些环训练',
+            '已有环训练列表',
+            '环训练列表',
+            '环训练状态怎么样',
+            '现在环训练怎么样了',
+            '查看环训练详情',
+            '查看训练详情',
+            '详细一点的训练信息',
+        )
         is_execute_turn = any(
             token in user_text
             for token in ('执行', '开始吧', '就这样', '确认', '可以开始', '开训', '启动吧', '直接训练', '直接开始训练')
@@ -219,6 +230,7 @@ class _LoopOpsGraph:
         is_loop_plan_handoff = (
             next_tool in {'prepare_dataset_for_training', 'start_training_loop'}
             and any(token in user_text or token in str(user_text).lower() for token in loop_request_tokens)
+            and not any(token in user_text for token in loop_followup_query_tokens)
         )
         is_post_prepare_loop_handoff = (
             next_tool == 'start_training_loop'
@@ -268,7 +280,12 @@ class _LoopOpsGraph:
                 'final_summary': '当前建议继续观察。',
             }
             final_text = self.inspect_reply
-        elif '最近环训练有哪些' in user_text:
+        elif (
+            '最近环训练有哪些' in user_text
+            or '最近有哪些环训练' in user_text
+            or '已有环训练列表' in user_text
+            or '环训练列表' in user_text
+        ):
             tool_name = 'list_training_loops'
             args = {}
             result = {
@@ -620,6 +637,11 @@ async def _run() -> None:
         assert loop_facts['loop_requested'] is True, loop_facts
         assert loop_facts['max_rounds'] == 2, loop_facts
         assert loop_facts['next_step'] == '启动循环训练', loop_facts
+
+        pending_list_turn = await client.chat('最近有哪些环训练')
+        assert pending_list_turn['status'] == 'completed', pending_list_turn
+        assert client.graph.calls[-1][0] == 'list_training_loops', client.graph.calls[-1]
+        assert client.session_state.pending_confirmation.tool_name == 'start_training_loop'
 
         confirm_loop_start = await client.confirm(confirm_prepare_then_loop['thread_id'], True)
         assert confirm_loop_start['status'] == 'completed', confirm_loop_start
