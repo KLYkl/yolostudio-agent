@@ -558,11 +558,15 @@ async def _scenario_status_query_without_session_context() -> None:
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
 
-    assert await client._try_handle_mainline_intent('查看训练情况', 'thread-training-plan-dialogue-status') is None
+    routed = await client._try_handle_mainline_intent('查看训练情况', 'thread-training-plan-dialogue-status')
+    assert routed is not None
+    assert routed['tool_call']['name'] == 'check_training_status'
+    calls.clear()
+    graph.calls.clear()
     turn = await client.chat('查看训练情况')
     assert turn['status'] == 'completed', turn
     assert calls == [('check_training_status', {})], calls
-    assert graph.calls == [('check_training_status', {})], graph.calls
+    assert graph.calls == [], graph.calls
     assert '第 3 轮' in turn['message'], turn
 
 

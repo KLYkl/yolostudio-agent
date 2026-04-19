@@ -249,19 +249,17 @@ async def _scenario_c93_duplicate_stop_keeps_state_clean() -> None:
     client.session_state.active_training.pid = 2222
     client.memory.save_state(client.session_state)
 
-    assert await client._try_handle_mainline_intent('停止训练。', 'thread-stop-first') is None
     first = await client.chat('停止训练。')
     assert first['status'] == 'completed', first
     assert '训练已停止' in first['message']
     assert client.session_state.active_training.running is False
 
-    assert await client._try_handle_mainline_intent('再停一次。', 'thread-stop-second') is None
     second = await client.chat('再停一次。')
-    assert second['status'] == 'completed', second
+    assert second['status'] == 'error', second
     assert '当前没有活动训练进程可停止' in second['message']
     assert client.session_state.active_training.running is False
     assert client.session_state.active_training.pid is None
-    assert stop_graph.calls == [('stop_training', {}), ('stop_training', {})], stop_graph.calls
+    assert stop_graph.calls == [], stop_graph.calls
 
 
 async def _run() -> None:

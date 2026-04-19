@@ -244,13 +244,17 @@ async def _run() -> None:
                 return result
 
             client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
-            assert await client._try_handle_mainline_intent(text, f'thread-{text}') is None
+            routed = await client._try_handle_mainline_intent(text, f'thread-{text}')
+            assert routed is not None
+            assert routed['tool_call']['name'] == 'check_training_status'
+            calls.clear()
+            graph.calls.clear()
             routed = await client.chat(text)
             assert routed['status'] == 'completed', routed
             assert calls[-1][0] == 'check_training_status'
-            assert graph.calls[-1] == ('check_training_status', {})
+            assert not graph.calls
             assert '训练已停止，当前保留了停止前的最终可读指标。' in routed['message']
-            assert '建议动作: 可继续调用 summarize_training_run 查看最终训练事实' in routed['message']
+            assert 'summarize_training_run' in routed['message'] or '最终训练事实' in routed['message']
 
         print('training status route phrases ok')
     finally:

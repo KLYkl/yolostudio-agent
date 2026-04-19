@@ -361,12 +361,16 @@ async def _scenario_c41_no_active_training_status_query_routes_status() -> None:
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
 
-    assert await client._try_handle_mainline_intent('训练到第几轮了？', 'thread-chaos-p0-c41-status') is None
+    routed = await client._try_handle_mainline_intent('训练到第几轮了？', 'thread-chaos-p0-c41-status')
+    assert routed is not None
+    assert routed['tool_call']['name'] == 'check_training_status'
+    calls.clear()
+    graph.calls.clear()
     turn = await client.chat('训练到第几轮了？')
     assert turn['status'] == 'completed', turn
     assert '当前没有正在运行的训练任务' in turn['message']
     assert calls == [('check_training_status', {})]
-    assert graph.calls == [('check_training_status', {})]
+    assert graph.calls == []
 
 
 async def _scenario_c51_missing_environment_blocks_start() -> None:
@@ -672,7 +676,7 @@ async def _scenario_c91_reloaded_session_keeps_status_context() -> None:
     assert '训练仍在运行' in turn3['message']
     assert client2.session_state.active_training.pid == 9090
     assert calls2 == [('check_training_status', {})]
-    assert graph.calls == [('check_training_status', {})]
+    assert graph.calls == []
 
 
 async def _scenario_c22_stop_then_replan_restart() -> None:
@@ -743,7 +747,7 @@ async def _scenario_c22_stop_then_replan_restart() -> None:
     turn1 = await client.chat('先停训练。')
     assert turn1['status'] == 'completed', turn1
     assert '训练已停止' in turn1['message']
-    assert stop_graph.calls == [('stop_training', {})]
+    assert stop_graph.calls == []
     assert client.session_state.active_training.running is False
 
     turn2 = await client.chat('现在重新开始训练。数据在 /data/restart，用 yolov8n.pt 训练 18轮，先给我计划。')
@@ -779,13 +783,17 @@ async def _scenario_c42_stopped_status_is_not_completed() -> None:
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
 
-    assert await client._try_handle_mainline_intent('训练跑完了吗？', 'thread-chaos-p0-c42-status') is None
+    routed = await client._try_handle_mainline_intent('训练跑完了吗？', 'thread-chaos-p0-c42-status')
+    assert routed is not None
+    assert routed['tool_call']['name'] == 'check_training_status'
+    calls.clear()
+    graph.calls.clear()
     turn = await client.chat('训练跑完了吗？')
     assert turn['status'] == 'completed', turn
     assert '训练已停止' in turn['message']
     assert 'completed' not in turn['message']
     assert calls == [('check_training_status', {})]
-    assert graph.calls == [('check_training_status', {})]
+    assert graph.calls == []
 
 
 async def _scenario_c43_failed_outcome_analysis_stays_grounded() -> None:

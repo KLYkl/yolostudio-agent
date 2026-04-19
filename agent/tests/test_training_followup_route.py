@@ -498,7 +498,7 @@ async def _scenario_cached_explicit_next_step_request_reuses_state() -> None:
     assert '漏标样本' in turn['message'], turn
 
 
-async def _scenario_cached_explicit_status_request_routes_through_graph() -> None:
+async def _scenario_cached_explicit_status_request_uses_local_bypass() -> None:
     client = _make_client('status-request-cached')
     graph = _ObservedToolGraph('check_training_status')
     client.graph = graph  # type: ignore[assignment]
@@ -523,14 +523,18 @@ async def _scenario_cached_explicit_status_request_routes_through_graph() -> Non
         return result
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
-    assert await client._try_handle_mainline_intent('看下训练状态', 'thread-status-request-cached') is None
+    routed = await client._try_handle_mainline_intent('看下训练状态', 'thread-status-request-cached')
+    assert routed is not None
+    assert routed['tool_call']['name'] == 'check_training_status'
+    calls.clear()
+    graph.calls.clear()
     turn = await client.chat('看下训练状态')
     assert turn['status'] == 'completed', turn
     assert '训练已完成' in turn['message'], turn
-    assert 'run_state=completed' in turn['message'], turn
+    assert 'run_state=completed' in turn['message'] or '运行状态: completed' in turn['message'], turn
     assert '继续查看训练总结' in turn['message'], turn
     assert calls == [('check_training_status', {})], calls
-    assert graph.calls == [('check_training_status', {})], graph.calls
+    assert graph.calls == [], graph.calls
 
 
 async def _scenario_cached_training_summary_request_routes_through_graph() -> None:
@@ -613,7 +617,7 @@ async def _run() -> None:
         await _scenario_next_step_followup_routes()
         await _scenario_cached_next_step_followup_reuses_state()
         await _scenario_cached_explicit_next_step_request_reuses_state()
-        await _scenario_cached_explicit_status_request_routes_through_graph()
+        await _scenario_cached_explicit_status_request_uses_local_bypass()
         await _scenario_cached_training_summary_request_routes_through_graph()
         await _scenario_generic_approval_after_training_summary_routes_to_analysis()
         print('training followup route ok')

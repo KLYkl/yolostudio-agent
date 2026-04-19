@@ -718,6 +718,22 @@ def build_grounded_tool_reply(applied_results: list[tuple[str, dict[str, Any]]])
             lines.append('建议:')
             lines.extend(f'- {item}' for item in suggestions)
         return _join(lines)
+    if tool_name == 'stop_training':
+        lines = [result.get('summary', '训练已停止')]
+        run_state = result.get('run_state')
+        if run_state:
+            lines.append(f"运行状态: {run_state}")
+        return_code = result.get('return_code')
+        if return_code is not None:
+            lines.append(f"返回码: {return_code}")
+        pid = result.get('pid')
+        if pid is not None:
+            lines.append(f"进程 ID: {pid}")
+        suggestions = _recommendation_lines(result, limit=2)
+        if suggestions:
+            lines.append('建议:')
+            lines.extend(f'- {item}' for item in suggestions)
+        return _join(lines)
     if tool_name == 'check_training_status':
         lines = [result.get('summary', '训练状态已更新')]
         overview = result.get('status_overview') or {}

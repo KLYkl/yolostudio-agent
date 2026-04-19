@@ -173,7 +173,7 @@ async def _scenario_c26_repeated_status_queries_stay_on_status() -> None:
         assert turn['status'] == 'completed', turn
         assert '训练仍在运行' in turn['message']
     assert [name for name, _ in calls].count('check_training_status') == 3
-    assert [name for name, _ in graph.calls].count('check_training_status') == 3
+    assert [name for name, _ in graph.calls].count('check_training_status') == 0
 
 
 async def _scenario_c27_cannot_erase_running_history() -> None:

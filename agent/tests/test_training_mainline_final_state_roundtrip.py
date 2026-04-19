@@ -412,10 +412,9 @@ async def _run_final_state_scenario(*, session_id: str, status_query: str, final
     turn4 = await client.chat(status_query)
     assert turn4['status'] == 'completed', turn4
     assert calls[-1][0] == 'check_training_status'
-    assert len(graph.calls) == graph_call_count_before_status + 1, graph.calls
-    assert graph.calls[-1] == ('check_training_status', {}), graph.calls
+    assert len(graph.calls) == graph_call_count_before_status, graph.calls
     assert status_summary in turn4['message']
-    assert '建议动作: 可继续调用 summarize_training_run 查看最终训练事实' in turn4['message']
+    assert '可继续调用 summarize_training_run 查看最终训练事实' in turn4['message']
     assert client.session_state.active_training.last_status.get('run_state') == final_run_state
 
     turn5 = await client.chat('这次训练效果怎么样？')

@@ -166,12 +166,16 @@ async def _scenario_c46_status_phrase_now_routes_status() -> None:
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
 
-    assert await client._try_handle_mainline_intent('现在状态呢？', 'thread-chaos-p1-c46-status') is None
+    routed = await client._try_handle_mainline_intent('现在状态呢？', 'thread-chaos-p1-c46-status')
+    assert routed is not None
+    assert routed['tool_call']['name'] == 'check_training_status'
+    calls.clear()
+    graph.calls.clear()
     turn = await client.chat('现在状态呢？')
     assert turn['status'] == 'completed', turn
     assert '训练已完成' in turn['message']
     assert calls == [('check_training_status', {})]
-    assert graph.calls == [('check_training_status', {})]
+    assert graph.calls == []
 
 
 async def _scenario_c47_provenance_question_uses_last_comparison() -> None:

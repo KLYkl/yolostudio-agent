@@ -1768,6 +1768,76 @@ class YoloStudioAgentClient:
             return self._complete_dialogue_text(str(followup_action.get('reply') or ''))
         return None
 
+    async def _execute_mainline_tool_bypass(
+        self,
+        tool_name: str,
+        *,
+        args: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        tool_args = dict(args or {})
+        parsed = await self.direct_tool(tool_name, **tool_args)
+        reply = await self._render_tool_result_message(tool_name, parsed)
+        if not reply:
+            reply = str(
+                parsed.get('summary')
+                or parsed.get('message')
+                or parsed.get('error')
+                or ('操作执行成功' if parsed.get('ok') else '操作执行失败')
+            ).strip()
+        self._messages.append(AIMessage(content=reply))
+        return {
+            'status': 'completed' if parsed.get('ok') else 'error',
+            'message': reply,
+            'tool_call': {'name': tool_name, 'args': tool_args},
+        }
+
+    async def _try_handle_live_training_control_request(
+        self,
+        *,
+        route_state: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        mainline_signals = dict(route_state.get('mainline_signals') or {})
+        followup_flags = dict(route_state.get('followup_flags') or {})
+        loop_route = dict(route_state.get('loop_route') or {})
+        loop_action = str(loop_route.get('action') or '').strip()
+        if loop_action in {'start', 'followup'}:
+            return None
+        followup_flags.pop('wants_training_revision', None)
+        if any(followup_flags.values()):
+            return None
+        if mainline_signals.get('wants_stop_training'):
+            if any(
+                mainline_signals.get(key)
+                for key in (
+                    'wants_remote_profile_list',
+                    'wants_remote_upload',
+                    'wants_remote_prediction_pipeline',
+                    'wants_remote_training_pipeline',
+                    'wants_predict',
+                )
+            ):
+                return None
+            return await self._execute_mainline_tool_bypass('stop_training')
+        if mainline_signals.get('training_status_phrase'):
+            if any(
+                mainline_signals.get(key)
+                for key in (
+                    'wants_remote_profile_list',
+                    'wants_remote_upload',
+                    'wants_remote_prediction_pipeline',
+                    'wants_remote_training_pipeline',
+                    'wants_predict',
+                    'wants_train',
+                    'no_train',
+                    'wants_readiness',
+                    'wants_split',
+                    'training_command_like',
+                )
+            ):
+                return None
+            return await self._execute_mainline_tool_bypass('check_training_status')
+        return None
+
     async def _try_handle_remote_requests(
         self,
         *,
@@ -1943,6 +2013,12 @@ class YoloStudioAgentClient:
         )
         if prediction_request:
             return prediction_request
+
+        live_training_control = await self._try_handle_live_training_control_request(
+            route_state=route_state,
+        )
+        if live_training_control:
+            return live_training_control
 
         training_entrypoint_request = await self._try_handle_training_entrypoints(
             thread_id=thread_id,

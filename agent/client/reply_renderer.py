@@ -592,6 +592,12 @@ def fallback_tool_result_text(
     )
 
 
+GROUNDED_TOOL_RENDER_ONLY = {
+    'check_training_status',
+    'stop_training',
+}
+
+
 def fallback_multi_tool_result_message(
     applied_results: list[tuple[str, dict[str, Any]]],
     *,
@@ -729,6 +735,12 @@ async def render_tool_result_message(
             applied_results=remote_pipeline_results,
             objective=objective,
             extra_notes=extra_notes or None,
+        )
+    if canonical_tool_name(tool_name) in GROUNDED_TOOL_RENDER_ONLY:
+        return fallback_tool_result_text(
+            tool_name,
+            parsed,
+            build_grounded_tool_reply=build_grounded_tool_reply,
         )
     if planner_llm is None:
         return fallback_tool_result_text(
