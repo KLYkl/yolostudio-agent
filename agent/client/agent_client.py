@@ -3632,6 +3632,53 @@ class YoloStudioAgentClient:
             }
         self._save_training_plan_draft(draft)
 
+    async def _refresh_start_training_interrupt_after_edit(self, payload: dict[str, Any]) -> dict[str, Any]:
+        next_step_tool = canonical_tool_name(str(payload.get('next_step_tool') or '').strip())
+        if next_step_tool != 'start_training':
+            return payload
+        next_step_args = dict(payload.get('next_step_args') or {})
+        required_fields = ('model', 'data_yaml', 'epochs')
+        if not all(str(next_step_args.get(field) or '').strip() for field in required_fields):
+            return payload
+        try:
+            preflight = await self.direct_tool('training_preflight', **next_step_args)
+        except Exception:
+            return payload
+        if not isinstance(preflight, dict):
+            return payload
+        resolved_args = dict(preflight.get('resolved_args') or {})
+        if resolved_args:
+            merged_args = dict(next_step_args)
+            merged_args.update({key: value for key, value in resolved_args.items()})
+            payload['next_step_args'] = merged_args
+            next_step_args = merged_args
+        plan_payload = dict(payload.get('plan') or {})
+        env_payload = dict(preflight.get('training_environment') or {})
+        training_environment = str(
+            env_payload.get('display_name')
+            or env_payload.get('name')
+            or next_step_args.get('training_environment')
+            or plan_payload.get('training_environment')
+            or ''
+        ).strip()
+        if training_environment:
+            plan_payload['training_environment'] = training_environment
+        if str(next_step_args.get('data_yaml') or '').strip():
+            plan_payload['data_yaml'] = str(next_step_args.get('data_yaml') or '').strip()
+        if next_step_args.get('batch') not in (None, ''):
+            plan_payload['batch'] = next_step_args.get('batch')
+        if next_step_args.get('imgsz') not in (None, ''):
+            plan_payload['imgsz'] = next_step_args.get('imgsz')
+        if next_step_args.get('epochs') not in (None, ''):
+            plan_payload['epochs'] = next_step_args.get('epochs')
+        if str(next_step_args.get('device') or '').strip():
+            plan_payload['device'] = str(next_step_args.get('device') or '').strip()
+        plan_payload['warnings'] = [str(item).strip() for item in (preflight.get('warnings') or []) if str(item).strip()]
+        plan_payload['blockers'] = [str(item).strip() for item in (preflight.get('blockers') or []) if str(item).strip()]
+        plan_payload['readiness_summary'] = str(preflight.get('summary') or '').strip()
+        payload['plan'] = plan_payload
+        return payload
+
     async def _handle_local_training_confirmation_interrupt(
         self,
         *,
@@ -3658,6 +3705,7 @@ class YoloStudioAgentClient:
                 if next_step_tool == 'start_training_loop' and 'epochs' in next_step_args and 'epochs_per_round' not in next_step_args:
                     next_step_args['epochs_per_round'] = next_step_args.pop('epochs')
                 updated_payload['next_step_args'] = next_step_args
+            updated_payload = await self._refresh_start_training_interrupt_after_edit(updated_payload)
             self._activate_local_training_confirmation_interrupt(updated_payload, thread_id=thread_id)
             message = self._render_plan_for_cli(
                 dict(updated_payload.get('plan') or {}),

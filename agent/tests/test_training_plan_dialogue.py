@@ -1368,7 +1368,7 @@ async def _scenario_prepare_approval_then_revise_start() -> None:
     assert client.session_state.active_training.classes == []
     assert client.session_state.active_training.training_plan_draft == {}
     assert [name for name, _ in calls].count('prepare_dataset_for_training') == 1
-    assert [name for name, _ in calls].count('training_preflight') == 1
+    assert [name for name, _ in calls].count('training_preflight') == 2
     assert [name for name, _ in calls].count('start_training') == 1
 
 
