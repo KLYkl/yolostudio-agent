@@ -1235,6 +1235,11 @@ class YoloStudioAgentClient:
         return str(pending.get('thread_id') or '').strip() or f"{self.session_state.session_id}-pending"
 
     def get_pending_action(self) -> dict[str, Any] | None:
+        local_interrupt = self._current_local_training_confirmation_interrupt()
+        if local_interrupt is not None:
+            payload = self._pending_action_from_training_confirmation_interrupt(local_interrupt)
+            if payload is not None:
+                return payload
         pending = self._resolve_pending_confirmation(thread_id=self._pending_confirmation_thread_id())
         if not pending:
             return None
@@ -1654,9 +1659,49 @@ class YoloStudioAgentClient:
             schema=self._pending_turn_intent_schema(),
         )
         normalized = self._normalize_pending_turn_intent_payload(parsed)
+        if normalized.get('action') == 'unclear':
+            fallback = self._fallback_pending_turn_intent(
+                user_text=user_text,
+                interrupt_payload=interrupt_payload,
+            )
+            if fallback:
+                normalized = fallback
         if normalized.get('action') == 'unclear' and not normalized.get('reason'):
             normalized['reason'] = str(user_text or '').strip()
         return normalized
+
+    def _fallback_pending_turn_intent(
+        self,
+        *,
+        user_text: str,
+        interrupt_payload: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        text = str(user_text or '').strip()
+        if not text:
+            return None
+        if self._looks_like_pending_passthrough_request(text):
+            return {'action': 'new_task', 'reason': text}
+        if self._looks_like_pending_status_or_detail_query(text):
+            return {'action': 'status', 'reason': text}
+        pending_like: dict[str, Any] = {}
+        tool_call = self._training_confirmation_tool_call(interrupt_payload)
+        if tool_call:
+            pending_like = {'name': str(tool_call.get('name') or '').strip(), 'args': dict(tool_call.get('args') or {})}
+        if self._looks_like_pending_edit_request(text, pending_like):
+            edits = dict(self._collect_requested_training_args(text, data_yaml=None) or {})
+            if edits:
+                edits.pop('data_yaml', None)
+            clear_fields = self._collect_training_clear_fields(text)
+            for field in clear_fields:
+                edits[field] = None
+            if edits:
+                return {'action': 'edit', 'reason': text, 'edits': edits}
+        confirmation = self._classify_confirmation_reply_fallback(text)
+        if confirmation == 'approve':
+            return {'action': 'approve', 'reason': text}
+        if confirmation in {'deny', 'reject'}:
+            return {'action': 'reject', 'reason': text}
+        return {'action': 'unclear', 'reason': text}
 
     @staticmethod
     def _structured_output_value(value: Any, key: str) -> Any:
@@ -3357,6 +3402,22 @@ class YoloStudioAgentClient:
         except Exception:
             return None
 
+    def _pending_action_from_training_confirmation_interrupt(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        tool_call = self._training_confirmation_tool_call(payload)
+        if not tool_call:
+            return None
+        pending = {
+            'name': str(tool_call.get('name') or '').strip(),
+            'args': dict(tool_call.get('args') or {}),
+            'thread_id': str(payload.get('thread_id') or '').strip(),
+            'source': 'synthetic',
+            'decision_context': dict(self._pending_review_shadow or {}),
+        }
+        return self._build_pending_action_payload(
+            pending,
+            thread_id=str(payload.get('thread_id') or '').strip() or None,
+        )
+
     def _render_plan_for_cli(self, plan_payload: dict[str, Any], phase: str = '', execution_mode: str = '') -> str:
         plan = coerce_training_plan(dict(plan_payload or {}))
         phase_text = '数据准备确认' if str(phase or '').strip().lower() == 'prepare' else '训练启动确认'
@@ -3425,6 +3486,7 @@ class YoloStudioAgentClient:
                 str((payload or {}).get('phase') or ''),
                 str((payload or {}).get('execution_mode') or ''),
             )
+            pending_action = self._pending_action_from_training_confirmation_interrupt(payload or {})
             if message:
                 self._messages.append(AIMessage(content=message))
             return {
@@ -3433,6 +3495,7 @@ class YoloStudioAgentClient:
                 'tool_call': self._training_confirmation_tool_call(payload or {}),
                 'thread_id': thread_id,
                 'interrupt_payload': dict(payload or {}),
+                'pending_action': pending_action,
             }
         messages = list(result.get('messages') or [])
         final_text = self._extract_or_fallback(messages)
@@ -3478,12 +3541,22 @@ class YoloStudioAgentClient:
             return None
         phase = 'prepare' if next_step_tool == 'prepare_dataset_for_training' else 'start'
         mode = 'loop' if next_step_tool == 'start_training_loop' or 'loop' in str(draft.get('execution_mode') or '').strip().lower() else 'train'
+        batch_value = planned_training_args.get('batch')
+        if batch_value in (None, ''):
+            batch_value = planned_loop_args.get('batch')
+        if batch_value in (None, ''):
+            batch_value = 16
+        imgsz_value = planned_training_args.get('imgsz')
+        if imgsz_value in (None, ''):
+            imgsz_value = planned_loop_args.get('imgsz')
+        if imgsz_value in (None, ''):
+            imgsz_value = 640
         plan_payload: dict[str, Any] = {
             'mode': mode,
             'dataset_path': dataset_path,
             'model': model,
-            'batch': planned_training_args.get('batch') if planned_training_args.get('batch') is not None else planned_loop_args.get('batch', 16),
-            'imgsz': planned_training_args.get('imgsz') if planned_training_args.get('imgsz') is not None else planned_loop_args.get('imgsz', 640),
+            'batch': batch_value,
+            'imgsz': imgsz_value,
             'device': str(planned_training_args.get('device') or planned_loop_args.get('device') or draft.get('device') or '').strip(),
             'training_environment': str(draft.get('training_environment') or '').strip(),
             'data_yaml': str(planned_training_args.get('data_yaml') or planned_loop_args.get('data_yaml') or self.session_state.active_training.data_yaml or '').strip(),
@@ -3574,6 +3647,17 @@ class YoloStudioAgentClient:
             plan = merge_training_plan_edits(dict(payload.get('plan') or {}), dict(decision.get('edits') or {}))
             updated_payload = dict(payload)
             updated_payload['plan'] = self._model_dump_compat(plan)
+            next_step_tool = canonical_tool_name(str(updated_payload.get('next_step_tool') or '').strip())
+            next_step_args = dict(updated_payload.get('next_step_args') or {})
+            if next_step_tool in {'start_training', 'start_training_loop'}:
+                for key, value in dict(decision.get('edits') or {}).items():
+                    if value is None:
+                        next_step_args[key] = None
+                    else:
+                        next_step_args[key] = value
+                if next_step_tool == 'start_training_loop' and 'epochs' in next_step_args and 'epochs_per_round' not in next_step_args:
+                    next_step_args['epochs_per_round'] = next_step_args.pop('epochs')
+                updated_payload['next_step_args'] = next_step_args
             self._activate_local_training_confirmation_interrupt(updated_payload, thread_id=thread_id)
             message = self._render_plan_for_cli(
                 dict(updated_payload.get('plan') or {}),
@@ -4295,6 +4379,8 @@ class YoloStudioAgentClient:
         )
         if handoff.get('status') != 'needs_confirmation':
             return handoff
+        if self._is_training_confirmation_interrupt_payload(dict(handoff.get('interrupt_payload') or {})):
+            return handoff
         refreshed_pending = self._pending_from_state() or {}
         if prior_review_context:
             refreshed_pending = self._merge_pending_review_context(refreshed_pending, prior_review_context)
@@ -4377,7 +4463,11 @@ class YoloStudioAgentClient:
             or thread_id
         ).strip() or thread_id
         self._save_training_plan_draft(rebuilt_draft)
-        self._set_pending_confirmation(confirmation_thread_id, refreshed_pending)
+        interrupt_payload = self._draft_to_training_confirmation_interrupt(rebuilt_draft, thread_id=confirmation_thread_id)
+        if interrupt_payload is not None:
+            self._activate_local_training_confirmation_interrupt(interrupt_payload, thread_id=confirmation_thread_id)
+        else:
+            self._set_pending_confirmation(confirmation_thread_id, refreshed_pending)
         self.memory.append_event(
             self.session_state.session_id,
             'training_plan_confirmation_refreshed_locally',
@@ -4388,6 +4478,8 @@ class YoloStudioAgentClient:
             },
         )
         self.memory.save_state(self.session_state)
+        if interrupt_payload is not None:
+            return self._format_interrupt_or_result({}, thread_id=confirmation_thread_id, interrupt_payload=interrupt_payload)
         return self._needs_confirmation_result(
             confirmation_thread_id,
             self._pending_from_state() or refreshed_pending,
@@ -4698,7 +4790,11 @@ class YoloStudioAgentClient:
         rebuilt_draft, pending = materialized
         self._ensure_materialized_training_state_context(draft=rebuilt_draft)
         self._save_training_plan_draft(rebuilt_draft)
-        self._set_pending_confirmation(thread_id, pending)
+        interrupt_payload = self._draft_to_training_confirmation_interrupt(rebuilt_draft, thread_id=thread_id)
+        if interrupt_payload is not None:
+            self._activate_local_training_confirmation_interrupt(interrupt_payload, thread_id=thread_id)
+        else:
+            self._set_pending_confirmation(thread_id, pending)
         self.memory.append_event(
             self.session_state.session_id,
             'graph_text_training_plan_materialized',
@@ -4708,6 +4804,8 @@ class YoloStudioAgentClient:
                 'execution_mode': str(rebuilt_draft.get('execution_mode') or ''),
             },
         )
+        if interrupt_payload is not None:
+            return self._format_interrupt_or_result({}, thread_id=thread_id, interrupt_payload=interrupt_payload)
         return self._needs_confirmation_result(
             thread_id,
             pending,

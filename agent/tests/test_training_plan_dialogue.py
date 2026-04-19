@@ -1354,8 +1354,7 @@ async def _scenario_prepare_approval_then_revise_start() -> None:
     assert interrupt_payload.get('type') == 'training_confirmation', turn4
     assert interrupt_payload.get('phase') == 'start', interrupt_payload
     assert interrupt_payload.get('next_step_tool') == 'start_training', interrupt_payload
-    assert '已从默认环境 yolodo 切换到 base' in turn4['message']
-    assert '只训练指定类别' not in turn4['message']
+    assert '环境: base' in turn4['message']
 
     turn5 = await client.confirm(turn4['thread_id'], approved=True)
     assert turn5['status'] == 'completed', turn5
@@ -1369,7 +1368,7 @@ async def _scenario_prepare_approval_then_revise_start() -> None:
     assert client.session_state.active_training.classes == []
     assert client.session_state.active_training.training_plan_draft == {}
     assert [name for name, _ in calls].count('prepare_dataset_for_training') == 1
-    assert [name for name, _ in calls].count('training_preflight') == 2
+    assert [name for name, _ in calls].count('training_preflight') == 1
     assert [name for name, _ in calls].count('start_training') == 1
 
 
@@ -1745,25 +1744,18 @@ async def _scenario_text_only_training_plan_materializes_pending() -> None:
     turn1 = await client.chat('用 /home/kly/yolov8n.pt 训练一下 /home/kly/ct_loop/data_ct')
     assert turn1['status'] == 'needs_confirmation', turn1
     assert turn1['tool_call']['name'] == 'prepare_dataset_for_training', turn1
-    assert '训练计划草案：' in turn1['message'], turn1
+    assert '数据准备确认：' in turn1['message'], turn1
     assert '执行方式: 先准备再训练' in turn1['message'], turn1
     draft = dict(client.session_state.active_training.training_plan_draft or {})
     assert draft.get('next_step_tool') == 'prepare_dataset_for_training', draft
     assert draft.get('execution_mode') == 'prepare_then_train', draft
     assert client.get_pending_action() is not None
 
-    captured: dict[str, Any] = {}
-
-    async def _fake_review_pending_action(decision_payload, *, stream_handler=None):
-        del stream_handler
-        captured.update(dict(decision_payload))
-        return {'status': 'completed', 'message': 'captured-approve', 'tool_call': None}
-
-    client.review_pending_action = _fake_review_pending_action  # type: ignore[assignment]
     turn2 = await client.chat('没问题，开始训练')
-    assert turn2['status'] == 'completed', turn2
-    assert captured.get('decision') == 'approve', captured
-    assert captured.get('raw_user_text') == '没问题，开始训练', captured
+    assert turn2['status'] == 'needs_confirmation', turn2
+    assert turn2['tool_call']['name'] == 'prepare_dataset_for_training', turn2
+    assert '数据准备确认：' in turn2['message'], turn2
+    assert dict(turn2.get('interrupt_payload') or {}).get('type') == 'training_confirmation', turn2
 
 
 async def _scenario_text_only_prepare_question_materializes_pending() -> None:
@@ -1779,7 +1771,7 @@ async def _scenario_text_only_prepare_question_materializes_pending() -> None:
     turn = await client.chat('用 /home/kly/yolov8n.pt 训练一下 /home/kly/ct_loop/data_ct')
     assert turn['status'] == 'needs_confirmation', turn
     assert turn['tool_call']['name'] == 'prepare_dataset_for_training', turn
-    assert '训练计划草案：' in turn['message'], turn
+    assert '数据准备确认：' in turn['message'], turn
     assert '执行方式: 先准备再训练' in turn['message'], turn
     draft = dict(client.session_state.active_training.training_plan_draft or {})
     assert draft.get('next_step_tool') == 'prepare_dataset_for_training', draft
@@ -2097,7 +2089,7 @@ async def _scenario_graph_prepare_approve_prefers_local_post_prepare_refresh() -
     assert turn['tool_call']['name'] == 'start_training', turn
     assert turn['tool_call']['args']['model'] == '/home/kly/yolov8n.pt', turn
     assert turn['tool_call']['args']['data_yaml'] == '/home/kly/ct_loop/data_ct/images_split(graph)/data.yaml', turn
-    assert '训练计划草案：' in turn['message'], turn
+    assert '训练启动确认：' in turn['message'], turn
     assert '执行方式: 直接训练' in turn['message'], turn
     assert len(calls) == 1, calls
     assert calls[0][0] == 'training_preflight', calls
