@@ -95,6 +95,7 @@ REMOTE_FOLLOWUP_TOKENS = (
 class ContextRetentionDecision:
     reuse_history: bool
     reason: str
+    preserve_state_context: bool = False
 
 
 def _mentions_any(text: str, lowered: str, tokens: tuple[str, ...]) -> bool:
@@ -237,6 +238,162 @@ def _needs_best_run_prediction_context(state: SessionState, user_text: str) -> b
     return mentions_best_run and mentions_prediction
 
 
+def _needs_read_only_prediction_followup_without_history(state: SessionState, user_text: str) -> bool:
+    if not _has_prediction_followup_context(state):
+        return False
+    text = str(user_text or '').strip()
+    lowered = text.lower()
+    if not text:
+        return False
+    mentions_prediction_target = _mentions_any(
+        text,
+        lowered,
+        (
+            '预测',
+            '推理',
+            '识别',
+            '预测输出',
+            '预测报告',
+            '报告',
+            '输出',
+            '输出目录',
+            '结果目录',
+            '产物',
+            'prediction',
+            'predict',
+            'report',
+            'output',
+        ),
+    )
+    mentions_read_only = _mentions_any(
+        text,
+        lowered,
+        (
+            '查看',
+            '详情',
+            '详细',
+            '记录',
+            '信息',
+            '状态',
+            '结果',
+            '情况',
+            '怎么看',
+            '说明',
+            'detail',
+            'details',
+            'status',
+            'explain',
+        ),
+    )
+    mentions_execution = _mentions_any(
+        text,
+        lowered,
+        (
+            '开始训练',
+            '启动训练',
+            '执行',
+            '上传',
+            '下载',
+            '暂停',
+            '停止',
+            '覆盖',
+            '复制',
+            'start training',
+            'upload',
+            'download',
+            'pause',
+            'stop',
+            'overwrite',
+            'copy',
+        ),
+    )
+    if not mentions_read_only or mentions_execution:
+        return False
+    if mentions_prediction_target:
+        return False
+    return not any(
+        (
+            _has_dataset_followup_context(state),
+            _has_training_followup_context(state),
+            _has_knowledge_followup_context(state),
+            _has_remote_followup_context(state),
+        )
+    )
+
+
+def _needs_read_only_training_followup_without_history(state: SessionState, user_text: str) -> bool:
+    training = state.active_training
+    if not (training.best_run_selection or training.last_run_inspection):
+        return False
+    text = str(user_text or '').strip()
+    lowered = text.lower()
+    if not text:
+        return False
+    mentions_target = _mentions_any(
+        text,
+        lowered,
+        (
+            '最佳训练',
+            '最好权重',
+            '训练详情',
+            '训练记录',
+            '训练结果',
+            'best run',
+            'best weight',
+            'training detail',
+            'training details',
+            'training result',
+        ),
+    )
+    mentions_read_only = _mentions_any(
+        text,
+        lowered,
+        (
+            '查看',
+            '详情',
+            '详细',
+            '记录',
+            '信息',
+            '状态',
+            '结果',
+            '怎么看',
+            '说明',
+            'detail',
+            'details',
+            'status',
+            'explain',
+        ),
+    )
+    mentions_execution = _mentions_any(
+        text,
+        lowered,
+        (
+            '预测',
+            '推理',
+            '识别',
+            '开始训练',
+            '启动训练',
+            '执行',
+            '上传',
+            '下载',
+            '暂停',
+            '停止',
+            '覆盖',
+            '复制',
+            'predict',
+            'infer',
+            'start training',
+            'upload',
+            'download',
+            'pause',
+            'stop',
+            'overwrite',
+            'copy',
+        ),
+    )
+    return mentions_target and mentions_read_only and not mentions_execution
+
+
 def _cached_domain_followup_reason(state: SessionState, user_text: str) -> str:
     text = str(user_text or '').strip()
     lowered = text.lower()
@@ -272,6 +429,10 @@ def build_context_retention_decision(
         return ContextRetentionDecision(True, 'training_plan_draft')
     if _has_active_workflow_context(state):
         return ContextRetentionDecision(True, 'active_workflow')
+    if _needs_read_only_prediction_followup_without_history(state, user_text):
+        return ContextRetentionDecision(False, 'read_only_prediction_followup', preserve_state_context=True)
+    if _needs_read_only_training_followup_without_history(state, user_text):
+        return ContextRetentionDecision(False, 'read_only_training_followup', preserve_state_context=True)
     if _needs_best_run_prediction_context(state, user_text):
         return ContextRetentionDecision(True, 'best_run_prediction_followup')
     if not _has_new_task_targets(user_text):

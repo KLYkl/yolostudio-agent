@@ -1501,6 +1501,104 @@ async def _scenario_prepare_then_train_preserves_explicit_classes_txt() -> None:
     assert [name for name, _ in calls].count('training_preflight') == 1
 
 
+async def _scenario_pending_prepare_then_train_uses_structured_surface_even_with_planner() -> None:
+    scenario_root = WORK / 'prepare_then_train_with_planner_surface'
+    client = _make_dummy_client(session_id='training-plan-dialogue-planner-surface', memory_root=scenario_root)
+    client.planner_llm = object()
+
+    async def _fake_renderer(**_: Any) -> str:
+        return '这是模型整理后的说明。'
+
+    client._invoke_renderer_text = _fake_renderer  # type: ignore[assignment]
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((tool_name, dict(kwargs)))
+        if tool_name == 'training_readiness':
+            result = {
+                'ok': True,
+                'summary': '当前还不能直接训练：缺少可用的 data_yaml；但当前数据集可以先进入 prepare_dataset_for_training',
+                'dataset_root': '/data/raw',
+                'resolved_img_dir': '/data/raw/images',
+                'resolved_label_dir': '/data/raw/labels',
+                'resolved_data_yaml': '',
+                'ready': False,
+                'preparable': True,
+                'primary_blocker_type': 'missing_yaml',
+                'warnings': [],
+                'blockers': ['缺少可用的 data_yaml'],
+            }
+        elif tool_name == 'list_training_environments':
+            result = {
+                'ok': True,
+                'summary': '发现 1 个可用训练环境，默认将使用 yolodo',
+                'environments': [{'name': 'yolodo', 'display_name': 'yolodo', 'selected_by_default': True}],
+                'default_environment': {'name': 'yolodo', 'display_name': 'yolodo'},
+            }
+        else:
+            raise AssertionError(f'unexpected tool call: {tool_name}')
+
+        client._apply_to_state(tool_name, result, kwargs)
+        return result
+
+    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+
+    turn = await client.chat('请把 /data/raw 按默认比例划分成训练集和验证集，然后用 yolov8n.pt 模型来训练。')
+    assert turn['status'] == 'needs_confirmation', turn
+    assert turn['tool_call']['name'] == 'prepare_dataset_for_training', turn
+    assert '训练计划草案：' in turn['message'], turn
+    assert '执行方式: 先准备再训练' in turn['message'], turn
+    assert turn['message'] != '这是模型整理后的说明。', turn
+    assert [name for name, _ in calls[:2]] == ['training_readiness', 'list_training_environments'], calls
+
+
+async def _scenario_prepare_only_with_planner_keeps_natural_surface() -> None:
+    scenario_root = WORK / 'prepare_only_with_planner_surface'
+    client = _make_dummy_client(session_id='training-plan-dialogue-prepare-only-planner', memory_root=scenario_root)
+    client.planner_llm = object()
+
+    async def _fake_renderer(**_: Any) -> str:
+        return '我会先按默认比例准备数据，暂时不会开始训练。'
+
+    client._invoke_renderer_text = _fake_renderer  # type: ignore[assignment]
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((tool_name, dict(kwargs)))
+        if tool_name != 'dataset_training_readiness':
+            raise AssertionError(f'unexpected tool call: {tool_name}')
+        result = {
+            'ok': True,
+            'readiness_scope': 'dataset',
+            'summary': '从数据集角度看，这份数据还不能直接训练: 缺少可用的 data.yaml, 训练/验证集还没准备好；但可以先准备数据',
+            'dataset_root': '/home/kly/ct_loop/data_ct',
+            'dataset_structure': 'image_label_root',
+            'is_split': False,
+            'needs_split': True,
+            'needs_data_yaml': True,
+            'resolved_img_dir': '/home/kly/ct_loop/data_ct/images',
+            'resolved_label_dir': '/home/kly/ct_loop/data_ct/labels',
+            'resolved_data_yaml': '',
+            'ready': False,
+            'preparable': True,
+            'primary_blocker_type': 'missing_yaml',
+            'warnings': [],
+            'blockers': ['缺少可用的 data.yaml', '训练/验证集还没准备好'],
+            'next_step_summary': '可以先准备数据，补齐 data.yaml 和划分产物。',
+        }
+        client._apply_to_state(tool_name, result, kwargs)
+        return result
+
+    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+
+    turn = await client.chat('用 /home/kly/ct_loop/data_ct 按默认比例准备训练数据，先不要开始训练。')
+    assert turn['status'] == 'needs_confirmation', turn
+    assert turn['tool_call']['name'] == 'prepare_dataset_for_training', turn
+    assert '训练计划草案' not in turn['message'], turn
+    assert turn['message'] == '我会先按默认比例准备数据，暂时不会开始训练。', turn
+    assert calls[0][0] == 'dataset_training_readiness', calls
+
+
 async def _run() -> None:
     shutil.rmtree(WORK, ignore_errors=True)
     WORK.mkdir(parents=True, exist_ok=True)
@@ -1515,6 +1613,8 @@ async def _run() -> None:
         await _scenario_prepare_only_invalid_path_is_not_confirmed()
         await _scenario_prepare_then_train_prompt_is_not_short_circuited()
         await _scenario_prepare_then_train_preserves_explicit_classes_txt()
+        await _scenario_pending_prepare_then_train_uses_structured_surface_even_with_planner()
+        await _scenario_prepare_only_with_planner_keeps_natural_surface()
         await _scenario_cancel_then_replan()
         await _scenario_cancel_prepare_then_rebuild()
         await _scenario_preparable_backend_switch()

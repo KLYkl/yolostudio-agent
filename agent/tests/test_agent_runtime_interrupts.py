@@ -163,6 +163,7 @@ except Exception:
     sys.modules['langgraph.checkpoint.memory'] = checkpoint_mod
 
 from langchain_core.messages import AIMessage
+from langchain_core.messages import ToolMessage
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
 
 
@@ -193,6 +194,32 @@ class _GraphWithPendingTool:
     async def ainvoke(self, *args, **kwargs):
         self.resume_calls.append((args, kwargs))
         raise AssertionError('synthetic pending should not resume graph state')
+
+
+class _ResumableGraphWithoutVisiblePending:
+    def __init__(self) -> None:
+        self.resume_calls: list[Any] = []
+
+    def get_state(self, config):
+        del config
+        return None
+
+    async def ainvoke(self, payload, config=None):
+        del config
+        self.resume_calls.append(payload)
+        messages = [
+            AIMessage(
+                content='',
+                tool_calls=[{'id': 'call-1', 'name': 'upload_assets_to_remote', 'args': {'server': 'lab', 'local_paths': ['/tmp/demo.pt']}}],
+            ),
+            ToolMessage(
+                content='{"ok": true, "summary": "上传完成", "remote_root": "/tmp/agent_stage"}',
+                name='upload_assets_to_remote',
+                tool_call_id='call-1',
+            ),
+            AIMessage(content='上传完成'),
+        ]
+        return {'messages': messages}
 
 
 WORK = Path(__file__).resolve().parent / '_tmp_runtime_interrupts'
@@ -384,6 +411,32 @@ async def _scenario_stale_graph_pending_is_cleared() -> None:
     assert client.get_pending_action() is None
 
 
+async def _scenario_graph_pending_shadow_is_reused_when_graph_can_resume() -> None:
+    scenario_root = WORK / 'graph_pending_shadow_reused'
+    settings = AgentSettings(session_id='runtime-interrupt-graph-shadow', memory_root=str(scenario_root))
+    graph = _ResumableGraphWithoutVisiblePending()
+    client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
+    client._set_pending_confirmation(
+        'runtime-interrupt-graph-shadow-turn-1',
+        {
+            'name': 'upload_assets_to_remote',
+            'args': {'server': 'lab', 'local_paths': ['/tmp/demo.pt']},
+            'id': 'call-1',
+            'source': 'graph',
+        },
+    )
+
+    pending = client.get_pending_action()
+    assert pending is not None, pending
+    assert pending['tool_name'] == 'upload_assets_to_remote', pending
+
+    result = await client.confirm('runtime-interrupt-graph-shadow-turn-1', approved=True)
+    assert result['status'] == 'completed', result
+    assert '上传完成' in result['message'], result
+    assert len(graph.resume_calls) == 1, graph.resume_calls
+    assert client.get_pending_action() is None
+
+
 async def _scenario_synthetic_pending_ignores_graph_pending() -> None:
     scenario_root = WORK / 'synthetic_ignores_graph'
     settings = AgentSettings(session_id='runtime-interrupt-synthetic-graph', memory_root=str(scenario_root))
@@ -445,6 +498,7 @@ async def _run() -> None:
         await _scenario_review_edit_keeps_pending()
         await _scenario_review_approve()
         await _scenario_stale_graph_pending_is_cleared()
+        await _scenario_graph_pending_shadow_is_reused_when_graph_can_resume()
         await _scenario_synthetic_pending_ignores_graph_pending()
         await _scenario_runtime_ignores_manual_pending_session_mutation()
         print('agent runtime interrupts ok')

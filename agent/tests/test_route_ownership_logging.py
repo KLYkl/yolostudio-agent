@@ -179,6 +179,18 @@ class _GraphWithHandledToolError:
         return {'messages': messages}
 
 
+class _GraphWithTextOnlyReply:
+    def get_state(self, config):
+        del config
+        return None
+
+    async def ainvoke(self, payload, config=None):
+        del config
+        messages = list(payload['messages'])
+        messages.append(AIMessage(content='当前样本最少的是 epidural。'))
+        return {'messages': messages}
+
+
 class _FakePlannerResponse:
     def __init__(self, content: str) -> None:
         self.content = content
@@ -214,6 +226,18 @@ async def _run() -> None:
     graph_route_names = [str(item.get('route') or '') for item in graph_routes]
     assert 'graph-selected-tool' in graph_route_names, graph_routes
     assert 'tool-error-recovery' in graph_route_names, graph_routes
+
+    text_client = YoloStudioAgentClient(
+        graph=_GraphWithTextOnlyReply(),
+        settings=AgentSettings(session_id='route-graph-text', memory_root=str(WORK / 'graph-text')),
+        tool_registry={},
+        planner_llm=None,
+    )
+    text_client._try_handle_mainline_intent = _never_bypass  # type: ignore[assignment]
+    text_result = await text_client.chat('哪个类别样本最少？')
+    assert text_result['status'] == 'completed', text_result
+    text_routes = text_client.route_ownership_report()
+    assert any(item.get('route') == 'graph-text-response' for item in text_routes), text_routes
 
     bypass_client = YoloStudioAgentClient(
         graph=_GraphWithHandledToolError(),

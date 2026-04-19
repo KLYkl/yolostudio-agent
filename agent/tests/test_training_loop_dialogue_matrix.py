@@ -578,6 +578,9 @@ async def _run() -> None:
         planner_prepare = await planner_route_client.chat('用 /home/kly/ct_loop/data_ct 数据集和 /home/kly/yolov8n.pt 循环训练3轮。')
         assert planner_prepare['status'] == 'needs_confirmation', planner_prepare
         assert planner_prepare['tool_call']['name'] == 'prepare_dataset_for_training', planner_prepare
+        assert '训练计划草案：' in planner_prepare['message'], planner_prepare
+        assert '执行方式: 先准备再进入循环训练' in planner_prepare['message'], planner_prepare
+        assert planner_prepare['message'] != '这是模型整理后的说明。', planner_prepare
         assert planner_route_calls[-1][0] == 'training_readiness', planner_route_calls
         assert planner_route_client.session_state.active_training.training_plan_draft.get('planner_decision_source') == 'fallback', planner_prepare
         assert planner_route_client.session_state.active_training.training_plan_draft.get('planner_decision') == 'prepare', planner_prepare
@@ -589,6 +592,9 @@ async def _run() -> None:
         planner_direct_start = await planner_direct_start_client.chat('用 /data/loop 数据集和 yolov8n.pt 开一个全托管环训练，最多 2 轮。')
         assert planner_direct_start['status'] == 'needs_confirmation', planner_direct_start
         assert planner_direct_start['tool_call']['name'] == 'start_training_loop', planner_direct_start
+        assert '训练计划草案：' in planner_direct_start['message'], planner_direct_start
+        assert '执行方式: 直接启动循环训练' in planner_direct_start['message'], planner_direct_start
+        assert planner_direct_start['message'] != '这是模型整理后的说明。', planner_direct_start
         assert planner_direct_start_client.session_state.active_training.training_plan_draft.get('planner_observed_tools') == ['training_readiness'], planner_direct_start
         assert planner_direct_start_client.session_state.active_training.training_plan_draft.get('planner_decision_source') == 'fallback', planner_direct_start
         assert planner_direct_start_client.session_state.active_training.training_plan_draft.get('planner_decision') == 'start', planner_direct_start
@@ -596,6 +602,8 @@ async def _run() -> None:
         planner_prepare_followup = await planner_route_client.confirm(planner_prepare['thread_id'], True)
         assert planner_prepare_followup['status'] == 'needs_confirmation', planner_prepare_followup
         assert planner_prepare_followup['tool_call']['name'] == 'start_training_loop', planner_prepare_followup
+        assert '训练计划草案：' in planner_prepare_followup['message'], planner_prepare_followup
+        assert '执行方式: 先准备再进入循环训练' in planner_prepare_followup['message'], planner_prepare_followup
         assert planner_route_client.session_state.active_training.training_plan_draft.get('planner_decision_source') == 'fallback', planner_prepare_followup
         assert planner_route_client.session_state.active_training.training_plan_draft.get('planner_decision') == 'start', planner_prepare_followup
 

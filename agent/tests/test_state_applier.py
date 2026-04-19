@@ -684,6 +684,21 @@ def main() -> None:
 
     apply_tool_result_to_state(
         state,
+        'inspect_training_run',
+        {
+            'ok': True,
+            'summary': '训练记录详情已就绪',
+            'selected_run_id': 'train_log_2',
+            'run_state': 'completed',
+            'best_weight_path': '/runs/train_log_2/weights/best.pt',
+        },
+    )
+    assert state.active_training.best_run_selection['best_weight_path'] == '/runs/train_log_2/weights/best.pt'
+    assert state.active_training.best_run_selection['resolved_weight_path'] == '/runs/train_log_2/weights/best.pt'
+    assert state.active_training.best_run_selection['best_run']['best_weight_path'] == '/runs/train_log_2/weights/best.pt'
+
+    apply_tool_result_to_state(
+        state,
         'retrieve_training_knowledge',
         {
             'ok': True,

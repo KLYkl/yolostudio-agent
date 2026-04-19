@@ -41,6 +41,42 @@ def _run() -> None:
     )
     assert best_weight_ready == {'action': 'none'}, best_weight_ready
 
+    best_weight_from_matching_inspection = resolve_prediction_request_followup_action(
+        wants_predict=True,
+        training_command_like=False,
+        wants_best_weight_prediction=True,
+        best_run_selection={
+            'summary': '最近最佳训练为 train_log_best。',
+            'best_run': {'run_id': 'train_log_best'},
+        },
+        last_run_inspection={
+            'summary': '最佳训练详情已就绪',
+            'selected_run_id': 'train_log_best',
+            'best_weight_path': '/weights/best.pt',
+        },
+    )
+    assert best_weight_from_matching_inspection == {'action': 'none'}, best_weight_from_matching_inspection
+
+    mismatched_inspection_still_blocks = resolve_prediction_request_followup_action(
+        wants_predict=True,
+        training_command_like=False,
+        wants_best_weight_prediction=True,
+        best_run_selection={
+            'summary': '最近最佳训练为 train_log_best。',
+            'best_run': {'run_id': 'train_log_best'},
+        },
+        last_run_inspection={
+            'summary': '另一个训练详情已就绪',
+            'selected_run_id': 'train_log_other',
+            'best_weight_path': '/weights/other.pt',
+        },
+    )
+    assert mismatched_inspection_still_blocks == {
+        'action': 'reply',
+        'reply': '我当前不能直接假定“最佳训练”的权重文件路径；请先查看最佳训练详情，或明确给我可用的权重路径。',
+        'status': 'completed',
+    }, mismatched_inspection_still_blocks
+
     non_prediction = resolve_prediction_request_followup_action(
         wants_predict=False,
         training_command_like=False,

@@ -172,6 +172,20 @@ def _make_client(session_id: str) -> YoloStudioAgentClient:
     return client
 
 
+def _make_prepare_client(session_id: str) -> YoloStudioAgentClient:
+    root = WORK / session_id
+    settings = AgentSettings(session_id=session_id, memory_root=str(root))
+    client = YoloStudioAgentClient(graph=_NoLLMGraph(), settings=settings, tool_registry={})
+    pending = {
+        'name': 'prepare_dataset_for_training',
+        'args': {'dataset_path': '/data/demo', 'force_split': True},
+        'id': None,
+        'synthetic': True,
+    }
+    client._set_pending_confirmation(f'{session_id}-pending', pending)
+    return client
+
+
 async def _scenario_status_query_reuses_confirmation_message() -> None:
     client = _make_client('pending-status')
 
@@ -198,12 +212,71 @@ async def _scenario_generic_text_reuses_confirmation_message() -> None:
     assert turn['message'] == '当前待确认的是启动训练：将使用 yolov8n.pt 训练 10 轮。', turn
 
 
+async def _scenario_prepare_start_like_phrase_routes_to_approve() -> None:
+    client = _make_prepare_client('pending-prepare-approve')
+    captured: dict[str, object] = {}
+
+    async def _fake_review_pending_action(decision_payload, *, stream_handler=None):
+        del stream_handler
+        captured.update(dict(decision_payload))
+        return {'status': 'completed', 'message': 'captured-approve', 'tool_call': None}
+
+    client.review_pending_action = _fake_review_pending_action  # type: ignore[assignment]
+    turn = await client.chat('没问题，开始训练')
+    assert turn['status'] == 'completed', turn
+    assert captured.get('decision') == 'approve', captured
+    assert captured.get('raw_user_text') == '没问题，开始训练', captured
+
+
+async def _scenario_continue_phrase_routes_to_approve() -> None:
+    client = _make_client('pending-continue-approve')
+    captured: dict[str, object] = {}
+
+    async def _fake_review_pending_action(decision_payload, *, stream_handler=None):
+        del stream_handler
+        captured.update(dict(decision_payload))
+        return {'status': 'completed', 'message': 'captured-approve', 'tool_call': None}
+
+    client.review_pending_action = _fake_review_pending_action  # type: ignore[assignment]
+    turn = await client.chat('可以，继续')
+    assert turn['status'] == 'completed', turn
+    assert captured.get('decision') == 'approve', captured
+    assert captured.get('raw_user_text') == '可以，继续', captured
+
+
+async def _scenario_edit_phrase_marks_pending_as_edit() -> None:
+    client = _make_client('pending-edit')
+    turn = await client.chat('把 batch 改成 12 再继续')
+    pending = client.get_pending_action()
+    assert pending is not None, turn
+    assert pending['decision_context']['decision'] == 'edit', pending
+    assert pending['decision_context']['raw_user_text'] == '把 batch 改成 12 再继续', pending
+    assert client.session_state.active_training.training_plan_draft.get('planned_training_args', {}).get('batch') == 12
+
+
+async def _scenario_clarify_phrase_reuses_confirmation_message() -> None:
+    client = _make_prepare_client('pending-clarify')
+
+    async def _fake_confirmation_message(pending):
+        assert pending['name'] == 'prepare_dataset_for_training'
+        return '当前待确认的是准备数据集：会先生成 data.yaml 再决定是否进入训练。'
+
+    client._build_confirmation_message = _fake_confirmation_message  # type: ignore[assignment]
+    turn = await client.chat('为什么这样安排？')
+    assert turn['status'] == 'needs_confirmation', turn
+    assert turn['message'] == '当前待确认的是准备数据集：会先生成 data.yaml 再决定是否进入训练。', turn
+
+
 async def _run() -> None:
     shutil.rmtree(WORK, ignore_errors=True)
     WORK.mkdir(parents=True, exist_ok=True)
     try:
         await _scenario_status_query_reuses_confirmation_message()
         await _scenario_generic_text_reuses_confirmation_message()
+        await _scenario_prepare_start_like_phrase_routes_to_approve()
+        await _scenario_continue_phrase_routes_to_approve()
+        await _scenario_edit_phrase_marks_pending_as_edit()
+        await _scenario_clarify_phrase_reuses_confirmation_message()
         print('pending confirmation dialogue route ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)

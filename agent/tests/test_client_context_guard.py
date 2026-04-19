@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import sys
 import types
@@ -154,6 +155,7 @@ from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudio
 from yolostudio_agent.agent.client.file_checkpointer import FileCheckpointSaver
 from yolostudio_agent.agent.client.memory_store import MemoryStore
 from yolostudio_agent.agent.client.session_state import SessionState
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 
 class _NoGraph:
@@ -179,6 +181,62 @@ class _CaptureGraph:
         del config
         self.payload = payload
         return {'messages': list(payload.get('messages') or [])}
+
+
+class _CaptureConfigGraph:
+    def __init__(self) -> None:
+        self.payload = None
+        self.thread_id = ''
+
+    def get_state(self, config):
+        del config
+        return None
+
+    async def ainvoke(self, payload, config=None):
+        configurable = dict((config or {}).get('configurable') or {})
+        self.thread_id = str(configurable.get('thread_id') or '').strip()
+        self.payload = payload
+        return {'messages': list(payload.get('messages') or [])}
+
+
+class _BestRunDetailLeakGuardGraph:
+    def __init__(self) -> None:
+        self.payload = None
+        self.calls: list[str] = []
+
+    def get_state(self, config):
+        del config
+        return None
+
+    async def ainvoke(self, payload, config=None):
+        del config
+        self.payload = payload
+        messages = list(payload.get('messages') or [])
+        transcript = '\n'.join(str(getattr(message, 'content', '')) for message in messages)
+        if '用最佳训练去预测 /data/images' in transcript and '查看这次最佳训练详情' in transcript:
+            tool_name = 'predict_images'
+            args = {'source_path': '/data/images', 'model': '/weights/best.pt'}
+            result = {'ok': True, 'summary': '图片预测完成'}
+            reply = '图片预测完成'
+        else:
+            tool_name = 'inspect_training_run'
+            args = {'run_id': 'train_log_best'}
+            result = {
+                'ok': True,
+                'summary': '最佳训练详情已就绪',
+                'selected_run_id': 'train_log_best',
+                'best_weight_path': '/weights/best.pt',
+            }
+            reply = '最佳训练详情已就绪'
+        self.calls.append(tool_name)
+        tool_call_id = f'call-{len(self.calls)}'
+        return {
+            'messages': messages + [
+                AIMessage(content='', tool_calls=[{'id': tool_call_id, 'name': tool_name, 'args': args}]),
+                ToolMessage(content=json.dumps(result, ensure_ascii=False), name=tool_name, tool_call_id=tool_call_id),
+                AIMessage(content=reply),
+            ]
+        }
 
 
 class _CheckpointGraph:
@@ -677,6 +735,57 @@ async def _scenario_legacy_synthetic_pending_is_bootstrapped_without_graph() -> 
     assert client.session_state.pending_confirmation.source == 'synthetic'
 
 
+async def _scenario_turn_index_bootstraps_from_checkpoint_threads() -> None:
+    root = WORK / 'startup-turn-index-bootstrap'
+    store = MemoryStore(root)
+    state = SessionState(session_id='startup-turn-index-bootstrap')
+    store.save_state(state)
+
+    capture_graph = _CaptureConfigGraph()
+    settings = AgentSettings(session_id='startup-turn-index-bootstrap', memory_root=str(root))
+    client = YoloStudioAgentClient(
+        graph=capture_graph,
+        settings=settings,
+        tool_registry={},
+        checkpointer=_FakeCheckpointSaver(
+            [
+                'startup-turn-index-bootstrap-turn-1',
+                'startup-turn-index-bootstrap-turn-7-post-prepare-start',
+                'startup-turn-index-bootstrap-turn-7',
+            ]
+        ),
+    )
+    assert client._turn_index == 7
+    await client.chat('你好')
+    assert capture_graph.thread_id == 'startup-turn-index-bootstrap-turn-8', capture_graph.thread_id
+
+
+async def _scenario_read_only_best_run_followup_does_not_forward_prior_predict_intent() -> None:
+    root = WORK / 'best-run-read-only-followup'
+    graph = _BestRunDetailLeakGuardGraph()
+    settings = AgentSettings(session_id='best-run-read-only-followup', memory_root=str(root))
+    client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
+    client.session_state.active_training.best_run_selection = {
+        'summary': '最近最佳训练为 train_log_best。',
+        'best_run': {
+            'run_id': 'train_log_best',
+            'best_weight_path': '/weights/best.pt',
+        },
+    }
+    client.memory.save_state(client.session_state)
+    client._messages.append(HumanMessage(content='用最佳训练去预测 /data/images'))
+    client._messages.append(AIMessage(content='请先查看最佳训练详情'))
+
+    turn = await client.chat('查看这次最佳训练详情')
+    assert turn['status'] == 'completed', turn
+    assert '最佳训练详情已就绪' in turn['message'], turn
+    assert graph.calls == ['inspect_training_run'], graph.calls
+    payload = graph.payload or {}
+    contents = [str(getattr(message, 'content', '')) for message in list(payload.get('messages') or [])]
+    assert any('best_run_id: train_log_best' in content for content in contents), contents
+    assert not any('用最佳训练去预测 /data/images' in content for content in contents), contents
+
+
 async def _scenario_corrupt_checkpoint_is_observed_on_startup() -> None:
     root = WORK / 'startup-corrupt-checkpoint'
     store = MemoryStore(root)
@@ -744,6 +853,42 @@ async def _scenario_best_weight_path_is_visible_to_graph_handoff() -> None:
     assert 'best_run_weight_path: /weights/best.pt' in summary
 
 
+async def _scenario_inspected_best_weight_path_is_promoted_before_graph_handoff() -> None:
+    root = WORK / 'best-weight-promoted-from-inspection'
+    capture_graph = _CaptureGraph()
+    settings = AgentSettings(session_id='best-weight-promoted-from-inspection', memory_root=str(root))
+    client = YoloStudioAgentClient(graph=capture_graph, settings=settings, tool_registry={})
+    client.session_state.active_training.best_run_selection = {
+        'summary': '最近最佳训练为 train_log_best。',
+        'best_run': {
+            'run_id': 'train_log_best',
+        },
+    }
+    client._apply_to_state(
+        'inspect_training_run',
+        {
+            'ok': True,
+            'summary': '最佳训练详情已就绪',
+            'selected_run_id': 'train_log_best',
+            'best_weight_path': '/weights/best.pt',
+        },
+        {},
+    )
+    client.memory.save_state(client.session_state)
+    await client._invoke_graph_from_current_runtime(
+        thread_id='best-weight-promoted-from-inspection-turn-1',
+        user_text_hint='用最佳训练去预测图片 /data/images。',
+    )
+    payload = capture_graph.payload or {}
+    messages = list(payload.get('messages') or [])
+    summary = '\n'.join(
+        str(getattr(message, 'content', '') or '')
+        for message in messages
+    )
+    assert 'best_run_id: train_log_best' in summary
+    assert 'best_run_weight_path: /weights/best.pt' in summary
+
+
 async def _run() -> None:
     shutil.rmtree(WORK, ignore_errors=True)
     WORK.mkdir(parents=True, exist_ok=True)
@@ -759,8 +904,11 @@ async def _run() -> None:
         await _scenario_existing_graph_pending_refreshes_stale_same_tool_draft()
         await _scenario_legacy_synthetic_pending_is_replaced_by_single_graph_pending()
         await _scenario_legacy_synthetic_pending_is_bootstrapped_without_graph()
+        await _scenario_turn_index_bootstraps_from_checkpoint_threads()
+        await _scenario_read_only_best_run_followup_does_not_forward_prior_predict_intent()
         await _scenario_corrupt_checkpoint_is_observed_on_startup()
         await _scenario_best_weight_path_is_visible_to_graph_handoff()
+        await _scenario_inspected_best_weight_path_is_promoted_before_graph_handoff()
         print('client context guard ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)

@@ -217,6 +217,7 @@ class YoloStudioAgentClient:
         self._applied_tool_call_ids: set[str] = set()
         self._recorded_route_tool_call_ids: set[str] = set()
         self._recorded_tool_error_signatures: set[str] = set()
+        self._recorded_graph_text_signatures: set[str] = set()
         self._pending_confirmation_shadow: dict[str, Any] | None = None
         self._pending_review_shadow: dict[str, Any] = {}
         self.memory = memory or MemoryStore(settings.memory_root)
@@ -226,6 +227,7 @@ class YoloStudioAgentClient:
         self.session_state: SessionState = self.memory.load_state(settings.session_id)
         self._bootstrap_pending_confirmation_state()
         self._reconcile_startup_pending_confirmation()
+        self._bootstrap_turn_index()
         self._clear_stale_startup_state()
         self._sync_training_workflow_state(reason='startup_sync')
         self._record_startup_checkpoint_health()
@@ -395,6 +397,46 @@ class YoloStudioAgentClient:
             thread_id=thread_id,
             tool_names=[str(item.get('tool') or '') for item in errors],
             metadata={'errors': errors},
+        )
+
+    def _record_graph_text_response(
+        self,
+        messages: list[BaseMessage],
+        *,
+        thread_id: str,
+        built_messages_len: int,
+    ) -> None:
+        delta_messages = messages[built_messages_len:] if built_messages_len <= len(messages) else messages
+        if any(isinstance(message, AIMessage) and list(getattr(message, 'tool_calls', []) or []) for message in delta_messages):
+            return
+        final_text = ''
+        for message in reversed(delta_messages):
+            if not isinstance(message, AIMessage):
+                continue
+            text = self._message_text(getattr(message, 'content', ''))
+            if text:
+                final_text = text
+                break
+        if not final_text:
+            return
+        signature = json.dumps(
+            {
+                'thread_id': thread_id,
+                'reply': final_text,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        if signature in self._recorded_graph_text_signatures:
+            return
+        self._recorded_graph_text_signatures.add(signature)
+        self._record_route_ownership(
+            'graph-text-response',
+            thread_id=thread_id,
+            metadata={
+                'response_kind': 'text',
+                'reply_preview': final_text[:120],
+            },
         )
 
     @staticmethod
@@ -701,6 +743,27 @@ class YoloStudioAgentClient:
             reason=reason,
         )
 
+    def _bootstrap_turn_index(self) -> None:
+        prefix = f'{self.session_state.session_id}-turn-'
+        candidate_thread_ids = set(self._startup_checkpoint_thread_ids())
+        for candidate in (
+            str(self.session_state.pending_confirmation.thread_id or '').strip(),
+            str((self._pending_confirmation_shadow or {}).get('thread_id') or '').strip(),
+        ):
+            if candidate:
+                candidate_thread_ids.add(candidate)
+        max_turn_index = 0
+        for thread_id in candidate_thread_ids:
+            if not thread_id.startswith(prefix):
+                continue
+            suffix = thread_id[len(prefix):]
+            match = re.match(r'(\d+)', suffix)
+            if not match:
+                continue
+            with contextlib.suppress(Exception):
+                max_turn_index = max(max_turn_index, int(match.group(1)))
+        self._turn_index = max_turn_index
+
     @staticmethod
     def _strip_ephemeral_context(state: SessionState) -> SessionState:
         ds = state.active_dataset
@@ -767,20 +830,22 @@ class YoloStudioAgentClient:
         sync_training_workflow_state(state, pending_confirmation={})
         return state
 
-    def _should_reuse_history_context(self, user_text: str) -> bool:
-        decision = build_context_retention_decision(
+    def _context_retention_decision(self, user_text: str):
+        return build_context_retention_decision(
             state=self.session_state,
             user_text=user_text,
             explicitly_references_previous_context=self._explicitly_references_previous_context(user_text),
         )
-        return decision.reuse_history
 
-    def _state_for_model(self, user_text: str) -> tuple[SessionState, bool]:
-        reuse_history = self._should_reuse_history_context(user_text)
-        if reuse_history:
-            return self.session_state, True
+    def _state_for_model(self, user_text: str) -> tuple[SessionState, bool, list[BaseMessage]]:
+        decision = self._context_retention_decision(user_text)
+        if decision.reuse_history:
+            return self.session_state, True, list(self._messages)
+        recent_messages = list(self._messages[-1:]) if self._messages else []
+        if decision.preserve_state_context:
+            return self.session_state, False, recent_messages
         cloned = SessionState.from_dict(self.session_state.to_dict())
-        return self._strip_ephemeral_context(cloned), False
+        return self._strip_ephemeral_context(cloned), False, recent_messages
 
     async def direct_tool(self, tool_name: str, **kwargs: Any) -> dict[str, Any]:
         state_mode = str(kwargs.pop('_state_mode', 'persistent') or 'persistent').strip().lower()
@@ -995,6 +1060,7 @@ class YoloStudioAgentClient:
         result = await self._graph_invoke(Command(resume={'decision': 'approve'}), config=config, stream_handler=stream_handler)
         self._record_graph_selected_tools(result["messages"], thread_id=thread_id, built_messages_len=0)
         self._record_tool_error_recovery(result["messages"], thread_id=thread_id, built_messages_len=0)
+        self._record_graph_text_response(result["messages"], thread_id=thread_id, built_messages_len=0)
         next_pending = self._resolve_pending_confirmation(thread_id=thread_id, config=config)
         if next_pending is not None:
             self.memory.save_state(self.session_state)
@@ -1037,33 +1103,78 @@ class YoloStudioAgentClient:
             return None
         return self._build_pending_action_payload(pending, thread_id=self._pending_confirmation_thread_id())
 
-    def _pending_passthrough_decision(self, user_text: str, pending: dict[str, Any]) -> str | None:
+    def _looks_like_pending_edit_request(self, user_text: str, pending: dict[str, Any]) -> bool:
+        text = str(user_text or '').strip()
+        normalized = text.lower()
+        if not text:
+            return False
         tool_name = str((pending or {}).get('name') or '').strip()
         if not tool_name:
-            return None
-        normalized = str(user_text or '').lower()
+            return False
+        if any(token in text or token in normalized for token in ('取消执行', '不要执行', '不执行', '先不要做', '先别做', '停止执行', '取消这一步')):
+            return False
         training_like_tools = {'start_training', 'prepare_dataset_for_training', 'start_training_loop'}
-        revision_tokens = (
-            '改成', '换成', '换个', '调整', '改一下', '不要了', '去掉', '取消类别', '类别限制', '别用',
-            'batch', 'imgsz', 'device', 'epochs', '轮数', 'optimizer', 'freeze', 'resume', 'lr0', 'patience', 'workers', 'amp',
-            'fraction', 'classes', 'single_cls', 'project', 'name', '环境', '模型', '权重', '最大轮数', 'managed_level',
-            '训练环境', '类别', '学习率', '优化器', '冻结', '早停', '线程数', '混合精度',
-            '划分', '自动划分', '不划分', '不要划分', '默认比例', 'force_split',
+        if tool_name in training_like_tools:
+            if self._collect_training_clear_fields(text):
+                return True
+            if self._collect_requested_training_args(text, data_yaml=None):
+                return True
+            split_tokens = (
+                '自动划分', '不划分', '不要划分', '默认比例', '按默认比例', 'force_split', 'split',
+                '只做准备', '先做准备', 'prepare only',
+            )
+            if any(token in text or token in normalized for token in split_tokens):
+                return True
+        generic_revision_markers = (
+            '改成', '换成', '换个', '调整', '改一下', '去掉', '取消类别', '类别限制',
+            'batch', 'imgsz', 'device', 'epochs', '轮数', 'optimizer', 'freeze', 'resume', 'lr0', 'patience',
+            'workers', 'amp', 'fraction', 'classes', 'single_cls', 'project', 'name', '环境', '模型', '权重',
+            '训练环境', '学习率', '优化器', '冻结', '早停', '线程数', '混合精度',
         )
-        if (
-            tool_name == 'prepare_dataset_for_training'
-            and any(token in user_text or token in normalized for token in ('直接训练', '开始训练', '启动训练', '执行训练', '那就训练', '那你训练'))
-        ):
-            return 'edit'
-        if tool_name in training_like_tools and any(token in user_text or token in normalized for token in revision_tokens):
-            return 'edit'
+        return any(token in text or token in normalized for token in generic_revision_markers)
+
+    @staticmethod
+    def _looks_like_pending_clarify_request(user_text: str) -> bool:
+        text = str(user_text or '').strip()
+        if not text:
+            return False
         question_tokens = (
             '为什么', '原因', '依据', '怎么看', '会不会', '会生成到哪里', '会上传到哪里', '产物路径', '输出路径', '先给我计划', '先看计划',
             '先讨论', '解释一下', '再解释一下', '说详细一点', '详细说说',
         )
-        if any(token in user_text for token in question_tokens):
+        return any(token in text for token in question_tokens)
+
+    def _pending_passthrough_decision(self, user_text: str, pending: dict[str, Any]) -> str | None:
+        if self._looks_like_pending_edit_request(user_text, pending):
+            return 'edit'
+        if self._looks_like_pending_clarify_request(user_text):
             return 'clarify'
         return None
+
+    async def _classify_pending_turn_intent(self, user_text: str, pending: dict[str, Any]) -> str:
+        heuristic = self._pending_passthrough_decision(user_text, pending)
+        if heuristic == 'edit':
+            return 'edit'
+        if heuristic == 'clarify':
+            return 'status'
+        decision = await self._classify_confirmation_reply(user_text, pending)
+        if decision == 'approve':
+            return 'approve'
+        if decision == 'deny':
+            return 'reject'
+        if decision == 'restate':
+            return 'restate'
+        if decision == 'edit':
+            return 'edit'
+        if decision == 'clarify':
+            return 'status'
+        pending_followup_action = await self._classify_pending_followup_action(
+            user_text=user_text,
+            pending=pending,
+        )
+        if pending_followup_action == 'status_or_detail' or self._looks_like_pending_status_or_detail_query(user_text):
+            return 'status'
+        return 'unclear'
 
     def _record_pending_action_review(
         self,
@@ -1129,39 +1240,28 @@ class YoloStudioAgentClient:
         pending = self._resolve_pending_confirmation(thread_id=self._pending_confirmation_thread_id())
         if not pending:
             return None
-        passthrough_decision = self._pending_passthrough_decision(user_text, pending)
-        if passthrough_decision is not None:
+        pending_turn_intent = await self._classify_pending_turn_intent(user_text, pending)
+        if pending_turn_intent == 'edit':
             self._record_pending_action_review(
                 pending,
-                decision=passthrough_decision,
+                decision='edit',
                 raw_user_text=user_text,
                 source='natural_language_chat',
             )
             return None
-        decision = await self._classify_confirmation_reply(user_text, pending)
-        if decision in {'approve', 'deny'}:
+        if pending_turn_intent in {'approve', 'reject'}:
             return await self.review_pending_action(
                 {
-                    'decision': 'approve' if decision == 'approve' else 'reject',
+                    'decision': pending_turn_intent,
                     'raw_user_text': user_text,
                     'source': 'natural_language_chat',
                 },
                 stream_handler=stream_handler,
             )
         pending_thread_id = self._pending_confirmation_thread_id()
-        if decision == 'restate':
+        if pending_turn_intent == 'restate':
             return self._needs_confirmation_result(pending_thread_id, pending, await self._build_confirmation_message(pending))
-        pending_followup_action = await self._classify_pending_followup_action(
-            user_text=user_text,
-            pending=pending,
-        )
-        if pending_followup_action == 'status_or_detail':
-            return self._needs_confirmation_result(
-                pending_thread_id,
-                pending,
-                await self._build_confirmation_message(pending),
-            )
-        if self._looks_like_pending_status_or_detail_query(user_text):
+        if pending_turn_intent == 'status':
             return self._needs_confirmation_result(
                 pending_thread_id,
                 pending,
@@ -1675,6 +1775,7 @@ class YoloStudioAgentClient:
             resolve_prediction_request_followup_action(
                 **dict(dispatch_payload.get('prediction_request_args') or {}),
                 best_run_selection=self.session_state.active_training.best_run_selection,
+                last_run_inspection=self.session_state.active_training.last_run_inspection,
             )
         )
         if prediction_request:
@@ -2917,6 +3018,8 @@ class YoloStudioAgentClient:
         if not pending:
             return None
         if str(pending.get('source') or 'synthetic').strip().lower() == 'graph':
+            if callable(getattr(self.graph, 'ainvoke', None)):
+                return pending
             self._clear_pending_confirmation(thread_id=pending_thread_id, persist_graph=False)
             self.memory.save_state(self.session_state)
             return None
@@ -2934,17 +3037,29 @@ class YoloStudioAgentClient:
         for message in delta_messages:
             if not isinstance(message, ToolMessage):
                 continue
-            if message.tool_call_id and message.tool_call_id in self._applied_tool_call_ids:
-                continue
             parsed = parse_tool_message(message)
             tool_name = canonical_tool_name(message.name or "unknown_tool")
             tool_args = normalize_tool_args(tool_name, tool_args_by_id.get(message.tool_call_id or '', {}))
+            apply_signature = ''
+            if message.tool_call_id:
+                apply_signature = json.dumps(
+                    {
+                        'tool_call_id': str(message.tool_call_id or ''),
+                        'tool': tool_name,
+                        'args': tool_args,
+                        'result': parsed,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+                if apply_signature in self._applied_tool_call_ids:
+                    continue
             self.memory.append_event(self.session_state.session_id, "tool_result", {"tool": tool_name, "args": tool_args, "result": parsed})
             self._apply_to_state(tool_name, parsed, tool_args)
             self._record_secondary_event(tool_name, parsed)
             applied_results.append((tool_name, parsed))
-            if message.tool_call_id:
-                self._applied_tool_call_ids.add(message.tool_call_id)
+            if apply_signature:
+                self._applied_tool_call_ids.add(apply_signature)
         return applied_results
 
     def _build_grounded_tool_reply(self, applied_results: list[tuple[str, dict[str, Any]]]) -> str:
@@ -3032,13 +3147,13 @@ class YoloStudioAgentClient:
     ) -> tuple[dict[str, Any], dict[str, Any], int]:
         config = {"configurable": {"thread_id": thread_id}}
         self._trim_history()
-        state_for_model, include_history_context = self._state_for_model(user_text_hint)
+        state_for_model, include_history_context, recent_messages_for_model = self._state_for_model(user_text_hint)
         digest = self.event_retriever.build_digest(
             self.session_state.session_id,
             state_for_model,
             include_history_context=include_history_context,
         )
-        built_messages = self.context_builder.build_messages(state_for_model, self._messages, digest=digest)
+        built_messages = self.context_builder.build_messages(state_for_model, recent_messages_for_model, digest=digest)
         graph_input = {
             "messages": built_messages,
             "cached_tool_context": build_cached_tool_context_payload(self.session_state),
@@ -3049,6 +3164,7 @@ class YoloStudioAgentClient:
         built_messages_len = len(built_messages)
         self._record_graph_selected_tools(result["messages"], thread_id=thread_id, built_messages_len=built_messages_len)
         self._record_tool_error_recovery(result["messages"], thread_id=thread_id, built_messages_len=built_messages_len)
+        self._record_graph_text_response(result["messages"], thread_id=thread_id, built_messages_len=built_messages_len)
         return result, config, built_messages_len
 
     async def _handoff_current_runtime_to_graph(
@@ -4231,7 +4347,21 @@ class YoloStudioAgentClient:
     def _training_plan_render_error(self, draft: dict[str, Any], *, pending: bool, error: Exception | None = None) -> str:
         return training_plan_render_error(draft, pending=pending, error=error)
 
+    @staticmethod
+    def _should_force_structured_training_surface(draft: dict[str, Any], *, pending: bool) -> bool:
+        if not draft or not pending:
+            return False
+        execution_mode = str(draft.get('execution_mode') or '').strip().lower()
+        if execution_mode in {'prepare_only', 'discussion_only', 'blocked'}:
+            return False
+        next_step_tool = str(draft.get('next_step_tool') or '').strip().lower()
+        critical_modes = {'prepare_then_train', 'prepare_then_loop', 'direct_train', 'direct_loop'}
+        critical_tools = {'prepare_dataset_for_training', 'start_training', 'start_training_loop', 'training_preflight'}
+        return execution_mode in critical_modes or next_step_tool in critical_tools
+
     async def _render_training_plan_message(self, draft: dict[str, Any], *, pending: bool) -> str:
+        if self._should_force_structured_training_surface(draft, pending=pending):
+            return self._render_training_plan_draft(draft, pending=pending)
         return await render_training_plan_message_service(
             planner_llm=self.planner_llm,
             draft=draft,

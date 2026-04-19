@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 from typing import Any, Sequence, get_args, get_origin
 
@@ -615,6 +616,36 @@ def _stringify_tool_result(value: Any) -> str:
     return str(value)
 
 
+def _serialize_tool_result_for_chat_model(value: Any) -> str:
+    if isinstance(value, str):
+        text = value.strip()
+        if text:
+            with contextlib.suppress(Exception):
+                parsed = json.loads(text)
+                if isinstance(parsed, dict):
+                    return text
+        return json.dumps({'ok': True, 'raw': value}, ensure_ascii=False)
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        text_parts: list[str] = []
+        for item in value:
+            if isinstance(item, dict) and item.get('type') == 'text':
+                text = str(item.get('text') or '').strip()
+                if text:
+                    text_parts.append(text)
+        if text_parts:
+            raw = '\n'.join(part for part in text_parts if part).strip()
+            if raw:
+                with contextlib.suppress(Exception):
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, dict):
+                        return raw
+                return json.dumps({'ok': True, 'raw': raw}, ensure_ascii=False)
+        return json.dumps({'ok': True, 'value': list(value)}, ensure_ascii=False)
+    return json.dumps({'ok': True, 'raw': str(value)}, ensure_ascii=False)
+
+
 def stringify_tool_result_facts(value: Any) -> str:
     return _stringify_tool_result(value)
 
@@ -723,11 +754,11 @@ def adapt_tool_for_chat_model(tool: BaseTool) -> BaseTool:
 
     async def _arun(**kwargs: Any) -> str:
         result = await tool.ainvoke(_prepare_tool_args(tool, tool.name, kwargs))
-        return _stringify_tool_result(result)
+        return _serialize_tool_result_for_chat_model(result)
 
     def _run(**kwargs: Any) -> str:
         result = tool.invoke(_prepare_tool_args(tool, tool.name, kwargs))
-        return _stringify_tool_result(result)
+        return _serialize_tool_result_for_chat_model(result)
 
     adapted = StructuredTool.from_function(
         func=_run,
@@ -887,11 +918,11 @@ class _RemoteTransferAliasArgs(BaseModel):
 def _build_alias_tool(alias_name: str, target_tool: BaseTool, *, description: str, args_schema: type[BaseModel]) -> BaseTool:
     async def _arun(**kwargs: Any) -> str:
         result = await target_tool.ainvoke(_prepare_tool_args(target_tool, alias_name, kwargs))
-        return _stringify_tool_result(result)
+        return _serialize_tool_result_for_chat_model(result)
 
     def _run(**kwargs: Any) -> str:
         result = target_tool.invoke(_prepare_tool_args(target_tool, alias_name, kwargs))
-        return _stringify_tool_result(result)
+        return _serialize_tool_result_for_chat_model(result)
 
     alias_tool = StructuredTool.from_function(
         func=_run,

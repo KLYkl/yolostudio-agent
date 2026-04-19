@@ -89,6 +89,43 @@ def test_best_run_prediction_followup_keeps_training_history_with_new_target() -
     assert decision.reason == 'best_run_prediction_followup'
 
 
+def test_read_only_prediction_followup_preserves_state_without_reusing_history() -> None:
+    state = SessionState(session_id='retention-read-only-prediction-followup')
+    state.active_prediction.last_result = {
+        'ok': True,
+        'summary': '预测完成: 已处理 2 张图片',
+        'report_path': '/tmp/predict/prediction_report.json',
+        'output_dir': '/tmp/predict',
+    }
+    decision = build_context_retention_decision(
+        state=state,
+        user_text='现在是什么情况了？我需要详细一点的信息',
+        explicitly_references_previous_context=False,
+    )
+    assert decision.reuse_history is False
+    assert decision.reason == 'read_only_prediction_followup'
+    assert decision.preserve_state_context is True
+
+
+def test_read_only_training_followup_preserves_state_without_reusing_history() -> None:
+    state = SessionState(session_id='retention-read-only-training-followup')
+    state.active_training.best_run_selection = {
+        'summary': '最近最佳训练为 train_log_best。',
+        'best_run': {
+            'run_id': 'train_log_best',
+            'best_weight_path': '/weights/best.pt',
+        },
+    }
+    decision = build_context_retention_decision(
+        state=state,
+        user_text='查看这次最佳训练详情。',
+        explicitly_references_previous_context=False,
+    )
+    assert decision.reuse_history is False
+    assert decision.reason == 'read_only_training_followup'
+    assert decision.preserve_state_context is True
+
+
 def test_dataset_followup_uses_dataset_domain_context() -> None:
     state = SessionState(session_id='retention-dataset-followup')
     state.active_dataset.last_scan = {
@@ -142,6 +179,8 @@ def main() -> None:
     test_cached_followup_reuses_history_without_new_task_targets()
     test_new_task_targets_strip_ephemeral_context()
     test_best_run_prediction_followup_keeps_training_history_with_new_target()
+    test_read_only_prediction_followup_preserves_state_without_reusing_history()
+    test_read_only_training_followup_preserves_state_without_reusing_history()
     test_dataset_followup_uses_dataset_domain_context()
     test_dataset_class_name_followup_reuses_dataset_context()
     test_knowledge_followup_uses_knowledge_domain_context()

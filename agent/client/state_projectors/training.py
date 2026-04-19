@@ -16,6 +16,18 @@ from yolostudio_agent.agent.client.state_projectors.common import (
 )
 
 
+def _training_run_weight_path(result: dict[str, Any]) -> str:
+    summary_overview = dict(result.get('summary_overview') or {})
+    return str(
+        result.get('best_weight_path')
+        or result.get('weights_path')
+        or result.get('weight_path')
+        or summary_overview.get('best_weight_path')
+        or summary_overview.get('weights_path')
+        or ''
+    ).strip()
+
+
 def apply_training_tool_result(
     session_state: SessionState,
     tool_name: str,
@@ -70,6 +82,19 @@ def apply_training_tool_result(
             )
             if matched is None:
                 tr.recent_runs = [result, *tr.recent_runs[:9]]
+        inspected_run_id = str(result.get('selected_run_id') or result.get('run_id') or '').strip()
+        inspected_weight_path = _training_run_weight_path(result)
+        if inspected_run_id and inspected_weight_path and tr.best_run_selection:
+            best_selection = dict(tr.best_run_selection or {})
+            best_run = dict(best_selection.get('best_run') or {})
+            best_run_id = str(best_run.get('run_id') or best_selection.get('best_run_id') or '').strip()
+            if best_run_id and best_run_id == inspected_run_id:
+                best_run['run_id'] = inspected_run_id
+                best_run['best_weight_path'] = inspected_weight_path
+                best_selection['best_run'] = best_run
+                best_selection['best_weight_path'] = inspected_weight_path
+                best_selection['resolved_weight_path'] = inspected_weight_path
+                tr.best_run_selection = best_selection
     elif tool_name == 'compare_training_runs' and result.get('ok'):
         tr.last_run_comparison = result
     elif tool_name == 'select_best_training_run' and result.get('ok'):

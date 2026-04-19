@@ -162,12 +162,40 @@ except Exception:
     sys.modules['langgraph.types'] = types_mod
     sys.modules['langgraph.checkpoint.memory'] = checkpoint_mod
 
+from langchain_core.messages import AIMessage
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
 
 
 class _DummyGraph:
+    def __init__(self) -> None:
+        self.client: YoloStudioAgentClient | None = None
+
+    def bind(self, client: YoloStudioAgentClient) -> None:
+        self.client = client
+
     def get_state(self, config):
         return None
+
+    async def ainvoke(self, payload, config=None):
+        assert self.client is not None
+        messages = list(payload['messages'])
+        plan_context = dict(payload.get('training_plan_context') or {})
+        next_tool = str(plan_context.get('next_step_tool') or '').strip()
+        next_args = dict(plan_context.get('next_step_args') or {})
+        user_text = ''
+        for message in reversed(messages):
+            content = getattr(message, 'content', '')
+            if isinstance(content, str) and content:
+                user_text = content
+                break
+        if next_tool:
+            thread_id = str((((config or {}).get('configurable') or {}).get('thread_id') or '')).strip()
+            self.client._set_pending_confirmation(
+                thread_id,
+                {'name': next_tool, 'args': next_args, 'id': None, 'synthetic': True},
+            )
+            return {'messages': messages + [AIMessage(content='按训练草案进入确认。')]}
+        raise AssertionError(f'unexpected graph prompt: {user_text}')
 
 
 WORK = Path(__file__).resolve().parent / '_tmp_training_plan_advanced_dialogue'
@@ -178,7 +206,9 @@ async def _run() -> None:
     WORK.mkdir(parents=True, exist_ok=True)
     try:
         settings = AgentSettings(session_id='training-plan-advanced-dialogue', memory_root=str(WORK))
-        client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+        graph = _DummyGraph()
+        client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
+        graph.bind(client)
         calls: list[tuple[str, dict[str, Any]]] = []
 
         async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
@@ -442,7 +472,9 @@ async def _run_backend_switch_followup() -> None:
     work.mkdir(parents=True, exist_ok=True)
     try:
         settings = AgentSettings(session_id='training-plan-backend-switch', memory_root=str(work))
-        client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+        graph = _DummyGraph()
+        client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
+        graph.bind(client)
         calls: list[tuple[str, dict[str, Any]]] = []
 
         async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
@@ -599,7 +631,9 @@ async def _run_prepare_bridge_replanning() -> None:
     work.mkdir(parents=True, exist_ok=True)
     try:
         settings = AgentSettings(session_id='training-plan-prepare-bridge-advanced', memory_root=str(work))
-        client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+        graph = _DummyGraph()
+        client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
+        graph.bind(client)
         calls: list[tuple[str, dict[str, Any]]] = []
 
         async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
@@ -790,7 +824,9 @@ async def _run_prepare_bridge_trainer_discussion() -> None:
     work.mkdir(parents=True, exist_ok=True)
     try:
         settings = AgentSettings(session_id='training-plan-prepare-bridge-trainer', memory_root=str(work))
-        client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+        graph = _DummyGraph()
+        client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
+        graph.bind(client)
         calls: list[tuple[str, dict[str, Any]]] = []
 
         async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
