@@ -305,6 +305,58 @@ async def _scenario_stale_training_plan_draft_is_cleared_on_startup() -> None:
     assert client.session_state.active_training.training_plan_draft == {}
 
 
+async def _scenario_startup_materializes_training_draft_without_pending() -> None:
+    root = WORK / 'startup-materialize-training-draft'
+    store = MemoryStore(root)
+    state = SessionState(session_id='startup-materialize-training-draft')
+    state.active_dataset.dataset_root = '/home/kly/ct_loop/data_ct'
+    state.active_dataset.last_readiness = {
+        'ok': True,
+        'ready': False,
+        'preparable': True,
+        'dataset_root': '/home/kly/ct_loop/data_ct',
+        'summary': '当前还缺少可用的 data_yaml，可先准备数据再训练。',
+        'blockers': ['缺少可用的 data_yaml'],
+    }
+    state.active_training.training_plan_draft = {
+        'status': 'ready_for_confirmation',
+        'dataset_path': '/home/kly/ct_loop/data_ct',
+        'execution_mode': 'prepare_then_train',
+        'execution_backend': 'standard_yolo',
+        'reasoning_summary': '当前还缺少可用的 data_yaml；确认后先准备再训练。',
+        'planned_training_args': {
+            'model': '/home/kly/yolov8n.pt',
+            'batch': 8,
+        },
+    }
+    store.save_state(state)
+
+    settings = AgentSettings(session_id='startup-materialize-training-draft', memory_root=str(root))
+    client = YoloStudioAgentClient(graph=_NoGraph(), settings=settings, tool_registry={})
+    pending = client.get_pending_action()
+    draft = dict(client.session_state.active_training.training_plan_draft or {})
+    assert pending is not None
+    assert pending['tool_name'] == 'prepare_dataset_for_training', pending
+    assert pending['tool_args'] == {'dataset_path': '/home/kly/ct_loop/data_ct'}, pending
+    assert draft.get('next_step_tool') == 'prepare_dataset_for_training', draft
+    events = client.memory.read_events(client.session_state.session_id)
+    assert any(
+        event.get('type') == 'startup_training_plan_materialized'
+        and event.get('tool') == 'prepare_dataset_for_training'
+        for event in events
+    ), events
+
+    turn = await client.chat('把 batch 改成 12 再继续')
+    refreshed_pending = client.get_pending_action()
+    refreshed_draft = dict(client.session_state.active_training.training_plan_draft or {})
+    assert turn['status'] == 'needs_confirmation', turn
+    assert refreshed_pending is not None, turn
+    assert refreshed_pending['tool_name'] == 'prepare_dataset_for_training', refreshed_pending
+    assert refreshed_pending['decision_context']['decision'] == 'edit', refreshed_pending
+    assert refreshed_pending['tool_args'] == {'dataset_path': '/home/kly/ct_loop/data_ct'}, refreshed_pending
+    assert (refreshed_draft.get('planned_training_args') or {}).get('batch') == 12, refreshed_draft
+
+
 def _scenario_strip_ephemeral_context_clears_pending_mirror() -> None:
     state = SessionState(session_id='strip-ephemeral-pending')
     state.pending_confirmation.thread_id = 'strip-ephemeral-pending-turn-1'
@@ -896,6 +948,7 @@ async def _run() -> None:
         _scenario_strip_ephemeral_context_clears_pending_mirror()
         await _scenario_observe_mode_does_not_pollute_state()
         await _scenario_stale_training_plan_draft_is_cleared_on_startup()
+        await _scenario_startup_materializes_training_draft_without_pending()
         await _scenario_stale_graph_pending_is_cleared_on_startup()
         await _scenario_graph_pending_is_restored_from_checkpoint_on_startup()
         await _scenario_graph_pending_restore_replaces_stale_draft()

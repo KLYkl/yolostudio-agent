@@ -571,9 +571,60 @@ class YoloStudioAgentClient:
             result["approved"] = True
         return result
 
+    def _maybe_materialize_startup_training_pending(self) -> bool:
+        if self._pending_from_state():
+            return False
+        draft = dict(self.session_state.active_training.training_plan_draft or {})
+        if not draft:
+            return False
+        materialized = self._build_materialized_training_pending(
+            draft=draft,
+            user_text=str(draft.get('planner_user_request') or ''),
+        )
+        if materialized is None:
+            return False
+        rebuilt_draft, pending = materialized
+        self._ensure_materialized_training_state_context(draft=rebuilt_draft)
+        self._save_training_plan_draft(rebuilt_draft)
+        thread_id = f"{self.session_state.session_id}-turn-{max(self._turn_index, 1)}-startup-materialized"
+        merged_pending = self._merge_pending_review_context(pending, self._pending_review_shadow)
+        payload = self._build_pending_action_payload(merged_pending, thread_id=thread_id)
+        normalized = {
+            'id': merged_pending.get('id'),
+            'tool_call_id': str(merged_pending.get('tool_call_id') or merged_pending.get('id') or '').strip(),
+            'name': payload['tool_name'],
+            'tool_name': payload['tool_name'],
+            'args': dict(payload['tool_args']),
+            'tool_args': dict(payload['tool_args']),
+            'summary': payload['summary'],
+            'objective': payload['objective'],
+            'allowed_decisions': list(payload['allowed_decisions']),
+            'review_config': dict(payload['review_config']),
+            'decision_context': dict(payload.get('decision_context') or {}),
+            'thread_id': thread_id,
+            'source': 'synthetic',
+            'interrupt_kind': payload['interrupt_kind'],
+            'created_at': utc_now(),
+        }
+        self._remember_pending_confirmation(
+            normalized,
+            emit_event=True,
+            persist_graph=False,
+        )
+        self.memory.append_event(
+            self.session_state.session_id,
+            'startup_training_plan_materialized',
+            {
+                'thread_id': thread_id,
+                'tool': payload['tool_name'],
+                'execution_mode': str(rebuilt_draft.get('execution_mode') or '').strip(),
+            },
+        )
+        return True
+
     def _clear_stale_startup_state(self) -> None:
         pending = self.session_state.pending_confirmation
-        if not str(pending.tool_name or '').strip():
+        if not str(pending.tool_name or '').strip() and not self._maybe_materialize_startup_training_pending():
             self._clear_training_plan_draft()
 
     def _record_startup_checkpoint_health(self) -> None:
@@ -917,7 +968,11 @@ class YoloStudioAgentClient:
             progressed = await self._maybe_auto_progress(pending_dialogue, stream_handler=stream_handler)
             return progressed or pending_dialogue
 
-        routed = await self._try_handle_mainline_intent(user_text, thread_id)
+        routed = await self._try_handle_mainline_intent(
+            user_text,
+            thread_id,
+            skip_training_plan_dialogue=pending_passthrough_requested,
+        )
         if routed is _DEFER_TO_GRAPH:
             routed = None
         if routed is not None:
@@ -1928,16 +1983,23 @@ class YoloStudioAgentClient:
             loop_route=loop_route,
         )
 
-    async def _try_handle_mainline_intent(self, user_text: str, thread_id: str) -> dict[str, Any] | None:
+    async def _try_handle_mainline_intent(
+        self,
+        user_text: str,
+        thread_id: str,
+        *,
+        skip_training_plan_dialogue: bool = False,
+    ) -> dict[str, Any] | None:
         self._sync_training_workflow_state(reason='route_eval')
         guardrail = self._try_handle_guardrail_intent(user_text)
         if guardrail is not None:
             return guardrail
-        plan_dialogue = await self._try_handle_training_plan_dialogue(user_text, thread_id)
-        if plan_dialogue is _DEFER_TO_GRAPH:
-            return None
-        if plan_dialogue is not None:
-            return plan_dialogue
+        if not skip_training_plan_dialogue:
+            plan_dialogue = await self._try_handle_training_plan_dialogue(user_text, thread_id)
+            if plan_dialogue is _DEFER_TO_GRAPH:
+                return None
+            if plan_dialogue is not None:
+                return plan_dialogue
         mainline_context = self._collect_mainline_context(user_text)
         route_state = await self._resolve_mainline_route_state(user_text, mainline_context)
         guard_reply = str(route_state.get('guard_reply') or '')

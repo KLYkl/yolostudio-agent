@@ -643,6 +643,19 @@ async def _run() -> None:
         assert client.graph.calls[-1][0] == 'list_training_loops', client.graph.calls[-1]
         assert client.session_state.pending_confirmation.tool_name == 'start_training_loop'
 
+        pending_passthrough_client, _ = await _build_client(session_id='loop-dialogue-passthrough-bypass')
+        pending_passthrough_start = await pending_passthrough_client.chat('用 /data/loop 数据集和 yolov8n.pt 开一个全托管环训练，最多 2 轮。')
+        assert pending_passthrough_start['status'] == 'needs_confirmation', pending_passthrough_start
+
+        async def _unexpected_training_plan_dialogue(*args: Any, **kwargs: Any) -> None:
+            raise AssertionError('pending passthrough turns should bypass training plan dialogue')
+
+        pending_passthrough_client._try_handle_training_plan_dialogue = _unexpected_training_plan_dialogue  # type: ignore[assignment]
+        pending_passthrough_list = await pending_passthrough_client.chat('最近有哪些环训练')
+        assert pending_passthrough_list['status'] == 'completed', pending_passthrough_list
+        assert pending_passthrough_client.graph.calls[-1][0] == 'list_training_loops', pending_passthrough_client.graph.calls[-1]
+        assert pending_passthrough_client.session_state.pending_confirmation.tool_name == 'start_training_loop'
+
         confirm_loop_start = await client.confirm(confirm_prepare_then_loop['thread_id'], True)
         assert confirm_loop_start['status'] == 'completed', confirm_loop_start
         assert [name for name, _ in calls].count('prepare_dataset_for_training') == 1, calls
