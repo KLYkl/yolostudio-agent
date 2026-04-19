@@ -965,6 +965,29 @@ class YoloStudioAgentClient:
         self._turn_index += 1
         thread_id = f"{self.session_state.session_id}-turn-{self._turn_index}"
 
+        active_interrupt = self._active_graph_interrupt(preferred_thread_id=thread_id)
+        if active_interrupt is not None:
+            interrupt_thread_id, interrupt_payload = active_interrupt
+            if self._is_training_confirmation_interrupt_payload(interrupt_payload):
+                decision = await self._parse_user_decision(
+                    user_text=user_text,
+                    interrupt_payload=interrupt_payload,
+                )
+                graph_result = await self._graph_invoke(
+                    Command(resume=decision),
+                    config=self._pending_config(interrupt_thread_id),
+                    stream_handler=stream_handler,
+                )
+                next_interrupt = self._active_graph_interrupt(preferred_thread_id=interrupt_thread_id)
+                response = self._format_interrupt_or_result(
+                    graph_result,
+                    thread_id=interrupt_thread_id,
+                    interrupt_payload=next_interrupt[1] if next_interrupt is not None else None,
+                )
+                self._trim_history()
+                self.memory.save_state(self.session_state)
+                return response
+
         pending_dialogue = await self._try_handle_pending_confirmation_dialogue(user_text, stream_handler=stream_handler)
         pending_passthrough_requested = pending_dialogue is _DEFER_TO_GRAPH
         if pending_dialogue is not None and not pending_passthrough_requested:
@@ -3179,6 +3202,150 @@ class YoloStudioAgentClient:
             return self._merge_pending_review_context(merged, self._graph_pending_review(config))
         return None
 
+    @staticmethod
+    def _graph_interrupt_payloads(state: Any) -> list[dict[str, Any]]:
+        payloads: list[dict[str, Any]] = []
+        if state is None:
+            return payloads
+        interrupts = list(getattr(state, 'interrupts', ()) or ())
+        for task in getattr(state, 'tasks', ()) or ():
+            interrupts.extend(list(getattr(task, 'interrupts', ()) or ()))
+        for item in interrupts:
+            raw_value = getattr(item, 'value', item)
+            if isinstance(raw_value, dict):
+                payloads.append(dict(raw_value))
+        return payloads
+
+    def _active_graph_interrupt(self, *, preferred_thread_id: str = '') -> tuple[str, dict[str, Any]] | None:
+        candidate_thread_ids: list[str] = []
+        for candidate in (
+            preferred_thread_id,
+            str((self._pending_confirmation_shadow or {}).get('thread_id') or '').strip(),
+            str(self.session_state.pending_confirmation.thread_id or '').strip(),
+        ):
+            if candidate:
+                candidate_thread_ids.append(candidate)
+        candidate_thread_ids.extend(self._startup_checkpoint_thread_ids())
+        if not candidate_thread_ids and preferred_thread_id:
+            candidate_thread_ids.append(preferred_thread_id)
+        seen: set[str] = set()
+        for thread_id in candidate_thread_ids:
+            if not thread_id or thread_id in seen:
+                continue
+            seen.add(thread_id)
+            state = self._graph_state_snapshot(self._pending_config(thread_id))
+            if state is None or not getattr(state, 'next', None):
+                continue
+            payloads = self._graph_interrupt_payloads(state)
+            if payloads:
+                return thread_id, payloads[0]
+        return None
+
+    @staticmethod
+    def _is_training_confirmation_interrupt_payload(payload: dict[str, Any] | None) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        kind = str(payload.get('type') or payload.get('interrupt_kind') or '').strip().lower()
+        return kind == 'training_confirmation'
+
+    @staticmethod
+    def _training_confirmation_tool_call(payload: dict[str, Any]) -> dict[str, Any] | None:
+        plan_payload = dict(payload.get('plan') or {})
+        if not plan_payload:
+            return None
+        phase = str(payload.get('phase') or 'prepare').strip().lower() or 'prepare'
+        try:
+            plan = coerce_training_plan(plan_payload)
+            if hasattr(plan, 'model_dump'):
+                try:
+                    plan_args = plan.model_dump(exclude_none=True)
+                except TypeError:
+                    plan_args = plan.model_dump()
+            else:
+                plan_args = dict(getattr(plan, '__dict__', {}) or {})
+            if phase == 'prepare':
+                return {
+                    'name': 'prepare_dataset_for_training',
+                    'args': {'dataset_path': plan.dataset_path},
+                }
+            if getattr(plan, 'mode', 'train') == 'loop':
+                return {'name': 'start_training_loop', 'args': plan_args}
+            return {'name': 'start_training', 'args': plan_args}
+        except Exception:
+            return None
+
+    def _render_plan_for_cli(self, plan_payload: dict[str, Any], phase: str = '') -> str:
+        plan = coerce_training_plan(dict(plan_payload or {}))
+        phase_text = '数据准备确认' if str(phase or '').strip().lower() == 'prepare' else '训练启动确认'
+        lines = [f'{phase_text}：']
+        mode = getattr(plan, 'mode', 'train')
+        lines.append(f"- 类型: {'循环训练' if mode == 'loop' else '普通训练'}")
+        lines.append(f'- 数据集: {plan.dataset_path}')
+        lines.append(f'- 模型: {plan.model}')
+        if mode == 'loop':
+            lines.append(f'- 循环参数: max_rounds={getattr(plan, "max_rounds", "")}, epochs_per_round={getattr(plan, "epochs_per_round", "")}')
+            loop_name = str(getattr(plan, 'loop_name', '') or '').strip()
+            if loop_name:
+                lines.append(f'- 循环名称: {loop_name}')
+        else:
+            lines.append(f'- 训练参数: epochs={getattr(plan, "epochs", "")}, batch={plan.batch}, imgsz={plan.imgsz}')
+        if str(plan.device or '').strip():
+            lines.append(f'- 设备: {plan.device}')
+        if str(plan.training_environment or '').strip():
+            lines.append(f'- 环境: {plan.training_environment}')
+        if str(plan.data_yaml or '').strip():
+            lines.append(f'- data.yaml: {plan.data_yaml}')
+        blockers = [str(item).strip() for item in (getattr(plan, 'blockers', None) or []) if str(item).strip()]
+        warnings = [str(item).strip() for item in (getattr(plan, 'warnings', None) or []) if str(item).strip()]
+        if blockers:
+            lines.append('- 当前阻塞:')
+            lines.extend(f'  - {item}' for item in blockers[:3])
+        elif warnings:
+            lines.append('- 主要风险:')
+            lines.extend(f'  - {item}' for item in warnings[:3])
+        summary = str(getattr(plan, 'prepare_summary', '') or getattr(plan, 'readiness_summary', '') or '').strip()
+        if summary:
+            lines.append(f'- 说明: {summary}')
+        lines.append('你可以直接确认、改参数、追问原因，或者切去处理别的新任务。')
+        return '\n'.join(lines)
+
+    def _format_interrupt_or_result(
+        self,
+        result: dict[str, Any],
+        *,
+        thread_id: str,
+        interrupt_payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload = interrupt_payload
+        if payload is None:
+            interrupts = result.get('__interrupt__')
+            if isinstance(interrupts, list):
+                for item in interrupts:
+                    raw_value = getattr(item, 'value', item)
+                    if isinstance(raw_value, dict):
+                        payload = dict(raw_value)
+                        break
+        if self._is_training_confirmation_interrupt_payload(payload):
+            message = self._render_plan_for_cli(dict((payload or {}).get('plan') or {}), str((payload or {}).get('phase') or ''))
+            if message:
+                self._messages.append(AIMessage(content=message))
+            return {
+                'status': 'needs_confirmation',
+                'message': message,
+                'tool_call': self._training_confirmation_tool_call(payload or {}),
+                'thread_id': thread_id,
+                'interrupt_payload': dict(payload or {}),
+            }
+        messages = list(result.get('messages') or [])
+        final_text = self._extract_or_fallback(messages)
+        if final_text:
+            self._messages.append(AIMessage(content=final_text))
+        return {
+            'status': 'completed',
+            'message': final_text,
+            'tool_call': None,
+        }
+
     def _update_graph_pending_state(
         self,
         *,
@@ -3551,6 +3718,18 @@ class YoloStudioAgentClient:
             suppress_ephemeral_state_context=suppress_ephemeral_state_context,
             stream_handler=stream_handler,
         )
+        active_interrupt = self._active_graph_interrupt(preferred_thread_id=thread_id)
+        if active_interrupt is not None:
+            interrupt_thread_id, interrupt_payload = active_interrupt
+            if self._is_training_confirmation_interrupt_payload(interrupt_payload):
+                formatted = self._format_interrupt_or_result(
+                    graph_result,
+                    thread_id=interrupt_thread_id,
+                    interrupt_payload=interrupt_payload,
+                )
+                self._trim_history()
+                self.memory.save_state(self.session_state)
+                return formatted
         if ignore_existing_pending:
             pending = self._graph_pending_from_values(config)
             if pending is None:

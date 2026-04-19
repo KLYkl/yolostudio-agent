@@ -163,6 +163,7 @@ _install_fake_test_dependencies()
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
 from yolostudio_agent.agent.client.llm_factory import LlmProviderSettings
+from langchain_core.messages import AIMessage
 from yolostudio_agent.agent.client.followup_router import (
     resolve_mainline_request_signals,
     resolve_training_run_query_signals,
@@ -183,6 +184,43 @@ class _NoLLMGraph:
 
     async def ainvoke(self, *args, **kwargs):
         raise AssertionError('graph should not be called in structured action router tests')
+
+
+class _InterruptEnvelope:
+    def __init__(self, value):
+        self.value = value
+
+
+class _InterruptTask:
+    def __init__(self, payload):
+        self.interrupts = [_InterruptEnvelope(payload)]
+
+
+class _TrainingInterruptState:
+    def __init__(self, payload: dict[str, object], *, messages=None) -> None:
+        self.next = ('training_confirmation',)
+        self.tasks = [_InterruptTask(payload)]
+        self.values = {'messages': list(messages or [])}
+
+
+class _TrainingInterruptGraph:
+    def __init__(self, initial_payload: dict[str, object], next_payload: dict[str, object] | None = None) -> None:
+        self._state = _TrainingInterruptState(initial_payload)
+        self.next_payload = next_payload
+        self.resume_payloads: list[object] = []
+
+    def get_state(self, config):
+        del config
+        return self._state
+
+    async def ainvoke(self, payload, config=None):
+        del config
+        self.resume_payloads.append(getattr(payload, 'resume', payload))
+        if self.next_payload is not None:
+            self._state = _TrainingInterruptState(self.next_payload)
+            return {'messages': []}
+        self._state = None
+        return {'messages': [AIMessage(content='训练已启动')]}
 
 
 class _FakeStructuredPlanner:
@@ -298,6 +336,57 @@ async def _scenario_parse_user_decision_falls_back_to_unclear() -> None:
         },
     )
     assert payload == {'action': 'unclear', 'reason': '嗯我再想想'}, payload
+
+
+async def _scenario_chat_resumes_training_confirmation_interrupt() -> None:
+    interrupt_payload = {
+        'type': 'training_confirmation',
+        'phase': 'prepare',
+        'plan': {
+            'mode': 'train',
+            'dataset_path': '/data/demo',
+            'model': 'yolov8n.pt',
+            'epochs': 20,
+            'batch': 12,
+        },
+    }
+    graph = _TrainingInterruptGraph(interrupt_payload)
+    root = WORK / 'chat-resume-training-confirmation'
+    settings = AgentSettings(session_id='chat-resume-training-confirmation', memory_root=str(root))
+    client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
+    planner = _FakeStructuredPlanner({'action': 'approve', 'reason': '开始执行'})
+    client.planner_llm = planner  # type: ignore[assignment]
+    result = await client.chat('好，继续。')
+    assert graph.resume_payloads == [{'action': 'approve', 'reason': '开始执行'}], graph.resume_payloads
+    assert result['status'] == 'completed', result
+    assert result['message'] == '训练已启动', result
+
+
+async def _scenario_handoff_formats_training_confirmation_interrupt() -> None:
+    interrupt_payload = {
+        'type': 'training_confirmation',
+        'phase': 'start',
+        'plan': {
+            'mode': 'loop',
+            'dataset_path': '/data/demo',
+            'model': 'yolov8n.pt',
+            'max_rounds': 5,
+            'epochs_per_round': 10,
+            'loop_name': 'ctxloop5',
+            'data_yaml': '/data/demo/split/data.yaml',
+        },
+    }
+    graph = _TrainingInterruptGraph(interrupt_payload, next_payload=interrupt_payload)
+    root = WORK / 'handoff-training-confirmation'
+    settings = AgentSettings(session_id='handoff-training-confirmation', memory_root=str(root))
+    client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
+    result = await client._handoff_current_runtime_to_graph(
+        thread_id='handoff-training-confirmation-turn-1',
+        user_text_hint='开一个 5 轮循环训练，每轮 10 epoch',
+    )
+    assert result['status'] == 'needs_confirmation', result
+    assert '循环训练' in result['message'], result
+    assert result['tool_call']['name'] == 'start_training_loop', result
 
 
 async def _scenario_training_loop_route_detects_control_followups_without_llm() -> None:
@@ -595,6 +684,8 @@ async def _run() -> None:
         await _scenario_generic_payload_uses_native_structured_output_for_ollama()
         await _scenario_parse_user_decision_structures_loop_edits()
         await _scenario_parse_user_decision_falls_back_to_unclear()
+        await _scenario_chat_resumes_training_confirmation_interrupt()
+        await _scenario_handoff_formats_training_confirmation_interrupt()
         await _scenario_training_loop_route_detects_control_followups_without_llm()
         await _scenario_training_loop_route_falls_back_without_llm()
         await _scenario_training_run_query_signals_reuse_last_comparison()
