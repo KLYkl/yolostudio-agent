@@ -109,8 +109,22 @@ def _install_fake_test_dependencies() -> None:
             for key, value in kwargs.items():
                 setattr(self, key, value)
 
+        @classmethod
+        def model_validate(cls, value):
+            if isinstance(value, cls):
+                return value
+            if isinstance(value, dict):
+                return cls(**value)
+            raise TypeError(f'cannot validate {value!r}')
+
         def model_dump(self):
             return dict(self.__dict__)
+
+        def model_copy(self, *, update=None):
+            payload = dict(self.__dict__)
+            if update:
+                payload.update(update)
+            return type(self)(**payload)
 
     def _Field(default=None, **kwargs):
         del kwargs
@@ -232,6 +246,58 @@ async def _scenario_generic_payload_uses_native_structured_output_for_ollama() -
     )
     assert payload == {'decision': 'approve', 'reason': 'user approved'}, payload
     assert planner.schemas, 'expected with_structured_output to be used'
+
+
+async def _scenario_parse_user_decision_structures_loop_edits() -> None:
+    client = _make_client('parse-user-decision-loop-edit')
+    planner = _FakeStructuredPlanner({
+        'action': 'edit',
+        'reason': '用户把轮数改成 3，并保持循环训练',
+        'edits': {'max_rounds': 3, 'epochs_per_round': 10, 'loop_name': 'ctxloop5'},
+    })
+    client.planner_llm = planner  # type: ignore[assignment]
+    payload = await client._parse_user_decision(
+        user_text='改成 3 轮，名字还是 ctxloop5，每轮 10 个 epoch',
+        interrupt_payload={
+            'phase': 'start',
+            'plan': {
+                'mode': 'loop',
+                'dataset_path': '/data/demo',
+                'model': 'yolov8n.pt',
+                'max_rounds': 5,
+                'epochs_per_round': 10,
+                'loop_name': 'ctxloop5',
+            },
+        },
+    )
+    assert payload['action'] == 'edit', payload
+    assert payload['edits'] == {'max_rounds': 3, 'epochs_per_round': 10, 'loop_name': 'ctxloop5'}, payload
+    assert planner.schemas, 'expected structured decision schema'
+    schema = planner.schemas[-1]
+    props = dict(schema.get('properties') or {})
+    edits = dict(props.get('edits') or {})
+    edit_props = dict(edits.get('properties') or {})
+    assert 'max_rounds' in edit_props, schema
+    assert 'epochs_per_round' in edit_props, schema
+
+
+async def _scenario_parse_user_decision_falls_back_to_unclear() -> None:
+    client = _make_client('parse-user-decision-unclear')
+    planner = _FakeStructuredPlanner({'action': 'something-else', 'reason': ''})
+    client.planner_llm = planner  # type: ignore[assignment]
+    payload = await client._parse_user_decision(
+        user_text='嗯我再想想',
+        interrupt_payload={
+            'phase': 'prepare',
+            'plan': {
+                'mode': 'train',
+                'dataset_path': '/data/demo',
+                'model': 'yolov8n.pt',
+                'epochs': 100,
+            },
+        },
+    )
+    assert payload == {'action': 'unclear', 'reason': '嗯我再想想'}, payload
 
 
 async def _scenario_training_loop_route_detects_control_followups_without_llm() -> None:
@@ -527,6 +593,8 @@ async def _run() -> None:
     try:
         await _scenario_uses_native_structured_output_for_ollama()
         await _scenario_generic_payload_uses_native_structured_output_for_ollama()
+        await _scenario_parse_user_decision_structures_loop_edits()
+        await _scenario_parse_user_decision_falls_back_to_unclear()
         await _scenario_training_loop_route_detects_control_followups_without_llm()
         await _scenario_training_loop_route_falls_back_without_llm()
         await _scenario_training_run_query_signals_reuse_last_comparison()

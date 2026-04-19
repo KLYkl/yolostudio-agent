@@ -126,6 +126,11 @@ from yolostudio_agent.agent.client.training_plan_context_service import (
     build_training_plan_context_payload,
     extract_training_plan_context_from_state,
 )
+from yolostudio_agent.agent.client.training_schemas import (
+    PendingTurnIntent,
+    TrainingEdits,
+    coerce_training_plan,
+)
 
 SYSTEM_PROMPT = """你是 YoloStudio Agent，负责帮助用户解决数据准备、训练、预测和远端传输问题。
 
@@ -1495,6 +1500,107 @@ class YoloStudioAgentClient:
             'required': ['action', 'reason'],
             'additionalProperties': False,
         }
+
+    @staticmethod
+    def _pending_turn_intent_schema() -> dict[str, Any]:
+        return {
+            'title': 'yolostudio_pending_turn_intent',
+            'type': 'object',
+            'properties': {
+                'action': {
+                    'type': 'string',
+                    'enum': ['approve', 'reject', 'edit', 'status', 'new_task', 'unclear'],
+                },
+                'edits': {
+                    'type': 'object',
+                    'properties': {
+                        'model': {'type': 'string'},
+                        'epochs': {'type': 'integer'},
+                        'batch': {'type': 'integer'},
+                        'imgsz': {'type': 'integer'},
+                        'device': {'type': 'string'},
+                        'training_environment': {'type': 'string'},
+                        'data_yaml': {'type': 'string'},
+                        'max_rounds': {'type': 'integer'},
+                        'epochs_per_round': {'type': 'integer'},
+                        'loop_name': {'type': 'string'},
+                    },
+                    'additionalProperties': False,
+                },
+                'reason': {'type': 'string'},
+            },
+            'required': ['action', 'reason'],
+            'additionalProperties': False,
+        }
+
+    @staticmethod
+    def _normalize_pending_turn_intent_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return PendingTurnIntent.model_validate(payload or {}).model_dump(exclude_none=True)
+        except Exception:
+            action = str((payload or {}).get('action') or '').strip().lower()
+            if action not in {'approve', 'reject', 'edit', 'status', 'new_task', 'unclear'}:
+                action = 'unclear'
+            edits = payload.get('edits') if isinstance(payload, dict) else None
+            normalized_edits: dict[str, Any] | None = None
+            if isinstance(edits, dict):
+                try:
+                    normalized_edits = TrainingEdits.model_validate(edits).model_dump(exclude_none=True)
+                except Exception:
+                    normalized_edits = {
+                        key: value
+                        for key, value in edits.items()
+                        if value is not None
+                    }
+            normalized = {
+                'action': action,
+                'reason': str((payload or {}).get('reason') or '').strip(),
+            }
+            if normalized_edits:
+                normalized['edits'] = normalized_edits
+            return normalized
+
+    async def _parse_user_decision(
+        self,
+        *,
+        user_text: str,
+        interrupt_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        plan_payload = {}
+        try:
+            plan_payload = coerce_training_plan(dict(interrupt_payload.get('plan') or {})).model_dump(exclude_none=True)
+        except Exception:
+            raw_plan = interrupt_payload.get('plan')
+            if isinstance(raw_plan, dict):
+                plan_payload = dict(raw_plan)
+        messages = [
+            SystemMessage(
+                content=(
+                    '你是训练确认路由器。'
+                    '根据当前训练计划和用户回复，输出结构化 JSON。'
+                    'action 只能是 approve / reject / edit / status / new_task / unclear。'
+                    '如果用户在修改参数，action=edit，且 edits 里只填写明确提到的新值。'
+                    '如果用户在追问当前计划细节、产物路径、原因、当前参数，action=status。'
+                    '如果用户在问与当前计划无关的新任务，例如查看历史、列出环训练、查其他对象，action=new_task。'
+                    '不要编造参数，不要输出额外字段。'
+                )
+            ),
+            HumanMessage(
+                content=(
+                    f'当前阶段: {str(interrupt_payload.get("phase") or "prepare")}\n'
+                    f'当前计划: {json.dumps(plan_payload, ensure_ascii=False, indent=2)}\n'
+                    f'用户回复: {user_text}'
+                )
+            ),
+        ]
+        parsed = await self._invoke_structured_payload(
+            messages=messages,
+            schema=self._pending_turn_intent_schema(),
+        )
+        normalized = self._normalize_pending_turn_intent_payload(parsed)
+        if normalized.get('action') == 'unclear' and not normalized.get('reason'):
+            normalized['reason'] = str(user_text or '').strip()
+        return normalized
 
     @staticmethod
     def _structured_output_value(value: Any, key: str) -> Any:
