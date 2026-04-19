@@ -266,7 +266,17 @@ async def build_confirmation_message(
         and execution_mode != 'prepare_only'
         and str(plan_draft.get('next_step_tool') or '').strip() == tool_name
     ):
-        return await render_training_plan_message(plan_draft, pending=True)
+        rendered_plan = await render_training_plan_message(plan_draft, pending=True)
+        if tool_name == 'prepare_dataset_for_training':
+            ds = session_state.active_dataset
+            dataset_path = str(args.get('dataset_path') or ds.dataset_root or ds.img_dir or '').strip()
+            readiness = ds.last_readiness or {}
+            resolved_yaml = str(readiness.get('resolved_data_yaml') or ds.data_yaml or '').strip()
+            planned_yaml = resolved_yaml or (f"{dataset_path.rstrip('/')}/data.yaml" if dataset_path else '')
+            expected_output_line = f'预期产物: data.yaml -> {planned_yaml}' if planned_yaml else ''
+            if expected_output_line and expected_output_line not in rendered_plan:
+                rendered_plan = f'{rendered_plan}\n{expected_output_line}' if rendered_plan else expected_output_line
+        return rendered_plan
     return await render_confirmation_message({'name': tool_name, 'args': args})
 
 
