@@ -68,8 +68,11 @@ def training_confirmation_node(state: Mapping[str, Any], config: RunnableConfig 
         'status_reply': status_reply,
         'suspended_training_plan': dict(suspended_plan or {}) if isinstance(suspended_plan, Mapping) else None,
     }
-    with set_config_context(config or {}):
-        decision = _normalize_decision(interrupt(payload))
+    with set_config_context(config or {}) as runtime_context:
+        if hasattr(runtime_context, 'run'):
+            decision = _normalize_decision(runtime_context.run(interrupt, payload))
+        else:
+            decision = _normalize_decision(interrupt(payload))
     action = str(decision.action or 'unclear').strip().lower()
 
     if action == 'approve':
