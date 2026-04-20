@@ -260,6 +260,55 @@ async def _scenario_execute_turn_defers_to_graph() -> None:
     assert client.session_state.pending_confirmation.tool_name == ''
 
 
+async def _scenario_enter_graph_confirmation_uses_override_without_persisting_draft() -> None:
+    root = WORK / 'enter-graph-confirmation-override'
+    client_holder: dict[str, YoloStudioAgentClient] = {}
+
+    class _DraftInspectGraph(_CaptureGraph):
+        def __init__(self) -> None:
+            super().__init__()
+            self.draft_at_invoke: dict[str, Any] | None = None
+
+        async def ainvoke(self, payload, config=None):
+            self.draft_at_invoke = dict(client_holder['client'].session_state.active_training.training_plan_draft or {})
+            return await super().ainvoke(payload, config=config)
+
+    graph = _DraftInspectGraph()
+    setattr(graph, '__codex_training_entry__', True)
+    settings = AgentSettings(session_id='training-plan-context-override', memory_root=str(root))
+    client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
+    client_holder['client'] = client
+    draft = {
+        'dataset_path': '/data/demo',
+        'execution_mode': 'direct_train',
+        'next_step_tool': 'start_training',
+        'next_step_args': {
+            'model': 'yolov8n.pt',
+            'data_yaml': '/data/demo/data.yaml',
+            'epochs': 20,
+        },
+        'planned_training_args': {
+            'model': 'yolov8n.pt',
+            'data_yaml': '/data/demo/data.yaml',
+            'epochs': 20,
+            'batch': 8,
+        },
+        'reasoning_summary': '当前可直接训练。',
+        'data_summary': '训练前检查通过。',
+    }
+    result = await client._enter_graph_training_confirmation(
+        draft=draft,
+        thread_id='training-plan-context-override-turn-1',
+        user_text_hint='请按当前方案确认训练',
+    )
+    assert result['status'] == 'needs_confirmation', result
+    assert graph.payloads, 'graph was not invoked'
+    plan_context = graph.payloads[0].get('training_plan_context') or {}
+    assert plan_context.get('next_step_tool') == 'start_training', plan_context
+    assert plan_context.get('dataset_path') == '/data/demo', plan_context
+    assert graph.draft_at_invoke == {}, graph.draft_at_invoke
+
+
 async def _run() -> None:
     shutil.rmtree(WORK, ignore_errors=True)
     WORK.mkdir(parents=True, exist_ok=True)
@@ -267,6 +316,7 @@ async def _run() -> None:
         _scenario_build_payload()
         await _scenario_chat_passes_training_plan_context()
         await _scenario_execute_turn_defers_to_graph()
+        await _scenario_enter_graph_confirmation_uses_override_without_persisting_draft()
         print('training plan context payload ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)

@@ -178,6 +178,13 @@ GPU_SENSITIVE_TOOLS = {
     "start_training",
     "start_training_loop",
 }
+_GRAPH_NATIVE_TRAINING_CONFIRMATION_ACTIONS = {
+    'render_plan',
+    'render_original_plan',
+    'render_draft',
+    'refresh_confirmation',
+    'save_draft_and_handoff',
+}
 
 
 @dataclass(slots=True)
@@ -2711,7 +2718,12 @@ class YoloStudioAgentClient:
                 pending=None,
                 thread_id=thread_id,
             )
-        if action == 'save_draft_and_reply' or action == 'save_draft_and_handoff':
+        persist_graph_handoff_draft = not (
+            self._graph_has_training_entry
+            and thread_id
+            and action == 'save_draft_and_handoff'
+        )
+        if action == 'save_draft_and_reply' or (action == 'save_draft_and_handoff' and persist_graph_handoff_draft):
             draft = dict(followup_action.get('draft') or {})
             if draft:
                 self._save_training_plan_draft(draft)
@@ -5891,8 +5903,16 @@ class YoloStudioAgentClient:
         )
         followup_action = dict(dialogue_result.get('followup_action') or {})
         draft_to_save = dict(dialogue_result.get('draft_to_save') or {})
-        if draft_to_save:
+        action = str(followup_action.get('action') or '').strip()
+        should_persist_draft = not (
+            self._graph_has_training_entry
+            and thread_id
+            and action in _GRAPH_NATIVE_TRAINING_CONFIRMATION_ACTIONS
+        )
+        if draft_to_save and should_persist_draft:
             self._save_training_plan_draft(draft_to_save)
+            draft = draft_to_save
+        elif draft_to_save:
             draft = draft_to_save
         return await self._apply_training_plan_followup_action(
             followup_action=followup_action,
