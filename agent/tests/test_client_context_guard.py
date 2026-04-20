@@ -335,25 +335,16 @@ async def _scenario_startup_materializes_training_draft_without_pending() -> Non
     client = YoloStudioAgentClient(graph=_NoGraph(), settings=settings, tool_registry={})
     pending = client.get_pending_action()
     draft = dict(client.session_state.active_training.training_plan_draft or {})
-    assert pending is not None
-    assert pending['tool_name'] == 'prepare_dataset_for_training', pending
-    assert pending['tool_args'] == {'dataset_path': '/home/kly/ct_loop/data_ct'}, pending
+    assert pending is None
     assert draft.get('next_step_tool') == 'prepare_dataset_for_training', draft
-    events = client.memory.read_events(client.session_state.session_id)
-    assert any(
-        event.get('type') == 'startup_training_plan_materialized'
-        and event.get('tool') == 'prepare_dataset_for_training'
-        for event in events
-    ), events
 
     turn = await client.chat('把 batch 改成 12 再继续')
     refreshed_pending = client.get_pending_action()
     refreshed_draft = dict(client.session_state.active_training.training_plan_draft or {})
-    assert turn['status'] == 'needs_confirmation', turn
-    assert refreshed_pending is not None, turn
-    assert refreshed_pending['tool_name'] == 'prepare_dataset_for_training', refreshed_pending
-    assert refreshed_pending['decision_context']['decision'] == 'edit', refreshed_pending
-    assert refreshed_pending['tool_args'] == {'dataset_path': '/home/kly/ct_loop/data_ct'}, refreshed_pending
+    assert turn['status'] == 'completed', turn
+    assert refreshed_pending is None, turn
+    assert 'batch=12' in turn['message'], turn
+    assert '下一步动作: prepare_dataset_for_training' in turn['message'], turn
     assert (refreshed_draft.get('planned_training_args') or {}).get('batch') == 12, refreshed_draft
 
 

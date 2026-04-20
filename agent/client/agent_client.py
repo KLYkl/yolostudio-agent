@@ -588,40 +588,24 @@ class YoloStudioAgentClient:
             result["approved"] = True
         return result
 
-    def _maybe_materialize_startup_training_pending(self) -> bool:
-        if self._pending_from_state():
-            return False
+    def _clear_stale_startup_state(self) -> None:
+        pending = self.session_state.pending_confirmation
+        if str(pending.tool_name or '').strip():
+            return
         draft = dict(self.session_state.active_training.training_plan_draft or {})
         if not draft:
-            return False
+            self._clear_training_plan_draft()
+            return
         materialized = self._build_materialized_training_pending(
             draft=draft,
             user_text=str(draft.get('planner_user_request') or ''),
         )
         if materialized is None:
-            return False
-        rebuilt_draft, pending = materialized
+            self._clear_training_plan_draft()
+            return
+        rebuilt_draft, _ = materialized
         self._ensure_materialized_training_state_context(draft=rebuilt_draft)
         self._save_training_plan_draft(rebuilt_draft)
-        thread_id = f"{self.session_state.session_id}-turn-{max(self._turn_index, 1)}-startup-materialized"
-        interrupt_payload = self._draft_to_training_confirmation_interrupt(rebuilt_draft, thread_id=thread_id)
-        if interrupt_payload is None:
-            return False
-        self.memory.append_event(
-            self.session_state.session_id,
-            'startup_training_plan_materialized',
-            {
-                'thread_id': thread_id,
-                'tool': str(pending.get('name') or ''),
-                'execution_mode': str(rebuilt_draft.get('execution_mode') or '').strip(),
-            },
-        )
-        return True
-
-    def _clear_stale_startup_state(self) -> None:
-        pending = self.session_state.pending_confirmation
-        if not str(pending.tool_name or '').strip() and not self._maybe_materialize_startup_training_pending():
-            self._clear_training_plan_draft()
 
     def _record_startup_checkpoint_health(self) -> None:
         if self.checkpointer is None or not hasattr(self.checkpointer, 'health_payload'):
