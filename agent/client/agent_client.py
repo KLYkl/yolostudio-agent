@@ -6503,6 +6503,7 @@ async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudi
             return Command(goto='training_confirmation')
         plan = coerce_training_plan(plan_payload)
         next_args = dict((state or {}).get('training_next_step_args') or {'dataset_path': plan.dataset_path})
+        next_args = {key: value for key, value in next_args.items() if value is not None}
         prepare_result = await client.direct_tool('prepare_dataset_for_training', **next_args)
         messages: list[Any] = [_tool_result_message('prepare_dataset_for_training', parsed=prepare_result)]
         if not prepare_result.get('ok'):
@@ -6548,6 +6549,7 @@ async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudi
         if next_tool_name not in {'start_training', 'start_training_loop'}:
             next_tool_name = 'start_training_loop' if getattr(plan, 'mode', 'train') == 'loop' else 'start_training'
         next_args = dict((state or {}).get('training_next_step_args') or client._model_dump_compat(plan))
+        next_args = {key: value for key, value in next_args.items() if value is not None}
         parsed = await client.direct_tool(next_tool_name, **next_args)
         reply = await client._render_tool_result_message(next_tool_name, parsed)
         messages: list[Any] = [_tool_result_message(next_tool_name, parsed=parsed)]
