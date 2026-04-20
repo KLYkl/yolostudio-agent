@@ -1203,7 +1203,7 @@ class YoloStudioAgentClient:
         messages = [
             SystemMessage(
                 content=(
-                    '你是 YoloStudio Agent 的待确认动作回复路由器。'
+                    '你是 YoloStudio Agent 的待确认动作审批回复解释器。'
                     '当前会话里已经存在一个待确认动作。'
                     '你只负责判断用户这句跟进对当前待确认动作意味着什么。'
                     '输出必须是 JSON，对象格式固定为 '
@@ -1669,7 +1669,16 @@ class YoloStudioAgentClient:
         except Exception:
             normalized_source = dict(payload or {})
 
-        action = str((normalized_source or {}).get('action') or '').strip().lower()
+        raw_action = (
+            (normalized_source or {}).get('action')
+            or (normalized_source or {}).get('decision')
+            or (payload or {}).get('action')
+            or (payload or {}).get('decision')
+            or ''
+        )
+        action = self._normalize_confirmation_reply_decision(str(raw_action or '').strip().lower())
+        if action == 'deny':
+            action = 'reject'
         if action not in {'approve', 'reject', 'edit', 'status', 'new_task', 'unclear'}:
             action = 'unclear'
         source_edits = dict((payload or {}).get('edits') or {}) if isinstance(payload, dict) else {}

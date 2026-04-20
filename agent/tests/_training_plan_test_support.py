@@ -9,6 +9,23 @@ from yolostudio_agent.agent.client.training_plan_context_service import (
 )
 
 
+def _candidate_training_plan_thread_ids(client: Any, *, thread_id: str = '') -> list[str]:
+    resolved = str(thread_id or '').strip()
+    candidate_ids: list[str] = []
+    if resolved:
+        candidate_ids.append(resolved)
+    candidate_getter = getattr(client, '_training_context_candidate_thread_ids', None)
+    if callable(candidate_getter):
+        for candidate in candidate_getter(preferred_thread_id=resolved):
+            normalized = str(candidate or '').strip()
+            if normalized and normalized not in candidate_ids:
+                candidate_ids.append(normalized)
+    fallback = resolve_training_plan_thread_id(client, thread_id=resolved)
+    if fallback and fallback not in candidate_ids:
+        candidate_ids.append(fallback)
+    return candidate_ids
+
+
 def resolve_training_plan_thread_id(client: Any, *, thread_id: str = '') -> str:
     resolved = str(thread_id or '').strip()
     if resolved:
@@ -38,9 +55,10 @@ def current_training_plan_context(client: Any, *, thread_id: str = '') -> dict[s
 
     plan_contexts = getattr(graph, 'plan_contexts', None)
     if isinstance(plan_contexts, dict):
-        context = plan_contexts.get(preferred_thread_id)
-        if isinstance(context, dict) and context:
-            return dict(context)
+        for candidate_thread_id in _candidate_training_plan_thread_ids(client, thread_id=preferred_thread_id):
+            context = plan_contexts.get(candidate_thread_id)
+            if isinstance(context, dict) and context:
+                return dict(context)
 
     for attr_name in ('plan_context', '_training_plan_context'):
         context = getattr(graph, attr_name, None)
@@ -81,10 +99,19 @@ def set_training_plan_context(
 ) -> None:
     preferred_thread_id = resolve_training_plan_thread_id(client, thread_id=thread_id)
     normalized = dict(context) if isinstance(context, dict) and context else None
+    target_thread_ids = _candidate_training_plan_thread_ids(client, thread_id=preferred_thread_id if thread_id else '')
+    if thread_id:
+        target_thread_ids = [preferred_thread_id]
+    elif not target_thread_ids:
+        target_thread_ids = [preferred_thread_id]
 
     updater = getattr(client, '_update_graph_training_plan_context', None)
-    if callable(updater):
-        updater(thread_id=preferred_thread_id, context=normalized)
+    clearer = getattr(client, '_clear_graph_training_plan_context_candidates', None)
+    if normalized is None and not thread_id and callable(clearer):
+        clearer()
+    elif callable(updater):
+        for target_thread_id in target_thread_ids:
+            updater(thread_id=target_thread_id, context=normalized)
 
     graph = getattr(client, 'graph', None)
     if graph is None:
@@ -94,7 +121,8 @@ def set_training_plan_context(
         if normalized:
             graph.plan_contexts[preferred_thread_id] = dict(normalized)
         else:
-            graph.plan_contexts.pop(preferred_thread_id, None)
+            for target_thread_id in target_thread_ids:
+                graph.plan_contexts.pop(target_thread_id, None)
 
     graph.plan_context = dict(normalized) if normalized else None
     if hasattr(graph, '_training_plan_context') or normalized is not None:
