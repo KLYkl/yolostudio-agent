@@ -6361,7 +6361,7 @@ async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudi
         training_entrypoint_args = dict(dispatch_payload.get('training_entrypoint_request_args') or {})
         if not training_entrypoint_args:
             return Command(goto='agent_runtime')
-        wants_training_loop_start = bool(training_entrypoint_args.pop('wants_training_loop_start', False))
+        wants_training_loop_start = bool(training_entrypoint_args.get('wants_training_loop_start'))
         prepare_only_followup = await run_prepare_only_flow(
             user_text=latest_user_text,
             looks_like_prepare_only_request=client._looks_like_prepare_only_request,
@@ -6392,6 +6392,26 @@ async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudi
                 loop_args=loop_args,
             )
         else:
+            standard_training_args = {
+                'normalized_text': str(training_entrypoint_args.get('normalized_text') or ''),
+                'dataset_path': str(training_entrypoint_args.get('dataset_path') or ''),
+                'frame_followup_path': str(training_entrypoint_args.get('frame_followup_path') or ''),
+                'wants_train': bool(training_entrypoint_args.get('wants_train')),
+                'wants_predict': bool(training_entrypoint_args.get('wants_predict')),
+                'no_train': bool(training_entrypoint_args.get('no_train')),
+                'readiness_only_query': bool(training_entrypoint_args.get('readiness_only_query')),
+                'wants_training_outcome_analysis': bool(
+                    training_entrypoint_args.get('wants_training_outcome_analysis')
+                ),
+                'wants_next_step_guidance': bool(training_entrypoint_args.get('wants_next_step_guidance')),
+                'wants_training_knowledge': bool(training_entrypoint_args.get('wants_training_knowledge')),
+                'wants_training_revision': bool(training_entrypoint_args.get('wants_training_revision')),
+                'wants_stop_training': bool(training_entrypoint_args.get('wants_stop_training')),
+                'blocks_training_start': bool(training_entrypoint_args.get('blocks_training_start')),
+                'explicit_run_ids': list(training_entrypoint_args.get('explicit_run_ids') or []),
+                'wants_split': bool(training_entrypoint_args.get('wants_split')),
+                'wants_training_loop_start': wants_training_loop_start,
+            }
             entrypoint_result = await run_training_request_entrypoint(
                 session_state=client.session_state,
                 user_text=latest_user_text,
@@ -6402,7 +6422,7 @@ async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudi
                 extract_training_execution_backend=client._extract_training_execution_backend_from_text,
                 build_training_plan_draft_fn=client._build_training_plan_draft,
                 render_training_plan_message=client._render_training_plan_message,
-                **training_entrypoint_args,
+                **standard_training_args,
             )
         if not entrypoint_result:
             return Command(goto='agent_runtime')
