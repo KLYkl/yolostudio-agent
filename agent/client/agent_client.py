@@ -3154,8 +3154,15 @@ class YoloStudioAgentClient:
                 return build_training_plan_context_from_draft(
                     self._draft_from_training_confirmation_interrupt(interrupt_payload)
                 )
+        candidate_thread_ids: list[str] = []
+        preferred_thread_id = str(preferred_thread_id or '').strip()
         if preferred_thread_id:
-            context = self._graph_training_plan_context(self._pending_config(preferred_thread_id))
+            candidate_thread_ids.append(preferred_thread_id)
+        default_thread_id = self._pending_confirmation_thread_id()
+        if default_thread_id and default_thread_id not in candidate_thread_ids:
+            candidate_thread_ids.append(default_thread_id)
+        for thread_id in candidate_thread_ids:
+            context = self._graph_training_plan_context(self._pending_config(thread_id))
             if context:
                 return context
         mirror = build_training_plan_context_payload(self.session_state)
