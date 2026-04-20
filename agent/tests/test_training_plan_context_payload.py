@@ -162,8 +162,8 @@ from yolostudio_agent.agent.client.training_plan_context_service import (
 WORK = Path(__file__).resolve().parent / '_tmp_training_plan_context'
 
 
-def _seed_training_plan_draft(state: SessionState) -> None:
-    state.active_training.training_plan_draft = {
+def _seed_training_plan_draft() -> dict[str, Any]:
+    return {
         'stage': 'training_plan',
         'status': 'ready_for_confirmation',
         'dataset_path': '/data/demo',
@@ -202,8 +202,29 @@ def _seed_training_plan_draft(state: SessionState) -> None:
 class _CaptureGraph:
     def __init__(self) -> None:
         self.payloads: list[dict[str, Any]] = []
+        self.state_by_thread: dict[str, dict[str, Any]] = {}
+
+    @staticmethod
+    def _thread_id(config: Any) -> str:
+        configurable = getattr(config, 'get', lambda *_args, **_kwargs: {})('configurable', {}) if isinstance(config, dict) else {}
+        if not isinstance(configurable, dict):
+            configurable = {}
+        return str(configurable.get('thread_id') or '').strip()
 
     def get_state(self, config):
+        thread_id = self._thread_id(config)
+        values = dict(self.state_by_thread.get(thread_id) or {})
+        if not values:
+            return None
+        return type('_GraphState', (), {'values': values})()
+
+    def update_state(self, config, values):
+        thread_id = self._thread_id(config)
+        if not thread_id:
+            return None
+        current = dict(self.state_by_thread.get(thread_id) or {})
+        current.update(dict(values or {}))
+        self.state_by_thread[thread_id] = current
         return None
 
     async def ainvoke(self, payload, config=None):
@@ -215,16 +236,15 @@ class _CaptureGraph:
 
 
 def _scenario_build_payload() -> None:
-    state = SessionState(session_id='training-plan-payload')
-    _seed_training_plan_draft(state)
-    payload = build_training_plan_context_payload(state)
+    draft = _seed_training_plan_draft()
+    payload = build_training_plan_context_payload(draft)
     assert payload is not None
     assert payload['next_step_tool'] == 'start_training'
     assert payload['planned_training_args']['model'] == 'yolov8n.pt'
     assert payload['planned_training_args']['batch'] == 8
     assert payload['warnings'] == ['样本量偏小，建议先小步验证']
     assert extract_training_plan_context_from_state({'training_plan_context': payload}) == payload
-    assert build_training_plan_context_from_draft(dict(state.active_training.training_plan_draft or {})) == payload
+    assert build_training_plan_context_from_draft(dict(draft)) == payload
     roundtrip_draft = build_training_plan_draft_from_context(payload)
     assert roundtrip_draft is not None
     assert roundtrip_draft['next_step_tool'] == 'start_training'
@@ -237,7 +257,9 @@ async def _scenario_chat_passes_training_plan_context() -> None:
     graph = _CaptureGraph()
     settings = AgentSettings(session_id='training-plan-context-chat', memory_root=str(root))
     client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
-    _seed_training_plan_draft(client.session_state)
+    graph.state_by_thread['training-plan-context-chat-turn-1'] = {
+        'training_plan_context': build_training_plan_context_from_draft(_seed_training_plan_draft()),
+    }
 
     result = await client.chat('hello')
     assert result['status'] == 'completed', result
@@ -296,7 +318,6 @@ async def _scenario_chat_prefers_graph_training_plan_context_over_stale_draft() 
     graph = _GraphWithState()
     settings = AgentSettings(session_id='training-plan-context-graph-preferred', memory_root=str(root))
     client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
-    _seed_training_plan_draft(client.session_state)
 
     result = await client.chat('hello')
     assert result['status'] == 'completed', result
@@ -343,16 +364,6 @@ async def _scenario_current_draft_view_prefers_graph_context_over_stale_mirror()
     graph = _GraphWithState()
     settings = AgentSettings(session_id='training-plan-current-draft-view', memory_root=str(root))
     client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
-    client.session_state.active_training.training_plan_draft = {
-        'dataset_path': '/data/stale',
-        'execution_mode': 'direct_train',
-        'next_step_tool': 'start_training',
-        'planned_training_args': {
-            'model': 'stale.pt',
-            'data_yaml': '/data/stale/data.yaml',
-            'epochs': 300,
-        },
-    }
 
     draft_view = client._current_training_plan_draft_view(preferred_thread_id='graph-turn-1')
     assert draft_view.get('dataset_path') == '/data/from-graph', draft_view
@@ -388,16 +399,6 @@ async def _scenario_current_context_prefers_graph_state_without_preferred_thread
     graph = _GraphWithState()
     settings = AgentSettings(session_id='training-plan-current-context-no-thread', memory_root=str(root))
     client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
-    client.session_state.active_training.training_plan_draft = {
-        'dataset_path': '/data/stale',
-        'execution_mode': 'direct_train',
-        'next_step_tool': 'start_training',
-        'planned_training_args': {
-            'model': 'stale.pt',
-            'data_yaml': '/data/stale/data.yaml',
-            'epochs': 300,
-        },
-    }
 
     context = client._current_training_plan_context()
     assert context is not None
@@ -408,21 +409,26 @@ async def _scenario_current_context_prefers_graph_state_without_preferred_thread
 async def _scenario_interrupt_sync_replaces_stale_mirror_but_keeps_local_metadata() -> None:
     root = WORK / 'interrupt-sync-replaces-stale-mirror'
     settings = AgentSettings(session_id='training-plan-interrupt-sync', memory_root=str(root))
-    client = YoloStudioAgentClient(graph=_CaptureGraph(), settings=settings, tool_registry={})
-    client.session_state.active_training.training_plan_draft = {
-        'dataset_path': '/data/stale',
-        'execution_mode': 'direct_train',
-        'next_step_tool': 'start_training',
-        'planned_training_args': {
-            'model': 'stale.pt',
-            'data_yaml': '/data/stale/data.yaml',
-            'epochs': 300,
-        },
-        'source_intent': 'training_loop',
-        'planner_user_request': '开一个循环训练',
-        'planner_decision_source': 'fallback',
-        'planner_decision': 'start',
-        'planner_observed_tools': ['training_readiness'],
+    graph = _CaptureGraph()
+    client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
+    graph.state_by_thread['graph-turn-2'] = {
+        'training_plan_context': build_training_plan_context_from_draft(
+            {
+                'dataset_path': '/data/stale',
+                'execution_mode': 'direct_train',
+                'next_step_tool': 'start_training',
+                'planned_training_args': {
+                    'model': 'stale.pt',
+                    'data_yaml': '/data/stale/data.yaml',
+                    'epochs': 300,
+                },
+                'source_intent': 'training_loop',
+                'planner_user_request': '开一个循环训练',
+                'planner_decision_source': 'fallback',
+                'planner_decision': 'start',
+                'planner_observed_tools': ['training_readiness'],
+            }
+        ),
     }
     interrupt_payload = client._draft_to_training_confirmation_interrupt(
         {
@@ -458,7 +464,7 @@ async def _scenario_interrupt_sync_replaces_stale_mirror_but_keeps_local_metadat
     assert interrupt_payload is not None
 
     client._sync_training_draft_from_interrupt_payload(interrupt_payload)
-    mirrored = dict(client.session_state.active_training.training_plan_draft or {})
+    mirrored = dict(client._current_training_plan_draft_view(preferred_thread_id='graph-turn-2') or {})
     assert mirrored.get('dataset_path') == '/data/fresh', mirrored
     assert mirrored.get('next_step_tool') == 'start_training_loop', mirrored
     assert (mirrored.get('planned_training_args') or {}).get('model') == 'graph.pt', mirrored
@@ -477,7 +483,9 @@ async def _scenario_execute_turn_defers_to_graph() -> None:
     graph = _CaptureGraph()
     settings = AgentSettings(session_id='training-plan-context-execute', memory_root=str(root))
     client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
-    _seed_training_plan_draft(client.session_state)
+    graph.state_by_thread['training-plan-context-execute-turn-1'] = {
+        'training_plan_context': build_training_plan_context_from_draft(_seed_training_plan_draft()),
+    }
 
     result = await client.chat('执行。')
     assert result['status'] == 'completed', result
@@ -498,7 +506,11 @@ async def _scenario_enter_graph_confirmation_uses_override_without_persisting_dr
             self.draft_at_invoke: dict[str, Any] | None = None
 
         async def ainvoke(self, payload, config=None):
-            self.draft_at_invoke = dict(client_holder['client'].session_state.active_training.training_plan_draft or {})
+            self.draft_at_invoke = dict(
+                client_holder['client']._current_training_plan_draft_view(
+                    preferred_thread_id='training-plan-context-override-turn-1'
+                ) or {}
+            )
             return await super().ainvoke(payload, config=config)
 
     graph = _DraftInspectGraph()

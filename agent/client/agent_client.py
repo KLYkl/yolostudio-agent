@@ -131,7 +131,6 @@ from yolostudio_agent.agent.client.training_plan_service import (
 from yolostudio_agent.agent.client.training_plan_context_service import (
     build_training_plan_draft_from_context,
     build_training_plan_context_from_draft,
-    build_training_plan_context_payload,
     extract_training_plan_context_from_state,
 )
 from yolostudio_agent.agent.client.training_workflow_graph import (
@@ -598,16 +597,7 @@ class YoloStudioAgentClient:
         return result
 
     def _clear_stale_startup_state(self) -> None:
-        if self._pending_from_state() is not None or self._active_graph_interrupt() is not None:
-            return
-        draft = dict(self.session_state.active_training.training_plan_draft or {})
-        if not draft:
-            self.session_state.active_training.training_plan_draft = {}
-            return
-        mirrored = self._sync_startup_training_plan_mirror_from_graph()
-        if not mirrored:
-            self.session_state.active_training.training_plan_draft = {}
-            return
+        return
 
     def _record_startup_checkpoint_health(self) -> None:
         if self.checkpointer is None or not hasattr(self.checkpointer, 'health_payload'):
@@ -640,6 +630,45 @@ class YoloStudioAgentClient:
             except Exception:
                 pass
         return sorted(thread_ids)
+
+    def _training_context_candidate_thread_ids(self, *, preferred_thread_id: str = '') -> list[str]:
+        candidate_thread_ids: list[str] = []
+        for candidate in (
+            str(preferred_thread_id or '').strip(),
+            self._pending_confirmation_thread_id(),
+            (
+                f'{self.session_state.session_id}-turn-{self._turn_index}'
+                if self._turn_index > 0 else ''
+            ),
+            (
+                f'{self.session_state.session_id}-turn-{self._turn_index - 1}'
+                if self._turn_index > 1 else ''
+            ),
+        ):
+            if candidate and candidate not in candidate_thread_ids:
+                candidate_thread_ids.append(candidate)
+
+        def _thread_sort_key(thread_id: str) -> tuple[int, str]:
+            prefix = f'{self.session_state.session_id}-turn-'
+            suffix = str(thread_id or '')
+            if suffix.startswith(prefix):
+                suffix = suffix[len(prefix):]
+            match = re.match(r'(\d+)', suffix)
+            if not match:
+                return (-1, str(thread_id))
+            with contextlib.suppress(Exception):
+                return (int(match.group(1)), str(thread_id))
+            return (-1, str(thread_id))
+
+        recent_thread_ids = sorted(
+            self._startup_checkpoint_thread_ids(),
+            key=_thread_sort_key,
+            reverse=True,
+        )
+        for thread_id in recent_thread_ids:
+            if thread_id not in candidate_thread_ids:
+                candidate_thread_ids.append(thread_id)
+        return candidate_thread_ids
 
     def _startup_graph_pending_candidates(self) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
@@ -674,9 +703,7 @@ class YoloStudioAgentClient:
         if len(candidates) != 1:
             return
         restored = candidates[0]
-        config = self._pending_config(str(restored.get('thread_id') or '').strip())
         self._remember_pending_confirmation(restored, emit_event=False, persist_graph=False)
-        self._restore_training_plan_draft_from_context(config=config, pending=restored)
         self.memory.append_event(
             self.session_state.session_id,
             'startup_graph_pending_restored',
@@ -702,11 +729,6 @@ class YoloStudioAgentClient:
             thread_id=thread_id,
             config=self._pending_config(thread_id),
         )
-        if resolved is not None:
-            self._restore_training_plan_draft_from_context(
-                config=self._pending_config(thread_id),
-                pending=resolved,
-            )
         if resolved is None:
             self.memory.append_event(
                 self.session_state.session_id,
@@ -777,7 +799,6 @@ class YoloStudioAgentClient:
         tr.last_run_inspection = {}
         tr.last_run_comparison = {}
         tr.best_run_selection = {}
-        tr.training_plan_draft = {}
         tr.last_remote_roundtrip = {}
         tr.last_loop_status = {}
         tr.last_loop_detail = {}
@@ -836,12 +857,16 @@ class YoloStudioAgentClient:
             return parsed
         self.memory.append_event(self.session_state.session_id, "tool_result", {"tool": canonical_name, "args": normalized_args, "result": parsed})
         self._apply_to_state(canonical_name, parsed, normalized_args)
+        pending_thread_id = self._pending_confirmation_thread_id()
+        current_draft = self._current_training_plan_draft_view(preferred_thread_id=pending_thread_id)
         if canonical_name in {'start_training', 'start_training_loop'} and parsed.get('ok'):
-            self.session_state.active_training.training_plan_draft = {}
-        elif canonical_name == 'prepare_dataset_for_training' and parsed.get('ok'):
-            draft = self.session_state.active_training.training_plan_draft or {}
-            if str(draft.get('execution_mode') or '').strip().lower() == 'prepare_only':
-                self.session_state.active_training.training_plan_draft = {}
+            self._clear_graph_training_plan_context_candidates(preferred_thread_id=pending_thread_id)
+        elif (
+            canonical_name == 'prepare_dataset_for_training'
+            and parsed.get('ok')
+            and str(current_draft.get('execution_mode') or '').strip().lower() == 'prepare_only'
+        ):
+            self._clear_graph_training_plan_context_candidates(preferred_thread_id=pending_thread_id)
         self._record_secondary_event(canonical_name, parsed)
         self.memory.save_state(self.session_state)
         return parsed
@@ -958,8 +983,12 @@ class YoloStudioAgentClient:
 
         unresolved_pending = self._resolve_pending_confirmation(thread_id=self._pending_confirmation_thread_id())
         if unresolved_pending is not None:
-            pending_thread_id = self._pending_confirmation_thread_id()
+            decision_state = str(unresolved_pending.get('decision_state') or '').strip().lower()
             last_decision = str((unresolved_pending.get('decision_context') or {}).get('decision') or '').strip()
+            if decision_state == 'rejected' or last_decision == 'reject':
+                unresolved_pending = None
+        if unresolved_pending is not None:
+            pending_thread_id = self._pending_confirmation_thread_id()
             if last_decision == 'edit':
                 reply = (
                     '我已经保留这一步待执行动作，但这句还不足以直接改完参数。'
@@ -1329,7 +1358,6 @@ class YoloStudioAgentClient:
                     updated_pending['args'] = dict(updated_args)
                     updated_pending['tool_args'] = dict(updated_args)
                     updated_draft['next_step_args'] = dict(updated_args)
-                    self.session_state.active_training.training_plan_draft = dict(updated_draft)
                     merged_pending = self._merge_pending_review_context(updated_pending, self._pending_review_shadow)
                     self._remember_pending_confirmation(
                         merged_pending,
@@ -1341,6 +1369,10 @@ class YoloStudioAgentClient:
                         or self._pending_confirmation_thread_id()
                         or ''
                     ).strip()
+                    self._update_graph_training_plan_context(
+                        thread_id=pending_thread_id,
+                        context=build_training_plan_context_from_draft(updated_draft),
+                    )
                     interrupt_payload = self._draft_to_training_confirmation_interrupt(updated_draft, thread_id=pending_thread_id)
                     if interrupt_payload is not None:
                         return self._format_interrupt_or_result(
@@ -1353,6 +1385,10 @@ class YoloStudioAgentClient:
                         merged_pending,
                         await self._build_confirmation_message(merged_pending),
                     )
+            pending_tool_name = canonical_tool_name(str(pending.get('name') or '').strip())
+            if pending_tool_name in {'start_training', 'start_training_loop', 'prepare_dataset_for_training'}:
+                if self._is_training_discussion_only(user_text):
+                    return _DEFER_TO_GRAPH
             pending_thread_id = self._pending_confirmation_thread_id()
             return self._needs_confirmation_result(
                 pending_thread_id,
@@ -2251,15 +2287,11 @@ class YoloStudioAgentClient:
             )
             followup_action = dict(dialogue_result.get('followup_action') or {})
             draft_to_save = dict(dialogue_result.get('draft_to_save') or {})
-            action = str(followup_action.get('action') or '').strip()
-            should_persist_draft = not (
-                thread_id
-                and action in _GRAPH_NATIVE_TRAINING_CONFIRMATION_ACTIONS
-            )
-            if draft_to_save and should_persist_draft:
-                self.session_state.active_training.training_plan_draft = dict(draft_to_save)
-                draft = draft_to_save
-            elif draft_to_save:
+            if draft_to_save:
+                self._update_graph_training_plan_context(
+                    thread_id=thread_id,
+                    context=build_training_plan_context_from_draft(draft_to_save),
+                )
                 draft = draft_to_save
             plan_dialogue = await self._apply_training_plan_followup_action(
                 followup_action=followup_action,
@@ -2603,11 +2635,11 @@ class YoloStudioAgentClient:
         if action == 'cancel_pending':
             return await self.confirm(thread_id, approved=False)
         if action == 'cancel_draft':
-            self.session_state.active_training.training_plan_draft = {}
+            self._update_graph_training_plan_context(thread_id=thread_id, context=None)
             self.memory.save_state(self.session_state)
             return {'status': 'cancelled', 'message': '已取消当前训练计划草案。', 'tool_call': None}
         if action == 'clear_and_recheck':
-            self.session_state.active_training.training_plan_draft = {}
+            self._update_graph_training_plan_context(thread_id=thread_id, context=None)
             self.memory.save_state(self.session_state)
             return None
         if action == 'confirmation_message':
@@ -2701,9 +2733,12 @@ class YoloStudioAgentClient:
         if action == 'save_draft_and_reply' or (action == 'save_draft_and_handoff' and persist_graph_handoff_draft):
             draft = dict(followup_action.get('draft') or {})
             if draft:
-                self.session_state.active_training.training_plan_draft = dict(draft)
+                self._update_graph_training_plan_context(
+                    thread_id=thread_id,
+                    context=build_training_plan_context_from_draft(draft),
+                )
         elif action == 'clear_draft_and_reply':
-            self.session_state.active_training.training_plan_draft = {}
+            self._update_graph_training_plan_context(thread_id=thread_id, context=None)
 
         if action == 'save_draft_and_handoff':
             if draft and thread_id:
@@ -3112,6 +3147,36 @@ class YoloStudioAgentClient:
             return None
         return extract_training_plan_context_from_state(values)
 
+    def _update_graph_training_plan_context(
+        self,
+        *,
+        thread_id: str,
+        context: dict[str, Any] | None,
+    ) -> None:
+        thread_id = str(thread_id or '').strip()
+        if not thread_id or not hasattr(self.graph, 'update_state'):
+            return
+        update = {
+            'training_plan_context': dict(context) if isinstance(context, dict) and context else None,
+        }
+        try:
+            self.graph.update_state(self._pending_config(thread_id), update)
+        except Exception:
+            return
+
+    def _clear_graph_training_plan_context_candidates(self, *, preferred_thread_id: str = '') -> None:
+        cleared = False
+        for thread_id in self._training_context_candidate_thread_ids(preferred_thread_id=preferred_thread_id):
+            if not thread_id:
+                continue
+            context = self._graph_training_plan_context(self._pending_config(thread_id))
+            if not context:
+                continue
+            self._update_graph_training_plan_context(thread_id=thread_id, context=None)
+            cleared = True
+        if not cleared and preferred_thread_id:
+            self._update_graph_training_plan_context(thread_id=preferred_thread_id, context=None)
+
     def _current_training_plan_context(
         self,
         *,
@@ -3124,20 +3189,10 @@ class YoloStudioAgentClient:
                 return build_training_plan_context_from_draft(
                     self._draft_from_training_confirmation_interrupt(interrupt_payload)
                 )
-        candidate_thread_ids: list[str] = []
-        preferred_thread_id = str(preferred_thread_id or '').strip()
-        if preferred_thread_id:
-            candidate_thread_ids.append(preferred_thread_id)
-        default_thread_id = self._pending_confirmation_thread_id()
-        if default_thread_id and default_thread_id not in candidate_thread_ids:
-            candidate_thread_ids.append(default_thread_id)
-        for thread_id in candidate_thread_ids:
+        for thread_id in self._training_context_candidate_thread_ids(preferred_thread_id=preferred_thread_id):
             context = self._graph_training_plan_context(self._pending_config(thread_id))
             if context:
                 return context
-        mirror = build_training_plan_context_payload(self.session_state)
-        if mirror:
-            return mirror
         return None
 
     def _current_training_plan_draft_view(
@@ -3158,128 +3213,7 @@ class YoloStudioAgentClient:
         draft = build_training_plan_draft_from_context(context)
         if draft:
             return draft
-        mirror_draft = dict(self.session_state.active_training.training_plan_draft or {})
-        if mirror_draft:
-            return mirror_draft
         return {}
-
-    def _draft_from_graph_training_state(
-        self,
-        *,
-        config: dict[str, Any],
-        pending: dict[str, Any] | None = None,
-    ) -> dict[str, Any] | None:
-        state = self._graph_state_snapshot(config)
-        values = getattr(state, 'values', {}) if state else {}
-        if not isinstance(values, dict):
-            return None
-        training_plan = dict(values.get('training_plan') or {})
-        if training_plan:
-            payload = {
-                'type': 'training_confirmation',
-                'phase': str(values.get('training_phase') or '').strip() or 'prepare',
-                'plan': training_plan,
-                'execution_mode': str(values.get('training_execution_mode') or '').strip(),
-                'next_step_tool': str(values.get('training_next_step_tool') or '').strip(),
-                'next_step_args': dict(values.get('training_next_step_args') or {}),
-                'status_reply': str(values.get('training_status_reply') or '').strip(),
-                'thread_id': str((pending or {}).get('thread_id') or '').strip(),
-            }
-            draft = self._draft_from_training_confirmation_interrupt(payload)
-            if draft:
-                return draft
-        context = extract_training_plan_context_from_state(values)
-        if not isinstance(context, dict) or not context:
-            return None
-        next_step_tool = str(context.get('next_step_tool') or '').strip()
-        pending_tool = str((pending or {}).get('name') or (pending or {}).get('tool_name') or '').strip()
-        if pending_tool and next_step_tool and next_step_tool != pending_tool:
-            return None
-        draft_meaningful_keys = (
-            'dataset_path',
-            'execution_mode',
-            'reasoning_summary',
-            'data_summary',
-            'preflight_summary',
-            'planned_training_args',
-            'command_preview',
-            'warnings',
-            'risks',
-            'blockers',
-        )
-        restored_draft = {
-            'stage': str(context.get('stage') or ''),
-            'status': str(context.get('status') or ''),
-            'dataset_path': str(context.get('dataset_path') or ''),
-            'execution_mode': str(context.get('execution_mode') or ''),
-            'execution_backend': str(context.get('execution_backend') or ''),
-            'training_environment': str(context.get('training_environment') or ''),
-            'advanced_details_requested': bool(context.get('advanced_details_requested')),
-            'reasoning_summary': str(context.get('reasoning_summary') or ''),
-            'data_summary': str(context.get('data_summary') or ''),
-            'preflight_summary': str(context.get('preflight_summary') or ''),
-            'next_step_tool': next_step_tool,
-            'next_step_args': dict(context.get('next_step_args') or {}),
-            'planned_training_args': dict(context.get('planned_training_args') or {}),
-            'command_preview': list(context.get('command_preview') or []),
-            'blockers': [str(item).strip() for item in (context.get('blockers') or []) if str(item).strip()],
-            'warnings': [str(item).strip() for item in (context.get('warnings') or []) if str(item).strip()],
-            'risks': [str(item).strip() for item in (context.get('risks') or []) if str(item).strip()],
-        }
-        if not any(restored_draft.get(key) for key in draft_meaningful_keys):
-            return None
-        return restored_draft
-
-    def _restore_training_plan_draft_from_context(
-        self,
-        *,
-        config: dict[str, Any],
-        pending: dict[str, Any],
-    ) -> None:
-        existing_draft = dict(self.session_state.active_training.training_plan_draft or {})
-        restored_draft = self._draft_from_graph_training_state(config=config, pending=pending)
-        if not restored_draft:
-            return
-        if existing_draft and all(existing_draft.get(key) == restored_draft.get(key) for key in restored_draft):
-            return
-        self.session_state.active_training.training_plan_draft = dict(restored_draft)
-        self.memory.append_event(
-            self.session_state.session_id,
-            'startup_training_plan_mirror_synced',
-            {
-                'next_step_tool': str(restored_draft.get('next_step_tool') or '').strip(),
-                'dataset_path': str(restored_draft.get('dataset_path') or '').strip(),
-                'status': str(restored_draft.get('status') or '').strip(),
-                'replaced_existing': bool(existing_draft),
-            },
-        )
-
-    def _sync_startup_training_plan_mirror_from_graph(self) -> bool:
-        existing_draft = dict(self.session_state.active_training.training_plan_draft or {})
-        candidates: list[tuple[str, dict[str, Any]]] = []
-        for thread_id in self._startup_checkpoint_thread_ids():
-            config = self._pending_config(thread_id)
-            mirrored = self._draft_from_graph_training_state(config=config)
-            if mirrored:
-                candidates.append((thread_id, mirrored))
-        if len(candidates) != 1:
-            return False
-        thread_id, mirrored_draft = candidates[0]
-        if existing_draft and all(existing_draft.get(key) == mirrored_draft.get(key) for key in mirrored_draft):
-            return True
-        self.session_state.active_training.training_plan_draft = dict(mirrored_draft)
-        self.memory.append_event(
-            self.session_state.session_id,
-            'startup_training_plan_mirror_synced',
-            {
-                'thread_id': thread_id,
-                'next_step_tool': str(mirrored_draft.get('next_step_tool') or '').strip(),
-                'dataset_path': str(mirrored_draft.get('dataset_path') or '').strip(),
-                'status': str(mirrored_draft.get('status') or '').strip(),
-                'replaced_existing': bool(existing_draft),
-            },
-        )
-        return True
 
     @staticmethod
     def _merge_pending_review_context(pending: dict[str, Any], review: dict[str, Any] | None) -> dict[str, Any]:
@@ -3657,7 +3591,8 @@ class YoloStudioAgentClient:
         }
 
     def _sync_training_draft_from_interrupt_payload(self, payload: dict[str, Any]) -> None:
-        existing_draft = dict(self.session_state.active_training.training_plan_draft or {})
+        pending_thread_id = str(payload.get('thread_id') or self._pending_confirmation_thread_id() or '').strip()
+        existing_draft = dict(self._current_training_plan_draft_view(preferred_thread_id=pending_thread_id))
         draft = self._draft_from_training_confirmation_interrupt(payload)
         for key in (
             'source_intent',
@@ -3670,7 +3605,10 @@ class YoloStudioAgentClient:
         ):
             if existing_draft.get(key) not in (None, '', [], {}):
                 draft[key] = existing_draft.get(key)
-        self.session_state.active_training.training_plan_draft = dict(draft)
+        self._update_graph_training_plan_context(
+            thread_id=pending_thread_id,
+            context=build_training_plan_context_from_draft(draft),
+        )
 
     async def _enter_graph_training_confirmation(
         self,
@@ -4891,7 +4829,10 @@ class YoloStudioAgentClient:
         )
         draft = dict(entrypoint_result.get('draft') or {})
         if draft:
-            self.session_state.active_training.training_plan_draft = dict(draft)
+            self._update_graph_training_plan_context(
+                thread_id=thread_id,
+                context=build_training_plan_context_from_draft(draft),
+            )
         reply = str(entrypoint_result.get('reply') or '').strip()
         if reply and not entrypoint_result.get('defer_to_graph'):
             self._messages.append(AIMessage(content=reply))

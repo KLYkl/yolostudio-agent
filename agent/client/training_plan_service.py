@@ -139,12 +139,8 @@ def build_training_loop_start_draft(
     if data_yaml:
         planned_args['data_yaml'] = data_yaml
     next_tool_name = str(plan.get('next_tool') or '').strip()
-    previous_draft = dict(session_state.active_training.training_plan_draft or {})
     execution_mode = 'prepare_then_loop' if next_tool_name == 'prepare_dataset_for_training' else 'direct_loop'
-    if next_tool_name == 'start_training_loop' and (
-        'prepare_dataset_for_training' in observed_tools
-        or str(previous_draft.get('execution_mode') or '').strip().lower() == 'prepare_then_loop'
-    ):
+    if next_tool_name == 'start_training_loop' and 'prepare_dataset_for_training' in observed_tools:
         execution_mode = 'prepare_then_loop'
     return {
         'source_intent': 'training_loop',

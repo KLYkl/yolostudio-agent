@@ -52,13 +52,13 @@ def main() -> None:
         assert state.session_id == 'legacy-session'
         assert state.schema_version == SESSION_STATE_SCHEMA_VERSION
         assert not hasattr(state, 'pending_confirmation')
-        assert state.active_training.training_plan_draft == {}
+        assert not hasattr(state.active_training, 'training_plan_draft')
 
         rewritten = json.loads(session_path.read_text(encoding='utf-8'))
         assert rewritten['session_id'] == 'legacy-session'
         assert rewritten['schema_version'] == SESSION_STATE_SCHEMA_VERSION
         assert 'pending_confirmation' not in rewritten
-        assert rewritten['active_training']['training_plan_draft'] == {}
+        assert 'training_plan_draft' not in rewritten['active_training']
         events = store.read_events('legacy-session')
         assert any(
             event.get('type') == 'state_schema_migrated'

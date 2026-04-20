@@ -2,9 +2,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from yolostudio_agent.agent.client.session_state import SessionState
-
 TRAINING_PLAN_CONTEXT_KEY = 'training_plan_context'
+
+_TRAINING_PLAN_METADATA_KEYS = (
+    'source_intent',
+    'planner_user_request',
+    'planner_decision_source',
+    'planner_decision',
+    'planner_output',
+    'planner_observed_tools',
+)
 
 
 def build_training_plan_context_from_draft(draft: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -31,6 +38,11 @@ def build_training_plan_context_from_draft(draft: dict[str, Any] | None) -> dict
         'warnings': [str(item).strip() for item in (draft.get('warnings') or []) if str(item).strip()],
         'risks': [str(item).strip() for item in (draft.get('risks') or []) if str(item).strip()],
     }
+    for key in _TRAINING_PLAN_METADATA_KEYS:
+        value = draft.get(key)
+        if value in (None, '', [], {}):
+            continue
+        payload[key] = list(value) if isinstance(value, list) else value
     return payload
 
 
@@ -58,6 +70,11 @@ def build_training_plan_draft_from_context(context: dict[str, Any] | None) -> di
         'warnings': [str(item).strip() for item in (context.get('warnings') or []) if str(item).strip()],
         'risks': [str(item).strip() for item in (context.get('risks') or []) if str(item).strip()],
     }
+    for key in _TRAINING_PLAN_METADATA_KEYS:
+        value = context.get(key)
+        if value in (None, '', [], {}):
+            continue
+        draft[key] = list(value) if isinstance(value, list) else value
     if not any(draft.get(key) for key in (
         'dataset_path',
         'execution_mode',
@@ -70,13 +87,20 @@ def build_training_plan_draft_from_context(context: dict[str, Any] | None) -> di
         'risks',
         'blockers',
         'next_step_tool',
+        *_TRAINING_PLAN_METADATA_KEYS,
     )):
         return None
     return draft
 
 
-def build_training_plan_context_payload(state: SessionState) -> dict[str, Any] | None:
-    return build_training_plan_context_from_draft(dict(state.active_training.training_plan_draft or {}))
+def build_training_plan_context_payload(source: Any) -> dict[str, Any] | None:
+    if isinstance(source, dict):
+        return build_training_plan_context_from_draft(source)
+    active_training = getattr(source, 'active_training', None)
+    draft = getattr(active_training, 'training_plan_draft', None)
+    if isinstance(draft, dict):
+        return build_training_plan_context_from_draft(draft)
+    return None
 
 
 def extract_training_plan_context_from_state(state: dict[str, Any]) -> dict[str, Any] | None:

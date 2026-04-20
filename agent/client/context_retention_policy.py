@@ -429,8 +429,6 @@ def build_context_retention_decision(
         return ContextRetentionDecision(True, 'pending_confirmation')
     if dict(training_plan_context or {}):
         return ContextRetentionDecision(True, 'training_plan_context')
-    if state.active_training.training_plan_draft:
-        return ContextRetentionDecision(True, 'training_plan_draft')
     if _has_active_workflow_context(state):
         return ContextRetentionDecision(True, 'active_workflow')
     if _needs_read_only_prediction_followup_without_history(state, user_text):

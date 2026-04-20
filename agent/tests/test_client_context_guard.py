@@ -304,41 +304,51 @@ async def _scenario_observe_mode_does_not_pollute_state() -> None:
 
 async def _scenario_stale_training_plan_draft_is_cleared_on_startup() -> None:
     root = WORK / 'startup-clean'
-    store = MemoryStore(root)
-    state = SessionState(session_id='startup-clean')
-    state.active_training.training_plan_draft = {'execution_mode': 'direct_train', 'model': 'yolov8n.pt'}
-    store.save_state(state)
+    session_path = _write_raw_session_payload(
+        root,
+        'startup-clean',
+        schema_version=5,
+        active_training={'training_plan_draft': {'execution_mode': 'direct_train', 'model': 'yolov8n.pt'}},
+    )
 
     settings = AgentSettings(session_id='startup-clean', memory_root=str(root))
     client = YoloStudioAgentClient(graph=_NoGraph(), settings=settings, tool_registry={})
-    assert client.session_state.active_training.training_plan_draft == {}
+    assert client._current_training_plan_draft_view() == {}
+    saved_payload = json.loads(session_path.read_text(encoding='utf-8'))
+    assert 'training_plan_draft' not in saved_payload.get('active_training', {}), saved_payload
 
 
 async def _scenario_startup_clears_training_draft_without_graph_mirror() -> None:
     root = WORK / 'startup-clears-training-draft-without-graph-mirror'
-    store = MemoryStore(root)
-    state = SessionState(session_id='startup-clears-training-draft-without-graph-mirror')
-    state.active_dataset.dataset_root = '/home/kly/ct_loop/data_ct'
-    state.active_dataset.last_readiness = {
-        'ok': True,
-        'ready': False,
-        'preparable': True,
-        'dataset_root': '/home/kly/ct_loop/data_ct',
-        'summary': '当前还缺少可用的 data_yaml，可先准备数据再训练。',
-        'blockers': ['缺少可用的 data_yaml'],
-    }
-    state.active_training.training_plan_draft = {
-        'status': 'ready_for_confirmation',
-        'dataset_path': '/home/kly/ct_loop/data_ct',
-        'execution_mode': 'prepare_then_train',
-        'execution_backend': 'standard_yolo',
-        'reasoning_summary': '当前还缺少可用的 data_yaml；确认后先准备再训练。',
-        'planned_training_args': {
-            'model': '/home/kly/yolov8n.pt',
-            'batch': 8,
+    session_path = _write_raw_session_payload(
+        root,
+        'startup-clears-training-draft-without-graph-mirror',
+        schema_version=5,
+        active_dataset={
+            'dataset_root': '/home/kly/ct_loop/data_ct',
+            'last_readiness': {
+                'ok': True,
+                'ready': False,
+                'preparable': True,
+                'dataset_root': '/home/kly/ct_loop/data_ct',
+                'summary': '当前还缺少可用的 data_yaml，可先准备数据再训练。',
+                'blockers': ['缺少可用的 data_yaml'],
+            },
         },
-    }
-    store.save_state(state)
+        active_training={
+            'training_plan_draft': {
+                'status': 'ready_for_confirmation',
+                'dataset_path': '/home/kly/ct_loop/data_ct',
+                'execution_mode': 'prepare_then_train',
+                'execution_backend': 'standard_yolo',
+                'reasoning_summary': '当前还缺少可用的 data_yaml；确认后先准备再训练。',
+                'planned_training_args': {
+                    'model': '/home/kly/yolov8n.pt',
+                    'batch': 8,
+                },
+            }
+        },
+    )
 
     settings = AgentSettings(
         session_id='startup-clears-training-draft-without-graph-mirror',
@@ -346,22 +356,28 @@ async def _scenario_startup_clears_training_draft_without_graph_mirror() -> None
     )
     client = YoloStudioAgentClient(graph=_NoGraph(), settings=settings, tool_registry={})
     pending = client.get_pending_action()
-    draft = dict(client.session_state.active_training.training_plan_draft or {})
+    draft = dict(client._current_training_plan_draft_view() or {})
     assert pending is None
     assert draft == {}, draft
+    saved_payload = json.loads(session_path.read_text(encoding='utf-8'))
+    assert 'training_plan_draft' not in saved_payload.get('active_training', {}), saved_payload
 
 
 async def _scenario_startup_syncs_training_draft_mirror_from_graph() -> None:
     root = WORK / 'startup-syncs-training-draft-mirror'
-    store = MemoryStore(root)
-    state = SessionState(session_id='startup-syncs-training-draft-mirror')
-    state.active_training.training_plan_draft = {
-        'status': 'ready_for_confirmation',
-        'dataset_path': '/data/stale-dataset',
-        'next_step_tool': 'prepare_dataset_for_training',
-        'planned_training_args': {'model': 'stale.pt', 'epochs': 40},
-    }
-    store.save_state(state)
+    _write_raw_session_payload(
+        root,
+        'startup-syncs-training-draft-mirror',
+        schema_version=5,
+        active_training={
+            'training_plan_draft': {
+                'status': 'ready_for_confirmation',
+                'dataset_path': '/data/stale-dataset',
+                'next_step_tool': 'prepare_dataset_for_training',
+                'planned_training_args': {'model': 'stale.pt', 'epochs': 40},
+            }
+        },
+    )
 
     thread_id = 'startup-syncs-training-draft-mirror-turn-1'
     graph = _CheckpointGraph(
@@ -391,32 +407,19 @@ async def _scenario_startup_syncs_training_draft_mirror_from_graph() -> None:
         checkpointer=_FakeCheckpointSaver([thread_id]),
     )
     pending = client.get_pending_action()
-    draft = dict(client.session_state.active_training.training_plan_draft or {})
+    draft = dict(client._current_training_plan_draft_view() or {})
     assert pending is None
     assert draft.get('dataset_path') == '/data/graph-demo', draft
     assert draft.get('next_step_tool') == 'prepare_dataset_for_training', draft
     assert (draft.get('planned_training_args') or {}).get('model') == 'yolov8n.pt', draft
-    events = client.memory.read_events(client.session_state.session_id)
-    assert any(
-        event.get('type') == 'startup_training_plan_mirror_synced'
-        and event.get('thread_id') == thread_id
-        for event in events
-    ), events
 
 
 def _scenario_strip_ephemeral_context_clears_pending_mirror() -> None:
     state = SessionState(session_id='strip-ephemeral-pending')
-    state.active_training.training_plan_draft = {
-        'next_step_tool': 'start_training',
-        'planned_training_args': {'model': 'yolov8n.pt', 'epochs': 40},
-    }
     state.active_training.workflow_state = 'pending_confirmation'
 
     stripped = YoloStudioAgentClient._strip_ephemeral_context(SessionState.from_dict(state.to_dict()))
-    assert stripped.active_training.training_plan_draft == {}
     assert stripped.active_training.workflow_state == 'idle'
-
-    assert state.active_training.training_plan_draft != {}
     assert state.active_training.workflow_state == 'pending_confirmation'
 
 
@@ -439,7 +442,7 @@ async def _scenario_stale_graph_pending_is_cleared_on_startup() -> None:
     settings = AgentSettings(session_id='startup-stale-pending', memory_root=str(root))
     client = YoloStudioAgentClient(graph=_NoGraph(), settings=settings, tool_registry={})
     assert client.get_pending_action() is None
-    assert client.session_state.active_training.training_plan_draft == {}
+    assert client._current_training_plan_draft_view() == {}
     saved_payload = json.loads(session_path.read_text(encoding='utf-8'))
     assert 'pending_confirmation' not in saved_payload, saved_payload
     events = client.memory.read_events(client.session_state.session_id)
@@ -495,7 +498,7 @@ async def _scenario_graph_pending_is_restored_from_checkpoint_on_startup() -> No
     assert pending['thread_id'] == thread_id
     assert pending['decision_context'] == {'mode': 'clarify'}
     assert client.session_state.active_training.workflow_state == 'pending_confirmation'
-    restored_draft = dict(client.session_state.active_training.training_plan_draft or {})
+    restored_draft = dict(client._current_training_plan_draft_view() or {})
     assert restored_draft.get('next_step_tool') == 'remote_training_pipeline'
     assert restored_draft.get('status') == 'ready_for_confirmation'
     assert (restored_draft.get('planned_training_args') or {}).get('model') == 'yolov8n.pt'
@@ -503,21 +506,24 @@ async def _scenario_graph_pending_is_restored_from_checkpoint_on_startup() -> No
     assert '确认后即可启动训练' in message
     events = client.memory.read_events(client.session_state.session_id)
     assert any(event.get('type') == 'startup_graph_pending_restored' for event in events), events
-    assert any(event.get('type') == 'startup_training_plan_mirror_synced' for event in events), events
 
 
 async def _scenario_graph_pending_restore_replaces_stale_draft() -> None:
     root = WORK / 'startup-graph-pending-replace-draft'
-    store = MemoryStore(root)
-    state = SessionState(session_id='startup-graph-pending-replace-draft')
-    state.active_training.training_plan_draft = {
-        'status': 'ready_for_confirmation',
-        'dataset_path': '/data/stale-dataset',
-        'next_step_tool': 'remote_training_pipeline',
-        'next_step_args': {'server': 'stale-server'},
-        'planned_training_args': {'model': 'yolov8s.pt', 'epochs': 20},
-    }
-    store.save_state(state)
+    _write_raw_session_payload(
+        root,
+        'startup-graph-pending-replace-draft',
+        schema_version=5,
+        active_training={
+            'training_plan_draft': {
+                'status': 'ready_for_confirmation',
+                'dataset_path': '/data/stale-dataset',
+                'next_step_tool': 'remote_training_pipeline',
+                'next_step_args': {'server': 'stale-server'},
+                'planned_training_args': {'model': 'yolov8s.pt', 'epochs': 20},
+            }
+        },
+    )
 
     thread_id = 'startup-graph-pending-replace-draft-turn-1'
     graph = _CheckpointGraph(
@@ -553,27 +559,23 @@ async def _scenario_graph_pending_restore_replaces_stale_draft() -> None:
         tool_registry={},
         checkpointer=_FakeCheckpointSaver([thread_id]),
     )
-    restored_draft = dict(client.session_state.active_training.training_plan_draft or {})
+    restored_draft = dict(client._current_training_plan_draft_view() or {})
     assert restored_draft.get('next_step_tool') == 'remote_training_pipeline'
     assert restored_draft.get('dataset_path') == '/data/restored'
     assert (restored_draft.get('planned_training_args') or {}).get('model') == 'yolov8n.pt'
     assert (restored_draft.get('planned_training_args') or {}).get('epochs') == 80
     assert (restored_draft.get('next_step_args') or {}).get('server') == 'yolostudio'
     assert client.session_state.active_training.workflow_state == 'pending_confirmation'
-    events = client.memory.read_events(client.session_state.session_id)
-    assert any(
-        event.get('type') == 'startup_training_plan_mirror_synced'
-        and event.get('replaced_existing') is True
-        for event in events
-    ), events
 
 
 async def _scenario_multiple_graph_pending_candidates_are_not_restored() -> None:
     root = WORK / 'startup-graph-pending-skip'
-    store = MemoryStore(root)
-    state = SessionState(session_id='startup-graph-pending-skip')
-    state.active_training.training_plan_draft = {'execution_mode': 'direct_train', 'model': 'yolov8n.pt'}
-    store.save_state(state)
+    _write_raw_session_payload(
+        root,
+        'startup-graph-pending-skip',
+        schema_version=5,
+        active_training={'training_plan_draft': {'execution_mode': 'direct_train', 'model': 'yolov8n.pt'}},
+    )
 
     thread_ids = [
         'startup-graph-pending-skip-turn-1',
@@ -613,23 +615,27 @@ async def _scenario_multiple_graph_pending_candidates_are_not_restored() -> None
         checkpointer=_FakeCheckpointSaver(thread_ids),
     )
     assert client.get_pending_action() is None
-    assert client.session_state.active_training.training_plan_draft == {}
+    assert client._current_training_plan_draft_view() == {}
     events = client.memory.read_events(client.session_state.session_id)
     assert any(event.get('type') == 'startup_pending_restore_skipped' for event in events), events
 
 
 async def _scenario_existing_graph_pending_rehydrates_missing_draft() -> None:
     root = WORK / 'startup-existing-graph-pending-draft-restore'
-    store = MemoryStore(root)
-    state = SessionState(session_id='startup-existing-graph-pending-draft-restore')
     thread_id = 'startup-existing-graph-pending-draft-restore-turn-1'
-    state.active_training.training_plan_draft = {
-        'status': 'ready_for_confirmation',
-        'dataset_path': '/data/stale-dataset',
-        'next_step_tool': 'prepare_dataset_for_training',
-        'planned_training_args': {'model': 'yolov8s.pt'},
-    }
-    store.save_state(state)
+    _write_raw_session_payload(
+        root,
+        'startup-existing-graph-pending-draft-restore',
+        schema_version=5,
+        active_training={
+            'training_plan_draft': {
+                'status': 'ready_for_confirmation',
+                'dataset_path': '/data/stale-dataset',
+                'next_step_tool': 'prepare_dataset_for_training',
+                'planned_training_args': {'model': 'yolov8s.pt'},
+            }
+        },
+    )
 
     graph = _CheckpointGraph(
         {
@@ -668,33 +674,31 @@ async def _scenario_existing_graph_pending_rehydrates_missing_draft() -> None:
     assert pending is not None
     assert pending['tool_name'] == 'start_training'
     assert pending['thread_id'] == thread_id
-    restored_draft = dict(client.session_state.active_training.training_plan_draft or {})
+    restored_draft = dict(client._current_training_plan_draft_view() or {})
     assert restored_draft.get('next_step_tool') == 'start_training'
     assert restored_draft.get('dataset_path') == '/data/demo'
     assert (restored_draft.get('planned_training_args') or {}).get('epochs') == 100
     message = await client._build_confirmation_message({'name': 'start_training', 'args': {'model': 'yolov8n.pt'}})
     assert '确认后即可启动训练' in message
-    events = client.memory.read_events(client.session_state.session_id)
-    assert any(
-        event.get('type') == 'startup_training_plan_mirror_synced'
-        and event.get('replaced_existing') is True
-        for event in events
-    ), events
 
 
 async def _scenario_existing_graph_pending_refreshes_stale_same_tool_draft() -> None:
     root = WORK / 'startup-existing-graph-pending-refresh-same-tool'
-    store = MemoryStore(root)
-    state = SessionState(session_id='startup-existing-graph-pending-refresh-same-tool')
     thread_id = 'startup-existing-graph-pending-refresh-same-tool-turn-1'
-    state.active_training.training_plan_draft = {
-        'status': 'ready_for_confirmation',
-        'dataset_path': '/data/stale-dataset',
-        'next_step_tool': 'start_training',
-        'next_step_args': {'model': 'yolov8s.pt'},
-        'planned_training_args': {'model': 'yolov8s.pt', 'epochs': 50},
-    }
-    store.save_state(state)
+    _write_raw_session_payload(
+        root,
+        'startup-existing-graph-pending-refresh-same-tool',
+        schema_version=5,
+        active_training={
+            'training_plan_draft': {
+                'status': 'ready_for_confirmation',
+                'dataset_path': '/data/stale-dataset',
+                'next_step_tool': 'start_training',
+                'next_step_args': {'model': 'yolov8s.pt'},
+                'planned_training_args': {'model': 'yolov8s.pt', 'epochs': 50},
+            }
+        },
+    )
 
     graph = _CheckpointGraph(
         {
@@ -733,17 +737,11 @@ async def _scenario_existing_graph_pending_refreshes_stale_same_tool_draft() -> 
     assert pending is not None
     assert pending['tool_name'] == 'start_training'
     assert pending['thread_id'] == thread_id
-    restored_draft = dict(client.session_state.active_training.training_plan_draft or {})
+    restored_draft = dict(client._current_training_plan_draft_view() or {})
     assert restored_draft.get('next_step_tool') == 'start_training'
     assert restored_draft.get('dataset_path') == '/data/demo'
     assert (restored_draft.get('next_step_args') or {}).get('model') == 'yolov8n.pt'
     assert (restored_draft.get('planned_training_args') or {}).get('epochs') == 100
-    events = client.memory.read_events(client.session_state.session_id)
-    assert any(
-        event.get('type') == 'startup_training_plan_mirror_synced'
-        and event.get('replaced_existing') is True
-        for event in events
-    ), events
 
 
 async def _scenario_legacy_synthetic_pending_is_replaced_by_single_graph_pending() -> None:
@@ -807,7 +805,7 @@ async def _scenario_legacy_synthetic_pending_is_replaced_by_single_graph_pending
     assert pending is not None
     assert pending['tool_name'] == 'remote_training_pipeline'
     assert pending['thread_id'] == thread_id
-    restored_draft = dict(client.session_state.active_training.training_plan_draft or {})
+    restored_draft = dict(client._current_training_plan_draft_view() or {})
     assert restored_draft.get('next_step_tool') == 'remote_training_pipeline'
     assert restored_draft.get('dataset_path') == '/data/graph'
     assert client.session_state.active_training.workflow_state == 'pending_confirmation'
@@ -927,7 +925,7 @@ async def _scenario_corrupt_checkpoint_is_observed_on_startup() -> None:
         checkpointer=checkpointer,
     )
     assert client.get_pending_action() is None
-    assert client.session_state.active_training.training_plan_draft == {}
+    assert client._current_training_plan_draft_view() == {}
     saved_payload = json.loads(session_path.read_text(encoding='utf-8'))
     assert 'pending_confirmation' not in saved_payload, saved_payload
     assert checkpoint_path.with_suffix('.pkl.corrupt').exists()

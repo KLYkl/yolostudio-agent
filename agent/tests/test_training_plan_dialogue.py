@@ -169,7 +169,6 @@ from yolostudio_agent.agent.client.mainline_route_support import resolve_mainlin
 from yolostudio_agent.agent.client.training_plan_context_service import (
     build_training_plan_draft_from_context,
     build_training_plan_context_from_draft,
-    build_training_plan_context_payload,
 )
 from yolostudio_agent.agent.client.training_request_service import (
     run_prepare_only_flow,
@@ -182,13 +181,14 @@ from yolostudio_agent.agent.client.training_plan_service import (
     build_training_preflight_tool_args,
     resolve_training_start_args,
 )
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 
 class _DummyGraph:
     def __init__(self) -> None:
         self.client: YoloStudioAgentClient | None = None
         self.plan_context: dict[str, Any] | None = None
+        self.plan_contexts: dict[str, dict[str, Any]] = {}
         self.interrupt_states: dict[str, Any] = {}
 
     def bind(self, client: YoloStudioAgentClient) -> None:
@@ -199,17 +199,34 @@ class _DummyGraph:
         thread_id = str(configurable.get('thread_id') or '').strip()
         if thread_id and thread_id in self.interrupt_states:
             return self.interrupt_states[thread_id]
-        if self.client is not None:
-            draft = dict(self.client.session_state.active_training.training_plan_draft or {})
-            if draft:
-                self.plan_context = build_training_plan_context_from_draft(draft)
-            has_draft = bool(draft)
-            has_pending = bool((self.client.get_pending_action() or {}).get('tool_name'))
-            if not has_draft and not has_pending:
-                self.plan_context = None
-        if not self.plan_context:
+        plan_context = None
+        if thread_id:
+            plan_context = dict(self.plan_contexts.get(thread_id) or {})
+        elif not plan_context:
+            plan_context = dict(self.plan_context or {})
+        if not plan_context:
             return None
-        return _GraphState(values={'training_plan_context': dict(self.plan_context)})
+        return _GraphState(values={'training_plan_context': plan_context})
+
+    def update_state(self, config, values):
+        configurable = dict((config or {}).get('configurable') or {})
+        thread_id = str(configurable.get('thread_id') or '').strip()
+        update = dict(values or {})
+        if 'training_plan_context' not in update:
+            return None
+        training_plan_context = dict(update.get('training_plan_context') or {})
+        if thread_id:
+            if training_plan_context:
+                self.plan_contexts = {thread_id: training_plan_context}
+            else:
+                self.plan_contexts.pop(thread_id, None)
+        if training_plan_context:
+            self.plan_context = training_plan_context
+        elif thread_id and thread_id in self.plan_contexts:
+            self.plan_context = dict(self.plan_contexts.get(thread_id) or {})
+        elif not self.plan_contexts:
+            self.plan_context = None
+        return None
 
     async def ainvoke(self, payload, config=None):
         assert self.client is not None
@@ -337,8 +354,11 @@ class _DummyGraph:
                             and str(followup_draft.get('next_step_tool') or '').strip() == 'start_training'
                         ):
                             followup_thread_id = f'{thread_id}-post-prepare-start'
-                            self.client.session_state.active_training.training_plan_draft = dict(followup_draft)
-                            self.plan_context = build_training_plan_context_from_draft(followup_draft)
+                            followup_context = build_training_plan_context_from_draft(followup_draft)
+                            self.update_state(
+                                {'configurable': {'thread_id': followup_thread_id}},
+                                {'training_plan_context': followup_context},
+                            )
                             followup_interrupt = self.client._draft_to_training_confirmation_interrupt(
                                 followup_draft,
                                 thread_id=followup_thread_id,
@@ -361,13 +381,16 @@ class _DummyGraph:
         messages = list(payload['messages'])
         user_text = ''
         for message in reversed(messages):
+            if not isinstance(message, HumanMessage):
+                continue
             content = getattr(message, 'content', '')
             if isinstance(content, str) and content:
                 user_text = content
                 break
         explicit_plan_context = dict(payload.get('training_plan_context') or {})
         plan_context = dict(explicit_plan_context or self.plan_context or {})
-        if not plan_context:
+        deferred_execution_handoff = False
+        if not plan_context or not _looks_like_training_plan_execute_turn(user_text):
             mainline_context = self.client._collect_mainline_context(user_text)
             route_state = await self.client._resolve_mainline_route_state(user_text, mainline_context)
             dispatch_payload = resolve_mainline_dispatch_payload(
@@ -413,9 +436,15 @@ class _DummyGraph:
                         session_state=self.client.session_state,
                         user_text=user_text,
                         normalized_text=str(training_entrypoint_args.get('normalized_text') or ''),
-                        dataset_path=str(training_entrypoint_args.get('dataset_path') or ''),
+                        dataset_path=(
+                            str(training_entrypoint_args.get('dataset_path') or '')
+                            or str(plan_context.get('dataset_path') or '')
+                        ),
                         frame_followup_path=str(training_entrypoint_args.get('frame_followup_path') or ''),
-                        wants_train=bool(training_entrypoint_args.get('wants_train')),
+                        wants_train=(
+                            bool(training_entrypoint_args.get('wants_train'))
+                            or bool(plan_context and training_entrypoint_args.get('wants_training_revision'))
+                        ),
                         wants_predict=bool(training_entrypoint_args.get('wants_predict')),
                         no_train=bool(training_entrypoint_args.get('no_train')),
                         readiness_only_query=bool(training_entrypoint_args.get('readiness_only_query')),
@@ -427,7 +456,9 @@ class _DummyGraph:
                         blocks_training_start=bool(training_entrypoint_args.get('blocks_training_start')),
                         explicit_run_ids=list(training_entrypoint_args.get('explicit_run_ids') or []),
                         wants_split=bool(training_entrypoint_args.get('wants_split')),
-                        current_training_plan_context=build_training_plan_context_payload(self.client.session_state),
+                        current_training_plan_context=self.client._current_training_plan_context(
+                            preferred_thread_id=thread_id,
+                        ),
                         direct_tool=self.client.direct_tool,
                         collect_requested_training_args=self.client._collect_requested_training_args,
                         is_training_discussion_only=self.client._is_training_discussion_only,
@@ -438,17 +469,31 @@ class _DummyGraph:
                 draft = dict((entrypoint_result or {}).get('draft') or {})
                 reply = str((entrypoint_result or {}).get('reply') or '').strip()
                 discussion_only = self.client._is_training_discussion_only(user_text)
+                requested_execution_handoff = (
+                    not bool(explicit_plan_context)
+                    and bool(training_entrypoint_args.get('wants_train'))
+                    and not discussion_only
+                    and not bool(training_entrypoint_args.get('readiness_only_query'))
+                    and not bool(training_entrypoint_args.get('wants_next_step_guidance'))
+                    and not bool(training_entrypoint_args.get('wants_training_knowledge'))
+                )
                 if draft:
-                    self.client.session_state.active_training.training_plan_draft = dict(draft)
-                    self.plan_context = build_training_plan_context_from_draft(draft)
+                    self.update_state(
+                        {'configurable': {'thread_id': thread_id}},
+                        {'training_plan_context': build_training_plan_context_from_draft(draft)},
+                    )
                 if draft and discussion_only:
                     rendered = reply or await self.client._render_training_plan_message(
                         draft,
                         pending=bool(draft.get('next_step_tool')),
                     )
                     return {'messages': messages + ([AIMessage(content=rendered)] if rendered else [])}
-                if bool((entrypoint_result or {}).get('defer_to_graph')) and draft:
+                if draft and requested_execution_handoff:
                     plan_context = dict(self.plan_context or {})
+                    deferred_execution_handoff = True
+                elif bool((entrypoint_result or {}).get('defer_to_graph')) and draft:
+                    plan_context = dict(self.plan_context or {})
+                    deferred_execution_handoff = requested_execution_handoff
                 elif reply:
                     return {'messages': messages + [AIMessage(content=reply)]}
                 elif draft:
@@ -457,7 +502,7 @@ class _DummyGraph:
                         pending=bool(draft.get('next_step_tool')),
                     )
                     return {'messages': messages + [AIMessage(content=rendered)]}
-        draft_view = dict(self.client.session_state.active_training.training_plan_draft or {})
+        draft_view = dict(self.client._current_training_plan_draft_view(preferred_thread_id=thread_id) or {})
         if draft_view and not explicit_plan_context:
             plan_context = build_training_plan_context_from_draft(draft_view) or plan_context
             self.plan_context = dict(plan_context or {})
@@ -469,6 +514,7 @@ class _DummyGraph:
         preflight_summary = str(plan_context.get('preflight_summary') or '').strip()
         is_post_prepare_start_handoff = (
             next_tool == 'start_training'
+            and str(plan_context.get('stage') or '').strip().lower() == 'plan_ready'
             and bool(preflight_summary)
             and '确认后即可启动' in reasoning_summary
         )
@@ -476,7 +522,7 @@ class _DummyGraph:
             _looks_like_training_plan_execute_turn(user_text)
             or execution_mode == 'prepare_only'
             or is_post_prepare_start_handoff
-            or (plan_status == 'ready_for_confirmation' and bool(next_tool))
+            or deferred_execution_handoff
         )
         if config and next_tool and is_execute_turn:
             thread_id = str(((config or {}).get('configurable') or {}).get('thread_id') or '').strip()
@@ -674,13 +720,25 @@ class _GraphPrepareApproveWithStaleStartGraph:
         self.client: YoloStudioAgentClient | None = None
         self.calls = 0
         self._state: _InterruptState | None = None
+        self._training_plan_context: dict[str, Any] | None = None
 
     def bind(self, client: YoloStudioAgentClient) -> None:
         self.client = client
 
     def get_state(self, config):
         del config
+        if self._state is not None and self._training_plan_context:
+            self._state.values['training_plan_context'] = dict(self._training_plan_context)
+            return self._state
+        if self._training_plan_context:
+            return _GraphState(values={'training_plan_context': dict(self._training_plan_context)})
         return self._state
+
+    def update_state(self, config, values):
+        del config
+        context = dict((values or {}).get('training_plan_context') or {})
+        self._training_plan_context = context or None
+        return None
 
     async def ainvoke(self, payload, config=None):
         self.calls += 1
@@ -730,11 +788,41 @@ class _GraphPrepareApproveWithStaleStartGraph:
             )
             if interrupt_payload is not None:
                 self._state = _InterruptState(dict(interrupt_payload))
+                self._training_plan_context = training_plan_context or None
                 return {'messages': list(payload.get('messages') or [])}
         raise AssertionError(f'unexpected graph payload: {payload!r}')
 
 
 WORK = Path(__file__).resolve().parent / '_tmp_training_plan_dialogue'
+
+
+def _draft_thread_id(client: YoloStudioAgentClient, *, thread_id: str = '') -> str:
+    resolved = str(thread_id or '').strip()
+    if resolved:
+        return resolved
+    pending_thread_id = str(client._pending_confirmation_thread_id() or '').strip()
+    if pending_thread_id:
+        return pending_thread_id
+    turn_index = client._turn_index if client._turn_index > 0 else 1
+    return f'{client.session_state.session_id}-turn-{turn_index}'
+
+
+def _current_training_plan_draft(client: YoloStudioAgentClient, *, thread_id: str = '') -> dict[str, Any]:
+    return dict(client._current_training_plan_draft_view(preferred_thread_id=_draft_thread_id(client, thread_id=thread_id)) or {})
+
+
+def _set_training_plan_draft(client: YoloStudioAgentClient, draft: dict[str, Any] | None, *, thread_id: str = '') -> None:
+    client._update_graph_training_plan_context(
+        thread_id=_draft_thread_id(client, thread_id=thread_id),
+        context=build_training_plan_context_from_draft(dict(draft or {})),
+    )
+
+
+def _clear_training_plan_draft(client: YoloStudioAgentClient, *, thread_id: str = '') -> None:
+    client._update_graph_training_plan_context(
+        thread_id=_draft_thread_id(client, thread_id=thread_id),
+        context=None,
+    )
 
 
 def _looks_like_training_plan_execute_turn(text: str) -> bool:
@@ -743,7 +831,21 @@ def _looks_like_training_plan_execute_turn(text: str) -> bool:
         return False
     if normalized in {'y', 'yes'}:
         return True
-    direct_tokens = ('执行', '开始吧', '就这样', '确认', '可以开始', '开训', '启动吧', '直接训练', '直接开始训练')
+    direct_tokens = (
+        '执行',
+        '开始吧',
+        '就这样',
+        '确认',
+        '可以开始',
+        '开训',
+        '启动吧',
+        '直接训练',
+        '直接开始训练',
+        '按这个来',
+        '按这个方案',
+        '就按这个来',
+        '保留这个方案',
+    )
     retry_tokens = (
         '按原计划重试',
         '重试刚才那次训练',
@@ -860,7 +962,7 @@ async def _scenario_discussion_then_execute() -> None:
 
         client._apply_to_state(tool_name, result, kwargs)
         if tool_name == 'start_training' and result.get('ok'):
-            client.session_state.active_training.training_plan_draft = {}
+            _clear_training_plan_draft(client)
         return result
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
@@ -895,7 +997,7 @@ async def _scenario_discussion_then_execute() -> None:
     turn4 = await client.confirm(turn3['thread_id'], approved=True)
     assert turn4['status'] == 'completed', turn4
     assert '训练已启动' in turn4['message']
-    assert client.session_state.active_training.training_plan_draft == {}
+    assert _current_training_plan_draft(client) == {}
     assert client.session_state.active_training.batch == 16
     assert client.session_state.active_training.optimizer == 'AdamW'
 
@@ -988,9 +1090,9 @@ async def _scenario_prepare_only_revision() -> None:
 
         client._apply_to_state(tool_name, result, kwargs)
         if tool_name == 'prepare_dataset_for_training' and result.get('ok'):
-            draft = client.session_state.active_training.training_plan_draft or {}
+            draft = _current_training_plan_draft(client)
             if str(draft.get('execution_mode') or '').strip().lower() == 'prepare_only':
-                client.session_state.active_training.training_plan_draft = {}
+                _clear_training_plan_draft(client)
         return result
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
@@ -1018,7 +1120,7 @@ async def _scenario_prepare_only_revision() -> None:
     assert turn3['status'] == 'completed', turn3
     assert '数据准备完成' in turn3['message']
     assert all(name != 'start_training' for name, _ in calls)
-    assert client.session_state.active_training.training_plan_draft == {}
+    assert _current_training_plan_draft(client) == {}
 
 
 async def _scenario_prepare_only_short_revision_without_dataset_path() -> None:
@@ -1192,11 +1294,11 @@ async def _scenario_prepare_then_replan_and_execute() -> None:
 
         client._apply_to_state(tool_name, result, kwargs)
         if tool_name == 'prepare_dataset_for_training' and result.get('ok'):
-            draft = client.session_state.active_training.training_plan_draft or {}
+            draft = _current_training_plan_draft(client)
             if str(draft.get('execution_mode') or '').strip().lower() == 'prepare_only':
-                client.session_state.active_training.training_plan_draft = {}
+                _clear_training_plan_draft(client)
         if tool_name == 'start_training' and result.get('ok'):
-            client.session_state.active_training.training_plan_draft = {}
+            _clear_training_plan_draft(client)
         return result
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
@@ -1221,7 +1323,7 @@ async def _scenario_prepare_then_replan_and_execute() -> None:
     assert turn4['status'] == 'completed', turn4
     assert '数据准备完成' in turn4['message']
     assert prepared['value'] is True
-    assert client.session_state.active_training.training_plan_draft == {}
+    assert _current_training_plan_draft(client) == {}
 
     turn5 = await client.chat('准备完了。数据还用 /data/raw-stage2，模型还是 yolov8n.pt。现在用 yolodo 环境，project /runs/stage2，name exp-stage2，batch 12，imgsz 1280，fraction 0.75，只训练类别 0,2，给我新计划，但先不要执行。')
     assert turn5['status'] == 'completed', turn5
@@ -1272,7 +1374,7 @@ async def _scenario_prepare_then_replan_and_execute() -> None:
     assert client.session_state.active_training.classes == []
     assert client.session_state.active_training.resume is False
     assert client.session_state.active_training.lr0 == 0.003
-    assert client.session_state.active_training.training_plan_draft == {}
+    assert _current_training_plan_draft(client) == {}
 
 
 async def _scenario_cancel_then_replan() -> None:
@@ -1352,7 +1454,7 @@ async def _scenario_cancel_then_replan() -> None:
 
         client._apply_to_state(tool_name, result, kwargs)
         if tool_name == 'start_training' and result.get('ok'):
-            client.session_state.active_training.training_plan_draft = {}
+            _clear_training_plan_draft(client)
         return result
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
@@ -1372,7 +1474,7 @@ async def _scenario_cancel_then_replan() -> None:
     assert '先不执行这一步' in turn3['message']
     assert '当前计划已保留' in turn3['message']
     assert (client.get_pending_action() or {}).get('tool_name', '') == ''
-    assert client.session_state.active_training.training_plan_draft != {}
+    assert _current_training_plan_draft(client) != {}
     assert all(name != 'start_training' for name, _ in calls)
 
     turn4 = await client.chat('刚才先取消。为什么你默认建议 yolodo？先把环境改成 base，project /runs/cancel-replan，name exp-retry，batch 24，imgsz 1280，fraction 0.6，先给我计划。')
@@ -1413,7 +1515,7 @@ async def _scenario_cancel_then_replan() -> None:
     assert client.session_state.active_training.batch == 24
     assert client.session_state.active_training.imgsz == 1280
     assert client.session_state.active_training.fraction == 0.6
-    assert client.session_state.active_training.training_plan_draft == {}
+    assert _current_training_plan_draft(client) == {}
     assert [name for name, _ in calls].count('start_training') == 1
 
 
@@ -1465,9 +1567,9 @@ async def _scenario_cancel_prepare_then_rebuild() -> None:
 
         client._apply_to_state(tool_name, result, kwargs)
         if tool_name == 'prepare_dataset_for_training' and result.get('ok'):
-            draft = client.session_state.active_training.training_plan_draft or {}
+            draft = _current_training_plan_draft(client)
             if str(draft.get('execution_mode') or '').strip().lower() == 'prepare_only':
-                client.session_state.active_training.training_plan_draft = {}
+                _clear_training_plan_draft(client)
         return result
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
@@ -1489,7 +1591,7 @@ async def _scenario_cancel_prepare_then_rebuild() -> None:
     assert '先不执行这一步' in turn3['message']
     assert '当前计划已保留' in turn3['message']
     assert (client.get_pending_action() or {}).get('tool_name', '') == ''
-    assert client.session_state.active_training.training_plan_draft != {}
+    assert _current_training_plan_draft(client) != {}
     assert all(name != 'prepare_dataset_for_training' for name, _ in calls)
 
     turn4 = await client.chat('为什么现在不能直接开训？保留刚才的数据和模型，改成先只做准备，不要自动划分，先给我计划。')
@@ -1510,7 +1612,7 @@ async def _scenario_cancel_prepare_then_rebuild() -> None:
     assert turn6['status'] == 'completed', turn6
     assert '数据准备完成' in turn6['message']
     assert [name for name, _ in calls].count('prepare_dataset_for_training') == 1
-    assert client.session_state.active_training.training_plan_draft == {}
+    assert _current_training_plan_draft(client) == {}
     assert all(name != 'start_training' for name, _ in calls)
 
 
@@ -1562,9 +1664,9 @@ async def _scenario_preparable_backend_switch() -> None:
 
         client._apply_to_state(tool_name, result, kwargs)
         if tool_name == 'prepare_dataset_for_training' and result.get('ok'):
-            draft = client.session_state.active_training.training_plan_draft or {}
+            draft = _current_training_plan_draft(client)
             if str(draft.get('execution_mode') or '').strip().lower() == 'prepare_only':
-                client.session_state.active_training.training_plan_draft = {}
+                _clear_training_plan_draft(client)
         return result
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
@@ -1601,7 +1703,7 @@ async def _scenario_preparable_backend_switch() -> None:
     assert turn5['status'] == 'completed', turn5
     assert '数据准备完成' in turn5['message']
     assert [name for name, _ in calls].count('prepare_dataset_for_training') == 1
-    assert client.session_state.active_training.training_plan_draft == {}
+    assert _current_training_plan_draft(client) == {}
 
 
 async def _scenario_prepare_approval_then_revise_start() -> None:
@@ -1687,7 +1789,7 @@ async def _scenario_prepare_approval_then_revise_start() -> None:
 
         client._apply_to_state(tool_name, result, kwargs)
         if tool_name == 'start_training' and result.get('ok'):
-            client.session_state.active_training.training_plan_draft = {}
+            _clear_training_plan_draft(client)
         return result
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
@@ -1747,7 +1849,7 @@ async def _scenario_prepare_approval_then_revise_start() -> None:
     assert client.session_state.active_training.imgsz == 960
     assert client.session_state.active_training.fraction is None
     assert client.session_state.active_training.classes == []
-    assert client.session_state.active_training.training_plan_draft == {}
+    assert _current_training_plan_draft(client) == {}
     assert [name for name, _ in calls].count('prepare_dataset_for_training') == 1
     assert [name for name, _ in calls].count('training_preflight') == 2
     assert [name for name, _ in calls].count('start_training') == 1
@@ -1792,7 +1894,7 @@ async def _scenario_prepare_only_natural_language_short_circuit() -> None:
 
         client._apply_to_state(tool_name, result, kwargs)
         if tool_name == 'prepare_dataset_for_training':
-            client.session_state.active_training.training_plan_draft = {}
+            _clear_training_plan_draft(client)
         return result
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
@@ -1906,7 +2008,7 @@ async def _scenario_prepare_then_train_prompt_is_not_short_circuited() -> None:
     assert '训练计划草案：' in turn['message'], turn
     assert '执行方式: 先准备再训练' in turn['message'], turn
     assert '准备执行：数据准备' not in turn['message'], turn
-    assert client.session_state.active_training.training_plan_draft.get('execution_mode') == 'prepare_then_train'
+    assert _current_training_plan_draft(client).get('execution_mode') == 'prepare_then_train'
     assert [name for name, _ in calls[:2]] == ['training_readiness', 'list_training_environments'], calls
 
 
@@ -1986,7 +2088,7 @@ async def _scenario_prepare_then_train_preserves_explicit_classes_txt() -> None:
 
         client._apply_to_state(tool_name, result, kwargs)
         if tool_name == 'start_training' and result.get('ok'):
-            client.session_state.active_training.training_plan_draft = {}
+            _clear_training_plan_draft(client)
         return result
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
@@ -2127,7 +2229,7 @@ async def _scenario_text_only_training_plan_materializes_pending() -> None:
     assert turn1['status'] == 'completed', turn1
     assert turn1['tool_call'] is None, turn1
     assert '训练前还缺少可用的 data.yaml' in turn1['message'], turn1
-    draft = dict(client.session_state.active_training.training_plan_draft or {})
+    draft = _current_training_plan_draft(client)
     assert draft == {}, draft
     assert not turn1.get('interrupt_payload'), turn1
 
@@ -2151,7 +2253,7 @@ async def _scenario_text_only_prepare_question_materializes_pending() -> None:
     assert turn['status'] == 'completed', turn
     assert turn['tool_call'] is None, turn
     assert '现在开始准备数据集吗？' in turn['message'], turn
-    draft = dict(client.session_state.active_training.training_plan_draft or {})
+    draft = _current_training_plan_draft(client)
     assert draft == {}, draft
     assert not turn.get('interrupt_payload'), turn
 
@@ -2203,7 +2305,7 @@ async def _scenario_text_only_prepare_question_restore_edit_stays_local() -> Non
         checkpointer=_FakeCheckpointSaver([restored_thread_id]),
     )
     turn2 = await restored.chat('把 batch 改成 12 再继续')
-    draft = dict(restored.session_state.active_training.training_plan_draft or {})
+    draft = _current_training_plan_draft(restored, thread_id=restored_thread_id)
     interrupt_payload = dict(turn2.get('interrupt_payload') or {})
     assert turn2['status'] == 'needs_confirmation', turn2
     assert interrupt_payload.get('type') == 'training_confirmation', turn2
@@ -2419,7 +2521,7 @@ async def _scenario_graph_prepare_approve_prefers_local_post_prepare_refresh() -
     )
     graph.bind(client)
     client.session_state.active_dataset.dataset_root = '/home/kly/ct_loop/data_ct'
-    client.session_state.active_training.training_plan_draft = {
+    _set_training_plan_draft(client, {
         'dataset_path': '/home/kly/ct_loop/data_ct',
         'execution_mode': 'prepare_then_train',
         'execution_backend': 'standard_yolo',
@@ -2431,7 +2533,7 @@ async def _scenario_graph_prepare_approve_prefers_local_post_prepare_refresh() -
         },
         'reasoning_summary': '当前数据还不能直接训练，但可以先自动准备到可训练状态。',
         'data_summary': '当前还不能直接训练: 缺少可用的 data_yaml；但当前数据集可以先进入 prepare_dataset_for_training',
-    }
+    }, thread_id='graph-prepare-turn-1')
     client.memory.save_state(client.session_state)
     client._remember_pending_confirmation(
         {

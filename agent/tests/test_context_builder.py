@@ -81,7 +81,7 @@ def _scenario_compact_populated_summary() -> None:
             'best_weight_path': '/runs/train/best-run/weights/best.pt',
         },
     }
-    state.active_training.training_plan_draft = {
+    training_plan_context = {
         'status': 'ready_for_confirmation',
         'execution_mode': 'direct_train',
         'execution_backend': 'standard_yolo',
@@ -117,7 +117,12 @@ def _scenario_compact_populated_summary() -> None:
         'tool_name': 'start_training',
         'allowed_decisions': ['approve', 'reject'],
     }
-    summary = builder.build_state_summary(state, digest, pending_confirmation=pending_confirmation)
+    summary = builder.build_state_summary(
+        state,
+        digest,
+        pending_confirmation=pending_confirmation,
+        training_plan_context=training_plan_context,
+    )
     assert '数据集:' in summary
     assert 'dataset_root: /data/demo' in summary
     assert 'last_scan_classes: epidural, subdural' in summary
@@ -152,7 +157,12 @@ def _scenario_compact_populated_summary() -> None:
     assert '历史摘要:' in summary
     assert '- 最近调用过的工具: check_training_status' in summary
 
-    messages = builder.build_messages(state, [], pending_confirmation=pending_confirmation)
+    messages = builder.build_messages(
+        state,
+        [],
+        pending_confirmation=pending_confirmation,
+        training_plan_context=training_plan_context,
+    )
     assert len(messages) == 2, messages
     assert getattr(messages[0], 'content', '') == 'system'
     assert 'epidural' in getattr(messages[1], 'content', '')
@@ -164,17 +174,6 @@ def _scenario_compact_populated_summary() -> None:
 def _scenario_graph_training_context_overrides_stale_mirror() -> None:
     builder = ContextBuilder('system')
     state = SessionState(session_id='ctx-graph-priority')
-    state.active_training.training_plan_draft = {
-        'status': 'ready_for_confirmation',
-        'execution_mode': 'direct_train',
-        'dataset_path': '/data/stale',
-        'next_step_tool': 'start_training',
-        'planned_training_args': {
-            'model': 'stale.pt',
-            'data_yaml': '/data/stale/data.yaml',
-            'epochs': 300,
-        },
-    }
     training_plan_context = {
         'status': 'ready_for_confirmation',
         'execution_mode': 'prepare_then_loop',

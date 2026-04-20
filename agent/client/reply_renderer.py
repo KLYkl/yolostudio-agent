@@ -126,7 +126,7 @@ def build_confirmation_prompt(
     tool_name = str(tool_call.get('name') or '')
     ds = session_state.active_dataset
     tr = session_state.active_training
-    plan_draft = build_training_plan_draft_from_context(training_plan_context) or tr.training_plan_draft or {}
+    plan_draft = build_training_plan_draft_from_context(training_plan_context) or {}
     execution_mode = str(plan_draft.get('execution_mode') or '').strip().lower()
 
     if (
@@ -354,11 +354,7 @@ async def build_confirmation_message(
 ) -> str:
     args = tool_call.get('args', {})
     tool_name = str(tool_call.get('name') or '')
-    plan_draft = (
-        build_training_plan_draft_from_context(training_plan_context)
-        or session_state.active_training.training_plan_draft
-        or {}
-    )
+    plan_draft = build_training_plan_draft_from_context(training_plan_context) or {}
     execution_mode = str(plan_draft.get('execution_mode') or '').strip().lower()
     if (
         plan_draft
