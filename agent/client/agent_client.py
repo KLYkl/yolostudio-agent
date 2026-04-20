@@ -131,6 +131,7 @@ from yolostudio_agent.agent.client.training_plan_service import (
     training_plan_user_facts,
 )
 from yolostudio_agent.agent.client.training_plan_context_service import (
+    build_training_plan_draft_from_context,
     build_training_plan_context_from_draft,
     build_training_plan_context_payload,
     extract_training_plan_context_from_state,
@@ -3103,6 +3104,50 @@ class YoloStudioAgentClient:
             return None
         return extract_training_plan_context_from_state(values)
 
+    def _current_training_plan_context(
+        self,
+        *,
+        preferred_thread_id: str = '',
+    ) -> dict[str, Any] | None:
+        active_interrupt = self._active_graph_interrupt(preferred_thread_id=preferred_thread_id)
+        if active_interrupt is not None:
+            interrupt_payload = dict(active_interrupt[1] or {})
+            if self._is_training_confirmation_interrupt_payload(interrupt_payload):
+                return build_training_plan_context_from_draft(
+                    self._draft_from_training_confirmation_interrupt(interrupt_payload)
+                )
+        if preferred_thread_id:
+            context = self._graph_training_plan_context(self._pending_config(preferred_thread_id))
+            if context:
+                return context
+        mirror = build_training_plan_context_payload(self.session_state)
+        if mirror:
+            return mirror
+        return None
+
+    def _current_training_plan_draft_view(
+        self,
+        *,
+        preferred_thread_id: str = '',
+    ) -> dict[str, Any]:
+        active_interrupt = self._active_graph_interrupt(preferred_thread_id=preferred_thread_id)
+        if active_interrupt is not None:
+            interrupt_payload = dict(active_interrupt[1] or {})
+            if self._is_training_confirmation_interrupt_payload(interrupt_payload):
+                return self._draft_from_training_confirmation_interrupt(interrupt_payload)
+        mirror_draft = dict(self.session_state.active_training.training_plan_draft or {})
+        if mirror_draft:
+            return mirror_draft
+        context = None
+        if preferred_thread_id:
+            context = self._graph_training_plan_context(self._pending_config(preferred_thread_id))
+        if not context:
+            context = self._current_training_plan_context(preferred_thread_id=preferred_thread_id)
+        draft = build_training_plan_draft_from_context(context)
+        if draft:
+            return draft
+        return {}
+
     def _draft_from_graph_training_state(
         self,
         *,
@@ -3596,13 +3641,18 @@ class YoloStudioAgentClient:
             normalized_plan = self._model_dump_compat(coerce_training_plan(plan_payload))
         except Exception:
             normalized_plan = plan_payload
+        next_step_args = dict(draft.get('next_step_args') or {})
+        if next_step_tool in {'start_training', 'start_training_loop'}:
+            merged_args = dict(planned_loop_args if next_step_tool == 'start_training_loop' else planned_training_args)
+            merged_args.update({key: value for key, value in next_step_args.items() if value not in (None, '', [], {})})
+            next_step_args = merged_args
         return {
             'type': 'training_confirmation',
             'phase': phase,
             'plan': normalized_plan,
             'execution_mode': str(draft.get('execution_mode') or '').strip(),
             'next_step_tool': next_step_tool,
-            'next_step_args': dict(draft.get('next_step_args') or {}),
+            'next_step_args': next_step_args,
             'thread_id': thread_id,
         }
 
@@ -4040,7 +4090,7 @@ class YoloStudioAgentClient:
             include_history_context=include_history_context,
         )
         effective_training_plan_context = None if suppress_training_plan_context else dict(
-            training_plan_context_override or build_training_plan_context_payload(self.session_state) or {}
+            training_plan_context_override or self._current_training_plan_context(preferred_thread_id=thread_id) or {}
         ) or None
         built_messages = self.context_builder.build_messages(
             state_for_model,
@@ -4429,7 +4479,6 @@ class YoloStudioAgentClient:
             or self._pending_confirmation_thread_id()
             or thread_id
         ).strip() or thread_id
-        self._save_training_plan_draft(rebuilt_draft)
         interrupt_payload = self._draft_to_training_confirmation_interrupt(rebuilt_draft, thread_id=confirmation_thread_id)
         self.memory.append_event(
             self.session_state.session_id,
@@ -4440,13 +4489,14 @@ class YoloStudioAgentClient:
                 'execution_mode': str(rebuilt_draft.get('execution_mode') or ''),
             },
         )
-        self.memory.save_state(self.session_state)
         if interrupt_payload is not None:
             return await self._enter_graph_training_confirmation(
                 draft=rebuilt_draft,
                 thread_id=confirmation_thread_id,
                 user_text_hint='请按更新后的训练草案进入确认。',
             )
+        self._save_training_plan_draft(rebuilt_draft)
+        self.memory.save_state(self.session_state)
         return await self._render_training_plan_dialogue_response(
             draft=rebuilt_draft,
             pending=None,
@@ -4454,7 +4504,7 @@ class YoloStudioAgentClient:
         )
 
     def _build_followup_training_request(self) -> dict[str, Any] | None:
-        draft = self.session_state.active_training.training_plan_draft or {}
+        draft = self._current_training_plan_draft_view()
         if str(draft.get('execution_mode') or '').strip().lower() == 'prepare_only':
             return None
         planned_args = dict(draft.get('planned_training_args') or {})
@@ -4504,7 +4554,7 @@ class YoloStudioAgentClient:
         return {"id": None, "name": "start_training", "args": args, "synthetic": True}
 
     def _build_followup_training_loop_request(self) -> dict[str, Any] | None:
-        draft = self.session_state.active_training.training_plan_draft or {}
+        draft = self._current_training_plan_draft_view()
         if str(draft.get('execution_mode') or '').strip().lower() != 'prepare_then_loop':
             return None
         planned_args = dict(draft.get('planned_loop_args') or draft.get('planned_training_args') or {})
@@ -4752,14 +4802,13 @@ class YoloStudioAgentClient:
         if self._is_training_discussion_only(user_text_hint or self._recent_user_text()):
             return None
         materialized = self._build_materialized_training_pending(
-            draft=dict(self.session_state.active_training.training_plan_draft or {}),
+            draft=self._current_training_plan_draft_view(preferred_thread_id=thread_id),
             user_text=user_text_hint or self._recent_user_text(),
         )
         if materialized is None:
             return None
         rebuilt_draft, pending = materialized
         self._ensure_materialized_training_state_context(draft=rebuilt_draft)
-        self._save_training_plan_draft(rebuilt_draft)
         interrupt_payload = self._draft_to_training_confirmation_interrupt(rebuilt_draft, thread_id=thread_id)
         self.memory.append_event(
             self.session_state.session_id,
@@ -5913,11 +5962,10 @@ class YoloStudioAgentClient:
         active_interrupt = self._active_graph_interrupt(preferred_thread_id=thread_id)
         interrupt_payload = dict(active_interrupt[1] or {}) if active_interrupt is not None else {}
         if self._is_training_confirmation_interrupt_payload(interrupt_payload):
-            draft = self._draft_from_training_confirmation_interrupt(interrupt_payload)
             pending = self._pending_action_from_training_confirmation_interrupt(interrupt_payload)
         else:
-            draft = dict(self.session_state.active_training.training_plan_draft or {})
             pending = self._pending_from_state()
+        draft = self._current_training_plan_draft_view(preferred_thread_id=thread_id)
         explicit_run_ids = self._extract_training_run_ids_from_text(user_text)
         clear_fields = self._collect_training_clear_fields(user_text)
         dialogue_result = await run_training_plan_dialogue_flow(

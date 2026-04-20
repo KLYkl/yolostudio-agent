@@ -153,6 +153,7 @@ from langchain_core.messages import AIMessage
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
 from yolostudio_agent.agent.client.session_state import SessionState
 from yolostudio_agent.agent.client.training_plan_context_service import (
+    build_training_plan_draft_from_context,
     build_training_plan_context_from_draft,
     build_training_plan_context_payload,
     extract_training_plan_context_from_state,
@@ -224,6 +225,11 @@ def _scenario_build_payload() -> None:
     assert payload['warnings'] == ['样本量偏小，建议先小步验证']
     assert extract_training_plan_context_from_state({'training_plan_context': payload}) == payload
     assert build_training_plan_context_from_draft(dict(state.active_training.training_plan_draft or {})) == payload
+    roundtrip_draft = build_training_plan_draft_from_context(payload)
+    assert roundtrip_draft is not None
+    assert roundtrip_draft['next_step_tool'] == 'start_training'
+    assert roundtrip_draft['planned_training_args']['model'] == 'yolov8n.pt'
+    assert roundtrip_draft['warnings'] == ['样本量偏小，建议先小步验证']
 
 
 async def _scenario_chat_passes_training_plan_context() -> None:
@@ -242,6 +248,64 @@ async def _scenario_chat_passes_training_plan_context() -> None:
     assert isinstance(plan_context, dict), payload
     assert plan_context.get('next_step_tool') == 'start_training', plan_context
     assert (plan_context.get('planned_training_args') or {}).get('data_yaml') == '/data/demo/data.yaml', plan_context
+
+
+async def _scenario_chat_prefers_graph_training_plan_context_over_stale_draft() -> None:
+    root = WORK / 'graph-state-over-stale-draft'
+
+    class _GraphState:
+        def __init__(self, values: dict[str, Any]) -> None:
+            self.values = values
+
+    class _GraphWithState(_CaptureGraph):
+        def __init__(self) -> None:
+            super().__init__()
+            self.state_values = {
+                'training_plan_context': {
+                    'stage': 'training_plan',
+                    'status': 'ready_for_confirmation',
+                    'dataset_path': '/data/from-graph',
+                    'execution_mode': 'direct_train',
+                    'execution_backend': 'standard_yolo',
+                    'training_environment': 'graph-env',
+                    'reasoning_summary': '以 graph 状态为准。',
+                    'data_summary': 'graph data summary',
+                    'preflight_summary': 'graph preflight',
+                    'next_step_tool': 'start_training',
+                    'next_step_args': {
+                        'model': 'graph.pt',
+                        'data_yaml': '/data/from-graph/data.yaml',
+                        'epochs': 20,
+                    },
+                    'planned_training_args': {
+                        'model': 'graph.pt',
+                        'data_yaml': '/data/from-graph/data.yaml',
+                        'epochs': 20,
+                        'batch': 16,
+                    },
+                    'warnings': ['graph warning'],
+                    'blockers': [],
+                    'risks': [],
+                }
+            }
+
+        def get_state(self, config):
+            del config
+            return _GraphState(dict(self.state_values))
+
+    graph = _GraphWithState()
+    settings = AgentSettings(session_id='training-plan-context-graph-preferred', memory_root=str(root))
+    client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
+    _seed_training_plan_draft(client.session_state)
+
+    result = await client.chat('hello')
+    assert result['status'] == 'completed', result
+    assert graph.payloads, 'graph was not invoked'
+    payload = graph.payloads[0]
+    plan_context = payload.get('training_plan_context') or {}
+    assert plan_context.get('dataset_path') == '/data/from-graph', plan_context
+    assert (plan_context.get('planned_training_args') or {}).get('model') == 'graph.pt', plan_context
+    assert plan_context.get('training_environment') == 'graph-env', plan_context
 
 
 async def _scenario_execute_turn_defers_to_graph() -> None:
@@ -314,6 +378,7 @@ async def _run() -> None:
     try:
         _scenario_build_payload()
         await _scenario_chat_passes_training_plan_context()
+        await _scenario_chat_prefers_graph_training_plan_context_over_stale_draft()
         await _scenario_execute_turn_defers_to_graph()
         await _scenario_enter_graph_confirmation_uses_override_without_persisting_draft()
         print('training plan context payload ok')
