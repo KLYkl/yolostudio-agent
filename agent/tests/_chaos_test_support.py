@@ -150,9 +150,13 @@ from langchain_core.messages import AIMessage, ToolMessage
 from yolostudio_agent.agent.client import intent_parsing
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
 from yolostudio_agent.agent.client.mainline_route_support import resolve_mainline_dispatch_payload
+from yolostudio_agent.agent.tests._training_plan_test_support import (
+    current_training_plan_context_payload,
+    current_training_plan_draft,
+    set_training_plan_draft,
+)
 from yolostudio_agent.agent.client.training_plan_context_service import (
     build_training_plan_context_from_draft,
-    build_training_plan_context_payload,
 )
 from yolostudio_agent.agent.client.training_request_service import (
     run_prepare_only_flow,
@@ -170,18 +174,16 @@ class _NoLLMGraph:
 
     def get_state(self, config):
         del config
-        client = self.client
-        if client is not None:
-            draft = dict(client.session_state.active_training.training_plan_draft or {})
-            if draft:
-                self.plan_context = build_training_plan_context_from_draft(draft)
-            has_draft = bool(draft)
-            has_pending = bool((client.get_pending_action() or {}).get('tool_name'))
-            if not has_draft and not has_pending:
-                self.plan_context = None
         if not self.plan_context:
             return None
         return types.SimpleNamespace(values={'training_plan_context': dict(self.plan_context)})
+
+    def update_state(self, config, update):
+        del config
+        if not isinstance(update, dict) or 'training_plan_context' not in update:
+            return
+        context = update.get('training_plan_context')
+        self.plan_context = dict(context) if isinstance(context, dict) and context else None
 
     async def ainvoke(self, payload, config=None):
         messages = list(payload['messages'])
@@ -243,7 +245,7 @@ class _NoLLMGraph:
                         blocks_training_start=bool(training_entrypoint_args.get('blocks_training_start')),
                         explicit_run_ids=list(training_entrypoint_args.get('explicit_run_ids') or []),
                         wants_split=bool(training_entrypoint_args.get('wants_split')),
-                        current_training_plan_context=build_training_plan_context_payload(self.client.session_state),
+                        current_training_plan_context=current_training_plan_context_payload(self.client),
                         direct_tool=self.client.direct_tool,
                         collect_requested_training_args=self.client._collect_requested_training_args,
                         is_training_discussion_only=self.client._is_training_discussion_only,
@@ -255,7 +257,7 @@ class _NoLLMGraph:
                 reply = str((entrypoint_result or {}).get('reply') or '').strip()
                 discussion_only = self.client._is_training_discussion_only(user_text)
                 if draft:
-                    self.client.session_state.active_training.training_plan_draft = dict(draft)
+                    set_training_plan_draft(self.client, draft)
                     self.plan_context = build_training_plan_context_from_draft(draft)
                 if draft and discussion_only:
                     rendered = reply or await self.client._render_training_plan_message(
@@ -313,18 +315,16 @@ class _ScriptedGraph:
 
     def get_state(self, config):
         del config
-        client = self.client
-        if client is not None:
-            draft = dict(client.session_state.active_training.training_plan_draft or {})
-            if draft:
-                self.plan_context = build_training_plan_context_from_draft(draft)
-            has_draft = bool(draft)
-            has_pending = bool((client.get_pending_action() or {}).get('tool_name'))
-            if not has_draft and not has_pending:
-                self.plan_context = None
         if not self.plan_context:
             return None
         return types.SimpleNamespace(values={'training_plan_context': dict(self.plan_context)})
+
+    def update_state(self, config, update):
+        del config
+        if not isinstance(update, dict) or 'training_plan_context' not in update:
+            return
+        context = update.get('training_plan_context')
+        self.plan_context = dict(context) if isinstance(context, dict) and context else None
 
     async def ainvoke(self, payload, config=None):
         messages = list(payload['messages'])
@@ -380,7 +380,7 @@ class _ScriptedGraph:
                         blocks_training_start=bool(training_entrypoint_args.get('blocks_training_start')),
                         explicit_run_ids=list(training_entrypoint_args.get('explicit_run_ids') or []),
                         wants_split=bool(training_entrypoint_args.get('wants_split')),
-                        current_training_plan_context=build_training_plan_context_payload(client.session_state),
+                        current_training_plan_context=current_training_plan_context_payload(client),
                         direct_tool=client.direct_tool,
                         collect_requested_training_args=client._collect_requested_training_args,
                         is_training_discussion_only=client._is_training_discussion_only,
@@ -392,7 +392,7 @@ class _ScriptedGraph:
                 reply = str((entrypoint_result or {}).get('reply') or '').strip()
                 discussion_only = client._is_training_discussion_only(user_text)
                 if draft:
-                    client.session_state.active_training.training_plan_draft = dict(draft)
+                    set_training_plan_draft(client, draft)
                     self.plan_context = build_training_plan_context_from_draft(draft)
                 if draft and discussion_only:
                     rendered = reply or await client._render_training_plan_message(
@@ -470,6 +470,7 @@ def _looks_like_training_plan_execute_turn(text: str) -> bool:
 
 def _make_client(session_id: str) -> YoloStudioAgentClient:
     root = WORK / session_id
+    root.mkdir(parents=True, exist_ok=True)
     settings = AgentSettings(session_id=session_id, memory_root=str(root))
     graph = _NoLLMGraph()
     client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})

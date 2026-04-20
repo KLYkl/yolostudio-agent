@@ -166,6 +166,11 @@ except Exception:
 import yolostudio_agent.agent.client.agent_client as agent_client_module
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
 from langchain_core.messages import AIMessage, ToolMessage
+from yolostudio_agent.agent.tests._training_plan_test_support import (
+    clear_training_plan_draft,
+    current_training_plan_draft,
+    set_training_plan_draft,
+)
 
 
 WORK = Path(__file__).resolve().parent / '_tmp_training_loop_dialogue_matrix'
@@ -189,12 +194,23 @@ class _LoopOpsGraph:
         self.status_reply = status_reply
         self.inspect_reply = inspect_reply
         self.list_reply = list_reply
+        self.plan_context: dict[str, Any] | None = None
 
     def bind(self, client: YoloStudioAgentClient) -> None:
         self.client = client
 
     def get_state(self, config):
-        return None
+        del config
+        if not self.plan_context:
+            return None
+        return types.SimpleNamespace(values={'training_plan_context': dict(self.plan_context)})
+
+    def update_state(self, config, update):
+        del config
+        if not isinstance(update, dict) or 'training_plan_context' not in update:
+            return
+        context = update.get('training_plan_context')
+        self.plan_context = dict(context) if isinstance(context, dict) and context else None
 
     async def ainvoke(self, payload, config=None):
         messages = list(payload['messages'])
@@ -249,7 +265,7 @@ class _LoopOpsGraph:
 
         thread_id = str(((config or {}).get('configurable') or {}).get('thread_id') or '').strip()
         if self.client is not None and config and thread_id.endswith('-post-prepare-loop'):
-            draft = dict(self.client.session_state.active_training.training_plan_draft or {})
+            draft = current_training_plan_draft(self.client, thread_id=thread_id)
             if not draft:
                 draft = self.client._current_training_plan_draft_view(preferred_thread_id=thread_id)
             planned_loop_args = dict(draft.get('planned_loop_args') or draft.get('planned_training_args') or {})
@@ -298,7 +314,7 @@ class _LoopOpsGraph:
             draft = dict(entrypoint_result.get('draft') or {})
             reply = str(entrypoint_result.get('reply') or '').strip()
             if draft:
-                self.client.session_state.active_training.training_plan_draft = dict(draft)
+                set_training_plan_draft(self.client, draft)
             if entrypoint_result.get('defer_to_graph') and draft and config:
                 thread_id = str(((config or {}).get('configurable') or {}).get('thread_id') or '').strip()
                 next_tool_name = str(draft.get('next_step_tool') or '').strip()
@@ -605,7 +621,7 @@ async def _build_client(planner_llm: Any | None = None, *, session_id: str = 'tr
 
         client._apply_to_state(tool_name, result, kwargs)
         if tool_name == 'prepare_dataset_for_training' and result.get('ok'):
-            draft = dict(client.session_state.active_training.training_plan_draft or {})
+            draft = current_training_plan_draft(client)
             if str(draft.get('execution_mode') or '').strip().lower() == 'prepare_then_loop':
                 planned_loop_args = dict(draft.get('planned_loop_args') or draft.get('planned_training_args') or {})
                 model = str(planned_loop_args.get('model') or client.session_state.active_training.model or '').strip()
@@ -622,9 +638,9 @@ async def _build_client(planner_llm: Any | None = None, *, session_id: str = 'tr
                     draft['next_step_tool'] = 'start_training_loop'
                     draft['next_step_args'] = next_step_args
                     draft['planner_decision'] = 'start'
-                    client.session_state.active_training.training_plan_draft = dict(draft)
+                    set_training_plan_draft(client, draft)
         if tool_name in {'start_training', 'start_training_loop'} and result.get('ok'):
-            client.session_state.active_training.training_plan_draft = {}
+            clear_training_plan_draft(client)
         client._record_secondary_event(tool_name, result)
         return result
 
@@ -658,14 +674,14 @@ async def _run() -> None:
         assert prepare_then_loop['status'] == 'needs_confirmation', prepare_then_loop
         assert prepare_then_loop['tool_call']['name'] == 'prepare_dataset_for_training', prepare_then_loop
         assert prepare_then_loop['tool_call']['args']['dataset_path'] == '/home/kly/ct_loop/data_ct', prepare_then_loop
-        assert client.session_state.active_training.training_plan_draft.get('next_step_tool') == 'prepare_dataset_for_training'
+        assert current_training_plan_draft(client).get('next_step_tool') == 'prepare_dataset_for_training'
 
         loop_three_rounds_client, _ = await _build_client(session_id='loop-dialogue-three-rounds')
         prepare_loop_three_rounds = await loop_three_rounds_client.chat('用 /home/kly/ct_loop/data_ct 数据集和 /home/kly/yolov8n.pt 循环训练3轮。')
         assert prepare_loop_three_rounds['status'] == 'needs_confirmation', prepare_loop_three_rounds
         assert prepare_loop_three_rounds['tool_call']['name'] == 'prepare_dataset_for_training', prepare_loop_three_rounds
-        assert loop_three_rounds_client.session_state.active_training.training_plan_draft.get('planned_loop_args', {}).get('max_rounds') == 3, prepare_loop_three_rounds
-        assert 'epochs' not in loop_three_rounds_client.session_state.active_training.training_plan_draft.get('planned_loop_args', {}), prepare_loop_three_rounds
+        assert current_training_plan_draft(loop_three_rounds_client).get('planned_training_args', {}).get('max_rounds') == 3, prepare_loop_three_rounds
+        assert 'epochs' not in current_training_plan_draft(loop_three_rounds_client).get('planned_training_args', {}), prepare_loop_three_rounds
 
         def _loop_planner_reply(messages: list[Any]) -> str:
             combined = '\n'.join(str(getattr(item, 'content', '')) for item in messages)
@@ -684,8 +700,8 @@ async def _run() -> None:
         assert '执行方式: 先准备再进入循环训练' in planner_prepare['message'], planner_prepare
         assert planner_prepare['message'] != '这是模型整理后的说明。', planner_prepare
         assert planner_route_calls[-1][0] == 'training_readiness', planner_route_calls
-        assert planner_route_client.session_state.active_training.training_plan_draft.get('planner_decision_source') == 'fallback', planner_prepare
-        assert planner_route_client.session_state.active_training.training_plan_draft.get('planner_decision') == 'prepare', planner_prepare
+        assert current_training_plan_draft(planner_route_client).get('planner_decision_source') == 'fallback', planner_prepare
+        assert current_training_plan_draft(planner_route_client).get('planner_decision') == 'prepare', planner_prepare
 
         planner_direct_start_client, _ = await _build_client(
             planner_llm=_FakePlannerLlm(_loop_planner_reply),
@@ -697,17 +713,17 @@ async def _run() -> None:
         assert '训练计划草案：' in planner_direct_start['message'], planner_direct_start
         assert '执行方式: 直接启动循环训练' in planner_direct_start['message'], planner_direct_start
         assert planner_direct_start['message'] != '这是模型整理后的说明。', planner_direct_start
-        assert planner_direct_start_client.session_state.active_training.training_plan_draft.get('planner_observed_tools') == ['training_readiness'], planner_direct_start
-        assert planner_direct_start_client.session_state.active_training.training_plan_draft.get('planner_decision_source') == 'fallback', planner_direct_start
-        assert planner_direct_start_client.session_state.active_training.training_plan_draft.get('planner_decision') == 'start', planner_direct_start
+        assert current_training_plan_draft(planner_direct_start_client).get('planner_observed_tools') == ['training_readiness'], planner_direct_start
+        assert current_training_plan_draft(planner_direct_start_client).get('planner_decision_source') == 'fallback', planner_direct_start
+        assert current_training_plan_draft(planner_direct_start_client).get('planner_decision') == 'start', planner_direct_start
 
         planner_prepare_followup = await planner_route_client.confirm(planner_prepare['thread_id'], True)
         assert planner_prepare_followup['status'] == 'needs_confirmation', planner_prepare_followup
         assert planner_prepare_followup['tool_call']['name'] == 'start_training_loop', planner_prepare_followup
         assert '训练计划草案：' in planner_prepare_followup['message'], planner_prepare_followup
         assert '执行方式: 先准备再进入循环训练' in planner_prepare_followup['message'], planner_prepare_followup
-        assert planner_route_client.session_state.active_training.training_plan_draft.get('planner_decision_source') == 'fallback', planner_prepare_followup
-        assert planner_route_client.session_state.active_training.training_plan_draft.get('planner_decision') == 'start', planner_prepare_followup
+        assert current_training_plan_draft(planner_route_client).get('planner_decision_source') == 'fallback', planner_prepare_followup
+        assert current_training_plan_draft(planner_route_client).get('planner_decision') == 'start', planner_prepare_followup
 
         confirm_prepare_then_loop = await client.confirm(prepare_then_loop['thread_id'], True)
         assert confirm_prepare_then_loop['status'] == 'needs_confirmation', confirm_prepare_then_loop
@@ -716,8 +732,8 @@ async def _run() -> None:
         assert confirm_prepare_then_loop['tool_call']['args']['data_yaml'] == '/home/kly/ct_loop/data_ct/data.yaml', confirm_prepare_then_loop
         assert confirm_prepare_then_loop['tool_call']['args']['max_rounds'] == 2, confirm_prepare_then_loop
         assert 'epochs' not in confirm_prepare_then_loop['tool_call']['args'], confirm_prepare_then_loop
-        assert client.session_state.active_training.training_plan_draft.get('next_step_tool') == 'start_training_loop'
-        loop_facts = client._training_plan_user_facts(client.session_state.active_training.training_plan_draft, pending=True)
+        assert current_training_plan_draft(client).get('next_step_tool') == 'start_training_loop'
+        loop_facts = client._training_plan_user_facts(current_training_plan_draft(client), pending=True)
         assert loop_facts['execution_mode'] == '先准备再进入循环训练', loop_facts
         assert loop_facts['loop_requested'] is True, loop_facts
         assert loop_facts['max_rounds'] == 2, loop_facts

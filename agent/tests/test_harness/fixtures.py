@@ -1,6 +1,6 @@
 """
 Harness 状态预设快照
-每个预设是 session_state 的 dotted-key → value 映射
+每个预设是 session_state / graph context 的键 → value 映射
 """
 from __future__ import annotations
 from typing import Any
@@ -11,7 +11,7 @@ STATE_PRESETS: dict[str, dict[str, Any]] = {
 
     # 有 prepare pending (synthetic)
     'pending_prepare': {
-        'active_training.training_plan_draft': {
+        'training_plan_context': {
             'dataset_path': '/home/kly/ct_loop/data_ct',
             'next_step_tool': 'prepare_dataset_for_training',
             'next_step_args': {'dataset_path': '/home/kly/ct_loop/data_ct'},
@@ -46,7 +46,7 @@ STATE_PRESETS: dict[str, dict[str, Any]] = {
         'active_training.workflow_state': 'training',
         'active_training.model': 'yolov8n.pt',
         'active_training.data_yaml': '/data/ct/data.yaml',
-        'active_training.training_plan_draft': {
+        'training_plan_context': {
             'dataset_path': '/data/ct',
             'next_step_tool': '',
             'execution_mode': 'prepare_then_train',

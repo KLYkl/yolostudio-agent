@@ -325,9 +325,6 @@ async def _run_async() -> None:
         raise AssertionError(tool_name)
 
     preserved_state = SessionState(session_id='preserve-model')
-    preserved_state.active_training.training_plan_draft = {
-        'planned_training_args': {'model': '/weights/last.pt'}
-    }
     preserved_state.active_training.model = '/weights/fallback.pt'
     preserved_model_result = await run_training_request_entrypoint(
         session_state=preserved_state,

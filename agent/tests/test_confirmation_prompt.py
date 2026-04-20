@@ -161,12 +161,30 @@ except Exception:
     sys.modules['langgraph.checkpoint.memory'] = checkpoint_mod
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from yolostudio_agent.agent.tests._training_plan_test_support import set_training_plan_draft
 from langchain_core.messages import HumanMessage
 
 
 class _DummyGraph:
+    def __init__(self) -> None:
+        self._injected_state = None
+
     def get_state(self, config):
-        return None
+        del config
+        return self._injected_state
+
+    def update_state(self, config, update):
+        del config
+        values = {}
+        if self._injected_state is not None:
+            values = dict(getattr(self._injected_state, 'values', {}) or {})
+        if isinstance(update, dict):
+            for key, value in update.items():
+                if value is None:
+                    values.pop(key, None)
+                else:
+                    values[key] = value
+        self._injected_state = types.SimpleNamespace(values=values) if values else None
 
 
 WORK = Path(__file__).resolve().parent / '_tmp_confirmation_prompt'
@@ -258,7 +276,7 @@ def main() -> None:
         assert '高级参数: fraction=0.5, classes=[1, 3], single_cls=False' in start_prompt
         assert '预检: 训练预检通过：将使用 yolodo，device=1' in start_prompt
 
-        client.session_state.active_training.training_plan_draft = {
+        set_training_plan_draft(client, {
             'dataset_path': '/data/dataset',
             'data_summary': '训练前检查完成：数据已具备训练条件。',
             'execution_mode': 'direct_train',
@@ -308,7 +326,7 @@ def main() -> None:
             },
             'warnings': ['样本量偏小'],
             'advanced_details_requested': True,
-        }
+        })
         draft_prompt = client._build_confirmation_prompt({
             'name': 'start_training',
             'args': {'model': 'yolov8n.pt', 'data_yaml': '/data/dataset/data.yaml', 'epochs': 80, 'device': '1', 'batch': 16, 'imgsz': 960},
@@ -325,7 +343,7 @@ def main() -> None:
             'preparable': False,
             'resolved_data_yaml': '/data/dataset/data.yaml',
         }
-        client.session_state.active_training.training_plan_draft = {
+        set_training_plan_draft(client, {
             'dataset_path': '/data/raw-dataset',
             'data_summary': '数据准备完成：当前数据集已具备训练条件。',
             'execution_mode': 'direct_train',
@@ -366,7 +384,7 @@ def main() -> None:
             },
             'warnings': ['prepare 完成后的首轮训练，建议先确认参数再启动'],
             'advanced_details_requested': True,
-        }
+        })
         bridged_prompt = client._build_confirmation_prompt({
             'name': 'start_training',
             'args': {'model': 'yolov8s.pt', 'data_yaml': '/data/raw-dataset/data.yaml', 'epochs': 45},
@@ -379,7 +397,7 @@ def main() -> None:
         assert '当前阻塞:' not in bridged_prompt
         assert '你可以直接确认，也可以继续改参数、追问原因、改执行方式。' in bridged_prompt
 
-        client.session_state.active_training.training_plan_draft = {
+        set_training_plan_draft(client, {
             'dataset_path': '/data/stale',
             'execution_mode': 'direct_train',
             'next_step_tool': 'start_training',
@@ -388,7 +406,7 @@ def main() -> None:
                 'data_yaml': '/data/stale/data.yaml',
                 'epochs': 300,
             },
-        }
+        })
         client._current_training_plan_context = lambda preferred_thread_id='': {
             'dataset_path': '/data/graph',
             'execution_mode': 'direct_train',

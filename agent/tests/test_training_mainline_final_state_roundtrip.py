@@ -169,9 +169,14 @@ except Exception:
 from yolostudio_agent.agent.client import intent_parsing
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
 from yolostudio_agent.agent.client.mainline_route_support import resolve_mainline_dispatch_payload
+from yolostudio_agent.agent.tests._training_plan_test_support import (
+    clear_training_plan_draft,
+    current_training_plan_context_payload,
+    current_training_plan_draft,
+    set_training_plan_draft,
+)
 from yolostudio_agent.agent.client.training_plan_context_service import (
     build_training_plan_context_from_draft,
-    build_training_plan_context_payload,
 )
 from yolostudio_agent.agent.client.training_request_service import (
     run_prepare_only_flow,
@@ -194,18 +199,16 @@ class _FakeGraph:
 
     def get_state(self, config):
         del config
-        client = getattr(self, 'client', None)
-        if client is not None:
-            draft = dict(client.session_state.active_training.training_plan_draft or {})
-            if draft:
-                self.plan_context = build_training_plan_context_from_draft(draft)
-            has_draft = bool(draft)
-            has_pending = bool((client.get_pending_action() or {}).get('tool_name'))
-            if not has_draft and not has_pending:
-                self.plan_context = None
         if not self.plan_context:
             return None
         return types.SimpleNamespace(values={'training_plan_context': dict(self.plan_context)})
+
+    def update_state(self, config, update):
+        del config
+        if not isinstance(update, dict) or 'training_plan_context' not in update:
+            return
+        context = update.get('training_plan_context')
+        self.plan_context = dict(context) if isinstance(context, dict) and context else None
 
     async def ainvoke(self, payload, config=None):
         messages = list(payload['messages'])
@@ -262,7 +265,7 @@ class _FakeGraph:
                         blocks_training_start=bool(training_entrypoint_args.get('blocks_training_start')),
                         explicit_run_ids=list(training_entrypoint_args.get('explicit_run_ids') or []),
                         wants_split=bool(training_entrypoint_args.get('wants_split')),
-                        current_training_plan_context=build_training_plan_context_payload(client.session_state),
+                        current_training_plan_context=current_training_plan_context_payload(client),
                         direct_tool=client.direct_tool,
                         collect_requested_training_args=client._collect_requested_training_args,
                         is_training_discussion_only=client._is_training_discussion_only,
@@ -274,7 +277,7 @@ class _FakeGraph:
                 reply = str((entrypoint_result or {}).get('reply') or '').strip()
                 discussion_only = client._is_training_discussion_only(user_text)
                 if draft:
-                    client.session_state.active_training.training_plan_draft = dict(draft)
+                    set_training_plan_draft(client, draft)
                     self.plan_context = build_training_plan_context_from_draft(draft)
                 if draft and discussion_only:
                     rendered = reply or await client._render_training_plan_message(
@@ -488,7 +491,7 @@ async def _run_final_state_scenario(*, session_id: str, status_query: str, final
         client._apply_to_state(tool_name, result, kwargs)
         client._record_secondary_event(tool_name, result)
         if tool_name == 'start_training' and result.get('ok'):
-            client.session_state.active_training.training_plan_draft = {}
+            clear_training_plan_draft(client)
         return result
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]

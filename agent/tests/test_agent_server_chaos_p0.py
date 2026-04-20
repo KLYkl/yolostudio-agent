@@ -16,11 +16,16 @@ if __package__ in {None, ''}:
 
 from yolostudio_agent.agent.tests._chaos_test_support import WORK, _ScriptedGraph, _make_client
 from yolostudio_agent.agent.tests._coroutine_runner import run
+from yolostudio_agent.agent.tests._training_plan_test_support import (
+    clear_training_plan_draft,
+    current_training_plan_context_payload,
+    current_training_plan_draft,
+    set_training_plan_draft,
+)
 from yolostudio_agent.agent.client import intent_parsing
 from yolostudio_agent.agent.client.mainline_route_support import resolve_mainline_dispatch_payload
 from yolostudio_agent.agent.client.training_plan_context_service import (
     build_training_plan_context_from_draft,
-    build_training_plan_context_payload,
 )
 from yolostudio_agent.agent.client.training_request_service import (
     run_prepare_only_flow,
@@ -40,24 +45,24 @@ class _PredictVideosGraph:
 
     def get_state(self, config):
         del config
-        client = self.client
-        if client is not None:
-            draft = dict(client.session_state.active_training.training_plan_draft or {})
-            if draft:
-                self.plan_context = build_training_plan_context_from_draft(draft)
-            has_draft = bool(draft)
-            has_pending = bool((client.get_pending_action() or {}).get('tool_name'))
-            if not has_draft and not has_pending:
-                self.plan_context = None
         if not self.plan_context:
             return None
         return type('GraphState', (), {'values': {'training_plan_context': dict(self.plan_context)}})()
+
+    def update_state(self, config, update):
+        del config
+        if not isinstance(update, dict) or 'training_plan_context' not in update:
+            return
+        context = update.get('training_plan_context')
+        self.plan_context = dict(context) if isinstance(context, dict) and context else None
 
     async def ainvoke(self, payload, config=None):
         messages = list(payload['messages'])
         client = self.client
         user_text = ''
         for message in reversed(messages):
+            if 'HumanMessage' not in message.__class__.__name__:
+                continue
             content = getattr(message, 'content', '')
             if isinstance(content, str) and content:
                 user_text = content
@@ -107,7 +112,7 @@ class _PredictVideosGraph:
                         blocks_training_start=bool(training_entrypoint_args.get('blocks_training_start')),
                         explicit_run_ids=list(training_entrypoint_args.get('explicit_run_ids') or []),
                         wants_split=bool(training_entrypoint_args.get('wants_split')),
-                        current_training_plan_context=build_training_plan_context_payload(client.session_state),
+                        current_training_plan_context=current_training_plan_context_payload(client),
                         direct_tool=client.direct_tool,
                         collect_requested_training_args=client._collect_requested_training_args,
                         is_training_discussion_only=client._is_training_discussion_only,
@@ -118,10 +123,18 @@ class _PredictVideosGraph:
                 draft = dict((entrypoint_result or {}).get('draft') or {})
                 reply = str((entrypoint_result or {}).get('reply') or '').strip()
                 if draft:
-                    client.session_state.active_training.training_plan_draft = dict(draft)
+                    set_training_plan_draft(client, draft)
                     self.plan_context = build_training_plan_context_from_draft(draft)
                 if reply:
                     return {'messages': messages + [AIMessage(content=reply)]}
+
+        if plan_context and client is not None and not any(token in user_text for token in ('/data/videos', '/models/qcar.pt', '预测')):
+            draft = current_training_plan_draft(client)
+            rendered = await client._render_training_plan_message(
+                draft,
+                pending=bool(draft.get('next_step_tool')),
+            )
+            return {'messages': messages + [AIMessage(content=rendered)]}
 
         args = {'source_path': '/data/videos', 'model': '/models/qcar.pt'}
         result = {
@@ -375,7 +388,7 @@ async def _scenario_c21_running_training_replan_does_not_override_active_run() -
     assert '训练计划草案：' in turn['message']
     assert client.session_state.active_training.running is True
     assert client.session_state.active_training.pid == 4321
-    assert client.session_state.active_training.training_plan_draft.get('planned_training_args', {}).get('model') == 'yolov8s.pt'
+    assert current_training_plan_draft(client).get('planned_training_args', {}).get('model') == 'yolov8s.pt'
     assert all(name != 'start_training' for name, _ in calls)
 
 
@@ -420,13 +433,13 @@ async def _scenario_c31_prepare_cancel_keeps_plan_and_explains() -> None:
     turn2 = await client.confirm(turn1['thread_id'], approved=False)
     assert turn2['status'] == 'cancelled', turn2
     assert '当前计划已保留' in turn2['message']
-    assert client.session_state.active_training.training_plan_draft != {}
+    assert current_training_plan_draft(client) != {}
 
     turn3 = await client.chat('那怎么直接训？为什么必须先 prepare？')
     assert turn3['status'] == 'completed', turn3
     assert '当前阻塞:' in turn3['message']
     assert '缺少可用的 data_yaml' in turn3['message']
-    assert client.session_state.active_training.training_plan_draft != {}
+    assert current_training_plan_draft(client) != {}
 
 
 async def _scenario_c41_no_active_training_status_query_routes_status() -> None:
@@ -592,7 +605,7 @@ async def _scenario_c61_prediction_interrupt_preserves_training_plan() -> None:
 
     turn1 = await client.chat('数据在 /data/train-plan，用 yolov8n.pt 训练 20轮，先给我计划，不要执行。')
     assert turn1['status'] == 'completed', turn1
-    draft_before = dict(client.session_state.active_training.training_plan_draft)
+    draft_before = current_training_plan_draft(client)
     phase_a = await client._try_handle_mainline_intent('先帮我预测这两个视频 /data/videos，用 /models/qcar.pt。', 'thread-chaos-p0-c61-predict')
     assert phase_a is None, phase_a
     assert all(name != 'predict_videos' for name, _ in calls), calls
@@ -603,15 +616,15 @@ async def _scenario_c61_prediction_interrupt_preserves_training_plan() -> None:
     assert '视频预测完成' in turn2['message']
     assert predict_graph.calls == [('predict_videos', {'source_path': '/data/videos', 'model': '/models/qcar.pt'})], predict_graph.calls
     assert calls == [], calls
-    draft_after_predict = dict(client.session_state.active_training.training_plan_draft)
+    draft_after_predict = current_training_plan_draft(client)
     assert draft_after_predict.get('dataset_path') == draft_before.get('dataset_path')
     assert draft_after_predict.get('next_step_tool') == draft_before.get('next_step_tool')
     assert dict(draft_after_predict.get('planned_training_args') or {}).get('model') == 'yolov8n.pt'
     turn3 = await client.chat('刚才训练计划继续，先给我计划。')
-    assert turn3['status'] == 'needs_confirmation', turn3
-    assert turn3['tool_call']['name'] == 'start_training'
-    assert '训练启动确认：' in turn3['message']
-    draft_after_resume = dict(client.session_state.active_training.training_plan_draft)
+    assert turn3['status'] == 'completed', turn3
+    assert turn3['tool_call'] is None
+    assert '训练计划草案：' in turn3['message']
+    draft_after_resume = current_training_plan_draft(client)
     assert draft_after_resume.get('dataset_path') == draft_before.get('dataset_path')
     assert draft_after_resume.get('next_step_tool') == 'start_training'
     assert dict(draft_after_resume.get('planned_training_args') or {}).get('model') == 'yolov8n.pt'
@@ -734,7 +747,7 @@ async def _scenario_c91_reloaded_session_keeps_status_context() -> None:
             raise AssertionError(tool_name)
         client1._apply_to_state(tool_name, result, kwargs)
         if tool_name == 'start_training' and result.get('ok'):
-            client1.session_state.active_training.training_plan_draft = {}
+            clear_training_plan_draft(client1)
         return result
 
     client1.direct_tool = _fake_direct_tool_client1  # type: ignore[assignment]
@@ -857,7 +870,7 @@ async def _scenario_c22_stop_then_replan_restart() -> None:
     turn2 = await client.chat('现在重新开始训练。数据在 /data/restart，用 yolov8n.pt 训练 18轮，先给我计划。')
     assert turn2['status'] == 'completed', turn2
     assert '训练计划草案：' in turn2['message']
-    assert client.session_state.active_training.training_plan_draft.get('planned_training_args', {}).get('epochs') == 18
+    assert current_training_plan_draft(client).get('planned_training_args', {}).get('epochs') == 18
 
 
 async def _scenario_c42_stopped_status_is_not_completed() -> None:
@@ -1048,7 +1061,7 @@ async def _scenario_c71_latest_dataset_overrides_stale_plan() -> None:
     assert turn1['status'] == 'completed', turn1
     turn2 = await client.chat('前面的先别管了。现在改成 /data/new，用 yolov8s.pt 训练 12轮，先给我新计划。')
     assert turn2['status'] == 'completed', turn2
-    draft = client.session_state.active_training.training_plan_draft
+    draft = current_training_plan_draft(client)
     assert draft.get('dataset_path') == '/data/new'
     assert draft.get('planned_training_args', {}).get('model') == 'yolov8s.pt'
     assert '/data/old' not in turn2['message']
@@ -1300,7 +1313,7 @@ async def _scenario_c13_no_auto_split_stays_conservative() -> None:
 
     turn = await client.chat('数据在 /data/c13，用 yolov8n.pt 训练，不要自动划分，但如果没法训你自己看着办，先给我计划。')
     assert turn['status'] == 'completed', turn
-    draft = dict(client.session_state.active_training.training_plan_draft)
+    draft = current_training_plan_draft(client)
     assert draft.get('next_step_tool') == 'prepare_dataset_for_training'
     assert 'force_split' not in dict(draft.get('next_step_args') or {})
     assert (client.get_pending_action() or {}).get('tool_name', '') == ''
@@ -1441,7 +1454,7 @@ async def _scenario_c24_running_train_new_dataset_means_new_run() -> None:
     assert '训练计划草案：' in turn['message']
     assert client.session_state.active_training.running is True
     assert client.session_state.active_training.pid == 2424
-    draft = dict(client.session_state.active_training.training_plan_draft)
+    draft = current_training_plan_draft(client)
     assert draft.get('dataset_path') == '/data/newset'
     assert dict(draft.get('planned_training_args') or {}).get('model') == 'yolov8s.pt'
     assert all(name != 'start_training' for name, _ in calls)
@@ -1516,7 +1529,7 @@ async def _scenario_c32_prepare_bridge_can_be_cancelled() -> None:
     assert turn3['status'] == 'cancelled', turn3
     assert '先不执行这一步' in turn3['message']
     assert (client.get_pending_action() or {}).get('tool_name', '') == ''
-    assert client.session_state.active_training.training_plan_draft != {}
+    assert current_training_plan_draft(client) != {}
 
 
 async def _run() -> None:

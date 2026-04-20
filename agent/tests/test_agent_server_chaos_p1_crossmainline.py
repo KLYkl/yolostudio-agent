@@ -14,8 +14,9 @@ if __package__ in {None, ''}:
         if path not in sys.path:
             sys.path.insert(0, path)
 
-from yolostudio_agent.agent.tests._chaos_test_support import WORK as P0_WORK, _make_client
+from yolostudio_agent.agent.tests._chaos_test_support import WORK as P0_WORK, _NoLLMGraph, _make_client
 from yolostudio_agent.agent.tests._coroutine_runner import run
+from yolostudio_agent.agent.tests._training_plan_test_support import current_training_plan_draft
 from langchain_core.messages import AIMessage, ToolMessage
 
 
@@ -61,18 +62,24 @@ class _StopTrainingGraph:
         }
 
 
-class _PredictVideosGraph:
+class _PredictVideosGraph(_NoLLMGraph):
     def __init__(self) -> None:
+        super().__init__()
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.client = None
+
+    def bind(self, client) -> None:
+        self.client = client
 
     def get_state(self, config):
         return None
 
     async def ainvoke(self, payload, config=None):
-        del config
         messages = list(payload['messages'])
         user_text = ''
         for message in reversed(messages):
+            if 'HumanMessage' not in message.__class__.__name__:
+                continue
             content = getattr(message, 'content', '')
             if isinstance(content, str) and content:
                 user_text = content
@@ -82,7 +89,7 @@ class _PredictVideosGraph:
         elif '/videos/c62.mp4' in user_text:
             source_path = '/videos/c62.mp4'
         else:
-            raise AssertionError(f'unexpected prediction prompt: {user_text}')
+            return await super().ainvoke(payload, config=config)
         args = {'source_path': source_path, 'model': 'yolov8n.pt'}
         result = {
             'ok': True,
@@ -178,11 +185,12 @@ async def _scenario_c61_training_plan_survives_prediction() -> None:
     client = _fresh_client('chaos-p1-c61')
     predict_graph = _PredictVideosGraph()
     client.graph = predict_graph  # type: ignore[assignment]
+    predict_graph.bind(client)
     calls = _install_crossmainline_tools(client)
 
     first = await client.chat('用 /data/c61 这个数据集和 yolov8n.pt 训练，先给我计划。')
     assert first['status'] == 'completed', first
-    draft = client.session_state.active_training.training_plan_draft
+    draft = current_training_plan_draft(client)
     assert draft.get('next_step_tool') == 'prepare_dataset_for_training'
     assert ((draft.get('planned_training_args') or {}).get('model')) == 'yolov8n.pt'
 
@@ -192,7 +200,7 @@ async def _scenario_c61_training_plan_survives_prediction() -> None:
     assert '视频预测完成' in second['message']
     assert predict_graph.calls == [('predict_videos', {'source_path': '/videos/c61.mp4', 'model': 'yolov8n.pt'})], predict_graph.calls
 
-    draft = client.session_state.active_training.training_plan_draft
+    draft = current_training_plan_draft(client)
     assert draft.get('next_step_tool') == 'prepare_dataset_for_training'
     assert ((draft.get('planned_training_args') or {}).get('model')) == 'yolov8n.pt'
 
@@ -201,6 +209,7 @@ async def _scenario_c62_prediction_done_then_resume_training_plan() -> None:
     client = _fresh_client('chaos-p1-c62')
     predict_graph = _PredictVideosGraph()
     client.graph = predict_graph  # type: ignore[assignment]
+    predict_graph.bind(client)
     calls = _install_crossmainline_tools(client)
 
     first = await client.chat('用 /data/c62 这个数据集和 yolov8n.pt 训练，先给我计划。')
@@ -212,10 +221,9 @@ async def _scenario_c62_prediction_done_then_resume_training_plan() -> None:
     assert predict_graph.calls == [('predict_videos', {'source_path': '/videos/c62.mp4', 'model': 'yolov8n.pt'})], predict_graph.calls
 
     third = await client.chat('刚才训练计划继续。')
-    assert third['status'] == 'completed', third
-    assert '训练计划草案：' in third['message']
-    assert '- 数据集: /data/c62' in third['message']
-    assert 'model=yolov8n.pt' in third['message']
+    assert third['status'] == 'needs_confirmation', third
+    assert third['tool_call']['name'] == 'prepare_dataset_for_training'
+    assert third['tool_call']['args']['dataset_path'] == '/data/c62'
     assert len(calls) == call_count, calls
 
 

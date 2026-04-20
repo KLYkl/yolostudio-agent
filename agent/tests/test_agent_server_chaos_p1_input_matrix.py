@@ -15,6 +15,7 @@ if __package__ in {None, ''}:
 
 from yolostudio_agent.agent.tests._chaos_test_support import WORK as P0_WORK, _make_client
 from yolostudio_agent.agent.tests._coroutine_runner import run
+from yolostudio_agent.agent.tests._training_plan_test_support import current_training_plan_draft
 
 
 def _fresh_client(session_id: str):
@@ -170,7 +171,7 @@ async def _scenario_c09_vague_old_dataset_requires_explicit_path() -> None:
     assert '缺少数据集路径' in turn['message']
     assert calls == []
     assert (client.get_pending_action() or {}).get('tool_name', '') == ''
-    assert client.session_state.active_training.training_plan_draft == {}
+    assert current_training_plan_draft(client) == {}
 
 
 async def _scenario_c10_second_push_without_info_stays_blocked() -> None:
@@ -190,7 +191,7 @@ async def _scenario_c10_second_push_without_info_stays_blocked() -> None:
     assert '缺少预训练权重/模型' in second['message']
     assert calls == []
     assert (client.get_pending_action() or {}).get('tool_name', '') == ''
-    assert client.session_state.active_training.training_plan_draft == {}
+    assert current_training_plan_draft(client) == {}
 
 
 async def _run() -> None:

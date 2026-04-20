@@ -15,6 +15,7 @@ if __package__ in {None, ''}:
 
 from yolostudio_agent.agent.tests._chaos_test_support import WORK as P0_WORK, _make_client
 from yolostudio_agent.agent.tests._coroutine_runner import run
+from yolostudio_agent.agent.tests._training_plan_test_support import clear_training_plan_draft
 
 
 def _fresh_client(session_id: str):
@@ -88,7 +89,7 @@ def _install_repeat_tools(client, *, ready: bool):
                 'started_at': 'now',
             }
             client._apply_to_state(tool_name, result, kwargs)
-            client.session_state.active_training.training_plan_draft = {}
+            clear_training_plan_draft(client)
             return result
         elif tool_name == 'prepare_dataset_for_training':
             prepare_count['value'] += 1

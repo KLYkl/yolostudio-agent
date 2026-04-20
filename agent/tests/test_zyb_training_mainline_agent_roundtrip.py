@@ -171,6 +171,7 @@ except Exception:
 
 from langchain_core.messages import AIMessage, ToolMessage
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from yolostudio_agent.agent.tests._training_plan_test_support import clear_training_plan_draft
 
 DEFAULT_OUT = str(Path(__file__).with_name('test_zyb_training_mainline_agent_roundtrip_output.json'))
 DEFAULT_DATASET_ROOT = '/data/example_dataset'
@@ -430,7 +431,7 @@ async def main() -> None:
         client._apply_to_state(tool_name, result, kwargs)
         client._record_secondary_event(tool_name, result)
         if tool_name == 'start_training' and result.get('ok'):
-            client.session_state.active_training.training_plan_draft = {}
+            clear_training_plan_draft(client)
         return result
 
     client.direct_tool = _direct_tool  # type: ignore[assignment]

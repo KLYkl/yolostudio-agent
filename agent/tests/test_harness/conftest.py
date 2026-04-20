@@ -113,6 +113,7 @@ except Exception:
 from langchain_core.messages import AIMessage, HumanMessage
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
 from yolostudio_agent.agent.client.session_state import SessionState
+from yolostudio_agent.agent.tests._training_plan_test_support import set_training_plan_context
 
 # ===== harness 临时目录 =====
 HARNESS_WORK = Path(__file__).resolve().parent / '_harness_tmp'
@@ -198,6 +199,9 @@ def make_client_at_state(
     for dotted_key, value in state_patch.items():
         if dotted_key.startswith('pending_confirmation.'):
             pending_patch[dotted_key.split('.', 1)[1]] = value
+            continue
+        if dotted_key == 'training_plan_context':
+            set_training_plan_context(client, dict(value or {}), thread_id=scenario_id)
             continue
         parts = dotted_key.split('.')
         obj = client.session_state

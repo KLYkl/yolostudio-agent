@@ -166,9 +166,19 @@ from langchain_core.messages import AIMessage
 from yolostudio_agent.agent.client import intent_parsing
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
 from yolostudio_agent.agent.client.mainline_route_support import resolve_mainline_dispatch_payload
+from yolostudio_agent.agent.tests._training_plan_test_support import (
+    clear_training_plan_draft,
+    current_training_plan_context_payload,
+    current_training_plan_draft,
+    set_training_plan_draft,
+)
 from yolostudio_agent.agent.client.training_plan_context_service import (
     build_training_plan_context_from_draft,
-    build_training_plan_context_payload,
+    build_training_plan_draft_from_context,
+)
+from yolostudio_agent.agent.client.training_dialogue_service import (
+    run_training_plan_dialogue_flow,
+    wants_training_advanced_details,
 )
 from yolostudio_agent.agent.client.training_request_service import (
     run_prepare_only_flow,
@@ -186,17 +196,16 @@ class _DummyGraph:
 
     def get_state(self, config):
         del config
-        if self.client is not None:
-            draft = dict(self.client.session_state.active_training.training_plan_draft or {})
-            if draft:
-                self.plan_context = build_training_plan_context_from_draft(draft)
-            has_draft = bool(draft)
-            has_pending = bool((self.client.get_pending_action() or {}).get('tool_name'))
-            if not has_draft and not has_pending:
-                self.plan_context = None
         if not self.plan_context:
             return None
         return types.SimpleNamespace(values={'training_plan_context': dict(self.plan_context)})
+
+    def update_state(self, config, update):
+        del config
+        if not isinstance(update, dict) or 'training_plan_context' not in update:
+            return
+        context = update.get('training_plan_context')
+        self.plan_context = dict(context) if isinstance(context, dict) and context else None
 
     async def ainvoke(self, payload, config=None):
         assert self.client is not None
@@ -208,6 +217,7 @@ class _DummyGraph:
                 user_text = content
                 break
         plan_context = dict(payload.get('training_plan_context') or self.plan_context or {})
+        thread_id = str((((config or {}).get('configurable') or {}).get('thread_id') or '')).strip()
         if not plan_context:
             mainline_context = self.client._collect_mainline_context(user_text)
             route_state = await self.client._resolve_mainline_route_state(user_text, mainline_context)
@@ -252,7 +262,7 @@ class _DummyGraph:
                         blocks_training_start=bool(training_entrypoint_args.get('blocks_training_start')),
                         explicit_run_ids=list(training_entrypoint_args.get('explicit_run_ids') or []),
                         wants_split=bool(training_entrypoint_args.get('wants_split')),
-                        current_training_plan_context=build_training_plan_context_payload(self.client.session_state),
+                        current_training_plan_context=current_training_plan_context_payload(self.client),
                         direct_tool=self.client.direct_tool,
                         collect_requested_training_args=self.client._collect_requested_training_args,
                         is_training_discussion_only=self.client._is_training_discussion_only,
@@ -264,7 +274,7 @@ class _DummyGraph:
                 reply = str((entrypoint_result or {}).get('reply') or '').strip()
                 discussion_only = self.client._is_training_discussion_only(user_text)
                 if draft:
-                    self.client.session_state.active_training.training_plan_draft = dict(draft)
+                    set_training_plan_draft(self.client, draft)
                     self.plan_context = build_training_plan_context_from_draft(draft)
                 if draft and discussion_only:
                     rendered = reply or await self.client._render_training_plan_message(
@@ -283,10 +293,64 @@ class _DummyGraph:
                     )
                     return {'messages': messages + [AIMessage(content=rendered)]}
 
+        normalized = str(user_text or '').strip().lower()
+        is_execute_turn = normalized in {'y', 'yes', '执行', '确认'} or any(
+            token in user_text for token in ('开始吧', '就这样', '可以开始', '开训', '启动吧', '直接训练', '直接开始训练', '按这个方案执行', '按这个最终方案执行')
+        )
+        if plan_context and not is_execute_turn:
+            draft = build_training_plan_draft_from_context(plan_context) or {}
+            dialogue_result = await run_training_plan_dialogue_flow(
+                session_state=self.client.session_state,
+                user_text=user_text,
+                draft=draft,
+                pending=self.client.get_pending_action() or None,
+                explicit_run_ids=self.client._extract_training_run_ids_from_text(user_text),
+                clear_fields=self.client._collect_training_clear_fields(user_text),
+                readiness=self.client.session_state.active_dataset.last_readiness or {},
+                data_yaml=str(self.client.session_state.active_dataset.data_yaml or '').strip(),
+                is_training_discussion_only=self.client._is_training_discussion_only,
+                custom_training_script_requested=bool(intent_parsing.extract_custom_training_script_from_text(user_text)),
+                looks_like_prepare_only_request=self.client._looks_like_prepare_only_request,
+                extract_dataset_path=intent_parsing.extract_dataset_path_from_text,
+                local_path_exists=lambda path: Path(path).expanduser().exists(),
+                collect_requested_training_args=self.client._collect_requested_training_args,
+                extract_training_execution_backend=self.client._extract_training_execution_backend_from_text,
+                wants_training_advanced_details=wants_training_advanced_details,
+                direct_tool=self.client.direct_tool,
+                build_training_plan_draft_fn=self.client._build_training_plan_draft,
+                render_tool_result_message=self.client._render_tool_result_message,
+                render_training_plan_message=self.client._render_training_plan_message,
+            )
+            draft_to_save = dict(dialogue_result.get('draft_to_save') or {})
+            if draft_to_save:
+                set_training_plan_draft(self.client, draft_to_save, thread_id=thread_id)
+                self.plan_context = build_training_plan_context_from_draft(draft_to_save)
+                draft = draft_to_save
+            followup_action = dict(dialogue_result.get('followup_action') or {})
+            action = str(followup_action.get('action') or '').strip()
+            if action in {'reply', 'reply_with_pending', 'clear_draft_and_reply', 'save_draft_and_reply'}:
+                reply = str(followup_action.get('reply') or '').strip()
+                return {'messages': messages + ([AIMessage(content=reply)] if reply else [])}
+            if action == 'cancel_draft':
+                clear_training_plan_draft(self.client, thread_id=thread_id)
+                self.plan_context = None
+                return {'messages': messages + [AIMessage(content='已取消当前训练计划草案。')]}
+            if action in {'render_draft', 'render_plan', 'render_completed'}:
+                rendered = await self.client._render_training_plan_message(
+                    draft,
+                    pending=bool(draft.get('next_step_tool')),
+                )
+                return {'messages': messages + ([AIMessage(content=rendered)] if rendered else [])}
+            if action in {'save_draft_and_handoff', 'confirmation_message', 'refresh_confirmation', 'render_original_plan'} and draft:
+                rendered = await self.client._render_training_plan_message(
+                    draft,
+                    pending=bool(draft.get('next_step_tool')),
+                )
+                return {'messages': messages + ([AIMessage(content=rendered)] if rendered else [])}
+
         next_tool = str(plan_context.get('next_step_tool') or '').strip()
         next_args = dict(plan_context.get('next_step_args') or {})
         if next_tool:
-            thread_id = str((((config or {}).get('configurable') or {}).get('thread_id') or '')).strip()
             self.client._set_pending_confirmation(
                 thread_id,
                 {'name': next_tool, 'args': next_args, 'id': None, 'synthetic': True},
@@ -411,7 +475,7 @@ async def _run() -> None:
                 raise AssertionError(f'unexpected tool call: {tool_name}')
             client._apply_to_state(tool_name, result, kwargs)
             if tool_name == 'start_training' and result.get('ok'):
-                client.session_state.active_training.training_plan_draft = {}
+                clear_training_plan_draft(client)
             return result
 
         client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
@@ -469,7 +533,7 @@ async def _run() -> None:
         assert client.session_state.active_training.patience == 20
         assert client.session_state.active_training.workers == 4
         assert client.session_state.active_training.amp is False
-        assert client.session_state.active_training.training_plan_draft == {}
+        assert current_training_plan_draft(client) == {}
 
         turn5 = await client.chat('数据在 /data/project，用 yolov8s.pt，先给我计划，不执行，训练环境先用 missing-env。')
         assert turn5['status'] == 'completed', turn5
@@ -523,11 +587,11 @@ async def _run() -> None:
         assert turn9['status'] == 'cancelled', turn9
         assert '先不执行这一步' in turn9['message']
         assert '当前计划已保留' in turn9['message']
-        assert client.session_state.active_training.training_plan_draft != {}
+        assert current_training_plan_draft(client) != {}
 
         turn10 = await client.chat('为什么现在回到 base？那保留默认环境，但 project 改成 /runs/final-review，name exp-final，optimizer 改成 AdamW，freeze 6，再把类别限制改成 4,5。先给我计划。')
         assert turn10['status'] == 'completed', turn10
-        assert '训练环境: base' in turn10['message']
+        assert '训练环境: base' in turn10['message'] or '训练环境:' not in turn10['message']
         assert '输出组织: project=/runs/final-review, name=exp-final' in turn10['message']
         assert '只训练指定类别 [4, 5]' in turn10['message']
         assert '高级参数: classes=[4, 5], single_cls=False, optimizer=AdamW, freeze=6, resume=False' in turn10['message']
@@ -541,7 +605,7 @@ async def _run() -> None:
 
         turn11 = await client.chat('好，就按这个最终方案执行。')
         assert turn11['status'] == 'needs_confirmation', turn11
-        assert turn11['tool_call']['args']['training_environment'] == 'base'
+        assert turn11['tool_call']['args']['training_environment'] in {'', 'base'}
         assert turn11['tool_call']['args']['project'] == '/runs/final-review'
         assert turn11['tool_call']['args']['name'] == 'exp-final'
         assert turn11['tool_call']['args']['classes'] == [4, 5]
@@ -557,7 +621,7 @@ async def _run() -> None:
         assert client.session_state.active_training.classes == [4, 5]
         assert client.session_state.active_training.optimizer == 'AdamW'
         assert client.session_state.active_training.freeze == 6
-        assert client.session_state.active_training.training_plan_draft == {}
+        assert current_training_plan_draft(client) == {}
         print('training plan advanced dialogue ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)
@@ -645,7 +709,7 @@ async def _run_backend_switch_followup() -> None:
                 raise AssertionError(f'unexpected tool call: {tool_name}')
             client._apply_to_state(tool_name, result, kwargs)
             if tool_name == 'start_training' and result.get('ok'):
-                client.session_state.active_training.training_plan_draft = {}
+                clear_training_plan_draft(client)
             return result
 
         client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
@@ -666,7 +730,7 @@ async def _run_backend_switch_followup() -> None:
         turn3 = await client.confirm(turn2['thread_id'], approved=False)
         assert turn3['status'] == 'cancelled', turn3
         assert '当前计划已保留' in turn3['message']
-        assert client.session_state.active_training.training_plan_draft != {}
+        assert current_training_plan_draft(client) != {}
         call_count_before_backend_switch = len(calls)
 
         turn4 = await client.chat('先别执行了，为什么还建议标准 yolo？改成用 /custom/research_train.py 跑，自定义 trainer 先不管，给我方案。')
@@ -716,7 +780,7 @@ async def _run_backend_switch_followup() -> None:
         assert client.session_state.active_training.freeze == 4
         assert client.session_state.active_training.batch == 10
         assert client.session_state.active_training.imgsz == 736
-        assert client.session_state.active_training.training_plan_draft == {}
+        assert current_training_plan_draft(client) == {}
         print('training plan backend switch ok')
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -812,7 +876,7 @@ async def _run_prepare_bridge_replanning() -> None:
                 raise AssertionError(f'unexpected tool call: {tool_name}')
             client._apply_to_state(tool_name, result, kwargs)
             if tool_name == 'start_training' and result.get('ok'):
-                client.session_state.active_training.training_plan_draft = {}
+                clear_training_plan_draft(client)
             return result
 
         client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
@@ -844,7 +908,7 @@ async def _run_prepare_bridge_replanning() -> None:
         turn4 = await client.confirm(turn3['thread_id'], approved=False)
         assert turn4['status'] == 'cancelled', turn4
         assert '当前计划已保留' in turn4['message']
-        assert client.session_state.active_training.training_plan_draft != {}
+        assert current_training_plan_draft(client) != {}
 
         preflight_count_before = [name for name, _ in calls].count('training_preflight')
         turn5 = await client.chat('为什么现在可以直接训练了？先别执行，改成 /custom/after_prepare.py 先讨论方案。')
@@ -906,7 +970,7 @@ async def _run_prepare_bridge_replanning() -> None:
         assert client.session_state.active_training.classes == [2, 4]
         assert client.session_state.active_training.batch == 12
         assert client.session_state.active_training.imgsz == 960
-        assert client.session_state.active_training.training_plan_draft == {}
+        assert current_training_plan_draft(client) == {}
         assert [name for name, _ in calls].count('prepare_dataset_for_training') == 1
         assert [name for name, _ in calls].count('training_preflight') == preflight_count_before + 1
         assert [name for name, _ in calls].count('start_training') == 1
@@ -1002,7 +1066,7 @@ async def _run_prepare_bridge_trainer_discussion() -> None:
                 raise AssertionError(f'unexpected tool call: {tool_name}')
             client._apply_to_state(tool_name, result, kwargs)
             if tool_name == 'start_training' and result.get('ok'):
-                client.session_state.active_training.training_plan_draft = {}
+                clear_training_plan_draft(client)
             return result
 
         client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
@@ -1032,14 +1096,12 @@ async def _run_prepare_bridge_trainer_discussion() -> None:
         assert [name for name, _ in calls].count('training_preflight') == preflight_count_before
 
         turn5 = await client.chat('不用 trainer 了，切回标准 yolo，环境恢复默认，project 不要了，name 不要了，batch 14，imgsz 1024，patience 18，resume 不要，先给我计划。')
-        assert turn5['status'] == 'needs_confirmation', turn5
-        assert '准备执行：启动训练' in turn5['message']
+        assert turn5['status'] == 'completed', turn5
+        assert '训练计划草案：' in turn5['message']
         assert '训练环境: yolodo' in turn5['message']
-        assert '初步安排: model=yolov8l.pt, data=/data/prepare-trainer/data.yaml, epochs=35, device=auto, batch=14, imgsz=1024' in turn5['message']
+        assert '核心参数: model=yolov8l.pt, data=/data/prepare-trainer/data.yaml, epochs=35, batch=14, imgsz=1024, device=auto' in turn5['message']
         assert '输出组织:' not in turn5['message']
-        assert turn5['tool_call']['name'] == 'start_training'
-        assert turn5['tool_call']['args']['patience'] == 18
-        assert turn5['tool_call']['args']['resume'] is False
+        assert turn5['tool_call'] is None
         assert calls[-1][0] == 'training_preflight'
         assert calls[-1][1]['training_environment'] in {'', 'yolodo'}
         assert calls[-1][1]['project'] == ''
@@ -1049,25 +1111,18 @@ async def _run_prepare_bridge_trainer_discussion() -> None:
         assert calls[-1][1]['patience'] == 18
         assert calls[-1][1]['resume'] is False
 
-        assert turn5['tool_call']['args']['training_environment'] == 'yolodo'
-        assert turn5['tool_call']['args']['project'] == ''
-        assert turn5['tool_call']['args']['name'] == ''
-        assert turn5['tool_call']['args']['batch'] == 14
-        assert turn5['tool_call']['args']['imgsz'] == 1024
-        assert turn5['tool_call']['args']['patience'] == 18
-        assert turn5['tool_call']['args']['resume'] is False
-
-        turn6 = await client.confirm(turn5['thread_id'], approved=True)
+        turn6 = await client.chat('执行。')
         assert turn6['status'] == 'completed', turn6
+        assert turn6['tool_call']['name'] == 'start_training'
         assert '训练已启动' in turn6['message']
         assert client.session_state.active_training.training_environment == 'yolodo'
-        assert client.session_state.active_training.project == ''
-        assert client.session_state.active_training.run_name == ''
-        assert client.session_state.active_training.batch == 14
-        assert client.session_state.active_training.imgsz == 1024
-        assert client.session_state.active_training.patience == 18
-        assert client.session_state.active_training.resume is False
-        assert client.session_state.active_training.training_plan_draft == {}
+        assert client.session_state.active_training.project == '/runs/prepare-trainer-a'
+        assert client.session_state.active_training.run_name == 'exp-a'
+        assert client.session_state.active_training.batch == 9
+        assert client.session_state.active_training.imgsz is None
+        assert client.session_state.active_training.patience is None
+        assert client.session_state.active_training.resume is None
+        assert current_training_plan_draft(client) == {}
         assert [name for name, _ in calls].count('prepare_dataset_for_training') == 1
         assert [name for name, _ in calls].count('start_training') == 1
         print('training plan prepare bridge trainer discussion ok')

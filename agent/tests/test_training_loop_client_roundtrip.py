@@ -165,6 +165,11 @@ except Exception:
 
 import yolostudio_agent.agent.client.agent_client as agent_client_module
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from yolostudio_agent.agent.tests._training_plan_test_support import (
+    clear_training_plan_draft,
+    current_training_plan_draft,
+    set_training_plan_draft,
+)
 from yolostudio_agent.agent.client.training_plan_context_service import build_training_plan_context_from_draft
 from langchain_core.messages import AIMessage, ToolMessage
 
@@ -186,17 +191,16 @@ class _ScriptedGraph:
 
     def get_state(self, config):
         del config
-        if self.client is not None:
-            draft = dict(self.client.session_state.active_training.training_plan_draft or {})
-            if draft:
-                self.plan_context = build_training_plan_context_from_draft(draft)
-            has_draft = bool(draft)
-            has_pending = bool((self.client.get_pending_action() or {}).get('tool_name'))
-            if not has_draft and not has_pending:
-                self.plan_context = None
         if not self.plan_context:
             return None
         return types.SimpleNamespace(values={'training_plan_context': dict(self.plan_context)})
+
+    def update_state(self, config, update):
+        del config
+        if not isinstance(update, dict) or 'training_plan_context' not in update:
+            return
+        context = update.get('training_plan_context')
+        self.plan_context = dict(context) if isinstance(context, dict) and context else None
 
     async def ainvoke(self, payload, config=None):
         messages = list(payload['messages'])
@@ -250,7 +254,7 @@ class _ScriptedGraph:
             draft = dict(entrypoint_result.get('draft') or {})
             reply = str(entrypoint_result.get('reply') or '').strip()
             if draft:
-                self.client.session_state.active_training.training_plan_draft = dict(draft)
+                set_training_plan_draft(self.client, draft)
                 self.plan_context = build_training_plan_context_from_draft(draft)
             if entrypoint_result.get('defer_to_graph') and draft and config:
                 thread_id = str(((config or {}).get('configurable') or {}).get('thread_id') or '').strip()
@@ -374,7 +378,7 @@ async def _run() -> None:
 
             client._apply_to_state(tool_name, result, kwargs)
             if tool_name in {'start_training', 'start_training_loop'} and result.get('ok'):
-                client.session_state.active_training.training_plan_draft = {}
+                clear_training_plan_draft(client)
             client._record_secondary_event(tool_name, result)
             return result
 

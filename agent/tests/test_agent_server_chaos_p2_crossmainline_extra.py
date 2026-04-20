@@ -15,6 +15,7 @@ if __package__ in {None, ''}:
 
 from yolostudio_agent.agent.tests._chaos_test_support import WORK as P0_WORK, _make_client
 from yolostudio_agent.agent.tests._coroutine_runner import run
+from yolostudio_agent.agent.tests._training_plan_test_support import current_training_plan_draft
 
 
 def _fresh_client(session_id: str):
@@ -59,7 +60,7 @@ async def _scenario_c66_mixed_predict_train_compare_request_is_split() -> None:
     assert '请拆成连续步骤' in turn['message']
     assert calls == []
     assert (client.get_pending_action() or {}).get('tool_name', '') == ''
-    assert client.session_state.active_training.training_plan_draft == {}
+    assert current_training_plan_draft(client) == {}
     assert client.session_state.active_prediction.source_path == ''
 
 
@@ -71,7 +72,7 @@ async def _scenario_c67_merge_frames_into_old_dataset_requires_prepare_chain() -
     assert '先走数据准备/校验' in turn['message']
     assert calls == []
     assert (client.get_pending_action() or {}).get('tool_name', '') == ''
-    assert client.session_state.active_training.training_plan_draft == {}
+    assert current_training_plan_draft(client) == {}
 
 
 async def _scenario_c68_predict_using_best_run_after_compare_still_needs_weight_path() -> None:
@@ -101,7 +102,7 @@ async def _scenario_c69_prediction_result_cannot_become_training_data_directly()
     assert '不能直接当训练数据开训' in turn['message']
     assert calls == []
     assert (client.get_pending_action() or {}).get('tool_name', '') == ''
-    assert client.session_state.active_training.training_plan_draft == {}
+    assert current_training_plan_draft(client) == {}
 
 
 async def _scenario_c70_no_continuous_parallel_prediction_during_training() -> None:
@@ -112,7 +113,7 @@ async def _scenario_c70_no_continuous_parallel_prediction_during_training() -> N
     assert '不支持“边训练边持续做视频预测”' in turn['message']
     assert calls == []
     assert (client.get_pending_action() or {}).get('tool_name', '') == ''
-    assert client.session_state.active_training.training_plan_draft == {}
+    assert current_training_plan_draft(client) == {}
     assert client.session_state.active_prediction.source_path == ''
 
 
