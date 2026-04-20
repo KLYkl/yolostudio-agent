@@ -3,6 +3,11 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 try:
+    from langchain_core.runnables import RunnableConfig
+except Exception:
+    RunnableConfig = Any  # type: ignore[misc,assignment]
+
+try:
     from langchain_core.runnables.config import set_config_context
 except Exception:
     from contextlib import contextmanager
@@ -47,7 +52,7 @@ def _normalize_decision(value: Any) -> PendingTurnIntent:
     return PendingTurnIntent(action='unclear', reason='')
 
 
-async def training_confirmation_node(state: Mapping[str, Any], config: Any = None) -> Any:
+def training_confirmation_node(state: Mapping[str, Any], config: RunnableConfig | None = None) -> Any:
     plan = coerce_training_plan(_state_value(state, 'training_plan', {}))
     phase = str(_state_value(state, 'training_phase', 'prepare') or 'prepare').strip().lower() or 'prepare'
     suspended_plan = _state_value(state, 'suspended_training_plan')
