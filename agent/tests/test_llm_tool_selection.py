@@ -177,7 +177,6 @@ class _GraphState:
         self.values = {
             'messages': list(messages),
             'pending_confirmation': dict(pending_confirmation) if pending_confirmation else None,
-            'pending_review': {},
         }
         self.tasks = ()
         self.interrupts = ()
@@ -339,8 +338,8 @@ async def _scenario_graph_selects_read_tool() -> None:
     )
     client = _make_client('graph-read-tool', graph)
 
-    async def _never_bypass(user_text: str, thread_id: str):
-        del user_text, thread_id
+    async def _never_bypass(user_text: str, thread_id: str, *, skip_training_plan_dialogue: bool = False):
+        del user_text, thread_id, skip_training_plan_dialogue
         return None
 
     client._try_handle_mainline_intent = _never_bypass  # type: ignore[assignment]

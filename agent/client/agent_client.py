@@ -1268,13 +1268,11 @@ class YoloStudioAgentClient:
                 self._update_graph_pending_state(
                     thread_id=pending_thread_id,
                     pending=current_pending,
-                    review=decision_context,
                 )
             else:
                 self._update_graph_pending_state(
                     thread_id=pending_thread_id,
-                    pending=None,
-                    review=decision_context,
+                    pending=current_pending,
                 )
         self.memory.append_event(
             self.session_state.session_id,
@@ -1332,9 +1330,11 @@ class YoloStudioAgentClient:
                     updated_pending['args'] = dict(updated_args)
                     updated_pending['tool_args'] = dict(updated_args)
                     updated_draft['next_step_args'] = dict(updated_args)
-                    merged_pending = self._merge_pending_review_context(
-                        updated_pending,
-                        (self._pending_from_state() or {}).get('decision_context'),
+                    merged_pending = dict(updated_pending)
+                    merged_pending['decision_context'] = dict(
+                        merged_pending.get('decision_context')
+                        or (self._pending_from_state() or {}).get('decision_context')
+                        or {}
                     )
                     self._remember_pending_confirmation(
                         merged_pending,
@@ -3108,15 +3108,6 @@ class YoloStudioAgentClient:
         except Exception:
             return None
 
-    def _graph_pending_review(self, config: dict[str, Any]) -> dict[str, Any]:
-        state = self._graph_state_snapshot(config)
-        values = getattr(state, 'values', {}) if state else {}
-        if isinstance(values, dict):
-            review = values.get('pending_review')
-            if isinstance(review, dict):
-                return dict(review)
-        return {}
-
     def _graph_training_plan_context(self, config: dict[str, Any]) -> dict[str, Any] | None:
         state = self._graph_state_snapshot(config)
         values = getattr(state, 'values', {}) if state else {}
@@ -3192,16 +3183,6 @@ class YoloStudioAgentClient:
             return draft
         return {}
 
-    @staticmethod
-    def _merge_pending_review_context(pending: dict[str, Any], review: dict[str, Any] | None) -> dict[str, Any]:
-        merged = dict(pending)
-        review_context = dict(review or {})
-        if review_context:
-            merged['decision_context'] = review_context
-        else:
-            merged['decision_context'] = dict(merged.get('decision_context') or {})
-        return merged
-
     def _graph_pending_from_values(self, config: dict[str, Any]) -> dict[str, Any] | None:
         state = self._graph_state_snapshot(config)
         values = getattr(state, 'values', {}) if state else {}
@@ -3219,7 +3200,8 @@ class YoloStudioAgentClient:
         merged['args'] = normalize_tool_args(tool_name, dict(merged.get('args') or merged.get('tool_args') or {}))
         merged['tool_args'] = dict(merged['args'])
         merged['source'] = str(merged.get('source') or 'synthetic').strip().lower() or 'synthetic'
-        return self._merge_pending_review_context(merged, self._graph_pending_review(config))
+        merged['decision_context'] = dict(merged.get('decision_context') or {})
+        return merged
 
     def _graph_pending_from_interrupt(self, config: dict[str, Any]) -> dict[str, Any] | None:
         state = self._graph_state_snapshot(config)
@@ -3255,7 +3237,7 @@ class YoloStudioAgentClient:
                 'source': 'graph',
                 'interrupt_kind': str(raw_value.get('interrupt_kind') or 'tool_approval').strip() or 'tool_approval',
             }
-            return self._merge_pending_review_context(merged, self._graph_pending_review(config))
+            return merged
         return None
 
     @staticmethod
@@ -3611,13 +3593,11 @@ class YoloStudioAgentClient:
         *,
         thread_id: str,
         pending: dict[str, Any] | None,
-        review: dict[str, Any] | None = None,
     ) -> None:
         if not thread_id or not hasattr(self.graph, 'update_state'):
             return
         update = {
             'pending_confirmation': dict(pending) if isinstance(pending, dict) else None,
-            'pending_review': dict(review or {}),
         }
         try:
             self.graph.update_state(self._pending_config(thread_id), update)
@@ -3640,9 +3620,11 @@ class YoloStudioAgentClient:
         )
 
     def _needs_confirmation_result(self, thread_id: str, pending: dict[str, Any], message: str) -> dict[str, Any]:
-        merged_pending = self._merge_pending_review_context(
-            pending,
-            (self._pending_from_state() or {}).get('decision_context'),
+        merged_pending = dict(pending)
+        merged_pending['decision_context'] = dict(
+            merged_pending.get('decision_context')
+            or (self._pending_from_state() or {}).get('decision_context')
+            or {}
         )
         return {
             'status': 'needs_confirmation',
@@ -3653,9 +3635,11 @@ class YoloStudioAgentClient:
         }
 
     def _cancelled_result(self, pending: dict[str, Any], message: str) -> dict[str, Any]:
-        merged_pending = self._merge_pending_review_context(
-            pending,
-            (self._pending_from_state() or {}).get('decision_context'),
+        merged_pending = dict(pending)
+        merged_pending['decision_context'] = dict(
+            merged_pending.get('decision_context')
+            or (self._pending_from_state() or {}).get('decision_context')
+            or {}
         )
         payload = self._build_pending_action_payload(merged_pending, decision_state='rejected')
         return {
@@ -3681,7 +3665,6 @@ class YoloStudioAgentClient:
             self._update_graph_pending_state(
                 thread_id=normalized['thread_id'],
                 pending=normalized,
-                review=dict(normalized.get('decision_context') or {}),
             )
         if emit_event and self._pending_signature(normalized) != previous_signature:
             self.memory.append_event(
@@ -3707,7 +3690,7 @@ class YoloStudioAgentClient:
         ).strip()
         self._pending_confirmation_shadow = None
         if persist_graph and resolved_thread_id:
-            self._update_graph_pending_state(thread_id=resolved_thread_id, pending=None, review={})
+            self._update_graph_pending_state(thread_id=resolved_thread_id, pending=None)
         self._sync_training_workflow_state(reason='pending_cleared')
 
     def _pending_from_state(self) -> dict[str, Any] | None:
@@ -4167,7 +4150,10 @@ class YoloStudioAgentClient:
             return handoff
         refreshed_pending = self._pending_from_state() or {}
         if prior_review_context:
-            refreshed_pending = self._merge_pending_review_context(refreshed_pending, prior_review_context)
+            refreshed_pending = dict(refreshed_pending)
+            refreshed_pending['decision_context'] = dict(
+                refreshed_pending.get('decision_context') or prior_review_context
+            )
             self._remember_pending_confirmation(
                 refreshed_pending,
                 emit_event=False,
@@ -5369,7 +5355,6 @@ try:
         dataset_fact_context: dict[str, Any] | None
         training_plan_context: dict[str, Any] | None
         pending_confirmation: dict[str, Any] | None
-        pending_review: dict[str, Any] | None
         training_plan: dict[str, Any] | None
         training_phase: str | None
         training_execution_mode: str | None
@@ -5390,7 +5375,6 @@ except Exception:
         dataset_fact_context: dict[str, Any] | None
         training_plan_context: dict[str, Any] | None
         pending_confirmation: dict[str, Any] | None
-        pending_review: dict[str, Any] | None
         training_plan: dict[str, Any] | None
         training_phase: str | None
         training_execution_mode: str | None
@@ -5422,7 +5406,7 @@ def _normalize_confirmation_resume_value(value: Any) -> str:
 
 
 def _tool_response_with_pending_clear(response: Any) -> Any:
-    clear_update = {'pending_confirmation': None, 'pending_review': {}}
+    clear_update = {'pending_confirmation': None}
     if isinstance(response, Command):
         update = response.update
         if isinstance(update, dict):
@@ -5465,7 +5449,6 @@ def _tool_rejection_command(*, tool_name: str, tool_call_id: str, message: str) 
                 )
             ],
             'pending_confirmation': None,
-            'pending_review': {},
         }
     )
 

@@ -67,9 +67,6 @@ def _ensure_graph_pending_state(client: Any) -> Any:
                 else:
                     values[key] = value
                 continue
-            if key == 'pending_review':
-                values[key] = dict(value or {})
-                continue
             if value is None:
                 values.pop(key, None)
                 continue
@@ -153,10 +150,7 @@ def seed_pending_confirmation(client: Any, thread_id: str, pending: dict[str, An
     graph = _ensure_graph_pending_state(client)
     graph.update_state(
         config,
-        {
-            'pending_confirmation': normalized,
-            'pending_review': dict(normalized.get('decision_context') or {}),
-        },
+        {'pending_confirmation': normalized},
     )
     client._resolve_pending_confirmation(thread_id=thread_id, config=config)
     client._sync_training_workflow_state(reason='pending_seeded_for_test')
@@ -175,10 +169,7 @@ def update_pending_confirmation_args(client: Any, thread_id: str, updates: dict[
     updated_pending['tool_args'] = dict(updated_args)
     graph.update_state(
         client._pending_config(thread_id),
-        {
-            'pending_confirmation': updated_pending,
-            'pending_review': dict(updated_pending.get('decision_context') or {}),
-        },
+        {'pending_confirmation': updated_pending},
     )
     client._resolve_pending_confirmation(thread_id=thread_id, config=client._pending_config(thread_id))
     return True

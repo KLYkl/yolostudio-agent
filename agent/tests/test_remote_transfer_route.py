@@ -188,7 +188,6 @@ class _GraphState:
         self.values = {
             'messages': list(messages),
             'pending_confirmation': dict(pending_confirmation) if pending_confirmation else None,
-            'pending_review': {},
         }
         self.tasks = ()
         self.interrupts = ()

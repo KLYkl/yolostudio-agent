@@ -113,7 +113,6 @@ def _training_state_update_from_interrupt_payload(payload: dict[str, Any] | None
         'training_plan_context': None,
         'training_entry_request': None,
         'pending_confirmation': None,
-        'pending_review': {},
     }
 
 

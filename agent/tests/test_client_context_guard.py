@@ -466,8 +466,8 @@ async def _scenario_graph_pending_is_restored_from_checkpoint_on_startup() -> No
                         'thread_id': thread_id,
                         'source': 'graph',
                         'summary': '等待远端训练闭环确认',
+                        'decision_context': {'mode': 'clarify'},
                     },
-                    'pending_review': {'mode': 'clarify'},
                     'training_plan_context': {
                         'stage': 'plan_ready',
                         'status': 'ready_for_confirmation',
