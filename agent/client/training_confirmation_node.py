@@ -8,6 +8,16 @@ except Exception:
     RunnableConfig = Any  # type: ignore[misc,assignment]
 
 try:
+    from langchain_core.runnables.config import set_config_context
+except Exception:
+    from contextlib import contextmanager
+
+    @contextmanager
+    def set_config_context(config: Any):
+        del config
+        yield None
+
+try:
     from langgraph.types import Command, interrupt
 except Exception:
     class Command:  # type: ignore[override]
@@ -42,8 +52,7 @@ def _normalize_decision(value: Any) -> PendingTurnIntent:
     return PendingTurnIntent(action='unclear', reason='')
 
 
-async def training_confirmation_node(state: Mapping[str, Any], config: RunnableConfig | None = None) -> Any:
-    del config
+def training_confirmation_node(state: Mapping[str, Any], config: RunnableConfig | None = None) -> Any:
     plan = coerce_training_plan(_state_value(state, 'training_plan', {}))
     phase = str(_state_value(state, 'training_phase', 'prepare') or 'prepare').strip().lower() or 'prepare'
     suspended_plan = _state_value(state, 'suspended_training_plan')
@@ -61,7 +70,8 @@ async def training_confirmation_node(state: Mapping[str, Any], config: RunnableC
         'status_reply': status_reply,
         'suspended_training_plan': dict(suspended_plan or {}) if isinstance(suspended_plan, Mapping) else None,
     }
-    decision = _normalize_decision(interrupt(payload))
+    with set_config_context(config or {}):
+        decision = _normalize_decision(interrupt(payload))
     action = str(decision.action or 'unclear').strip().lower()
 
     if action == 'approve':
