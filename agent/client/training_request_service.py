@@ -13,8 +13,6 @@ from yolostudio_agent.agent.client.training_contracts import (
     TrainingRequestResult,
 )
 from yolostudio_agent.agent.client.session_state import SessionState
-from yolostudio_agent.agent.client.training_plan_service import run_training_request_orchestration
-
 DirectToolInvoker = Callable[..., Awaitable[dict[str, Any]]]
 TrainingArgsCollector = Callable[..., dict[str, Any]]
 TrainingDiscussionChecker = Callable[[str], bool]
@@ -402,7 +400,9 @@ async def run_training_request_entrypoint(
     )
     readiness = dict(prepared_context.get('readiness') or {})
     requested_args = dict(prepared_context.get('requested_args') or {})
-    plan_result = await run_training_request_orchestration(
+    from yolostudio_agent.agent.client.training_workflow_graph import plan_training_request
+
+    plan_result = await plan_training_request(
         user_text=user_text,
         dataset_path=dataset_path,
         readiness=readiness,

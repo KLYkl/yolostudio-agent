@@ -38,9 +38,9 @@ except Exception:
 
 from yolostudio_agent.agent.client.training_plan_service import (
     build_training_preflight_tool_args,
-    run_training_request_orchestration,
     resolve_training_start_args,
 )
+from yolostudio_agent.agent.client.training_workflow_graph import plan_training_request as run_training_request_orchestration
 from yolostudio_agent.agent.client.training_dialogue_service import (
     build_training_revision_draft,
     prepare_training_revision_context,

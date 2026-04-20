@@ -123,10 +123,6 @@ from yolostudio_agent.agent.client.training_dialogue_service import (
 from yolostudio_agent.agent.client.training_contracts import TrainingPlanFollowupAction
 from yolostudio_agent.agent.client.training_plan_service import (
     build_training_loop_start_draft as build_training_loop_start_draft_service,
-    build_training_loop_start_fallback_plan as build_training_loop_start_fallback_plan_service,
-    render_training_plan_message as render_training_plan_message_service,
-    run_training_loop_start_entrypoint as run_training_loop_start_entrypoint_service,
-    run_training_loop_start_orchestration as run_training_loop_start_orchestration_service,
     training_plan_render_error,
     training_plan_user_facts,
 )
@@ -137,7 +133,10 @@ from yolostudio_agent.agent.client.training_plan_context_service import (
     extract_training_plan_context_from_state,
 )
 from yolostudio_agent.agent.client.training_workflow_graph import (
+    build_training_loop_start_fallback_plan_core,
     install_training_workflow_nodes,
+    plan_training_loop_start_request,
+    render_training_plan_message_core,
 )
 from yolostudio_agent.agent.client.training_schemas import (
     PendingTurnIntent,
@@ -5271,7 +5270,7 @@ class YoloStudioAgentClient:
         loop_args: dict[str, Any],
         observed_tools: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        return build_training_loop_start_fallback_plan_service(
+        return build_training_loop_start_fallback_plan_core(
             user_text=user_text,
             dataset_path=dataset_path,
             loop_args=loop_args,
@@ -5308,27 +5307,26 @@ class YoloStudioAgentClient:
         loop_args: dict[str, Any],
         observed_tools: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        return await run_training_loop_start_orchestration_service(
-            self.session_state,
+        entrypoint_result = await self._run_training_loop_start_entrypoint(
             user_text=user_text,
-            thread_id=thread_id,
             dataset_path=dataset_path,
             loop_args=loop_args,
             observed_tools=observed_tools,
-            direct_tool=self.direct_tool,
-            build_training_loop_start_fallback_plan_fn=self._build_training_loop_start_fallback_plan,
-            known_training_loop_data_yaml=self._known_training_loop_data_yaml,
-            append_event=lambda event, payload: self.memory.append_event(self.session_state.session_id, event, payload),
-            compact_training_loop_start_fact=self._compact_training_loop_start_fact,
-            build_training_loop_start_draft_fn=self._build_training_loop_start_draft,
-            save_training_plan_draft=self._save_training_plan_draft,
-            append_ai_message=lambda reply: self._messages.append(AIMessage(content=reply)),
-            handoff_to_graph=lambda handoff_thread_id, handoff_user_text: self._handoff_current_runtime_to_graph(
-                thread_id=handoff_thread_id,
-                user_text_hint=handoff_user_text,
-                auto_approve=False,
-            ),
         )
+        draft = dict(entrypoint_result.get('draft') or {})
+        if draft:
+            self._save_training_plan_draft(draft)
+        reply = str(entrypoint_result.get('reply') or '').strip()
+        if reply and not entrypoint_result.get('defer_to_graph'):
+            self._messages.append(AIMessage(content=reply))
+            return {'status': 'completed', 'message': reply, 'tool_call': None}
+        if entrypoint_result.get('defer_to_graph'):
+            return await self._handoff_current_runtime_to_graph(
+                thread_id=thread_id,
+                user_text_hint=user_text,
+                auto_approve=False,
+            )
+        return {'status': 'completed', 'message': reply, 'tool_call': None}
 
     async def _run_training_loop_start_entrypoint(
         self,
@@ -5338,7 +5336,7 @@ class YoloStudioAgentClient:
         loop_args: dict[str, Any],
         observed_tools: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        return await run_training_loop_start_entrypoint_service(
+        return await plan_training_loop_start_request(
             self.session_state,
             user_text=user_text,
             dataset_path=dataset_path,
@@ -5733,7 +5731,7 @@ class YoloStudioAgentClient:
     async def _render_training_plan_message(self, draft: dict[str, Any], *, pending: bool) -> str:
         if self._should_force_structured_training_surface(draft, pending=pending):
             return self._render_training_plan_draft(draft, pending=pending)
-        return await render_training_plan_message_service(
+        return await render_training_plan_message_core(
             planner_llm=self.planner_llm,
             draft=draft,
             pending=pending,
@@ -6183,23 +6181,6 @@ def _tool_rejection_command(*, tool_name: str, tool_call_id: str, message: str) 
             'pending_review': {},
         }
     )
-
-
-def _training_state_update_from_interrupt_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
-    payload = dict(payload or {})
-    return {
-        'training_plan': dict(payload.get('plan') or {}) or None,
-        'training_phase': str(payload.get('phase') or '').strip() or None,
-        'training_execution_mode': str(payload.get('execution_mode') or '').strip() or None,
-        'training_next_step_tool': str(payload.get('next_step_tool') or '').strip() or None,
-        'training_next_step_args': dict(payload.get('next_step_args') or {}) or None,
-        'suspended_training_plan': dict(payload.get('suspended_training_plan') or {}) or None,
-        'pending_new_task': str(payload.get('pending_new_task') or '').strip() or None,
-        'training_status_reply': str(payload.get('status_reply') or '').strip() or None,
-        'training_plan_context': None,
-        'pending_confirmation': None,
-        'pending_review': {},
-    }
 
 
 def _latest_human_text_from_messages(messages: list[Any] | None) -> str:

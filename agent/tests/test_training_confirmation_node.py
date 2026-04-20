@@ -10,7 +10,7 @@ if __package__ in {None, ''}:
         if path not in sys.path:
             sys.path.insert(0, path)
 
-from yolostudio_agent.agent.client.training_confirmation_node import (
+from yolostudio_agent.agent.client.training_workflow_graph import (
     answer_training_status_node,
     post_prepare_node,
     training_confirmation_node,
@@ -22,7 +22,7 @@ from yolostudio_agent.agent.client.training_schemas import (
     TrainingEdits,
     merge_training_plan_edits,
 )
-import yolostudio_agent.agent.client.training_confirmation_node as confirmation_mod
+import yolostudio_agent.agent.client.training_workflow_graph as confirmation_mod
 
 
 def _assert_equal(actual, expected, message: str) -> None:
