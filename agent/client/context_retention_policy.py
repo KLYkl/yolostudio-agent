@@ -420,11 +420,14 @@ def build_context_retention_decision(
     state: SessionState,
     user_text: str,
     explicitly_references_previous_context: bool,
+    training_plan_context: dict[str, object] | None = None,
 ) -> ContextRetentionDecision:
     if explicitly_references_previous_context:
         return ContextRetentionDecision(True, 'explicit_reference')
     if str(state.pending_confirmation.tool_name or '').strip():
         return ContextRetentionDecision(True, 'pending_confirmation')
+    if dict(training_plan_context or {}):
+        return ContextRetentionDecision(True, 'training_plan_context')
     if state.active_training.training_plan_draft:
         return ContextRetentionDecision(True, 'training_plan_draft')
     if _has_active_workflow_context(state):

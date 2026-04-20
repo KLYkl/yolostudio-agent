@@ -871,6 +871,7 @@ class YoloStudioAgentClient:
             state=self.session_state,
             user_text=user_text,
             explicitly_references_previous_context=self._explicitly_references_previous_context(user_text),
+            training_plan_context=self._current_training_plan_context(),
         )
 
     def _state_for_model(self, user_text: str) -> tuple[SessionState, bool, list[BaseMessage]]:
@@ -5180,8 +5181,10 @@ class YoloStudioAgentClient:
         tr = self.session_state.active_training
         args = self._collect_requested_training_args(user_text, data_yaml=data_yaml)
         if not str(args.get('model') or '').strip():
+            current_plan_context = dict(self._current_training_plan_context() or {})
+            current_plan_args = dict(current_plan_context.get('planned_training_args') or {})
             preserved_model = str(
-                (((tr.training_plan_draft or {}).get('planned_training_args') or {}).get('model'))
+                (current_plan_args.get('model'))
                 or tr.model
                 or ''
             ).strip()

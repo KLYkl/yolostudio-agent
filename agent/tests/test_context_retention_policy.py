@@ -126,6 +126,23 @@ def test_read_only_training_followup_preserves_state_without_reusing_history() -
     assert decision.preserve_state_context is True
 
 
+def test_graph_training_context_reuses_history_without_session_draft() -> None:
+    state = SessionState(session_id='retention-graph-training-context')
+    decision = build_context_retention_decision(
+        state=state,
+        user_text='把 batch 改成 12 再继续',
+        explicitly_references_previous_context=False,
+        training_plan_context={
+            'dataset_path': '/data/demo',
+            'execution_mode': 'direct_train',
+            'next_step_tool': 'start_training',
+            'planned_training_args': {'model': 'graph.pt', 'epochs': 20},
+        },
+    )
+    assert decision.reuse_history is True
+    assert decision.reason == 'training_plan_context'
+
+
 def test_dataset_followup_uses_dataset_domain_context() -> None:
     state = SessionState(session_id='retention-dataset-followup')
     state.active_dataset.last_scan = {
@@ -181,6 +198,7 @@ def main() -> None:
     test_best_run_prediction_followup_keeps_training_history_with_new_target()
     test_read_only_prediction_followup_preserves_state_without_reusing_history()
     test_read_only_training_followup_preserves_state_without_reusing_history()
+    test_graph_training_context_reuses_history_without_session_draft()
     test_dataset_followup_uses_dataset_domain_context()
     test_dataset_class_name_followup_reuses_dataset_context()
     test_knowledge_followup_uses_knowledge_domain_context()
