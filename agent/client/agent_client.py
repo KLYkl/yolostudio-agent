@@ -901,28 +901,17 @@ class YoloStudioAgentClient:
         self._turn_index += 1
         thread_id = f"{self.session_state.session_id}-turn-{self._turn_index}"
 
-        active_interrupt = self._active_graph_interrupt(preferred_thread_id=thread_id)
-        if active_interrupt is not None:
-            interrupt_thread_id, interrupt_payload = active_interrupt
-            if self._is_training_confirmation_interrupt_payload(interrupt_payload):
-                decision = await self._parse_user_decision(
-                    user_text=user_text,
-                    interrupt_payload=interrupt_payload,
-                )
-                return await self._resume_active_confirmation_interrupt(
-                    interrupt_thread_id=interrupt_thread_id,
-                    interrupt_payload=interrupt_payload,
-                    decision=decision,
-                    stream_handler=stream_handler,
-                )
-
-        pending_dialogue = await self._try_handle_pending_confirmation_dialogue(user_text, stream_handler=stream_handler)
-        pending_passthrough_requested = pending_dialogue is _DEFER_TO_GRAPH
-        if pending_dialogue is not None and not pending_passthrough_requested:
+        pending_turn = await self._handle_pending_turn(
+            user_text,
+            thread_id=thread_id,
+            stream_handler=stream_handler,
+        )
+        pending_passthrough_requested = pending_turn is _DEFER_TO_GRAPH
+        if pending_turn is not None and not pending_passthrough_requested:
             self._trim_history()
             self.memory.save_state(self.session_state)
-            progressed = await self._maybe_auto_progress(pending_dialogue, stream_handler=stream_handler)
-            return progressed or pending_dialogue
+            progressed = await self._maybe_auto_progress(pending_turn, stream_handler=stream_handler)
+            return progressed or pending_turn
 
         routed = await self._try_handle_mainline_intent(
             user_text,
@@ -948,28 +937,6 @@ class YoloStudioAgentClient:
                 suppress_ephemeral_state_context=True,
                 stream_handler=stream_handler,
             )
-
-        unresolved_pending = self._resolve_pending_confirmation(thread_id=self._pending_confirmation_thread_id())
-        if unresolved_pending is not None:
-            decision_state = str(unresolved_pending.get('decision_state') or '').strip().lower()
-            last_decision = str((unresolved_pending.get('decision_context') or {}).get('decision') or '').strip()
-            if decision_state == 'rejected' or last_decision == 'reject':
-                unresolved_pending = None
-        if unresolved_pending is not None:
-            pending_thread_id = self._pending_confirmation_thread_id()
-            if last_decision == 'edit':
-                reply = (
-                    '我已经保留这一步待执行动作，但这句还不足以直接改完参数。'
-                    '你可以继续明确要改哪一项，例如“不要自动划分”、“batch 改成 12”或“环境改成 base”。'
-                )
-            elif last_decision == 'clarify':
-                reply = await self._build_confirmation_message(unresolved_pending)
-            else:
-                reply = await self._build_confirmation_message(unresolved_pending)
-            self._messages.append(AIMessage(content=reply))
-            self._trim_history()
-            self.memory.save_state(self.session_state)
-            return self._needs_confirmation_result(pending_thread_id, unresolved_pending, reply)
 
         return await self._handoff_current_runtime_to_graph(
             thread_id=thread_id,
@@ -1231,15 +1198,15 @@ class YoloStudioAgentClient:
         )
         return decision_context
 
-    async def _try_handle_pending_confirmation_dialogue(
+    async def _handle_pending_turn_intent(
         self,
-        user_text: str,
         *,
+        user_text: str,
+        pending: dict[str, Any],
+        pending_thread_id: str,
         stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
+        active_interrupt: tuple[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any] | object | None:
-        pending = self._resolve_pending_confirmation(thread_id=self._pending_confirmation_thread_id())
-        if not pending:
-            return None
         pending_turn_intent = await self._classify_pending_turn_intent(user_text, pending)
         if pending_turn_intent == 'edit':
             self._record_pending_action_review(
@@ -1284,24 +1251,25 @@ class YoloStudioAgentClient:
                         emit_event=False,
                         persist_graph=False,
                     )
-                    pending_thread_id = str(
+                    updated_thread_id = str(
                         merged_pending.get('thread_id')
+                        or pending_thread_id
                         or self._pending_confirmation_thread_id()
                         or ''
                     ).strip()
                     self._update_graph_training_plan_context(
-                        thread_id=pending_thread_id,
+                        thread_id=updated_thread_id,
                         context=build_training_plan_context_from_draft(updated_draft),
                     )
-                    interrupt_payload = self._draft_to_training_confirmation_interrupt(updated_draft, thread_id=pending_thread_id)
+                    interrupt_payload = self._draft_to_training_confirmation_interrupt(updated_draft, thread_id=updated_thread_id)
                     if interrupt_payload is not None:
                         return self._format_interrupt_or_result(
                             {},
-                            thread_id=pending_thread_id,
+                            thread_id=updated_thread_id,
                             interrupt_payload=interrupt_payload,
                         )
                     return self._needs_confirmation_result(
-                        pending_thread_id,
+                        updated_thread_id,
                         merged_pending,
                         await self._build_confirmation_message(merged_pending),
                     )
@@ -1309,7 +1277,6 @@ class YoloStudioAgentClient:
             if pending_tool_name in {'start_training', 'start_training_loop', 'prepare_dataset_for_training'}:
                 if self._is_training_discussion_only(user_text):
                     return _DEFER_TO_GRAPH
-            pending_thread_id = self._pending_confirmation_thread_id()
             return self._needs_confirmation_result(
                 pending_thread_id,
                 self._pending_from_state() or pending,
@@ -1323,12 +1290,22 @@ class YoloStudioAgentClient:
                 raw_user_text=user_text,
                 source='natural_language_chat',
             )
+            if active_interrupt is not None:
+                interrupt_thread_id, interrupt_payload = active_interrupt
+                return await self._resume_active_confirmation_interrupt(
+                    interrupt_thread_id=interrupt_thread_id,
+                    interrupt_payload=interrupt_payload,
+                    decision={
+                        'action': pending_turn_intent,
+                        'reason': 'pending dialogue',
+                    },
+                    stream_handler=stream_handler,
+                )
             return await self.confirm(
-                self._pending_confirmation_thread_id(),
+                pending_thread_id,
                 approved=pending_turn_intent == 'approve',
                 stream_handler=stream_handler,
             )
-        pending_thread_id = self._pending_confirmation_thread_id()
         if pending_turn_intent == 'restate':
             self._record_pending_action_review(
                 pending,
@@ -1352,6 +1329,77 @@ class YoloStudioAgentClient:
         if pending_turn_intent == 'passthrough':
             return _DEFER_TO_GRAPH
         return None
+
+    async def _handle_pending_turn(
+        self,
+        user_text: str,
+        *,
+        thread_id: str,
+        stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
+    ) -> dict[str, Any] | object | None:
+        active_interrupt = self._active_graph_interrupt(preferred_thread_id=thread_id)
+        if active_interrupt is not None:
+            interrupt_thread_id, interrupt_payload = active_interrupt
+            if self._is_training_confirmation_interrupt_payload(interrupt_payload):
+                decision = await self._parse_user_decision(
+                    user_text=user_text,
+                    interrupt_payload=interrupt_payload,
+                )
+                return await self._resume_active_confirmation_interrupt(
+                    interrupt_thread_id=interrupt_thread_id,
+                    interrupt_payload=interrupt_payload,
+                    decision=decision,
+                    stream_handler=stream_handler,
+                )
+            interrupt_pending = self._pending_from_interrupt_payload(
+                interrupt_payload,
+                thread_id=interrupt_thread_id,
+            )
+            if interrupt_pending is not None:
+                return await self._handle_pending_turn_intent(
+                    user_text=user_text,
+                    pending=interrupt_pending,
+                    pending_thread_id=interrupt_thread_id,
+                    stream_handler=stream_handler,
+                    active_interrupt=active_interrupt,
+                )
+
+        pending_dialogue = await self._try_handle_pending_confirmation_dialogue(user_text, stream_handler=stream_handler)
+        if pending_dialogue is not None:
+            return pending_dialogue
+
+        unresolved_pending = self._resolve_pending_confirmation(thread_id=self._pending_confirmation_thread_id())
+        if unresolved_pending is not None:
+            decision_state = str(unresolved_pending.get('decision_state') or '').strip().lower()
+            last_decision = str((unresolved_pending.get('decision_context') or {}).get('decision') or '').strip()
+            if decision_state != 'rejected' and last_decision != 'reject':
+                pending_thread_id = self._pending_confirmation_thread_id()
+                if last_decision == 'edit':
+                    reply = (
+                        '我已经保留这一步待执行动作，但这句还不足以直接改完参数。'
+                        '你可以继续明确要改哪一项，例如“不要自动划分”、“batch 改成 12”或“环境改成 base”。'
+                    )
+                else:
+                    reply = await self._build_confirmation_message(unresolved_pending)
+                self._messages.append(AIMessage(content=reply))
+                return self._needs_confirmation_result(pending_thread_id, unresolved_pending, reply)
+        return None
+
+    async def _try_handle_pending_confirmation_dialogue(
+        self,
+        user_text: str,
+        *,
+        stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
+    ) -> dict[str, Any] | object | None:
+        pending = self._resolve_pending_confirmation(thread_id=self._pending_confirmation_thread_id())
+        if not pending:
+            return None
+        return await self._handle_pending_turn_intent(
+            user_text=user_text,
+            pending=pending,
+            pending_thread_id=self._pending_confirmation_thread_id(),
+            stream_handler=stream_handler,
+        )
 
     @staticmethod
     def _looks_like_pending_status_or_detail_query(user_text: str) -> bool:

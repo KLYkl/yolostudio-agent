@@ -508,6 +508,73 @@ async def _scenario_confirm_rejects_visible_graph_interrupt() -> None:
     assert client.get_pending_action() is None
 
 
+async def _scenario_chat_approves_visible_graph_interrupt() -> None:
+    scenario_root = WORK / 'visible_graph_interrupt_chat_approve'
+    settings = AgentSettings(session_id='runtime-interrupt-visible-chat-approve', memory_root=str(scenario_root))
+    graph = _ResumableGraphWithVisibleInterrupt(
+        {
+            'id': 'call-1',
+            'tool_call_id': 'call-1',
+            'name': 'upload_assets_to_remote',
+            'tool_name': 'upload_assets_to_remote',
+            'args': {'server': 'lab', 'local_paths': ['/tmp/demo.pt']},
+            'tool_args': {'server': 'lab', 'local_paths': ['/tmp/demo.pt']},
+            'summary': '上传资源到远端服务器',
+            'objective': '把本地资源上传到远端服务器',
+            'allowed_decisions': ['approve', 'reject', 'edit', 'clarify'],
+            'review_config': {'risk_level': 'high'},
+            'decision_context': {},
+            'thread_id': 'visible-graph-chat-approve-turn-1',
+            'source': 'graph',
+            'interrupt_kind': 'tool_approval',
+        }
+    )
+    client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
+
+    result = await client.chat('继续')
+    assert result['status'] == 'completed', result
+    assert '上传完成' in result['message'], result
+    assert len(graph.resume_calls) == 1, graph.resume_calls
+    assert client.get_pending_action() is None
+
+
+async def _scenario_chat_clarifies_visible_graph_interrupt() -> None:
+    scenario_root = WORK / 'visible_graph_interrupt_chat_clarify'
+    settings = AgentSettings(session_id='runtime-interrupt-visible-chat-clarify', memory_root=str(scenario_root))
+    graph = _ResumableGraphWithVisibleInterrupt(
+        {
+            'id': 'call-1',
+            'tool_call_id': 'call-1',
+            'name': 'upload_assets_to_remote',
+            'tool_name': 'upload_assets_to_remote',
+            'args': {'server': 'lab', 'local_paths': ['/tmp/demo.pt']},
+            'tool_args': {'server': 'lab', 'local_paths': ['/tmp/demo.pt']},
+            'summary': '上传资源到远端服务器',
+            'objective': '把本地资源上传到远端服务器',
+            'allowed_decisions': ['approve', 'reject', 'edit', 'clarify'],
+            'review_config': {'risk_level': 'high'},
+            'decision_context': {},
+            'thread_id': 'visible-graph-chat-clarify-turn-1',
+            'source': 'graph',
+            'interrupt_kind': 'tool_approval',
+        }
+    )
+    client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
+
+    async def _fake_confirmation_message(pending):
+        assert pending['name'] == 'upload_assets_to_remote'
+        return '当前待确认的是上传素材：会把 /tmp/demo.pt 上传到 lab。'
+
+    client._build_confirmation_message = _fake_confirmation_message  # type: ignore[assignment]
+    result = await client.chat('为什么这样安排？')
+    assert result['status'] == 'needs_confirmation', result
+    assert result['message'] == '当前待确认的是上传素材：会把 /tmp/demo.pt 上传到 lab。', result
+    assert graph.resume_calls == [], graph.resume_calls
+    pending = client.get_pending_action()
+    assert pending is not None, result
+    assert pending['tool_name'] == 'upload_assets_to_remote', pending
+
+
 async def _scenario_synthetic_pending_ignores_graph_pending() -> None:
     scenario_root = WORK / 'synthetic_ignores_graph'
     settings = AgentSettings(session_id='runtime-interrupt-synthetic-graph', memory_root=str(scenario_root))
@@ -567,6 +634,8 @@ async def _run() -> None:
         await _scenario_graph_pending_shadow_is_reused_when_graph_can_resume()
         await _scenario_confirm_approves_visible_graph_interrupt()
         await _scenario_confirm_rejects_visible_graph_interrupt()
+        await _scenario_chat_approves_visible_graph_interrupt()
+        await _scenario_chat_clarifies_visible_graph_interrupt()
         await _scenario_synthetic_pending_ignores_graph_pending()
         await _scenario_runtime_ignores_manual_pending_session_mutation()
         print('agent runtime interrupts ok')
