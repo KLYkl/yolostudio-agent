@@ -308,6 +308,37 @@ class _CountingDummyGraph(_DummyGraph):
         return await super().ainvoke(payload, config=config)
 
 
+class _GraphState:
+    def __init__(self, *, values=None, interrupts=None, tasks=None):
+        self.values = values or {}
+        self.interrupts = interrupts or ()
+        self.tasks = tasks or ()
+
+
+class _CheckpointGraph:
+    def __init__(self, states: dict[str, _GraphState]) -> None:
+        self.states = dict(states)
+
+    def get_state(self, config):
+        configurable = dict((config or {}).get('configurable') or {})
+        thread_id = str(configurable.get('thread_id') or '').strip()
+        return self.states.get(thread_id)
+
+    async def ainvoke(self, payload, config=None):
+        raise AssertionError(f"unexpected graph prompt: {payload.get('messages')!r}")
+
+
+class _FakeCheckpointSaver:
+    def __init__(self, thread_ids: list[str]) -> None:
+        self._thread_ids = list(thread_ids)
+
+    def thread_ids(self, prefix: str = '') -> list[str]:
+        ids = list(self._thread_ids)
+        if prefix:
+            ids = [thread_id for thread_id in ids if thread_id.startswith(prefix)]
+        return ids
+
+
 class _InterruptEnvelope:
     def __init__(self, payload: dict[str, Any]) -> None:
         self.value = payload
@@ -1818,13 +1849,37 @@ async def _scenario_text_only_prepare_question_restore_edit_stays_local() -> Non
     assert turn1['status'] == 'needs_confirmation', turn1
     assert turn1['tool_call']['name'] == 'prepare_dataset_for_training', turn1
 
-    restored_graph = _DummyGraph()
+    restored_thread_id = 'training-plan-dialogue-prepare-question-restore-turn-1'
+    restored_graph = _CheckpointGraph(
+        {
+            restored_thread_id: _GraphState(
+                values={
+                    'training_plan_context': {
+                        'stage': 'plan_ready',
+                        'status': 'ready_for_confirmation',
+                        'dataset_path': '/home/kly/ct_loop/data_ct',
+                        'execution_mode': 'prepare_then_train',
+                        'execution_backend': 'standard_yolo',
+                        'reasoning_summary': '确认后先准备数据，再开始训练。',
+                        'next_step_tool': 'prepare_dataset_for_training',
+                        'next_step_args': {
+                            'dataset_path': '/home/kly/ct_loop/data_ct',
+                        },
+                        'planned_training_args': {
+                            'model': '/home/kly/yolov8n.pt',
+                            'batch': 8,
+                        },
+                    },
+                }
+            )
+        }
+    )
     restored = YoloStudioAgentClient(
         graph=restored_graph,
         settings=AgentSettings(session_id='training-plan-dialogue-prepare-question-restore', memory_root=str(scenario_root)),
         tool_registry={},
+        checkpointer=_FakeCheckpointSaver([restored_thread_id]),
     )
-    restored_graph.bind(restored)
     turn2 = await restored.chat('把 batch 改成 12 再继续')
     draft = dict(restored.session_state.active_training.training_plan_draft or {})
     interrupt_payload = dict(turn2.get('interrupt_payload') or {})

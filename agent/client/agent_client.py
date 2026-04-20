@@ -606,16 +606,10 @@ class YoloStudioAgentClient:
         if not draft:
             self._clear_training_plan_draft()
             return
-        materialized = self._build_materialized_training_pending(
-            draft=draft,
-            user_text=str(draft.get('planner_user_request') or ''),
-        )
-        if materialized is None:
+        mirrored = self._sync_startup_training_plan_mirror_from_graph()
+        if not mirrored:
             self._clear_training_plan_draft()
             return
-        rebuilt_draft, _ = materialized
-        self._ensure_materialized_training_state_context(draft=rebuilt_draft)
-        self._save_training_plan_draft(rebuilt_draft)
 
     def _record_startup_checkpoint_health(self) -> None:
         if self.checkpointer is None or not hasattr(self.checkpointer, 'health_payload'):
@@ -3197,18 +3191,38 @@ class YoloStudioAgentClient:
             return None
         return extract_training_plan_context_from_state(values)
 
-    def _restore_training_plan_draft_from_context(
+    def _draft_from_graph_training_state(
         self,
         *,
         config: dict[str, Any],
-        pending: dict[str, Any],
-    ) -> None:
-        existing_draft = dict(self.session_state.active_training.training_plan_draft or {})
-        context = self._graph_training_plan_context(config) or {}
+        pending: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        state = self._graph_state_snapshot(config)
+        values = getattr(state, 'values', {}) if state else {}
+        if not isinstance(values, dict):
+            return None
+        training_plan = dict(values.get('training_plan') or {})
+        if training_plan:
+            payload = {
+                'type': 'training_confirmation',
+                'phase': str(values.get('training_phase') or '').strip() or 'prepare',
+                'plan': training_plan,
+                'execution_mode': str(values.get('training_execution_mode') or '').strip(),
+                'next_step_tool': str(values.get('training_next_step_tool') or '').strip(),
+                'next_step_args': dict(values.get('training_next_step_args') or {}),
+                'status_reply': str(values.get('training_status_reply') or '').strip(),
+                'thread_id': str((pending or {}).get('thread_id') or '').strip(),
+            }
+            draft = self._draft_from_training_confirmation_interrupt(payload)
+            if draft:
+                return draft
+        context = extract_training_plan_context_from_state(values)
+        if not isinstance(context, dict) or not context:
+            return None
         next_step_tool = str(context.get('next_step_tool') or '').strip()
-        pending_tool = str(pending.get('name') or pending.get('tool_name') or '').strip()
-        if not next_step_tool or next_step_tool != pending_tool:
-            return
+        pending_tool = str((pending or {}).get('name') or (pending or {}).get('tool_name') or '').strip()
+        if pending_tool and next_step_tool and next_step_tool != pending_tool:
+            return None
         draft_meaningful_keys = (
             'dataset_path',
             'execution_mode',
@@ -3241,20 +3255,59 @@ class YoloStudioAgentClient:
             'risks': [str(item).strip() for item in (context.get('risks') or []) if str(item).strip()],
         }
         if not any(restored_draft.get(key) for key in draft_meaningful_keys):
+            return None
+        return restored_draft
+
+    def _restore_training_plan_draft_from_context(
+        self,
+        *,
+        config: dict[str, Any],
+        pending: dict[str, Any],
+    ) -> None:
+        existing_draft = dict(self.session_state.active_training.training_plan_draft or {})
+        restored_draft = self._draft_from_graph_training_state(config=config, pending=pending)
+        if not restored_draft:
             return
         if existing_draft and all(existing_draft.get(key) == restored_draft.get(key) for key in restored_draft):
             return
         self._save_training_plan_draft(restored_draft)
         self.memory.append_event(
             self.session_state.session_id,
-            'startup_training_plan_draft_restored',
+            'startup_training_plan_mirror_synced',
             {
-                'next_step_tool': next_step_tool,
+                'next_step_tool': str(restored_draft.get('next_step_tool') or '').strip(),
                 'dataset_path': str(restored_draft.get('dataset_path') or '').strip(),
                 'status': str(restored_draft.get('status') or '').strip(),
                 'replaced_existing': bool(existing_draft),
             },
         )
+
+    def _sync_startup_training_plan_mirror_from_graph(self) -> bool:
+        existing_draft = dict(self.session_state.active_training.training_plan_draft or {})
+        candidates: list[tuple[str, dict[str, Any]]] = []
+        for thread_id in self._startup_checkpoint_thread_ids():
+            config = self._pending_config(thread_id)
+            mirrored = self._draft_from_graph_training_state(config=config)
+            if mirrored:
+                candidates.append((thread_id, mirrored))
+        if len(candidates) != 1:
+            return False
+        thread_id, mirrored_draft = candidates[0]
+        if existing_draft and all(existing_draft.get(key) == mirrored_draft.get(key) for key in mirrored_draft):
+            return True
+        self._save_training_plan_draft(mirrored_draft)
+        self.memory.append_event(
+            self.session_state.session_id,
+            'startup_training_plan_mirror_synced',
+            {
+                'thread_id': thread_id,
+                'next_step_tool': str(mirrored_draft.get('next_step_tool') or '').strip(),
+                'dataset_path': str(mirrored_draft.get('dataset_path') or '').strip(),
+                'status': str(mirrored_draft.get('status') or '').strip(),
+                'replaced_existing': bool(existing_draft),
+            },
+        )
+        return True
 
     @staticmethod
     def _merge_pending_review_context(pending: dict[str, Any], review: dict[str, Any] | None) -> dict[str, Any]:
@@ -4783,6 +4836,8 @@ class YoloStudioAgentClient:
         if self._pending_from_state():
             return None
         if not self._looks_like_training_confirmation_invitation(final_text):
+            return None
+        if self._is_training_discussion_only(user_text_hint or self._recent_user_text()):
             return None
         materialized = self._build_materialized_training_pending(
             draft=dict(self.session_state.active_training.training_plan_draft or {}),
