@@ -894,6 +894,46 @@ class YoloStudioAgentClient:
             'stopped',
         }
 
+    async def _finalize_chat_turn(
+        self,
+        turn_result: dict[str, Any],
+        *,
+        thread_id: str,
+        stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
+        record_bypass: bool = False,
+    ) -> dict[str, Any]:
+        if record_bypass:
+            self._record_bypass_route(thread_id, turn_result)
+        self._trim_history()
+        self.memory.save_state(self.session_state)
+        progressed = await self._maybe_auto_progress(turn_result, stream_handler=stream_handler)
+        return progressed or turn_result
+
+    async def _handoff_chat_turn(
+        self,
+        *,
+        thread_id: str,
+        user_text: str,
+        auto_approve: bool = False,
+        pending_passthrough_requested: bool = False,
+        stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
+    ) -> dict[str, Any]:
+        handoff_kwargs: dict[str, Any] = {
+            'thread_id': thread_id,
+            'user_text_hint': user_text,
+            'auto_approve': auto_approve,
+            'stream_handler': stream_handler,
+        }
+        if pending_passthrough_requested:
+            handoff_kwargs.update(
+                {
+                    'ignore_existing_pending': True,
+                    'suppress_training_plan_context': True,
+                    'suppress_ephemeral_state_context': True,
+                }
+            )
+        return await self._handoff_current_runtime_to_graph(**handoff_kwargs)
+
     async def chat(self, user_text: str, auto_approve: bool = False, stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None) -> dict[str, Any]:
         if not str(user_text).strip():
             return {"status": "completed", "message": "请输入内容。", "tool_call": None}
@@ -908,10 +948,11 @@ class YoloStudioAgentClient:
         )
         pending_passthrough_requested = pending_turn is _DEFER_TO_GRAPH
         if pending_turn is not None and not pending_passthrough_requested:
-            self._trim_history()
-            self.memory.save_state(self.session_state)
-            progressed = await self._maybe_auto_progress(pending_turn, stream_handler=stream_handler)
-            return progressed or pending_turn
+            return await self._finalize_chat_turn(
+                pending_turn,
+                thread_id=thread_id,
+                stream_handler=stream_handler,
+            )
 
         routed = await self._try_handle_mainline_intent(
             user_text,
@@ -921,27 +962,18 @@ class YoloStudioAgentClient:
         if routed is _DEFER_TO_GRAPH:
             routed = None
         if routed is not None:
-            self._record_bypass_route(thread_id, routed)
-            self._trim_history()
-            self.memory.save_state(self.session_state)
-            progressed = await self._maybe_auto_progress(routed, stream_handler=stream_handler)
-            return progressed or routed
-
-        if pending_passthrough_requested:
-            return await self._handoff_current_runtime_to_graph(
+            return await self._finalize_chat_turn(
+                routed,
                 thread_id=thread_id,
-                user_text_hint=user_text,
-                auto_approve=auto_approve,
-                ignore_existing_pending=True,
-                suppress_training_plan_context=True,
-                suppress_ephemeral_state_context=True,
                 stream_handler=stream_handler,
+                record_bypass=True,
             )
 
-        return await self._handoff_current_runtime_to_graph(
+        return await self._handoff_chat_turn(
             thread_id=thread_id,
-            user_text_hint=user_text,
+            user_text=user_text,
             auto_approve=auto_approve,
+            pending_passthrough_requested=pending_passthrough_requested,
             stream_handler=stream_handler,
         )
 
