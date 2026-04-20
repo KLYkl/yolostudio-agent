@@ -25,10 +25,10 @@ def _set_prepare_pending(client: Any) -> None:
     )
 
 
-# ===== 测试 1: 确认语不应被 passthrough 截为 edit =====
+# ===== 测试 1: 确认语不应被 pending intent 误判为 edit =====
 async def _test_approve_not_intercepted_as_edit() -> None:
     """
-    根因热点 1: _pending_passthrough_decision 把"开始训练"判成 edit
+    根因热点 1: pending turn intent 把"开始训练"判成 edit
     验证：当 pending=prepare 时，说"没问题，开始训练" 不应被截为 edit
     """
     problematic_phrases = [
@@ -39,9 +39,8 @@ async def _test_approve_not_intercepted_as_edit() -> None:
     for phrase in problematic_phrases:
         client = make_client(f'confirm-not-edit-{hash(phrase) % 10000}')
         _set_prepare_pending(client)
-        # 调用 _pending_passthrough_decision 看是否被截为 edit
         pending = client._resolve_pending_confirmation(thread_id='confirm-sem-t1')
-        decision = client._pending_passthrough_decision(phrase, pending)
+        decision = await client._classify_pending_turn_intent(phrase, pending)
         results.append((phrase, decision))
 
     intercepted = [(p, d) for p, d in results if d == 'edit']
@@ -65,15 +64,14 @@ async def _test_pure_approve_phrases() -> None:
     for phrase in approve_phrases:
         client = make_client(f'confirm-pure-{hash(phrase) % 10000}')
         _set_prepare_pending(client)
-        # 检查 passthrough 不截获
         pending = client._resolve_pending_confirmation(thread_id='confirm-sem-t1')
-        pt = client._pending_passthrough_decision(phrase, pending)
+        pt = await client._classify_pending_turn_intent(phrase, pending)
         results.append((phrase, pt))
 
-    passthrough_intercepted = [(p, d) for p, d in results if d is not None]
-    print(f'  passthrough 截获: {len(passthrough_intercepted)}/{len(results)}')
+    passthrough_intercepted = [(p, d) for p, d in results if d != 'approve']
+    print(f'  非 approve 截获: {len(passthrough_intercepted)}/{len(results)}')
     for p, d in passthrough_intercepted:
-        print(f'    "{p}" → passthrough={d}')
+        print(f'    "{p}" → intent={d}')
 
 
 # ===== 测试 3: 编辑语义应 passthrough 为 edit =====
@@ -85,7 +83,7 @@ async def _test_edit_phrases_passthrough() -> None:
         client = make_client(f'confirm-edit-{hash(phrase) % 10000}')
         _set_prepare_pending(client)
         pending = client._resolve_pending_confirmation(thread_id='confirm-sem-t1')
-        pt = client._pending_passthrough_decision(phrase, pending)
+        pt = await client._classify_pending_turn_intent(phrase, pending)
         results.append((phrase, pt))
 
     correct = [(p, d) for p, d in results if d == 'edit']
@@ -104,10 +102,10 @@ async def _test_clarify_phrases_passthrough() -> None:
         client = make_client(f'confirm-clarify-{hash(phrase) % 10000}')
         _set_prepare_pending(client)
         pending = client._resolve_pending_confirmation(thread_id='confirm-sem-t1')
-        pt = client._pending_passthrough_decision(phrase, pending)
+        pt = await client._classify_pending_turn_intent(phrase, pending)
         results.append((phrase, pt))
 
-    correct = [(p, d) for p, d in results if d == 'clarify']
+    correct = [(p, d) for p, d in results if d == 'status']
     print(f'  追问语正确识别: {correct.__len__()}/{len(results)}')
 
 
@@ -117,24 +115,21 @@ async def _test_try_handle_returns_for_pending() -> None:
     client = make_client('confirm-try-handle')
     _set_prepare_pending(client)
 
-    # passthrough 为 edit 的会被 _record_pending_action_review 记录后返回 None
-    # passthrough 为 None 的会进入 _classify_confirmation_reply（需要 LLM，可能失败）
-    # 所以这里只验证 passthrough 层的行为
     phrases_and_expected_passthrough = [
-        ('确认', None),       # 纯确认，不截获
-        ('取消', None),       # 纯取消，不截获
-        ('把 batch 改成 12', 'edit'),  # 编辑，截获
-        ('为什么用这个模型', 'clarify'),  # 追问，截获
+        ('确认', 'approve'),
+        ('取消', 'reject'),
+        ('把 batch 改成 12', 'edit'),
+        ('为什么用这个模型', 'status'),
     ]
     for phrase, expected_pt in phrases_and_expected_passthrough:
         client2 = make_client(f'confirm-flow-{hash(phrase) % 10000}')
         _set_prepare_pending(client2)
         pending = client2._resolve_pending_confirmation(thread_id='confirm-sem-t1')
-        actual_pt = client2._pending_passthrough_decision(phrase, pending)
+        actual_pt = await client2._classify_pending_turn_intent(phrase, pending)
         if actual_pt != expected_pt:
-            print(f'    ⚠️ "{phrase}": 期望 passthrough={expected_pt}, 实际={actual_pt}')
+            print(f'    ⚠️ "{phrase}": 期望 intent={expected_pt}, 实际={actual_pt}')
         else:
-            print(f'    ✅ "{phrase}": passthrough={actual_pt}')
+            print(f'    ✅ "{phrase}": intent={actual_pt}')
 
 
 # ===== 入口 =====

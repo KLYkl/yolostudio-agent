@@ -1156,31 +1156,6 @@ class YoloStudioAgentClient:
             return None
         return self._build_pending_action_payload(pending, thread_id=self._pending_confirmation_thread_id())
 
-    def _looks_like_pending_approve_request(self, user_text: str) -> bool:
-        normalized = self._normalize_confirmation_text(user_text)
-        if not normalized:
-            return False
-        if self._classify_confirmation_reply_fallback(user_text) != 'approve':
-            return False
-        if any(token in normalized for token in ('不', '别', '先不', '不要', '取消', '算了')):
-            return False
-        strong_approve_tokens = (
-            '继续',
-            '继续执行',
-            '开始训练',
-            '启动训练',
-            '开始循环训练',
-            '启动循环训练',
-            '确认开始训练',
-            '确认启动训练',
-            '就这样',
-            '按这个来',
-            '没问题',
-            '可以开始',
-            '执行吧',
-        )
-        return any(token in normalized for token in strong_approve_tokens)
-
     def _looks_like_pending_edit_request(self, user_text: str, pending: dict[str, Any]) -> bool:
         text = str(user_text or '').strip()
         normalized = text.lower()
@@ -1198,7 +1173,26 @@ class YoloStudioAgentClient:
             '只做准备', '先做准备', 'prepare only',
         )
         split_requested = any(token in text or token in normalized for token in split_tokens)
-        if self._looks_like_pending_approve_request(text) and not clear_fields and not requested_training_args and not split_requested:
+        strong_approve_request = False
+        if self._classify_confirmation_reply_fallback(text) == 'approve':
+            if not any(token in normalized for token in ('不', '别', '先不', '不要', '取消', '算了')):
+                strong_approve_tokens = (
+                    '继续',
+                    '继续执行',
+                    '开始训练',
+                    '启动训练',
+                    '开始循环训练',
+                    '启动循环训练',
+                    '确认开始训练',
+                    '确认启动训练',
+                    '就这样',
+                    '按这个来',
+                    '没问题',
+                    '可以开始',
+                    '执行吧',
+                )
+                strong_approve_request = any(token in normalized for token in strong_approve_tokens)
+        if strong_approve_request and not clear_fields and not requested_training_args and not split_requested:
             return False
         if clear_fields:
             return True
@@ -1214,29 +1208,14 @@ class YoloStudioAgentClient:
         )
         return any(token in text or token in normalized for token in generic_revision_markers)
 
-    @staticmethod
-    def _looks_like_pending_clarify_request(user_text: str) -> bool:
-        text = str(user_text or '').strip()
-        if not text:
-            return False
-        question_tokens = (
+    async def _classify_pending_turn_intent(self, user_text: str, pending: dict[str, Any]) -> str:
+        if self._looks_like_pending_edit_request(user_text, pending):
+            return 'edit'
+        clarify_tokens = (
             '为什么', '原因', '依据', '怎么看', '会不会', '会生成到哪里', '会上传到哪里', '产物路径', '输出路径', '先给我计划', '先看计划',
             '先讨论', '解释一下', '再解释一下', '说详细一点', '详细说说',
         )
-        return any(token in text for token in question_tokens)
-
-    def _pending_passthrough_decision(self, user_text: str, pending: dict[str, Any]) -> str | None:
-        if self._looks_like_pending_edit_request(user_text, pending):
-            return 'edit'
-        if self._looks_like_pending_clarify_request(user_text):
-            return 'clarify'
-        return None
-
-    async def _classify_pending_turn_intent(self, user_text: str, pending: dict[str, Any]) -> str:
-        heuristic = self._pending_passthrough_decision(user_text, pending)
-        if heuristic == 'edit':
-            return 'edit'
-        if heuristic == 'clarify':
+        if any(token in str(user_text or '').strip() for token in clarify_tokens):
             return 'status'
         if self._looks_like_pending_passthrough_request(user_text):
             return 'passthrough'
