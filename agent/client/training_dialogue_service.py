@@ -28,6 +28,22 @@ DatasetPathExtractor = Callable[[str], str]
 LocalPathExistenceChecker = Callable[[str], bool]
 
 
+def wants_training_advanced_details(text: str) -> bool:
+    lowered = str(text or '').lower()
+    return any(
+        token in text or token in lowered
+        for token in (
+            '高级参数',
+            '高级配置',
+            '展开参数',
+            '详细参数',
+            '更多参数',
+            'advanced',
+            'hyperparameter',
+        )
+    )
+
+
 def resolve_training_plan_dialogue_context(
     *,
     user_text: str,

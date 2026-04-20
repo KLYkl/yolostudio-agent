@@ -119,6 +119,7 @@ from yolostudio_agent.agent.client.training_execution_service import (
 )
 from yolostudio_agent.agent.client.training_dialogue_service import (
     run_training_plan_dialogue_flow,
+    wants_training_advanced_details,
 )
 from yolostudio_agent.agent.client.training_contracts import TrainingPlanFollowupAction
 from yolostudio_agent.agent.client.training_plan_service import (
@@ -2229,7 +2230,57 @@ class YoloStudioAgentClient:
         if guardrail is not None:
             return guardrail
         if not skip_training_plan_dialogue:
-            plan_dialogue = await self._try_handle_training_plan_dialogue(user_text, thread_id)
+            active_interrupt = self._active_graph_interrupt(preferred_thread_id=thread_id)
+            interrupt_payload = dict(active_interrupt[1] or {}) if active_interrupt is not None else {}
+            if self._is_training_confirmation_interrupt_payload(interrupt_payload):
+                pending = self._pending_action_from_training_confirmation_interrupt(interrupt_payload)
+            else:
+                pending = self._pending_from_state()
+            draft = self._current_training_plan_draft_view(preferred_thread_id=thread_id)
+            explicit_run_ids = self._extract_training_run_ids_from_text(user_text)
+            clear_fields = self._collect_training_clear_fields(user_text)
+            dialogue_result = await run_training_plan_dialogue_flow(
+                session_state=self.session_state,
+                user_text=user_text,
+                draft=draft,
+                pending=pending,
+                explicit_run_ids=explicit_run_ids,
+                clear_fields=clear_fields,
+                readiness=self.session_state.active_dataset.last_readiness or {},
+                data_yaml=str(self.session_state.active_dataset.data_yaml or '').strip(),
+                is_training_discussion_only=self._is_training_discussion_only,
+                custom_training_script_requested=bool(intent_parsing.extract_custom_training_script_from_text(user_text)),
+                looks_like_prepare_only_request=self._looks_like_prepare_only_request,
+                extract_dataset_path=intent_parsing.extract_dataset_path_from_text,
+                local_path_exists=lambda path: Path(path).expanduser().exists(),
+                collect_requested_training_args=self._collect_requested_training_args,
+                extract_training_execution_backend=self._extract_training_execution_backend_from_text,
+                wants_training_advanced_details=wants_training_advanced_details,
+                direct_tool=self.direct_tool,
+                build_training_plan_draft_fn=self._build_training_plan_draft,
+                render_tool_result_message=self._render_tool_result_message,
+                render_training_plan_message=self._render_training_plan_message,
+            )
+            followup_action = dict(dialogue_result.get('followup_action') or {})
+            draft_to_save = dict(dialogue_result.get('draft_to_save') or {})
+            action = str(followup_action.get('action') or '').strip()
+            should_persist_draft = not (
+                thread_id
+                and action in _GRAPH_NATIVE_TRAINING_CONFIRMATION_ACTIONS
+            )
+            if draft_to_save and should_persist_draft:
+                self._save_training_plan_draft(draft_to_save)
+                draft = draft_to_save
+            elif draft_to_save:
+                draft = draft_to_save
+            plan_dialogue = await self._apply_training_plan_followup_action(
+                followup_action=followup_action,
+                thread_id=thread_id,
+                user_text=user_text,
+                handoff_mode=str(followup_action.get('handoff_mode') or 'defer'),
+                pending=pending,
+                draft=draft,
+            )
             if plan_dialogue is _DEFER_TO_GRAPH:
                 return None
             if plan_dialogue is not None:
@@ -4651,22 +4702,6 @@ class YoloStudioAgentClient:
             )
         )
 
-    @staticmethod
-    def _wants_training_advanced_details(text: str) -> bool:
-        lowered = str(text or '').lower()
-        return any(
-            token in text or token in lowered
-            for token in (
-                '高级参数',
-                '高级配置',
-                '展开参数',
-                '详细参数',
-                '更多参数',
-                'advanced',
-                'hyperparameter',
-            )
-        )
-
     def _collect_training_clear_fields(self, user_text: str) -> set[str]:
         clear_fields: set[str] = set()
         if self._wants_default_training_environment(user_text):
@@ -5218,7 +5253,7 @@ class YoloStudioAgentClient:
             'custom_script': custom_script,
             'training_environment': env_name,
             'planned_training_args': planned_training_args,
-            'advanced_details_requested': self._wants_training_advanced_details(user_text),
+            'advanced_details_requested': wants_training_advanced_details(user_text),
             'preflight_summary': preflight.get('summary') or '',
             'command_preview': list(preflight.get('command_preview') or []),
             'blockers': blockers,
@@ -5599,59 +5634,6 @@ class YoloStudioAgentClient:
             invoke_renderer_text=self._invoke_renderer_text,
             build_grounded_tool_reply=self._build_grounded_tool_reply,
             merge_grounded_sections=self._merge_grounded_sections,
-        )
-
-    async def _try_handle_training_plan_dialogue(self, user_text: str, thread_id: str) -> dict[str, Any] | None:
-        active_interrupt = self._active_graph_interrupt(preferred_thread_id=thread_id)
-        interrupt_payload = dict(active_interrupt[1] or {}) if active_interrupt is not None else {}
-        if self._is_training_confirmation_interrupt_payload(interrupt_payload):
-            pending = self._pending_action_from_training_confirmation_interrupt(interrupt_payload)
-        else:
-            pending = self._pending_from_state()
-        draft = self._current_training_plan_draft_view(preferred_thread_id=thread_id)
-        explicit_run_ids = self._extract_training_run_ids_from_text(user_text)
-        clear_fields = self._collect_training_clear_fields(user_text)
-        dialogue_result = await run_training_plan_dialogue_flow(
-            session_state=self.session_state,
-            user_text=user_text,
-            draft=draft,
-            pending=pending,
-            explicit_run_ids=explicit_run_ids,
-            clear_fields=clear_fields,
-            readiness=self.session_state.active_dataset.last_readiness or {},
-            data_yaml=str(self.session_state.active_dataset.data_yaml or '').strip(),
-            is_training_discussion_only=self._is_training_discussion_only,
-            custom_training_script_requested=bool(intent_parsing.extract_custom_training_script_from_text(user_text)),
-            looks_like_prepare_only_request=self._looks_like_prepare_only_request,
-            extract_dataset_path=intent_parsing.extract_dataset_path_from_text,
-            local_path_exists=lambda path: Path(path).expanduser().exists(),
-            collect_requested_training_args=self._collect_requested_training_args,
-            extract_training_execution_backend=self._extract_training_execution_backend_from_text,
-            wants_training_advanced_details=self._wants_training_advanced_details,
-            direct_tool=self.direct_tool,
-            build_training_plan_draft_fn=self._build_training_plan_draft,
-            render_tool_result_message=self._render_tool_result_message,
-            render_training_plan_message=self._render_training_plan_message,
-        )
-        followup_action = dict(dialogue_result.get('followup_action') or {})
-        draft_to_save = dict(dialogue_result.get('draft_to_save') or {})
-        action = str(followup_action.get('action') or '').strip()
-        should_persist_draft = not (
-            thread_id
-            and action in _GRAPH_NATIVE_TRAINING_CONFIRMATION_ACTIONS
-        )
-        if draft_to_save and should_persist_draft:
-            self._save_training_plan_draft(draft_to_save)
-            draft = draft_to_save
-        elif draft_to_save:
-            draft = draft_to_save
-        return await self._apply_training_plan_followup_action(
-            followup_action=followup_action,
-            thread_id=thread_id,
-            user_text=user_text,
-            handoff_mode=str(followup_action.get('handoff_mode') or 'defer'),
-            pending=pending,
-            draft=draft,
         )
 
     def _build_confirmation_prompt(self, tool_call: dict[str, Any]) -> str:

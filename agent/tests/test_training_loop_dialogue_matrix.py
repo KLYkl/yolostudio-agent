@@ -163,6 +163,7 @@ except Exception:
     sys.modules['langgraph.types'] = types_mod
     sys.modules['langgraph.checkpoint.memory'] = checkpoint_mod
 
+import yolostudio_agent.agent.client.agent_client as agent_client_module
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
 from langchain_core.messages import AIMessage, ToolMessage
 
@@ -223,6 +224,7 @@ class _LoopOpsGraph:
             '查看训练详情',
             '详细一点的训练信息',
         )
+        loop_control_tokens = ('暂停', '恢复', '终止', '停止', '状态', '详情', '列表', '最近', '查看')
         is_execute_turn = any(
             token in user_text
             for token in ('执行', '开始吧', '就这样', '确认', '可以开始', '开训', '启动吧', '直接训练', '直接开始训练')
@@ -244,6 +246,70 @@ class _LoopOpsGraph:
                 {'name': next_tool, 'args': next_args, 'id': None, 'synthetic': True},
             )
             return {'messages': messages + [AIMessage(content='按训练草案进入确认。')]}
+
+        thread_id = str(((config or {}).get('configurable') or {}).get('thread_id') or '').strip()
+        if self.client is not None and config and thread_id.endswith('-post-prepare-loop'):
+            draft = dict(self.client.session_state.active_training.training_plan_draft or {})
+            if not draft:
+                draft = self.client._current_training_plan_draft_view(preferred_thread_id=thread_id)
+            planned_loop_args = dict(draft.get('planned_loop_args') or draft.get('planned_training_args') or {})
+            model = str(
+                planned_loop_args.get('model')
+                or self.client.session_state.active_training.model
+                or ''
+            ).strip()
+            data_yaml = str(
+                planned_loop_args.get('data_yaml')
+                or draft.get('data_yaml')
+                or self.client.session_state.active_training.data_yaml
+                or self.client.session_state.active_dataset.data_yaml
+                or (
+                    f"{str(draft.get('dataset_path') or '').rstrip('/')}/data.yaml"
+                    if str(draft.get('dataset_path') or '').strip()
+                    else ''
+                )
+                or ''
+            ).strip()
+            if model and data_yaml:
+                draft_next_args = dict(planned_loop_args)
+                draft_next_args['model'] = model
+                draft_next_args['data_yaml'] = data_yaml
+                self.client._set_pending_confirmation(
+                    thread_id,
+                    {'name': 'start_training_loop', 'args': draft_next_args, 'id': None, 'synthetic': True},
+                )
+                return {'messages': messages + [AIMessage(content='按训练草案进入确认。')]}
+
+        is_loop_start_request = (
+            self.client is not None
+            and any(token in user_text or token in str(user_text).lower() for token in loop_request_tokens)
+            and not any(token in user_text for token in loop_followup_query_tokens)
+            and not any(token in user_text for token in loop_control_tokens)
+            and next_tool not in {'prepare_dataset_for_training', 'start_training_loop'}
+        )
+        if is_loop_start_request:
+            dataset_path = agent_client_module.intent_parsing.extract_dataset_path_from_text(user_text)
+            loop_args = self.client._collect_requested_training_loop_args(user_text, data_yaml=None)
+            entrypoint_result = await self.client._run_training_loop_start_entrypoint(
+                user_text=user_text,
+                dataset_path=dataset_path,
+                loop_args=loop_args,
+            )
+            draft = dict(entrypoint_result.get('draft') or {})
+            reply = str(entrypoint_result.get('reply') or '').strip()
+            if draft:
+                self.client._save_training_plan_draft(draft)
+            if entrypoint_result.get('defer_to_graph') and draft and config:
+                thread_id = str(((config or {}).get('configurable') or {}).get('thread_id') or '').strip()
+                next_tool_name = str(draft.get('next_step_tool') or '').strip()
+                next_tool_args = dict(draft.get('next_step_args') or {})
+                self.client._set_pending_confirmation(
+                    thread_id,
+                    {'name': next_tool_name, 'args': next_tool_args, 'id': None, 'synthetic': True},
+                )
+                return {'messages': messages + [AIMessage(content='按训练草案进入确认。')]}
+            if reply:
+                return {'messages': messages + [AIMessage(content=reply)]}
 
         if '环训练状态怎么样' in user_text or '现在环训练怎么样了' in user_text or user_text.strip() == '查看情况' or '再次查看训练状态' in user_text:
             tool_name = 'check_training_loop_status'
@@ -538,6 +604,25 @@ async def _build_client(planner_llm: Any | None = None, *, session_id: str = 'tr
             raise AssertionError(f'unexpected tool call: {tool_name}')
 
         client._apply_to_state(tool_name, result, kwargs)
+        if tool_name == 'prepare_dataset_for_training' and result.get('ok'):
+            draft = dict(client.session_state.active_training.training_plan_draft or {})
+            if str(draft.get('execution_mode') or '').strip().lower() == 'prepare_then_loop':
+                planned_loop_args = dict(draft.get('planned_loop_args') or draft.get('planned_training_args') or {})
+                model = str(planned_loop_args.get('model') or client.session_state.active_training.model or '').strip()
+                data_yaml = str(
+                    result.get('data_yaml')
+                    or client.session_state.active_training.data_yaml
+                    or client.session_state.active_dataset.data_yaml
+                    or ''
+                ).strip()
+                if model and data_yaml:
+                    next_step_args = dict(planned_loop_args)
+                    next_step_args['model'] = model
+                    next_step_args['data_yaml'] = data_yaml
+                    draft['next_step_tool'] = 'start_training_loop'
+                    draft['next_step_args'] = next_step_args
+                    draft['planner_decision'] = 'start'
+                    client._save_training_plan_draft(draft)
         if tool_name in {'start_training', 'start_training_loop'} and result.get('ok'):
             client._clear_training_plan_draft()
         client._record_secondary_event(tool_name, result)
@@ -650,8 +735,12 @@ async def _run() -> None:
         async def _unexpected_training_plan_dialogue(*args: Any, **kwargs: Any) -> None:
             raise AssertionError('pending passthrough turns should bypass training plan dialogue')
 
-        pending_passthrough_client._try_handle_training_plan_dialogue = _unexpected_training_plan_dialogue  # type: ignore[assignment]
-        pending_passthrough_list = await pending_passthrough_client.chat('最近有哪些环训练')
+        original_dialogue_flow = agent_client_module.run_training_plan_dialogue_flow
+        agent_client_module.run_training_plan_dialogue_flow = _unexpected_training_plan_dialogue  # type: ignore[assignment]
+        try:
+            pending_passthrough_list = await pending_passthrough_client.chat('最近有哪些环训练')
+        finally:
+            agent_client_module.run_training_plan_dialogue_flow = original_dialogue_flow  # type: ignore[assignment]
         assert pending_passthrough_list['status'] == 'completed', pending_passthrough_list
         assert pending_passthrough_client.graph.calls[-1][0] == 'list_training_loops', pending_passthrough_client.graph.calls[-1]
         assert pending_passthrough_client.session_state.pending_confirmation.tool_name == 'start_training_loop'
