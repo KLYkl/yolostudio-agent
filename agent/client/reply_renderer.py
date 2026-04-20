@@ -589,6 +589,10 @@ def fallback_tool_result_text(
     *,
     build_grounded_tool_reply: GroundedReplyBuilder,
 ) -> str:
+    if canonical_tool_name(tool_name) in GROUNDED_TOOL_RENDER_ONLY:
+        grounded_text = build_grounded_tool_reply([(tool_name, parsed)])
+        if grounded_text:
+            return grounded_text
     structured_text = stringify_tool_result_facts(parsed).strip()
     if structured_text:
         return structured_text

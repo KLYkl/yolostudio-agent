@@ -255,6 +255,49 @@ async def _run() -> None:
             assert not graph.calls
             assert '训练已停止，当前保留了停止前的最终可读指标。' in routed['message']
             assert 'summarize_training_run' in routed['message'] or '最终训练事实' in routed['message']
+            assert '状态概览:' not in routed['message']
+
+        settings = AgentSettings(session_id='training-status-route-phrases-running', memory_root=str(WORK))
+        graph = _ObservedStatusGraph()
+        client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
+        graph.bind(client)
+        calls = []
+
+        async def _fake_running_status_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+            calls.append((tool_name, dict(kwargs)))
+            if tool_name != 'check_training_status':
+                raise AssertionError(f'unexpected tool call: {tool_name}')
+            result = {
+                'ok': True,
+                'summary': '训练进行中 (device=1, pid=12345，epoch 3/20，当前仍属早期观察)',
+                'running': True,
+                'run_state': 'running',
+                'observation_stage': 'early',
+                'progress': {'epoch': 3, 'total_epochs': 20, 'progress_ratio': 0.15},
+                'latest_metrics': {
+                    'metrics': {
+                        'box_loss': 1.2,
+                        'cls_loss': 0.8,
+                        'dfl_loss': 1.5,
+                    }
+                },
+                'analysis_ready': False,
+                'minimum_facts_ready': False,
+                'signals': ['running', 'loss_only_metrics'],
+                'next_actions': ['可继续调用 summarize_training_run 查看阶段性事实'],
+            }
+            client._apply_to_state(tool_name, result, kwargs)
+            return result
+
+        client.direct_tool = _fake_running_status_tool  # type: ignore[assignment]
+        routed = await client.chat('查看当前训练状态')
+        assert routed['status'] == 'completed', routed
+        assert calls == [('check_training_status', {})]
+        assert '训练进行中' in routed['message']
+        assert '运行状态: running' in routed['message']
+        assert '最近进度: 3/20' in routed['message']
+        assert '当前仅有训练损失' in routed['message']
+        assert '状态概览:' not in routed['message']
 
         print('training status route phrases ok')
     finally:
