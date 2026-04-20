@@ -242,7 +242,6 @@ class YoloStudioAgentClient:
         self._recorded_tool_error_signatures: set[str] = set()
         self._recorded_graph_text_signatures: set[str] = set()
         self._pending_confirmation_shadow: dict[str, Any] | None = None
-        self._pending_review_shadow: dict[str, Any] = {}
         self.memory = memory or MemoryStore(settings.memory_root)
         self.checkpointer = checkpointer
         self.context_builder = ContextBuilder(SYSTEM_PROMPT)
@@ -1261,7 +1260,6 @@ class YoloStudioAgentClient:
             'source': str(source or 'runtime_review').strip(),
             'edits': dict(edits or {}),
         }
-        self._pending_review_shadow = dict(decision_context)
         current_pending = self._pending_from_state()
         if current_pending is not None:
             current_pending['decision_context'] = dict(decision_context)
@@ -1334,7 +1332,10 @@ class YoloStudioAgentClient:
                     updated_pending['args'] = dict(updated_args)
                     updated_pending['tool_args'] = dict(updated_args)
                     updated_draft['next_step_args'] = dict(updated_args)
-                    merged_pending = self._merge_pending_review_context(updated_pending, self._pending_review_shadow)
+                    merged_pending = self._merge_pending_review_context(
+                        updated_pending,
+                        (self._pending_from_state() or {}).get('decision_context'),
+                    )
                     self._remember_pending_confirmation(
                         merged_pending,
                         emit_event=False,
@@ -3331,7 +3332,7 @@ class YoloStudioAgentClient:
             'args': dict(tool_call.get('args') or {}),
             'thread_id': str(payload.get('thread_id') or '').strip(),
             'source': 'synthetic',
-            'decision_context': dict(self._pending_review_shadow or {}),
+            'decision_context': dict((self._pending_from_state() or {}).get('decision_context') or {}),
         }
         return self._build_pending_action_payload(
             pending,
@@ -3639,7 +3640,10 @@ class YoloStudioAgentClient:
         )
 
     def _needs_confirmation_result(self, thread_id: str, pending: dict[str, Any], message: str) -> dict[str, Any]:
-        merged_pending = self._merge_pending_review_context(pending, self._pending_review_shadow)
+        merged_pending = self._merge_pending_review_context(
+            pending,
+            (self._pending_from_state() or {}).get('decision_context'),
+        )
         return {
             'status': 'needs_confirmation',
             'message': message,
@@ -3649,7 +3653,10 @@ class YoloStudioAgentClient:
         }
 
     def _cancelled_result(self, pending: dict[str, Any], message: str) -> dict[str, Any]:
-        merged_pending = self._merge_pending_review_context(pending, self._pending_review_shadow)
+        merged_pending = self._merge_pending_review_context(
+            pending,
+            (self._pending_from_state() or {}).get('decision_context'),
+        )
         payload = self._build_pending_action_payload(merged_pending, decision_state='rejected')
         return {
             'status': 'cancelled',
@@ -3670,12 +3677,11 @@ class YoloStudioAgentClient:
         normalized['source'] = str(normalized.get('source') or 'synthetic').strip().lower() or 'synthetic'
         previous_signature = self._pending_signature(self._pending_confirmation_shadow)
         self._pending_confirmation_shadow = normalized
-        self._pending_review_shadow = dict(normalized.get('decision_context') or {})
         if persist_graph and normalized['source'] != 'graph':
             self._update_graph_pending_state(
                 thread_id=normalized['thread_id'],
                 pending=normalized,
-                review=self._pending_review_shadow,
+                review=dict(normalized.get('decision_context') or {}),
             )
         if emit_event and self._pending_signature(normalized) != previous_signature:
             self.memory.append_event(
@@ -3700,14 +3706,13 @@ class YoloStudioAgentClient:
             or ''
         ).strip()
         self._pending_confirmation_shadow = None
-        self._pending_review_shadow = {}
         if persist_graph and resolved_thread_id:
             self._update_graph_pending_state(thread_id=resolved_thread_id, pending=None, review={})
         self._sync_training_workflow_state(reason='pending_cleared')
 
     def _pending_from_state(self) -> dict[str, Any] | None:
         if self._pending_confirmation_shadow:
-            return self._merge_pending_review_context(self._pending_confirmation_shadow, self._pending_review_shadow)
+            return dict(self._pending_confirmation_shadow)
         return None
 
     def _resolve_pending_confirmation(
@@ -4139,7 +4144,11 @@ class YoloStudioAgentClient:
         revised_draft: dict[str, Any],
         user_text_hint: str,
     ) -> dict[str, Any]:
-        prior_review_context = dict((pending or {}).get('decision_context') or self._pending_review_shadow)
+        prior_review_context = dict(
+            (pending or {}).get('decision_context')
+            or (self._pending_from_state() or {}).get('decision_context')
+            or {}
+        )
         pending_thread_id = str(
             (pending or {}).get('thread_id')
             or self._pending_confirmation_thread_id()
