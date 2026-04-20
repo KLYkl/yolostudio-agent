@@ -232,6 +232,7 @@ async def _run_async() -> None:
         blocks_training_start=False,
         explicit_run_ids=None,
         wants_split=False,
+        current_training_plan_context=None,
         direct_tool=_unexpected_hot_update_tool,
         collect_requested_training_args=lambda *_args, **_kwargs: {},
         is_training_discussion_only=lambda _text: False,
@@ -267,6 +268,7 @@ async def _run_async() -> None:
         blocks_training_start=False,
         explicit_run_ids=None,
         wants_split=False,
+        current_training_plan_context=None,
         direct_tool=_unexpected_missing_input_tool,
         collect_requested_training_args=lambda *_args, **_kwargs: {},
         is_training_discussion_only=lambda _text: False,
@@ -345,6 +347,7 @@ async def _run_async() -> None:
         blocks_training_start=False,
         explicit_run_ids=None,
         wants_split=False,
+        current_training_plan_context={'planned_training_args': {'model': '/weights/last.pt'}},
         direct_tool=_fake_entrypoint_tool,
         collect_requested_training_args=lambda _text, *, data_yaml=None: {
             'epochs': 12,
@@ -377,6 +380,7 @@ async def _run_async() -> None:
         user_text='这些帧训练一下，直接开始。',
         dataset_path='/data/frames',
         frame_followup_path='/data/frames',
+        current_training_plan_context={'planned_training_args': {'model': '/weights/last.pt'}},
         direct_tool=_fake_prepared_context_tool,
         collect_requested_training_args=lambda _text, *, data_yaml=None: {
             'data_yaml': data_yaml,

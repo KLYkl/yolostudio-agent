@@ -2176,6 +2176,7 @@ class YoloStudioAgentClient:
             blocks_training_start=blocks_training_start,
             explicit_run_ids=explicit_run_ids,
             wants_split=wants_split,
+            current_training_plan_context=build_training_plan_context_payload(self.session_state),
             direct_tool=self.direct_tool,
             collect_requested_training_args=self._collect_requested_training_args,
             is_training_discussion_only=self._is_training_discussion_only,
@@ -3403,6 +3404,69 @@ class YoloStudioAgentClient:
             thread_id=str(payload.get('thread_id') or '').strip() or None,
         )
 
+    def _draft_from_training_confirmation_interrupt(self, payload: dict[str, Any]) -> dict[str, Any]:
+        plan = coerce_training_plan(dict(payload.get('plan') or {}))
+        phase = str(payload.get('phase') or 'prepare').strip().lower() or 'prepare'
+        next_step_tool = str(payload.get('next_step_tool') or '').strip()
+        if not next_step_tool:
+            next_step_tool = 'prepare_dataset_for_training' if phase == 'prepare' else (
+                'start_training_loop' if getattr(plan, 'mode', 'train') == 'loop' else 'start_training'
+            )
+        draft: dict[str, Any] = {
+            'stage': 'training_plan',
+            'status': 'ready_for_confirmation',
+            'dataset_path': plan.dataset_path,
+            'execution_mode': str(payload.get('execution_mode') or '').strip() or (
+                'prepare_then_loop' if phase == 'prepare' and getattr(plan, 'mode', 'train') == 'loop' else (
+                    'prepare_then_train' if phase == 'prepare' else (
+                        'direct_loop' if getattr(plan, 'mode', 'train') == 'loop' else 'direct_train'
+                    )
+                )
+            ),
+            'execution_backend': 'standard_yolo',
+            'training_environment': str(getattr(plan, 'training_environment', '') or '').strip(),
+            'reasoning_summary': str(getattr(plan, 'prepare_summary', '') or '').strip(),
+            'data_summary': str(getattr(plan, 'readiness_summary', '') or '').strip(),
+            'preflight_summary': str(getattr(plan, 'readiness_summary', '') or '').strip(),
+            'next_step_tool': next_step_tool,
+            'next_step_args': dict(payload.get('next_step_args') or {}),
+            'blockers': [str(item).strip() for item in (getattr(plan, 'blockers', None) or []) if str(item).strip()],
+            'warnings': [str(item).strip() for item in (getattr(plan, 'warnings', None) or []) if str(item).strip()],
+        }
+        planned_args = {
+            'model': plan.model,
+            'data_yaml': str(getattr(plan, 'data_yaml', '') or '').strip(),
+            'batch': getattr(plan, 'batch', None),
+            'imgsz': getattr(plan, 'imgsz', None),
+            'device': str(getattr(plan, 'device', '') or '').strip(),
+            'training_environment': str(getattr(plan, 'training_environment', '') or '').strip(),
+            'project': str(getattr(plan, 'project', '') or '').strip(),
+            'name': str(getattr(plan, 'name', '') or '').strip(),
+            'fraction': getattr(plan, 'fraction', None),
+            'classes': list(getattr(plan, 'classes', None) or []),
+            'single_cls': getattr(plan, 'single_cls', None),
+            'optimizer': str(getattr(plan, 'optimizer', '') or '').strip(),
+            'freeze': getattr(plan, 'freeze', None),
+            'resume': getattr(plan, 'resume', None),
+            'lr0': getattr(plan, 'lr0', None),
+            'patience': getattr(plan, 'patience', None),
+            'workers': getattr(plan, 'workers', None),
+            'amp': getattr(plan, 'amp', None),
+        }
+        if getattr(plan, 'mode', 'train') == 'loop':
+            planned_args.update(
+                {
+                    'max_rounds': getattr(plan, 'max_rounds', None),
+                    'epochs_per_round': getattr(plan, 'epochs_per_round', None),
+                    'loop_name': str(getattr(plan, 'loop_name', '') or '').strip(),
+                }
+            )
+            draft['planned_loop_args'] = dict(planned_args)
+        else:
+            planned_args['epochs'] = getattr(plan, 'epochs', None)
+        draft['planned_training_args'] = dict(planned_args)
+        return draft
+
     def _render_plan_for_cli(self, plan_payload: dict[str, Any], phase: str = '', execution_mode: str = '', status_reply: str = '') -> str:
         plan = coerce_training_plan(dict(plan_payload or {}))
         phase_text = '数据准备确认' if str(phase or '').strip().lower() == 'prepare' else '训练启动确认'
@@ -4010,16 +4074,20 @@ class YoloStudioAgentClient:
             state_for_model,
             include_history_context=include_history_context,
         )
-        built_messages = self.context_builder.build_messages(state_for_model, recent_messages_for_model, digest=digest)
+        effective_training_plan_context = None if suppress_training_plan_context else dict(
+            training_plan_context_override or build_training_plan_context_payload(self.session_state) or {}
+        ) or None
+        built_messages = self.context_builder.build_messages(
+            state_for_model,
+            recent_messages_for_model,
+            digest=digest,
+            training_plan_context=effective_training_plan_context,
+        )
         graph_input = {
             "messages": built_messages,
             "cached_tool_context": build_cached_tool_context_payload(self.session_state),
             "dataset_fact_context": build_dataset_fact_context_payload(self.session_state),
-            "training_plan_context": (
-                None
-                if suppress_training_plan_context
-                else dict(training_plan_context_override or build_training_plan_context_payload(self.session_state) or {})
-            ) or None,
+            "training_plan_context": effective_training_plan_context,
         }
         result = await self._graph_invoke(graph_input, config=config, stream_handler=stream_handler)
         built_messages_len = len(built_messages)
@@ -5875,8 +5943,14 @@ class YoloStudioAgentClient:
         )
 
     async def _try_handle_training_plan_dialogue(self, user_text: str, thread_id: str) -> dict[str, Any] | None:
-        draft = dict(self.session_state.active_training.training_plan_draft or {})
-        pending = self._pending_from_state()
+        active_interrupt = self._active_graph_interrupt(preferred_thread_id=thread_id)
+        interrupt_payload = dict(active_interrupt[1] or {}) if active_interrupt is not None else {}
+        if self._is_training_confirmation_interrupt_payload(interrupt_payload):
+            draft = self._draft_from_training_confirmation_interrupt(interrupt_payload)
+            pending = self._pending_action_from_training_confirmation_interrupt(interrupt_payload)
+        else:
+            draft = dict(self.session_state.active_training.training_plan_draft or {})
+            pending = self._pending_from_state()
         explicit_run_ids = self._extract_training_run_ids_from_text(user_text)
         clear_fields = self._collect_training_clear_fields(user_text)
         dialogue_result = await run_training_plan_dialogue_flow(
@@ -6284,6 +6358,7 @@ async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudi
             entrypoint_result = await run_training_request_entrypoint(
                 session_state=client.session_state,
                 user_text=latest_user_text,
+                current_training_plan_context=context,
                 direct_tool=client.direct_tool,
                 collect_requested_training_args=client._collect_requested_training_args,
                 is_training_discussion_only=client._is_training_discussion_only,

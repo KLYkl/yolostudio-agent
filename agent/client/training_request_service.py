@@ -307,6 +307,7 @@ async def prepare_training_request_context(
     user_text: str,
     dataset_path: str,
     frame_followup_path: str,
+    current_training_plan_context: dict[str, Any] | None,
     direct_tool: DirectToolInvoker,
     collect_requested_training_args: TrainingArgsCollector,
 ) -> TrainingRequestContext:
@@ -318,7 +319,9 @@ async def prepare_training_request_context(
         data_yaml=str(readiness.get('resolved_data_yaml') or session_state.active_dataset.data_yaml or ''),
     )
     if not str(requested_args.get('model') or '').strip():
-        draft_model = str((((active_training.training_plan_draft or {}).get('planned_training_args') or {}).get('model')) or '').strip()
+        current_training_plan_context = dict(current_training_plan_context or {})
+        current_plan_args = dict(current_training_plan_context.get('planned_training_args') or {})
+        draft_model = str(current_plan_args.get('model') or '').strip()
         preserved_model = ''
         if frame_followup_path:
             preserved_model = draft_model or str(active_training.model or '').strip()
@@ -351,6 +354,7 @@ async def run_training_request_entrypoint(
     blocks_training_start: bool,
     explicit_run_ids: list[str] | None,
     wants_split: bool,
+    current_training_plan_context: dict[str, Any] | None,
     direct_tool: DirectToolInvoker,
     collect_requested_training_args: TrainingArgsCollector,
     is_training_discussion_only: TrainingDiscussionChecker,
@@ -390,6 +394,7 @@ async def run_training_request_entrypoint(
         user_text=user_text,
         dataset_path=dataset_path,
         frame_followup_path=frame_followup_path,
+        current_training_plan_context=current_training_plan_context,
         direct_tool=direct_tool,
         collect_requested_training_args=collect_requested_training_args,
     )

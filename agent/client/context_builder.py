@@ -168,8 +168,9 @@ class ContextBuilder:
         state: SessionState,
         recent_messages: Iterable[BaseMessage],
         digest: MemoryDigest | None = None,
+        training_plan_context: dict[str, object] | None = None,
     ) -> list[BaseMessage]:
-        summary = self.build_state_summary(state, digest)
+        summary = self.build_state_summary(state, digest, training_plan_context=training_plan_context)
         messages: list[BaseMessage] = [
             SystemMessage(content=self.system_prompt),
             SystemMessage(content=summary),
@@ -177,7 +178,12 @@ class ContextBuilder:
         messages.extend(list(recent_messages))
         return messages
 
-    def build_state_summary(self, state: SessionState, digest: MemoryDigest | None = None) -> str:
+    def build_state_summary(
+        self,
+        state: SessionState,
+        digest: MemoryDigest | None = None,
+        training_plan_context: dict[str, object] | None = None,
+    ) -> str:
         ds = state.active_dataset
         tr = state.active_training
         pc = state.pending_confirmation
@@ -190,7 +196,7 @@ class ContextBuilder:
         last_extract = dict(ds.last_extract_result or ds.last_frame_extract or ds.last_video_scan or ds.last_extract_preview or {})
         last_training_pipeline = dict(tr.last_remote_roundtrip or {})
         last_prediction_pipeline = dict(pred.last_remote_roundtrip or {})
-        training_plan_draft = dict(tr.training_plan_draft or {})
+        training_plan_draft = dict(training_plan_context or tr.training_plan_draft or {})
         best_run_selection = dict(tr.best_run_selection or {})
         best_run = dict(best_run_selection.get('best_run') or {})
         best_run_id = str(best_run.get('run_id') or best_run_selection.get('best_run_id') or '').strip()
@@ -278,7 +284,7 @@ class ContextBuilder:
                 ('loop_cache', _cache_state(tr.last_loop_status or tr.last_loop_detail)
                  if (tr.last_loop_status or tr.last_loop_detail) else ''),
                 ('comparison_cache', _cache_state(tr.last_run_comparison) if tr.last_run_comparison else ''),
-                ('training_plan_draft', '待确认' if tr.training_plan_draft else ''),
+                ('training_plan_draft', '待确认' if training_plan_draft else ''),
                 *_build_training_plan_entries(training_plan_draft),
             ],
         )
