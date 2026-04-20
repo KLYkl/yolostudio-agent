@@ -2642,13 +2642,6 @@ class YoloStudioAgentClient:
                     thread_id=thread_id,
                     user_text_hint='请按更新后的训练草案进入确认。',
                 )
-            if self._should_refresh_training_plan_confirmation_locally(pending, draft):
-                return await self._refresh_training_plan_confirmation_locally(
-                    thread_id=thread_id,
-                    pending=pending,
-                    revised_draft=draft,
-                    user_text_hint='请按更新后的训练草案进入确认。',
-                )
             return await self._refresh_training_plan_confirmation_via_graph(
                 thread_id=thread_id,
                 pending=pending,
@@ -3729,7 +3722,6 @@ class YoloStudioAgentClient:
             auto_approve=False,
             suppress_training_plan_context=False,
             training_plan_context_override=build_training_plan_context_from_draft(draft),
-            skip_text_only_training_confirmation=True,
             stream_handler=stream_handler,
         )
         if self._is_training_confirmation_interrupt_payload(dict(handoff.get('interrupt_payload') or {})):
@@ -4051,7 +4043,7 @@ class YoloStudioAgentClient:
                         await self._emit_stream_event(stream_handler, {'type': 'tool_call', 'tool_name': tool_name, 'node': node_name})
 
     async def _graph_invoke(self, payload: Any, config: dict[str, Any], stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None) -> dict[str, Any]:
-        if stream_handler is None:
+        if stream_handler is None or not hasattr(self.graph, 'astream'):
             return await self.graph.ainvoke(payload, config=config)
         async for item in self.graph.astream(
             payload,
@@ -4122,7 +4114,6 @@ class YoloStudioAgentClient:
         suppress_training_plan_context: bool = False,
         training_plan_context_override: dict[str, Any] | None = None,
         suppress_ephemeral_state_context: bool = False,
-        skip_text_only_training_confirmation: bool = False,
         stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
     ) -> dict[str, Any]:
         graph_result, config, built_messages_len = await self._invoke_graph_from_current_runtime(
@@ -4163,18 +4154,6 @@ class YoloStudioAgentClient:
 
         applied_results = self._apply_tool_results(graph_result["messages"], built_messages_len=built_messages_len)
         final_text = self._compose_final_reply(graph_result["messages"], applied_results)
-        if not skip_text_only_training_confirmation:
-            materialized_confirmation = await self._maybe_materialize_text_only_training_confirmation(
-                thread_id=thread_id,
-                user_text_hint=user_text_hint,
-                final_text=final_text,
-                applied_results=applied_results,
-                stream_handler=stream_handler,
-            )
-            if materialized_confirmation is not None:
-                self._trim_history()
-                self.memory.save_state(self.session_state)
-                return materialized_confirmation
         self._messages.append(AIMessage(content=final_text))
         self._trim_history()
         self.memory.save_state(self.session_state)
@@ -4285,15 +4264,16 @@ class YoloStudioAgentClient:
                 'warning_count': len([str(item).strip() for item in (preflight.get('warnings') or []) if str(item).strip()]),
             },
         )
-        if self._should_localize_post_prepare_start_confirmation(
-            followup_action=followup_action,
-            draft=followup_draft,
+        if (
+            str(followup_action.get('action') or '').strip() == 'save_draft_and_handoff'
+            and canonical_tool_name(str(followup_draft.get('next_step_tool') or '').strip()) == 'start_training'
+            and str(followup_draft.get('execution_backend') or '').strip().lower() in {'', 'standard_yolo'}
         ):
-            return await self._refresh_training_plan_confirmation_locally(
+            return await self._enter_graph_training_confirmation(
+                draft=followup_draft,
                 thread_id=f"{thread_id}-post-prepare-start",
-                pending=None,
-                revised_draft=followup_draft,
                 user_text_hint='当前数据已具备训练条件，确认后即可启动训练。',
+                stream_handler=stream_handler,
             )
         result = await self._apply_training_plan_followup_action(
             followup_action=followup_action,
@@ -4309,24 +4289,6 @@ class YoloStudioAgentClient:
             "tool_call": synthetic_followup,
             "approved": True,
         }
-
-    @staticmethod
-    def _should_localize_post_prepare_start_confirmation(
-        *,
-        followup_action: dict[str, Any] | None,
-        draft: dict[str, Any] | None,
-    ) -> bool:
-        followup_action = dict(followup_action or {})
-        draft = dict(draft or {})
-        if str(followup_action.get('action') or '').strip() != 'save_draft_and_handoff':
-            return False
-        if canonical_tool_name(str(draft.get('next_step_tool') or '').strip()) != 'start_training':
-            return False
-        execution_backend = str(draft.get('execution_backend') or '').strip().lower()
-        if execution_backend and execution_backend != 'standard_yolo':
-            return False
-        return True
-
     @staticmethod
     def _find_applied_tool_result(
         applied_results: list[tuple[str, dict[str, Any]]],
@@ -4418,92 +4380,6 @@ class YoloStudioAgentClient:
             await self._render_training_plan_message(revised_draft, pending=True),
         )
 
-    @staticmethod
-    def _should_refresh_training_plan_confirmation_locally(
-        pending: dict[str, Any] | None,
-        revised_draft: dict[str, Any] | None,
-    ) -> bool:
-        pending_tool = canonical_tool_name(str((pending or {}).get('name') or (pending or {}).get('tool_name') or '').strip())
-        next_step_tool = canonical_tool_name(str((revised_draft or {}).get('next_step_tool') or '').strip())
-        execution_backend = str((revised_draft or {}).get('execution_backend') or '').strip().lower()
-        if pending_tool != 'prepare_dataset_for_training':
-            return False
-        if not next_step_tool:
-            return False
-        if execution_backend and execution_backend != 'standard_yolo':
-            return False
-        return True
-
-    async def _refresh_training_plan_confirmation_locally(
-        self,
-        *,
-        thread_id: str,
-        pending: dict[str, Any] | None,
-        revised_draft: dict[str, Any],
-        user_text_hint: str,
-    ) -> dict[str, Any]:
-        rebuilt_draft = dict(revised_draft or {})
-        next_tool_name = canonical_tool_name(str(rebuilt_draft.get('next_step_tool') or '').strip())
-        next_tool_args = dict(rebuilt_draft.get('next_step_args') or {})
-        if not next_tool_name:
-            materialized = self._build_materialized_training_pending(
-                draft=revised_draft,
-                user_text=user_text_hint or self._recent_user_text(),
-            )
-            if materialized is None:
-                return await self._refresh_training_plan_confirmation_via_graph(
-                    thread_id=thread_id,
-                    pending=pending,
-                    revised_draft=revised_draft,
-                    user_text_hint=user_text_hint,
-                )
-            rebuilt_draft, refreshed_pending = materialized
-        else:
-            if not next_tool_args and next_tool_name == 'prepare_dataset_for_training':
-                dataset_path = str(
-                    rebuilt_draft.get('dataset_path')
-                    or self.session_state.active_dataset.dataset_root
-                    or self.session_state.active_dataset.img_dir
-                    or ''
-                ).strip()
-                if dataset_path:
-                    next_tool_args = {'dataset_path': dataset_path}
-                    rebuilt_draft['next_step_args'] = dict(next_tool_args)
-            refreshed_pending = {
-                'id': None,
-                'name': next_tool_name,
-                'args': dict(next_tool_args),
-                'synthetic': True,
-            }
-        confirmation_thread_id = str(
-            (pending or {}).get('thread_id')
-            or self._pending_confirmation_thread_id()
-            or thread_id
-        ).strip() or thread_id
-        interrupt_payload = self._draft_to_training_confirmation_interrupt(rebuilt_draft, thread_id=confirmation_thread_id)
-        self.memory.append_event(
-            self.session_state.session_id,
-            'training_plan_confirmation_refreshed_locally',
-            {
-                'thread_id': confirmation_thread_id,
-                'tool': str(refreshed_pending.get('name') or ''),
-                'execution_mode': str(rebuilt_draft.get('execution_mode') or ''),
-            },
-        )
-        if interrupt_payload is not None:
-            return await self._enter_graph_training_confirmation(
-                draft=rebuilt_draft,
-                thread_id=confirmation_thread_id,
-                user_text_hint='请按更新后的训练草案进入确认。',
-            )
-        self._save_training_plan_draft(rebuilt_draft)
-        self.memory.save_state(self.session_state)
-        return await self._render_training_plan_dialogue_response(
-            draft=rebuilt_draft,
-            pending=None,
-            thread_id=confirmation_thread_id,
-        )
-
     def _build_followup_training_request(self) -> dict[str, Any] | None:
         draft = self._current_training_plan_draft_view()
         if str(draft.get('execution_mode') or '').strip().lower() == 'prepare_only':
@@ -4591,239 +4467,6 @@ class YoloStudioAgentClient:
             "args": planned_args,
             "synthetic": True,
         }
-
-    @staticmethod
-    def _looks_like_training_confirmation_invitation(text: str) -> bool:
-        content = str(text or '').strip()
-        if not content:
-            return False
-        lowered = content.lower()
-        confirmation_tokens = (
-            '确认执行',
-            '是否确认',
-            '是否继续',
-            '如果你同意',
-            '如果您同意',
-            '同意的话',
-            '确认后',
-            '继续吗',
-            '可以继续',
-        )
-        execution_tokens = (
-            '开始执行',
-            '开始训练',
-            '启动训练',
-            '数据准备',
-            '准备数据集',
-            '准备数据',
-            '准备训练数据',
-            'prepare',
-            'data.yaml',
-        )
-        explicit_prepare_question_patterns = (
-            r'(?:现在|先)?开始准备(?:数据集|数据|训练数据)?吗',
-            r'是否(?:现在|先)?开始准备(?:数据集|数据|训练数据)?',
-            r'要不要(?:先)?准备(?:数据集|数据|训练数据)?',
-            r'先准备(?:数据集|数据|训练数据)?吗',
-        )
-        if any(re.search(pattern, content) or re.search(pattern, lowered) for pattern in explicit_prepare_question_patterns) and any(
-            token in content or token in lowered for token in execution_tokens
-        ):
-            return True
-        return any(token in content or token in lowered for token in confirmation_tokens) and any(
-            token in content or token in lowered for token in execution_tokens
-        )
-
-    def _build_materialized_training_pending(
-        self,
-        *,
-        draft: dict[str, Any],
-        user_text: str,
-    ) -> tuple[dict[str, Any], dict[str, Any]] | None:
-        draft = dict(draft or {})
-        if not draft:
-            return None
-        if str(draft.get('source_intent') or '').strip().lower() == 'training_loop':
-            return None
-        execution_backend = str(draft.get('execution_backend') or '').strip().lower()
-        if execution_backend and execution_backend != 'standard_yolo':
-            return None
-
-        dataset_path = str(
-            draft.get('dataset_path')
-            or self.session_state.active_dataset.dataset_root
-            or self.session_state.active_dataset.img_dir
-            or ''
-        ).strip()
-        planned_training_args = dict(draft.get('planned_training_args') or {})
-        model = str(
-            planned_training_args.get('model')
-            or self.session_state.active_training.model
-            or ''
-        ).strip()
-        if not dataset_path or not model:
-            return None
-
-        readiness = dict(self.session_state.active_dataset.last_readiness or {})
-        next_tool_name = str(draft.get('next_step_tool') or '').strip()
-        next_tool_args = dict(draft.get('next_step_args') or {})
-
-        if not next_tool_name:
-            data_yaml = str(
-                planned_training_args.get('data_yaml')
-                or readiness.get('resolved_data_yaml')
-                or self._session_training_data_yaml(dataset_path=dataset_path)
-                or ''
-            ).strip()
-            if data_yaml:
-                planned_training_args['data_yaml'] = data_yaml
-                next_tool_name = 'start_training'
-                next_tool_args = dict(planned_training_args)
-            else:
-                next_tool_name = 'prepare_dataset_for_training'
-                next_tool_args = {'dataset_path': dataset_path}
-                classes_txt = str(planned_training_args.get('classes_txt') or '').strip()
-                if classes_txt:
-                    next_tool_args['classes_txt'] = classes_txt
-
-        rebuilt_draft = self._build_training_plan_draft(
-            user_text=user_text,
-            dataset_path=dataset_path,
-            readiness=readiness,
-            preflight={},
-            next_tool_name=next_tool_name,
-            next_tool_args=next_tool_args,
-            planned_training_args=planned_training_args,
-        )
-        for key in (
-            'source_intent',
-            'advanced_details_requested',
-            'planner_user_request',
-            'planner_decision_source',
-            'planner_decision',
-            'planner_output',
-            'planner_observed_tools',
-        ):
-            if draft.get(key) not in (None, '', [], {}):
-                rebuilt_draft[key] = draft.get(key)
-        if not rebuilt_draft.get('data_summary') and draft.get('data_summary'):
-            rebuilt_draft['data_summary'] = draft.get('data_summary')
-        if not rebuilt_draft.get('reasoning_summary') and draft.get('reasoning_summary'):
-            rebuilt_draft['reasoning_summary'] = draft.get('reasoning_summary')
-
-        pending = {
-            'id': None,
-            'name': next_tool_name,
-            'args': dict(next_tool_args),
-            'synthetic': True,
-        }
-        return rebuilt_draft, pending
-
-    def _ensure_materialized_training_state_context(self, *, draft: dict[str, Any]) -> None:
-        draft = dict(draft or {})
-        if not draft:
-            return
-        dataset_path = str(
-            draft.get('dataset_path')
-            or self.session_state.active_dataset.dataset_root
-            or self.session_state.active_dataset.img_dir
-            or ''
-        ).strip()
-        planned_training_args = dict(draft.get('planned_training_args') or {})
-        next_tool_name = str(draft.get('next_step_tool') or '').strip()
-        next_tool_args = dict(draft.get('next_step_args') or {})
-        data_yaml = str(
-            next_tool_args.get('data_yaml')
-            or planned_training_args.get('data_yaml')
-            or self.session_state.active_dataset.data_yaml
-            or ''
-        ).strip()
-        model = str(
-            planned_training_args.get('model')
-            or self.session_state.active_training.model
-            or ''
-        ).strip()
-
-        if dataset_path and not str(self.session_state.active_dataset.dataset_root or '').strip():
-            self.session_state.active_dataset.dataset_root = dataset_path
-        if data_yaml:
-            self.session_state.active_dataset.data_yaml = data_yaml
-        if model:
-            self.session_state.active_training.model = model
-
-        readiness = dict(self.session_state.active_dataset.last_readiness or {})
-        summary = str(draft.get('data_summary') or draft.get('reasoning_summary') or '').strip()
-        warnings = [str(item).strip() for item in (draft.get('warnings') or []) if str(item).strip()]
-        blockers = [str(item).strip() for item in (draft.get('blockers') or []) if str(item).strip()]
-        if not blockers and next_tool_name == 'prepare_dataset_for_training' and not data_yaml:
-            blockers = ['缺少可用的 data_yaml']
-
-        if dataset_path and not str(readiness.get('dataset_root') or '').strip():
-            readiness['dataset_root'] = dataset_path
-        if data_yaml and not str(readiness.get('resolved_data_yaml') or '').strip():
-            readiness['resolved_data_yaml'] = data_yaml
-        if warnings and not readiness.get('warnings'):
-            readiness['warnings'] = warnings
-        if blockers and not readiness.get('blockers'):
-            readiness['blockers'] = blockers
-        if summary and not str(readiness.get('summary') or '').strip():
-            readiness['summary'] = summary
-
-        if next_tool_name == 'prepare_dataset_for_training':
-            readiness.setdefault('ok', True)
-            readiness.setdefault('ready', False)
-            readiness.setdefault('preparable', True)
-        elif next_tool_name == 'start_training':
-            readiness.setdefault('ok', True)
-            readiness.setdefault('ready', True)
-            readiness.setdefault('preparable', False)
-
-        if readiness:
-            self.session_state.active_dataset.last_readiness = readiness
-
-    async def _maybe_materialize_text_only_training_confirmation(
-        self,
-        *,
-        thread_id: str,
-        user_text_hint: str,
-        final_text: str,
-        applied_results: list[tuple[str, dict[str, Any]]],
-        stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
-    ) -> dict[str, Any] | None:
-        if applied_results:
-            return None
-        if self._pending_from_state():
-            return None
-        if not self._looks_like_training_confirmation_invitation(final_text):
-            return None
-        if self._is_training_discussion_only(user_text_hint or self._recent_user_text()):
-            return None
-        materialized = self._build_materialized_training_pending(
-            draft=self._current_training_plan_draft_view(preferred_thread_id=thread_id),
-            user_text=user_text_hint or self._recent_user_text(),
-        )
-        if materialized is None:
-            return None
-        rebuilt_draft, pending = materialized
-        self._ensure_materialized_training_state_context(draft=rebuilt_draft)
-        interrupt_payload = self._draft_to_training_confirmation_interrupt(rebuilt_draft, thread_id=thread_id)
-        self.memory.append_event(
-            self.session_state.session_id,
-            'graph_text_training_plan_materialized',
-            {
-                'thread_id': thread_id,
-                'tool': str(pending.get('name') or ''),
-                'execution_mode': str(rebuilt_draft.get('execution_mode') or ''),
-            },
-        )
-        if interrupt_payload is not None:
-            return await self._enter_graph_training_confirmation(
-                draft=rebuilt_draft,
-                thread_id=thread_id,
-                user_text_hint=user_text_hint or self._recent_user_text(),
-                stream_handler=stream_handler,
-            )
-        return None
 
     def _should_use_video_prediction(self, user_text: str, path: str) -> bool:
         normalized = str(user_text or '').lower()

@@ -2328,7 +2328,7 @@ async def _scenario_graph_prepare_approve_prefers_local_post_prepare_refresh() -
     assert calls[0][1]['model'] == '/home/kly/yolov8n.pt', calls
     assert calls[0][1]['data_yaml'] == '/home/kly/ct_loop/data_ct/images_split(graph)/data.yaml', calls
     assert calls[0][1]['epochs'] == 100, calls
-    assert graph_stream_handlers == [None, None], graph_stream_handlers
+    assert graph_stream_handlers == [None, _capture_stream], graph_stream_handlers
     assert streamed_events == [], streamed_events
     interrupt_payload = dict(turn.get('interrupt_payload') or {})
     assert interrupt_payload.get('type') == 'training_confirmation', turn
