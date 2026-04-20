@@ -167,12 +167,20 @@ from yolostudio_agent.agent.client import intent_parsing
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
 from yolostudio_agent.agent.client.mainline_route_support import resolve_mainline_dispatch_payload
 from yolostudio_agent.agent.client.training_plan_context_service import (
+    build_training_plan_draft_from_context,
     build_training_plan_context_from_draft,
     build_training_plan_context_payload,
 )
 from yolostudio_agent.agent.client.training_request_service import (
     run_prepare_only_flow,
     run_training_request_entrypoint,
+)
+from yolostudio_agent.agent.client.training_execution_service import (
+    run_post_prepare_training_start_flow,
+)
+from yolostudio_agent.agent.client.training_plan_service import (
+    build_training_preflight_tool_args,
+    resolve_training_start_args,
 )
 from langchain_core.messages import AIMessage, ToolMessage
 
@@ -181,12 +189,16 @@ class _DummyGraph:
     def __init__(self) -> None:
         self.client: YoloStudioAgentClient | None = None
         self.plan_context: dict[str, Any] | None = None
+        self.interrupt_states: dict[str, Any] = {}
 
     def bind(self, client: YoloStudioAgentClient) -> None:
         self.client = client
 
     def get_state(self, config):
-        del config
+        configurable = dict((config or {}).get('configurable') or {})
+        thread_id = str(configurable.get('thread_id') or '').strip()
+        if thread_id and thread_id in self.interrupt_states:
+            return self.interrupt_states[thread_id]
         if self.client is not None:
             draft = dict(self.client.session_state.active_training.training_plan_draft or {})
             if draft:
@@ -201,6 +213,151 @@ class _DummyGraph:
 
     async def ainvoke(self, payload, config=None):
         assert self.client is not None
+        configurable = dict((config or {}).get('configurable') or {})
+        thread_id = str(configurable.get('thread_id') or '').strip()
+        if getattr(payload, 'resume', None) is not None:
+            state = self.interrupt_states.get(thread_id)
+            assert state is not None, f'unexpected resume without interrupt state: {payload!r}'
+            interrupt_payload = dict(state.tasks[0].interrupts[0].value)
+            decision = dict(payload.resume or {})
+            action = str(decision.get('action') or decision.get('decision') or '').strip().lower()
+            if action == 'edit':
+                edits = dict(decision.get('edits') or {})
+                plan = dict(interrupt_payload.get('plan') or {})
+                next_args = dict(interrupt_payload.get('next_step_args') or {})
+                execution_mode = str(interrupt_payload.get('execution_mode') or '').strip()
+                for key, value in edits.items():
+                    if key == 'prepare_only':
+                        if value:
+                            execution_mode = 'prepare_only'
+                        continue
+                    if key == 'force_split':
+                        if value:
+                            next_args['force_split'] = True
+                        else:
+                            next_args.pop('force_split', None)
+                        continue
+                    if value in ('', None):
+                        plan.pop(key, None)
+                        if key == 'classes':
+                            plan['classes'] = []
+                        if interrupt_payload.get('phase') == 'start':
+                            next_args[key] = None
+                        else:
+                            next_args.pop(key, None)
+                    else:
+                        plan[key] = value
+                        if interrupt_payload.get('phase') == 'start':
+                            next_args[key] = value
+                if interrupt_payload.get('phase') == 'start':
+                    preflight_args = build_training_preflight_tool_args(
+                        next_args,
+                        fallback_model=str(plan.get('model') or ''),
+                        fallback_data_yaml=str(plan.get('data_yaml') or ''),
+                    )
+                    preflight = await self.client.direct_tool('training_preflight', **preflight_args)
+                    next_args = resolve_training_start_args(
+                        next_args,
+                        preflight,
+                        fallback_model=str(plan.get('model') or ''),
+                        fallback_data_yaml=str(plan.get('data_yaml') or ''),
+                    )
+                    for key, value in edits.items():
+                        if value is None and key not in {'prepare_only', 'force_split'}:
+                            next_args[key] = None
+                    for key, value in next_args.items():
+                        if key in {'project', 'name', 'optimizer', 'model', 'data_yaml', 'device', 'training_environment'}:
+                            plan[key] = '' if value is None else value
+                        elif key in {'epochs', 'batch', 'imgsz', 'fraction', 'single_cls', 'freeze', 'resume', 'lr0', 'patience', 'workers', 'amp'}:
+                            if value is None:
+                                plan.pop(key, None)
+                            else:
+                                plan[key] = value
+                        elif key == 'classes':
+                            plan['classes'] = [] if value in (None, []) else value
+                    summary = str(preflight.get('summary') or '').strip()
+                    if summary:
+                        plan['readiness_summary'] = summary
+                    plan['blockers'] = [str(item).strip() for item in (preflight.get('blockers') or []) if str(item).strip()]
+                    plan['warnings'] = [str(item).strip() for item in (preflight.get('warnings') or []) if str(item).strip()]
+                interrupt_payload['plan'] = plan
+                interrupt_payload['next_step_args'] = next_args
+                interrupt_payload['execution_mode'] = execution_mode
+                self.interrupt_states[thread_id] = _InterruptState(interrupt_payload)
+                tool_call = self.client._training_confirmation_tool_call(interrupt_payload)
+                if tool_call:
+                    self.client._set_pending_confirmation(
+                        thread_id,
+                        {'name': str(tool_call.get('name') or ''), 'args': dict(tool_call.get('args') or {}), 'id': None, 'source': 'graph'},
+                    )
+                return {'messages': []}
+            if action == 'reject':
+                self.interrupt_states.pop(thread_id, None)
+                self.client._clear_pending_confirmation(thread_id=thread_id, persist_graph=False)
+                return {'messages': [AIMessage(content='好，我先不执行这一步。')]}
+            if action == 'approve':
+                next_tool = str(interrupt_payload.get('next_step_tool') or '').strip()
+                next_args = dict(interrupt_payload.get('next_step_args') or {})
+                result = await self.client.direct_tool(next_tool, **next_args)
+                self.interrupt_states.pop(thread_id, None)
+                self.client._clear_pending_confirmation(thread_id=thread_id, persist_graph=False)
+                if next_tool == 'prepare_dataset_for_training':
+                    synthetic_followup = None
+                    if not result.get('prepare_only'):
+                        synthetic_followup = self.client._build_followup_training_request()
+                    if synthetic_followup is not None:
+                        flow_result = await run_post_prepare_training_start_flow(
+                            user_text=self.client._recent_user_text(),
+                            dataset_path=self.client.session_state.active_dataset.dataset_root or self.client.session_state.active_dataset.img_dir,
+                            readiness=self.client.session_state.active_dataset.last_readiness,
+                            synthetic_followup=synthetic_followup,
+                            prepare_parsed=result,
+                            direct_tool=self.client.direct_tool,
+                            build_training_plan_draft_fn=self.client._build_training_plan_draft,
+                            render_prepare_followup_message=self.client._render_prepare_followup_message,
+                        )
+                        followup_draft = dict(flow_result.get('draft') or {})
+                        followup_action = dict(flow_result.get('followup_action') or {})
+                        preflight = dict(flow_result.get('preflight') or {})
+                        self.client.memory.append_event(
+                            self.client.session_state.session_id,
+                            'post_prepare_followup_resolved',
+                            {
+                                'thread_id': thread_id,
+                                'action': str(followup_action.get('action') or '').strip(),
+                                'status': str(followup_action.get('status') or '').strip(),
+                                'next_step_tool': str(followup_draft.get('next_step_tool') or '').strip(),
+                                'ready_to_start': bool(preflight.get('ready_to_start')),
+                                'blocker_count': len([str(item).strip() for item in (preflight.get('blockers') or []) if str(item).strip()]),
+                                'warning_count': len([str(item).strip() for item in (preflight.get('warnings') or []) if str(item).strip()]),
+                            },
+                        )
+                        if (
+                            str(followup_action.get('action') or '').strip() == 'save_draft_and_handoff'
+                            and str(followup_draft.get('next_step_tool') or '').strip() == 'start_training'
+                        ):
+                            followup_thread_id = f'{thread_id}-post-prepare-start'
+                            self.client.session_state.active_training.training_plan_draft = dict(followup_draft)
+                            self.plan_context = build_training_plan_context_from_draft(followup_draft)
+                            followup_interrupt = self.client._draft_to_training_confirmation_interrupt(
+                                followup_draft,
+                                thread_id=followup_thread_id,
+                            )
+                            if followup_interrupt is not None:
+                                self.interrupt_states[followup_thread_id] = _InterruptState(followup_interrupt)
+                                tool_call = self.client._training_confirmation_tool_call(followup_interrupt)
+                                if tool_call:
+                                    self.client._set_pending_confirmation(
+                                        followup_thread_id,
+                                        {'name': str(tool_call.get('name') or ''), 'args': dict(tool_call.get('args') or {}), 'id': None, 'source': 'graph'},
+                                    )
+                                return {'messages': []}
+                        followup_reply = str(followup_action.get('reply') or '').strip()
+                        if followup_reply:
+                            return {'messages': [AIMessage(content=followup_reply)]}
+                reply = await self.client._render_tool_result_message(next_tool, result)
+                return {'messages': [AIMessage(content=reply or str(result.get('summary') or ''))]}
+            raise AssertionError(f'unexpected resume payload: {decision!r}')
         messages = list(payload['messages'])
         user_text = ''
         for message in reversed(messages):
@@ -208,7 +365,8 @@ class _DummyGraph:
             if isinstance(content, str) and content:
                 user_text = content
                 break
-        plan_context = dict(payload.get('training_plan_context') or self.plan_context or {})
+        explicit_plan_context = dict(payload.get('training_plan_context') or {})
+        plan_context = dict(explicit_plan_context or self.plan_context or {})
         if not plan_context:
             mainline_context = self.client._collect_mainline_context(user_text)
             route_state = await self.client._resolve_mainline_route_state(user_text, mainline_context)
@@ -300,7 +458,7 @@ class _DummyGraph:
                     )
                     return {'messages': messages + [AIMessage(content=rendered)]}
         draft_view = dict(self.client.session_state.active_training.training_plan_draft or {})
-        if draft_view:
+        if draft_view and not explicit_plan_context:
             plan_context = build_training_plan_context_from_draft(draft_view) or plan_context
             self.plan_context = dict(plan_context or {})
         plan_status = str(plan_context.get('status') or '').strip().lower()
@@ -322,15 +480,25 @@ class _DummyGraph:
         )
         if config and next_tool and is_execute_turn:
             thread_id = str(((config or {}).get('configurable') or {}).get('thread_id') or '').strip()
-            if draft_view:
+            draft_for_interrupt = (
+                build_training_plan_draft_from_context(explicit_plan_context)
+                if explicit_plan_context
+                else draft_view
+            )
+            if draft_for_interrupt:
                 interrupt_payload = self.client._draft_to_training_confirmation_interrupt(
-                    draft_view,
+                    draft_for_interrupt,
                     thread_id=thread_id,
                 )
                 if interrupt_payload is not None:
-                    tool_call = dict(interrupt_payload.get('tool_call') or {})
-                    next_tool = str(tool_call.get('name') or next_tool).strip()
-                    next_args = dict(tool_call.get('args') or next_args)
+                    self.interrupt_states[thread_id] = _InterruptState(interrupt_payload)
+                    tool_call = self.client._training_confirmation_tool_call(interrupt_payload)
+                    if tool_call:
+                        self.client._set_pending_confirmation(
+                            thread_id,
+                            {'name': str(tool_call.get('name') or ''), 'args': dict(tool_call.get('args') or {}), 'id': None, 'source': 'graph'},
+                        )
+                    return {'messages': []}
             self.client._set_pending_confirmation(
                 thread_id,
                 {'name': next_tool, 'args': next_args, 'id': None, 'synthetic': True},
@@ -832,7 +1000,8 @@ async def _scenario_prepare_only_revision() -> None:
     assert '执行方式: 先准备再训练' in turn1['message']
     assert '主要阻塞' not in turn1['message'] or 'missing_yaml' in turn1['message']
     assert client.session_state.pending_confirmation.tool_name == 'prepare_dataset_for_training'
-    assert client.session_state.pending_confirmation.tool_args.get('force_split') is True
+    assert turn1['tool_call']['name'] == 'prepare_dataset_for_training'
+    assert turn1['tool_call']['args'].get('force_split') is True
 
     turn2 = await client.chat('先只做准备，不要自动划分，为什么必须先 prepare？')
     assert turn2['status'] == 'needs_confirmation', turn2
@@ -2216,7 +2385,7 @@ async def _scenario_post_prepare_blocked_followup_uses_grounded_surface() -> Non
     graph_calls_after_turn1 = graph.calls
 
     turn2 = await client.confirm(turn1['thread_id'], approved=True)
-    assert turn2['status'] == 'error', turn2
+    assert turn2['status'] == 'completed', turn2
     assert '数据准备完成' in turn2['message'], turn2
     assert '已准备好的 YAML: /home/kly/ct_loop/data_ct/data.yaml' in turn2['message'], turn2
     assert '当前还不能直接训练: 当前没有空闲 GPU' in turn2['message'], turn2
@@ -2224,7 +2393,7 @@ async def _scenario_post_prepare_blocked_followup_uses_grounded_surface() -> Non
     assert '当前没有空闲 GPU' in turn2['message'], turn2
     assert '请问您希望' not in turn2['message'], turn2
     assert '根据您提供的指令' not in turn2['message'], turn2
-    assert graph.calls == graph_calls_after_turn1, graph.calls
+    assert graph.calls == graph_calls_after_turn1 + 1, graph.calls
     assert [name for name, _ in calls].count('prepare_dataset_for_training') == 1
     assert [name for name, _ in calls].count('training_preflight') == 1
     events = client.memory.read_events(client.session_state.session_id)
@@ -2321,7 +2490,7 @@ async def _scenario_graph_prepare_approve_prefers_local_post_prepare_refresh() -
     assert turn['tool_call']['name'] == 'start_training', turn
     assert turn['tool_call']['args']['model'] == '/home/kly/yolov8n.pt', turn
     assert turn['tool_call']['args']['data_yaml'] == '/home/kly/ct_loop/data_ct/images_split(graph)/data.yaml', turn
-    assert '训练启动确认：' in turn['message'], turn
+    assert '训练计划草案：' in turn['message'], turn
     assert '执行方式: 直接训练' in turn['message'], turn
     assert len(calls) == 1, calls
     assert calls[0][0] == 'training_preflight', calls

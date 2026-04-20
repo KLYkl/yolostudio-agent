@@ -1033,10 +1033,9 @@ async def _run_prepare_bridge_trainer_discussion() -> None:
 
         turn5 = await client.chat('不用 trainer 了，切回标准 yolo，环境恢复默认，project 不要了，name 不要了，batch 14，imgsz 1024，patience 18，resume 不要，先给我计划。')
         assert turn5['status'] == 'needs_confirmation', turn5
-        assert '训练启动确认：' in turn5['message']
-        assert '环境: yolodo' in turn5['message']
-        assert '执行方式: 直接训练' in turn5['message']
-        assert '训练参数: epochs=35, batch=14, imgsz=1024' in turn5['message']
+        assert '准备执行：启动训练' in turn5['message']
+        assert '训练环境: yolodo' in turn5['message']
+        assert '初步安排: model=yolov8l.pt, data=/data/prepare-trainer/data.yaml, epochs=35, device=auto, batch=14, imgsz=1024' in turn5['message']
         assert '输出组织:' not in turn5['message']
         assert turn5['tool_call']['name'] == 'start_training'
         assert turn5['tool_call']['args']['patience'] == 18

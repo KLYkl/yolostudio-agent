@@ -191,69 +191,23 @@ class _LoopListGraph:
 WORK = Path(__file__).resolve().parent / '_tmp_pending_confirmation_dialogue_route'
 
 
-def _make_client(session_id: str) -> YoloStudioAgentClient:
-    root = WORK / session_id
-    settings = AgentSettings(session_id=session_id, memory_root=str(root))
-    client = YoloStudioAgentClient(graph=_NoLLMGraph(), settings=settings, tool_registry={})
-    pending = {
-        'name': 'start_training',
-        'args': {'model': 'yolov8n.pt', 'data_yaml': '/data/demo/data.yaml', 'epochs': 10},
-        'id': None,
-        'synthetic': True,
-    }
-    client._set_pending_confirmation(f'{session_id}-pending', pending)
-    return client
-
-
-def _make_prepare_client(session_id: str) -> YoloStudioAgentClient:
-    root = WORK / session_id
-    settings = AgentSettings(session_id=session_id, memory_root=str(root))
-    client = YoloStudioAgentClient(graph=_NoLLMGraph(), settings=settings, tool_registry={})
-    pending = {
-        'name': 'prepare_dataset_for_training',
-        'args': {'dataset_path': '/data/demo', 'force_split': True},
-        'id': None,
-        'synthetic': True,
-    }
-    client._set_pending_confirmation(f'{session_id}-pending', pending)
-    return client
-
-
-def _seed_prepare_training_plan(client: YoloStudioAgentClient) -> None:
-    client.session_state.active_training.training_plan_draft = {
-        'dataset_path': '/data/demo',
-        'execution_mode': 'prepare_then_train',
-        'next_step_tool': 'prepare_dataset_for_training',
-        'next_step_args': {'dataset_path': '/data/demo', 'force_split': True},
-        'planned_training_args': {'model': 'yolov8n.pt', 'epochs': 100},
-        'reasoning_summary': '当前数据还不能直接训练，但可以先自动准备到可训练状态。',
-        'data_summary': '当前还不能直接训练: 缺少可用的 data_yaml；但当前数据集可以先进入 prepare_dataset_for_training',
-    }
-    client.session_state.active_dataset.dataset_root = '/data/demo'
-    client.session_state.active_dataset.last_readiness = {
-        'ok': True,
-        'ready': False,
-        'preparable': True,
-        'dataset_root': '/data/demo',
-        'resolved_data_yaml': '',
-        'blockers': ['缺少可用的 data_yaml'],
-        'summary': '当前还不能直接训练: 缺少可用的 data_yaml；但当前数据集可以先进入 prepare_dataset_for_training',
-    }
-    client.memory.save_state(client.session_state)
-
-
-def _make_prepare_revision_client(session_id: str, graph=None) -> YoloStudioAgentClient:
+def _make_client(
+    session_id: str,
+    *,
+    graph=None,
+    tool_name: str = 'upload_assets_to_remote',
+    tool_args: dict[str, object] | None = None,
+) -> YoloStudioAgentClient:
     root = WORK / session_id
     settings = AgentSettings(session_id=session_id, memory_root=str(root))
     client = YoloStudioAgentClient(graph=graph or _NoLLMGraph(), settings=settings, tool_registry={})
     pending = {
-        'name': 'prepare_dataset_for_training',
-        'args': {'dataset_path': '/data/demo', 'force_split': True},
+        'name': tool_name,
+        'args': dict(tool_args or {'server': 'lab', 'local_paths': ['/tmp/demo.pt']}),
         'id': None,
         'synthetic': True,
     }
     client._set_pending_confirmation(f'{session_id}-pending', pending)
-    _seed_prepare_training_plan(client)
     return client
 
 
@@ -261,30 +215,30 @@ async def _scenario_status_query_reuses_confirmation_message() -> None:
     client = _make_client('pending-status')
 
     async def _fake_confirmation_message(pending):
-        assert pending['name'] == 'start_training'
-        return '当前待确认的是启动训练：将使用 yolov8n.pt 训练 10 轮。'
+        assert pending['name'] == 'upload_assets_to_remote'
+        return '当前待确认的是上传素材：会把 /tmp/demo.pt 上传到 lab。'
 
     client._build_confirmation_message = _fake_confirmation_message  # type: ignore[assignment]
     turn = await client.chat('查看训练状态')
     assert turn['status'] == 'needs_confirmation', turn
-    assert turn['message'] == '当前待确认的是启动训练：将使用 yolov8n.pt 训练 10 轮。', turn
+    assert turn['message'] == '当前待确认的是上传素材：会把 /tmp/demo.pt 上传到 lab。', turn
 
 
 async def _scenario_generic_text_reuses_confirmation_message() -> None:
     client = _make_client('pending-generic')
 
     async def _fake_confirmation_message(pending):
-        assert pending['name'] == 'start_training'
-        return '当前待确认的是启动训练：将使用 yolov8n.pt 训练 10 轮。'
+        assert pending['name'] == 'upload_assets_to_remote'
+        return '当前待确认的是上传素材：会把 /tmp/demo.pt 上传到 lab。'
 
     client._build_confirmation_message = _fake_confirmation_message  # type: ignore[assignment]
     turn = await client.chat('嗯我再想想')
     assert turn['status'] == 'needs_confirmation', turn
-    assert turn['message'] == '当前待确认的是启动训练：将使用 yolov8n.pt 训练 10 轮。', turn
+    assert turn['message'] == '当前待确认的是上传素材：会把 /tmp/demo.pt 上传到 lab。', turn
 
 
-async def _scenario_prepare_start_like_phrase_routes_to_approve() -> None:
-    client = _make_prepare_client('pending-prepare-approve')
+async def _scenario_execute_phrase_routes_to_approve() -> None:
+    client = _make_client('pending-execute-approve')
     captured: dict[str, object] = {}
 
     async def _fake_review_pending_action(decision_payload, *, stream_handler=None):
@@ -293,10 +247,10 @@ async def _scenario_prepare_start_like_phrase_routes_to_approve() -> None:
         return {'status': 'completed', 'message': 'captured-approve', 'tool_call': None}
 
     client.review_pending_action = _fake_review_pending_action  # type: ignore[assignment]
-    turn = await client.chat('没问题，开始训练')
+    turn = await client.chat('没问题，执行吧')
     assert turn['status'] == 'completed', turn
     assert captured.get('decision') == 'approve', captured
-    assert captured.get('raw_user_text') == '没问题，开始训练', captured
+    assert captured.get('raw_user_text') == '没问题，执行吧', captured
 
 
 async def _scenario_continue_phrase_routes_to_approve() -> None:
@@ -333,29 +287,28 @@ async def _scenario_continue_phrase_with_punctuation_routes_to_approve() -> None
 
 async def _scenario_edit_phrase_marks_pending_as_edit() -> None:
     client = _make_client('pending-edit')
-    turn = await client.chat('把 batch 改成 12 再继续')
+    turn = await client.chat('把目标服务器改成 prod')
     pending = client.get_pending_action()
     assert pending is not None, turn
     assert pending['decision_context']['decision'] == 'edit', pending
-    assert pending['decision_context']['raw_user_text'] == '把 batch 改成 12 再继续', pending
-    assert client.session_state.active_training.training_plan_draft.get('planned_training_args', {}).get('batch') == 12
+    assert pending['decision_context']['raw_user_text'] == '把目标服务器改成 prod', pending
 
 
 async def _scenario_clarify_phrase_reuses_confirmation_message() -> None:
-    client = _make_prepare_client('pending-clarify')
+    client = _make_client('pending-clarify')
 
     async def _fake_confirmation_message(pending):
-        assert pending['name'] == 'prepare_dataset_for_training'
-        return '当前待确认的是准备数据集：会先生成 data.yaml 再决定是否进入训练。'
+        assert pending['name'] == 'upload_assets_to_remote'
+        return '当前待确认的是上传素材：会把 /tmp/demo.pt 上传到 lab。'
 
     client._build_confirmation_message = _fake_confirmation_message  # type: ignore[assignment]
     turn = await client.chat('为什么这样安排？')
     assert turn['status'] == 'needs_confirmation', turn
-    assert turn['message'] == '当前待确认的是准备数据集：会先生成 data.yaml 再决定是否进入训练。', turn
+    assert turn['message'] == '当前待确认的是上传素材：会把 /tmp/demo.pt 上传到 lab。', turn
 
 
-async def _scenario_prepare_start_phrase_with_punctuation_routes_to_approve() -> None:
-    client = _make_prepare_client('pending-prepare-approve-punct')
+async def _scenario_execute_phrase_with_punctuation_routes_to_approve() -> None:
+    client = _make_client('pending-execute-approve-punct')
     captured: dict[str, object] = {}
 
     async def _fake_review_pending_action(decision_payload, *, stream_handler=None):
@@ -364,66 +317,21 @@ async def _scenario_prepare_start_phrase_with_punctuation_routes_to_approve() ->
         return {'status': 'completed', 'message': 'captured-approve', 'tool_call': None}
 
     client.review_pending_action = _fake_review_pending_action  # type: ignore[assignment]
-    turn = await client.chat('没问题，开始训练吧。')
+    turn = await client.chat('没问题，执行吧。')
     assert turn['status'] == 'completed', turn
     assert captured.get('decision') == 'approve', captured
-    assert captured.get('raw_user_text') == '没问题，开始训练吧。', captured
+    assert captured.get('raw_user_text') == '没问题，执行吧。', captured
 
 
-async def _scenario_prepare_pending_edit_refreshes_locally() -> None:
-    graph = _CountingGraph()
-    client = _make_prepare_revision_client('pending-prepare-edit-local', graph=graph)
-    turn = await client.chat('把 batch 改成 12 再继续，其他设置不变')
-    pending = client.get_pending_action()
-    draft = dict(client.session_state.active_training.training_plan_draft or {})
-    interrupt_payload = dict(turn.get('interrupt_payload') or {})
-    assert turn['status'] == 'needs_confirmation', turn
-    assert len(graph.calls) == 1, graph.calls
-    assert interrupt_payload.get('type') == 'training_confirmation', turn
-    assert interrupt_payload.get('phase') == 'prepare', interrupt_payload
-    assert interrupt_payload.get('next_step_tool') == 'prepare_dataset_for_training', interrupt_payload
-    assert interrupt_payload.get('next_step_args') == {'dataset_path': '/data/demo', 'force_split': True}, interrupt_payload
-    assert draft.get('next_step_tool') == 'prepare_dataset_for_training', draft
-    assert (draft.get('planned_training_args') or {}).get('batch') == 12, draft
-    if pending is not None:
-        assert pending['tool_args'] == {'dataset_path': '/data/demo', 'force_split': True}, pending
-
-
-async def _scenario_prepare_pending_edit_restored_session_stays_local() -> None:
-    scenario_id = 'pending-prepare-edit-restore'
-    seed_graph = _CountingGraph()
-    seeded = _make_prepare_revision_client(scenario_id, graph=seed_graph)
-    seeded.memory.save_state(seeded.session_state)
-
-    restore_graph = _CountingGraph()
-    restored = YoloStudioAgentClient(
-        graph=restore_graph,
-        settings=AgentSettings(session_id=scenario_id, memory_root=str(WORK / scenario_id)),
-        tool_registry={},
-    )
-    turn = await restored.chat('把 batch 改成 12 再继续，其他设置不变')
-    pending = restored.get_pending_action()
-    draft = dict(restored.session_state.active_training.training_plan_draft or {})
-    interrupt_payload = dict(turn.get('interrupt_payload') or {})
-    assert turn['status'] == 'needs_confirmation', turn
-    assert len(restore_graph.calls) == 1, restore_graph.calls
-    assert interrupt_payload.get('type') == 'training_confirmation', turn
-    assert interrupt_payload.get('phase') == 'prepare', interrupt_payload
-    assert interrupt_payload.get('next_step_tool') == 'prepare_dataset_for_training', interrupt_payload
-    assert interrupt_payload.get('next_step_args') == {'dataset_path': '/data/demo', 'force_split': True}, interrupt_payload
-    assert (draft.get('planned_training_args') or {}).get('batch') == 12, draft
-    if pending is not None:
-        assert pending['tool_args'] == {'dataset_path': '/data/demo', 'force_split': True}, pending
-
-
-async def _scenario_pending_loop_list_passthrough_strips_plan_context() -> None:
+async def _scenario_non_training_pending_passthrough_routes_to_graph() -> None:
     graph = _LoopListGraph()
-    client = _make_prepare_revision_client('pending-loop-list-passthrough', graph=graph)
+    client = _make_client('pending-passthrough', graph=graph)
     turn = await client.chat('最近有哪些环训练')
     pending = client.get_pending_action()
     assert turn['status'] == 'completed', turn
     assert turn['message'] == '找到 2 条环训练记录', turn
     assert pending is not None, turn
+    assert pending['tool_name'] == 'upload_assets_to_remote', pending
     assert len(graph.payloads) == 1, graph.payloads
     payload = dict(graph.payloads[0] or {})
     assert payload.get('training_plan_context') is None, payload
@@ -432,9 +340,9 @@ async def _scenario_pending_loop_list_passthrough_strips_plan_context() -> None:
     assert getattr(messages[-1], 'content', '') == '最近有哪些环训练', messages
 
 
-async def _scenario_pending_loop_list_passthrough_beats_clarify_classifier() -> None:
+async def _scenario_pending_passthrough_beats_clarify_classifier() -> None:
     graph = _LoopListGraph()
-    client = _make_prepare_revision_client('pending-loop-list-passthrough-clf', graph=graph)
+    client = _make_client('pending-passthrough-clf', graph=graph)
 
     async def _fake_classify_confirmation_reply(user_text, pending):
         del user_text, pending
@@ -453,16 +361,14 @@ async def _run() -> None:
     try:
         await _scenario_status_query_reuses_confirmation_message()
         await _scenario_generic_text_reuses_confirmation_message()
-        await _scenario_prepare_start_like_phrase_routes_to_approve()
+        await _scenario_execute_phrase_routes_to_approve()
         await _scenario_continue_phrase_routes_to_approve()
         await _scenario_continue_phrase_with_punctuation_routes_to_approve()
         await _scenario_edit_phrase_marks_pending_as_edit()
         await _scenario_clarify_phrase_reuses_confirmation_message()
-        await _scenario_prepare_start_phrase_with_punctuation_routes_to_approve()
-        await _scenario_prepare_pending_edit_refreshes_locally()
-        await _scenario_prepare_pending_edit_restored_session_stays_local()
-        await _scenario_pending_loop_list_passthrough_strips_plan_context()
-        await _scenario_pending_loop_list_passthrough_beats_clarify_classifier()
+        await _scenario_execute_phrase_with_punctuation_routes_to_approve()
+        await _scenario_non_training_pending_passthrough_routes_to_graph()
+        await _scenario_pending_passthrough_beats_clarify_classifier()
         print('pending confirmation dialogue route ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)

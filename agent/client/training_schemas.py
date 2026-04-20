@@ -13,9 +13,23 @@ class TrainingEdits(BaseModel):
     device: str | None = None
     training_environment: str | None = None
     data_yaml: str | None = None
+    project: str | None = None
+    name: str | None = None
+    fraction: float | None = None
+    classes: list[int] | None = None
+    single_cls: bool | None = None
+    optimizer: str | None = None
+    freeze: int | list[int] | None = None
+    resume: bool | str | None = None
+    lr0: float | None = None
+    patience: int | None = None
+    workers: int | None = None
+    amp: bool | None = None
     max_rounds: int | None = None
     epochs_per_round: int | None = None
     loop_name: str | None = None
+    force_split: bool | None = None
+    prepare_only: bool | None = None
 
 
 class PendingTurnIntent(BaseModel):
@@ -112,9 +126,16 @@ def merge_training_plan_edits(plan: TrainingPlan | dict[str, Any], edits: Traini
     if edits is None:
         return normalized_plan
     if isinstance(edits, TrainingEdits):
-        edit_payload = _model_dump_compat(edits)
+        fields_set = set(getattr(edits, 'model_fields_set', None) or getattr(edits, '__fields_set__', set()) or set())
+        edit_payload = _model_dump_compat(edits, exclude_none=False)
+        if fields_set:
+            edit_payload = {key: edit_payload.get(key) for key in fields_set if key in edit_payload}
+        else:
+            edit_payload = {key: value for key, value in edit_payload.items() if value is not None}
     else:
-        edit_payload = {key: value for key, value in dict(edits or {}).items() if value is not None}
+        edit_payload = dict(edits or {})
+    edit_payload.pop('force_split', None)
+    edit_payload.pop('prepare_only', None)
     if isinstance(normalized_plan, LoopTrainPlan):
         if 'epochs' in edit_payload and 'epochs_per_round' not in edit_payload:
             edit_payload['epochs_per_round'] = edit_payload.pop('epochs')

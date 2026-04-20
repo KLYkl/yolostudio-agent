@@ -602,9 +602,37 @@ def training_confirmation_node(state: Mapping[str, Any], config: Any = None) -> 
     if action == 'edit':
         updated = merge_training_plan_edits(plan, decision.edits)
         updated_args = dict(next_step_args)
+        updated_execution_mode = execution_mode
+        raw_edits = {}
+        if decision.edits is not None:
+            model_dump = getattr(decision.edits, 'model_dump', None)
+            if callable(model_dump):
+                raw_edits = model_dump(exclude_none=False)
+                fields_set = set(
+                    getattr(decision.edits, 'model_fields_set', None)
+                    or getattr(decision.edits, '__fields_set__', set())
+                    or set()
+                )
+                if fields_set:
+                    raw_edits = {key: raw_edits.get(key) for key in fields_set if key in raw_edits}
+                else:
+                    raw_edits = {
+                        key: value
+                        for key, value in raw_edits.items()
+                        if value is not None
+                    }
+            else:
+                raw_edits = dict(vars(decision.edits))
         if phase == 'prepare':
             if updated.dataset_path:
                 updated_args['dataset_path'] = updated.dataset_path
+            if raw_edits.get('prepare_only'):
+                updated_execution_mode = 'prepare_only'
+            if 'force_split' in raw_edits:
+                if raw_edits.get('force_split'):
+                    updated_args['force_split'] = True
+                else:
+                    updated_args.pop('force_split', None)
         else:
             updated_args = updated.model_dump()
             if next_step_tool == 'start_training_loop' and 'epochs_per_round' in updated_args and 'epochs' not in updated_args:
@@ -614,7 +642,7 @@ def training_confirmation_node(state: Mapping[str, Any], config: Any = None) -> 
             'training_phase': phase,
             'training_next_step_tool': next_step_tool,
             'training_next_step_args': updated_args,
-            'training_execution_mode': execution_mode,
+            'training_execution_mode': updated_execution_mode,
             'training_status_reply': '',
         }, goto='refresh_training_start_after_edit' if phase == 'start' else 'training_confirmation')
 

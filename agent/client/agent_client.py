@@ -949,6 +949,7 @@ class YoloStudioAgentClient:
         if active_interrupt is not None:
             interrupt_thread_id, interrupt_payload = active_interrupt
             if self._is_training_confirmation_interrupt_payload(interrupt_payload):
+                pending_tool_call = self._training_confirmation_tool_call(interrupt_payload) or {}
                 decision = await self._parse_user_decision(
                     user_text=user_text,
                     interrupt_payload=interrupt_payload,
@@ -959,6 +960,25 @@ class YoloStudioAgentClient:
                     stream_handler=stream_handler,
                 )
                 next_interrupt = self._active_graph_interrupt(preferred_thread_id=interrupt_thread_id)
+                action = str((decision or {}).get('action') or '').strip().lower()
+                if action == 'reject' and next_interrupt is None:
+                    pending = {
+                        'name': str(pending_tool_call.get('name') or '').strip(),
+                        'args': dict(pending_tool_call.get('args') or {}),
+                        'thread_id': interrupt_thread_id,
+                        'source': 'graph',
+                    }
+                    cancel_message = self._build_cancel_message(pending) or self._extract_or_fallback(list(graph_result.get('messages') or []))
+                    if cancel_message:
+                        self._messages.append(AIMessage(content=cancel_message))
+                    self._trim_history()
+                    self.memory.append_event(
+                        self.session_state.session_id,
+                        'confirmation_cancelled',
+                        {'tool': pending['name'], 'args': pending.get('args', {})},
+                    )
+                    self.memory.save_state(self.session_state)
+                    return self._cancelled_result(pending, cancel_message or '好，我先不执行这一步。')
                 response = self._format_interrupt_or_result(
                     graph_result,
                     thread_id=interrupt_thread_id,
@@ -1093,6 +1113,7 @@ class YoloStudioAgentClient:
         if active_interrupt is not None:
             interrupt_thread_id, interrupt_payload = active_interrupt
             if self._is_training_confirmation_interrupt_payload(interrupt_payload):
+                pending_tool_call = self._training_confirmation_tool_call(interrupt_payload) or {}
                 decision = {
                     'action': 'approve' if approved else 'reject',
                     'reason': 'confirm() resume',
@@ -1103,6 +1124,24 @@ class YoloStudioAgentClient:
                     stream_handler=stream_handler,
                 )
                 next_interrupt = self._active_graph_interrupt(preferred_thread_id=interrupt_thread_id)
+                if not approved and next_interrupt is None:
+                    pending = {
+                        'name': str(pending_tool_call.get('name') or '').strip(),
+                        'args': dict(pending_tool_call.get('args') or {}),
+                        'thread_id': interrupt_thread_id,
+                        'source': 'graph',
+                    }
+                    cancel_message = self._build_cancel_message(pending) or self._extract_or_fallback(list(graph_result.get('messages') or []))
+                    if cancel_message:
+                        self._messages.append(AIMessage(content=cancel_message))
+                    self._trim_history()
+                    self.memory.append_event(
+                        self.session_state.session_id,
+                        'confirmation_cancelled',
+                        {'tool': pending['name'], 'args': pending.get('args', {})},
+                    )
+                    self.memory.save_state(self.session_state)
+                    return self._cancelled_result(pending, cancel_message or '好，我先不执行这一步。')
                 response = self._format_interrupt_or_result(
                     graph_result,
                     thread_id=interrupt_thread_id,
@@ -1253,23 +1292,21 @@ class YoloStudioAgentClient:
             return False
         if any(token in text or token in normalized for token in ('取消执行', '不要执行', '不执行', '先不要做', '先别做', '停止执行', '取消这一步')):
             return False
-        training_like_tools = {'start_training', 'prepare_dataset_for_training', 'start_training_loop'}
-        if tool_name in training_like_tools:
-            clear_fields = self._collect_training_clear_fields(text)
-            requested_training_args = self._collect_requested_training_args(text, data_yaml=None)
-            split_tokens = (
-                '自动划分', '不划分', '不要划分', '默认比例', '按默认比例', 'force_split', 'split',
-                '只做准备', '先做准备', 'prepare only',
-            )
-            split_requested = any(token in text or token in normalized for token in split_tokens)
-            if self._looks_like_pending_approve_request(text) and not clear_fields and not requested_training_args and not split_requested:
-                return False
-            if clear_fields:
-                return True
-            if requested_training_args:
-                return True
-            if split_requested:
-                return True
+        clear_fields = self._collect_training_clear_fields(text)
+        requested_training_args = self._collect_requested_training_args(text, data_yaml=None)
+        split_tokens = (
+            '自动划分', '不划分', '不要划分', '默认比例', '按默认比例', 'force_split', 'split',
+            '只做准备', '先做准备', 'prepare only',
+        )
+        split_requested = any(token in text or token in normalized for token in split_tokens)
+        if self._looks_like_pending_approve_request(text) and not clear_fields and not requested_training_args and not split_requested:
+            return False
+        if clear_fields:
+            return True
+        if requested_training_args:
+            return True
+        if split_requested:
+            return True
         generic_revision_markers = (
             '改成', '换成', '换个', '调整', '改一下', '去掉', '取消类别', '类别限制',
             'batch', 'imgsz', 'device', 'epochs', '轮数', 'optimizer', 'freeze', 'resume', 'lr0', 'patience',
@@ -1398,14 +1435,17 @@ class YoloStudioAgentClient:
             if canonical_tool_name(str(pending.get('name') or '').strip()) == 'prepare_dataset_for_training':
                 updated_pending = dict(pending)
                 updated_args = dict(updated_pending.get('args') or updated_pending.get('tool_args') or {})
+                updated_draft = dict(self._current_training_plan_draft_view())
                 updated = False
                 normalized_text = str(user_text or '').strip().lower()
                 prepare_only_tokens = ('只做准备', '先只做准备', '不要开始训练', '暂不启动训练', '只准备')
                 disable_split_tokens = ('不要自动划分', '不自动划分', '不要划分', '不划分', '先不要自动划分')
                 enable_split_tokens = ('按默认比例', '默认比例', '先划分', '划分训练集', '划分数据集', 'force_split', 'split')
                 if any(token in user_text or token in normalized_text for token in prepare_only_tokens):
-                    updated = False
-                elif any(token in user_text or token in normalized_text for token in disable_split_tokens):
+                    if str(updated_draft.get('execution_mode') or '').strip().lower() != 'prepare_only':
+                        updated_draft['execution_mode'] = 'prepare_only'
+                        updated = True
+                if any(token in user_text or token in normalized_text for token in disable_split_tokens):
                     if 'force_split' in updated_args:
                         updated_args.pop('force_split', None)
                         updated = True
@@ -1416,6 +1456,8 @@ class YoloStudioAgentClient:
                 if updated:
                     updated_pending['args'] = dict(updated_args)
                     updated_pending['tool_args'] = dict(updated_args)
+                    updated_draft['next_step_args'] = dict(updated_args)
+                    self.session_state.active_training.training_plan_draft = dict(updated_draft)
                     merged_pending = self._merge_pending_review_context(updated_pending, self._pending_review_shadow)
                     self._remember_pending_confirmation(
                         merged_pending,
@@ -1427,6 +1469,13 @@ class YoloStudioAgentClient:
                         or self._pending_confirmation_thread_id()
                         or ''
                     ).strip()
+                    interrupt_payload = self._draft_to_training_confirmation_interrupt(updated_draft, thread_id=pending_thread_id)
+                    if interrupt_payload is not None:
+                        return self._format_interrupt_or_result(
+                            {},
+                            thread_id=pending_thread_id,
+                            interrupt_payload=interrupt_payload,
+                        )
                     return self._needs_confirmation_result(
                         pending_thread_id,
                         merged_pending,
@@ -1590,9 +1639,36 @@ class YoloStudioAgentClient:
                         'device': {'type': 'string'},
                         'training_environment': {'type': 'string'},
                         'data_yaml': {'type': 'string'},
+                        'project': {'type': 'string'},
+                        'name': {'type': 'string'},
+                        'fraction': {'type': 'number'},
+                        'classes': {
+                            'type': 'array',
+                            'items': {'type': 'integer'},
+                        },
+                        'single_cls': {'type': 'boolean'},
+                        'optimizer': {'type': 'string'},
+                        'freeze': {
+                            'anyOf': [
+                                {'type': 'integer'},
+                                {'type': 'array', 'items': {'type': 'integer'}},
+                            ]
+                        },
+                        'resume': {
+                            'anyOf': [
+                                {'type': 'boolean'},
+                                {'type': 'string'},
+                            ]
+                        },
+                        'lr0': {'type': 'number'},
+                        'patience': {'type': 'integer'},
+                        'workers': {'type': 'integer'},
+                        'amp': {'type': 'boolean'},
                         'max_rounds': {'type': 'integer'},
                         'epochs_per_round': {'type': 'integer'},
                         'loop_name': {'type': 'string'},
+                        'force_split': {'type': 'boolean'},
+                        'prepare_only': {'type': 'boolean'},
                     },
                     'additionalProperties': False,
                 },
@@ -1605,24 +1681,32 @@ class YoloStudioAgentClient:
     def _normalize_pending_turn_intent_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         normalized_source: dict[str, Any]
         try:
-            normalized_source = self._model_dump_compat(PendingTurnIntent.model_validate(payload or {}))
+            normalized_source = self._model_dump_compat(
+                PendingTurnIntent.model_validate(payload or {}),
+                exclude_none=False,
+            )
         except Exception:
             normalized_source = dict(payload or {})
 
         action = str((normalized_source or {}).get('action') or '').strip().lower()
         if action not in {'approve', 'reject', 'edit', 'status', 'new_task', 'unclear'}:
             action = 'unclear'
+        source_edits = dict((payload or {}).get('edits') or {}) if isinstance(payload, dict) else {}
         edits = normalized_source.get('edits') if isinstance(normalized_source, dict) else None
         normalized_edits: dict[str, Any] | None = None
         if isinstance(edits, dict):
             try:
-                normalized_edits = self._model_dump_compat(TrainingEdits.model_validate(edits))
-            except Exception:
+                validated_edits = self._model_dump_compat(
+                    TrainingEdits.model_validate(edits),
+                    exclude_none=False,
+                )
                 normalized_edits = {
-                    key: value
-                    for key, value in edits.items()
-                    if value is not None
+                    key: validated_edits.get(key)
+                    for key in (source_edits.keys() or edits.keys())
+                    if key in validated_edits
                 }
+            except Exception:
+                normalized_edits = dict(source_edits or edits)
         normalized = {
             'action': action,
             'reason': str((normalized_source or {}).get('reason') or '').strip(),
@@ -1704,6 +1788,16 @@ class YoloStudioAgentClient:
             clear_fields = self._collect_training_clear_fields(text)
             for field in clear_fields:
                 edits[field] = None
+            tool_name = canonical_tool_name(str(pending_like.get('name') or '').strip())
+            normalized_text = text.lower()
+            if tool_name == 'prepare_dataset_for_training':
+                prepare_only_tokens = ('只做准备', '先只做准备', '不要开始训练', '暂不启动训练', '只准备')
+                if self._looks_like_prepare_only_request(text) or any(token in text or token in normalized_text for token in prepare_only_tokens):
+                    edits['prepare_only'] = True
+                if any(token in text or token in normalized_text for token in ('不要自动划分', '不自动划分', '不要划分', '不划分', '先不要自动划分')):
+                    edits['force_split'] = False
+                elif any(token in text or token in normalized_text for token in ('按默认比例', '默认比例', '先划分', '划分训练集', '划分数据集', 'force_split', 'split')):
+                    edits['force_split'] = True
             if edits:
                 return {'action': 'edit', 'reason': text, 'edits': edits}
         confirmation = self._classify_confirmation_reply_fallback(text)
@@ -3505,6 +3599,7 @@ class YoloStudioAgentClient:
         plan = coerce_training_plan(dict(payload.get('plan') or {}))
         phase = str(payload.get('phase') or 'prepare').strip().lower() or 'prepare'
         next_step_tool = str(payload.get('next_step_tool') or '').strip()
+        next_step_args = dict(payload.get('next_step_args') or {})
         if not next_step_tool:
             next_step_tool = 'prepare_dataset_for_training' if phase == 'prepare' else (
                 'start_training_loop' if getattr(plan, 'mode', 'train') == 'loop' else 'start_training'
@@ -3526,7 +3621,7 @@ class YoloStudioAgentClient:
             'data_summary': str(getattr(plan, 'readiness_summary', '') or '').strip(),
             'preflight_summary': str(getattr(plan, 'readiness_summary', '') or '').strip(),
             'next_step_tool': next_step_tool,
-            'next_step_args': dict(payload.get('next_step_args') or {}),
+            'next_step_args': next_step_args,
             'blockers': [str(item).strip() for item in (getattr(plan, 'blockers', None) or []) if str(item).strip()],
             'warnings': [str(item).strip() for item in (getattr(plan, 'warnings', None) or []) if str(item).strip()],
         }
@@ -3550,6 +3645,7 @@ class YoloStudioAgentClient:
             'workers': getattr(plan, 'workers', None),
             'amp': getattr(plan, 'amp', None),
         }
+        planned_args.update({key: value for key, value in next_step_args.items() if value not in (None, '', [], {})})
         if getattr(plan, 'mode', 'train') == 'loop':
             planned_args.update(
                 {
@@ -3565,53 +3661,34 @@ class YoloStudioAgentClient:
         return draft
 
     def _render_plan_for_cli(self, plan_payload: dict[str, Any], phase: str = '', execution_mode: str = '', status_reply: str = '') -> str:
-        plan = coerce_training_plan(dict(plan_payload or {}))
-        phase_text = '数据准备确认' if str(phase or '').strip().lower() == 'prepare' else '训练启动确认'
-        lines: list[str] = []
         status_reply = str(status_reply or '').strip()
-        if status_reply:
-            lines.append(status_reply)
-            lines.append('')
-        lines.append(f'{phase_text}：')
-        mode = getattr(plan, 'mode', 'train')
-        lines.append(f"- 类型: {'循环训练' if mode == 'loop' else '普通训练'}")
-        lines.append(f'- 数据集: {plan.dataset_path}')
-        lines.append(f'- 模型: {plan.model}')
-        if mode == 'loop':
-            lines.append(f'- 循环参数: max_rounds={getattr(plan, "max_rounds", "")}, epochs_per_round={getattr(plan, "epochs_per_round", "")}')
-            loop_name = str(getattr(plan, 'loop_name', '') or '').strip()
-            if loop_name:
-                lines.append(f'- 循环名称: {loop_name}')
+        draft = self._current_training_plan_draft_view()
+        if not draft:
+            draft = self._draft_from_training_confirmation_interrupt(
+                {
+                    'type': 'training_confirmation',
+                    'phase': phase,
+                    'plan': dict(plan_payload or {}),
+                    'execution_mode': execution_mode,
+                }
+            )
+        if draft:
+            if execution_mode and not str(draft.get('execution_mode') or '').strip():
+                draft['execution_mode'] = str(execution_mode).strip()
+            rendered = render_training_plan_draft_text(draft, pending=True)
+            if status_reply and rendered:
+                return f'{status_reply}\n\n{rendered}'
+            return rendered or status_reply
+        plan = coerce_training_plan(dict(plan_payload or {}))
+        lines = ['训练计划草案：', f'- 数据集: {plan.dataset_path}', f'- 模型: {plan.model}']
+        if getattr(plan, 'mode', 'train') == 'loop':
+            lines.append(
+                f'- 循环参数: max_rounds={getattr(plan, "max_rounds", "")}, epochs_per_round={getattr(plan, "epochs_per_round", "")}'
+            )
         else:
             lines.append(f'- 训练参数: epochs={getattr(plan, "epochs", "")}, batch={plan.batch}, imgsz={plan.imgsz}')
-        if str(plan.device or '').strip():
-            lines.append(f'- 设备: {plan.device}')
-        if str(plan.training_environment or '').strip():
-            lines.append(f'- 环境: {plan.training_environment}')
-        if str(plan.data_yaml or '').strip():
-            lines.append(f'- data.yaml: {plan.data_yaml}')
-        execution_mode_map = {
-            'prepare_then_train': '先准备再训练',
-            'prepare_then_loop': '先准备再进入循环训练',
-            'direct_train': '直接训练',
-            'direct_loop': '直接启动循环训练',
-            'prepare_only': '只做准备，暂不启动训练',
-            'discussion_only': '先讨论方案，暂不执行',
-            'blocked': '当前存在阻塞，先解决问题',
-        }
-        if execution_mode:
-            lines.append(f"- 执行方式: {execution_mode_map.get(str(execution_mode).strip(), str(execution_mode).strip())}")
-        blockers = [str(item).strip() for item in (getattr(plan, 'blockers', None) or []) if str(item).strip()]
-        warnings = [str(item).strip() for item in (getattr(plan, 'warnings', None) or []) if str(item).strip()]
-        if blockers:
-            lines.append('- 当前阻塞:')
-            lines.extend(f'  - {item}' for item in blockers[:3])
-        elif warnings:
-            lines.append('- 主要风险:')
-            lines.extend(f'  - {item}' for item in warnings[:3])
-        summary = str(getattr(plan, 'prepare_summary', '') or getattr(plan, 'readiness_summary', '') or '').strip()
-        if summary:
-            lines.append(f'- 说明: {summary}')
+        if status_reply:
+            lines.append(f'- 说明: {status_reply}')
         lines.append('你可以直接确认、改参数、追问原因，或者切去处理别的新任务。')
         return '\n'.join(lines)
 
@@ -3731,7 +3808,10 @@ class YoloStudioAgentClient:
         next_step_args = dict(draft.get('next_step_args') or {})
         if next_step_tool in {'start_training', 'start_training_loop'}:
             merged_args = dict(planned_loop_args if next_step_tool == 'start_training_loop' else planned_training_args)
-            merged_args.update({key: value for key, value in next_step_args.items() if value not in (None, '', [], {})})
+            for key, value in next_step_args.items():
+                if value in ('', [], {}):
+                    continue
+                merged_args[key] = value
             next_step_args = merged_args
         return {
             'type': 'training_confirmation',
@@ -3776,21 +3856,6 @@ class YoloStudioAgentClient:
             training_plan_context_override=build_training_plan_context_from_draft(draft),
             stream_handler=stream_handler,
         )
-        if self._is_training_confirmation_interrupt_payload(dict(handoff.get('interrupt_payload') or {})):
-            return handoff
-        interrupt_payload = self._draft_to_training_confirmation_interrupt(draft, thread_id=thread_id)
-        if interrupt_payload is not None:
-            tool_call = self._training_confirmation_tool_call(interrupt_payload)
-            if tool_call:
-                self._set_pending_confirmation(
-                    thread_id,
-                    {
-                        'name': str(tool_call.get('name') or '').strip(),
-                        'args': dict(tool_call.get('args') or {}),
-                        'synthetic': True,
-                    },
-                )
-            return self._format_interrupt_or_result({}, thread_id=thread_id, interrupt_payload=interrupt_payload)
         return handoff
 
     def _update_graph_pending_state(

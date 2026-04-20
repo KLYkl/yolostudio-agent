@@ -229,12 +229,11 @@ async def _scenario_pending_payload_contract() -> None:
     scenario_root = WORK / 'payload_contract'
     settings = AgentSettings(session_id='runtime-interrupt-payload', memory_root=str(scenario_root))
     client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
-    client.session_state.active_training.data_yaml = '/data/demo/data.yaml'
     client._set_pending_confirmation(
         'runtime-interrupt-payload-turn-1',
         {
-            'name': 'start_training',
-            'args': {'model': 'yolov8n.pt', 'data_yaml': '/data/demo/data.yaml', 'epochs': 12},
+            'name': 'upload_assets_to_remote',
+            'args': {'server': 'lab', 'local_paths': ['/tmp/demo.pt']},
             'id': None,
             'synthetic': True,
         },
@@ -243,10 +242,10 @@ async def _scenario_pending_payload_contract() -> None:
     assert payload is not None
     assert payload['interrupt_kind'] == 'tool_approval'
     assert payload['decision_state'] == 'pending'
-    assert payload['tool_name'] == 'start_training'
-    assert payload['tool_args']['epochs'] == 12
-    assert payload['summary'].startswith('启动训练')
-    assert payload['objective'].startswith('启动训练')
+    assert payload['tool_name'] == 'upload_assets_to_remote'
+    assert payload['tool_args']['server'] == 'lab'
+    assert payload['summary'] == '上传资源到远端服务器'
+    assert payload['objective'] == '把本地资源上传到远端服务器'
     assert payload['allowed_decisions'] == ['approve', 'reject', 'edit', 'clarify']
     assert payload['review_config']['risk_level'] == 'high'
     assert payload['decision_context'] == {}
@@ -263,8 +262,8 @@ async def _scenario_review_reject() -> None:
     client._set_pending_confirmation(
         'runtime-interrupt-reject-turn-1',
         {
-            'name': 'prepare_dataset_for_training',
-            'args': {'dataset_path': '/data/raw', 'force_split': True},
+            'name': 'upload_assets_to_remote',
+            'args': {'server': 'lab', 'local_paths': ['/tmp/demo.pt']},
             'id': None,
             'synthetic': True,
         },
@@ -293,8 +292,8 @@ async def _scenario_review_clarify_keeps_pending() -> None:
     client._set_pending_confirmation(
         'runtime-interrupt-clarify-turn-1',
         {
-            'name': 'start_training_loop',
-            'args': {'model': 'yolov8n.pt', 'data_yaml': '/data/loop/data.yaml', 'max_rounds': 2},
+            'name': 'split_dataset',
+            'args': {'dataset_root': '/data/demo', 'train_ratio': 0.8},
             'id': None,
             'synthetic': True,
         },
@@ -311,7 +310,7 @@ async def _scenario_review_clarify_keeps_pending() -> None:
     assert result['status'] == 'needs_confirmation', result
     assert result['pending_action']['decision_state'] == 'pending', result
     assert result['pending_action']['decision_context']['decision'] == 'clarify', result
-    assert result['tool_call']['name'] == 'start_training_loop', result
+    assert result['tool_call']['name'] == 'split_dataset', result
     assert client.get_pending_action() is not None
 
 
@@ -322,8 +321,8 @@ async def _scenario_review_edit_keeps_pending() -> None:
     client._set_pending_confirmation(
         'runtime-interrupt-edit-turn-1',
         {
-            'name': 'start_training',
-            'args': {'model': 'yolov8n.pt', 'data_yaml': '/data/demo/data.yaml', 'epochs': 20},
+            'name': 'upload_assets_to_remote',
+            'args': {'server': 'lab', 'local_paths': ['/tmp/demo.pt']},
             'id': None,
             'synthetic': True,
         },
@@ -341,7 +340,7 @@ async def _scenario_review_edit_keeps_pending() -> None:
     assert result['pending_action']['decision_state'] == 'pending', result
     assert result['pending_action']['decision_context']['decision'] == 'edit', result
     assert result['pending_action']['decision_context']['raw_user_text'] == '把 batch 改成 12 再继续', result
-    assert result['tool_call']['name'] == 'start_training', result
+    assert result['tool_call']['name'] == 'upload_assets_to_remote', result
     assert client.get_pending_action() is not None
 
 
@@ -355,11 +354,7 @@ async def _scenario_review_approve() -> None:
         calls.append((tool_name, dict(kwargs)))
         result = {
             'ok': True,
-            'summary': '训练已启动: model=yolov8n.pt, data=/data/demo/data.yaml',
-            'device': kwargs.get('device', 'auto') or 'auto',
-            'pid': 1234,
-            'log_file': '/runs/runtime_interrupt.txt',
-            'started_at': 12.34,
+            'summary': '上传已完成: server=lab',
             'resolved_args': dict(kwargs),
         }
         client._apply_to_state(tool_name, result, kwargs)
@@ -369,8 +364,8 @@ async def _scenario_review_approve() -> None:
     client._set_pending_confirmation(
         'runtime-interrupt-approve-turn-1',
         {
-            'name': 'start_training',
-            'args': {'model': 'yolov8n.pt', 'data_yaml': '/data/demo/data.yaml', 'epochs': 20},
+            'name': 'upload_assets_to_remote',
+            'args': {'server': 'lab', 'local_paths': ['/tmp/demo.pt']},
             'id': None,
             'synthetic': True,
         },
@@ -385,10 +380,9 @@ async def _scenario_review_approve() -> None:
         }
     )
     assert result['status'] == 'completed', result
-    assert '训练已启动' in result['message'], result
-    assert calls == [('start_training', {'model': 'yolov8n.pt', 'data_yaml': '/data/demo/data.yaml', 'epochs': 20})], calls
+    assert '上传已完成' in result['message'], result
+    assert calls == [('upload_assets_to_remote', {'server': 'lab', 'local_paths': ['/tmp/demo.pt']})], calls
     assert client.get_pending_action() is None
-    assert client.session_state.active_training.model == 'yolov8n.pt'
 
 
 async def _scenario_stale_graph_pending_is_cleared() -> None:
