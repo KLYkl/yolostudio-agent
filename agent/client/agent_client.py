@@ -917,9 +917,6 @@ class YoloStudioAgentClient:
     def _tool_is_destructive(self, tool_name: str) -> bool:
         return self._tool_policy(tool_name).destructive
 
-    def _tool_requires_confirmation(self, tool_name: str) -> bool:
-        return self._tool_policy(tool_name).confirmation_required
-
     @staticmethod
     def _local_llm_gpu_wait_enabled() -> bool:
         value = str(os.getenv('YOLOSTUDIO_LOCAL_LLM_GPU_WAIT', '') or '').strip().lower()
@@ -1044,68 +1041,6 @@ class YoloStudioAgentClient:
             user_text_hint=user_text,
             auto_approve=auto_approve,
             stream_handler=stream_handler,
-        )
-
-    async def review_pending_action(
-        self,
-        decision_payload: dict[str, Any],
-        *,
-        stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
-    ) -> dict[str, Any]:
-        pending_thread_id = self._pending_confirmation_thread_id()
-        pending = self._resolve_pending_confirmation(thread_id=pending_thread_id)
-        if not pending:
-            return {"status": "error", "message": "当前没有待确认的高风险操作。"}
-
-        normalized_decision = self._normalize_confirmation_reply_decision(decision_payload.get('decision'))
-        if normalized_decision == 'deny':
-            normalized_decision = 'reject'
-        if normalized_decision not in {'approve', 'reject', 'edit', 'clarify', 'unclear', 'restate'}:
-            normalized_decision = 'unclear'
-
-        self._record_pending_action_review(
-            pending,
-            decision=normalized_decision,
-            reason=str(decision_payload.get('reason') or '').strip(),
-            raw_user_text=str(decision_payload.get('raw_user_text') or '').strip(),
-            source=str(decision_payload.get('source') or 'runtime_review').strip(),
-            edits=dict(decision_payload.get('edits') or {}),
-        )
-
-        if normalized_decision == 'approve':
-            return await self.confirm(pending_thread_id, approved=True, stream_handler=stream_handler)
-        if normalized_decision == 'reject':
-            return await self.confirm(pending_thread_id, approved=False, stream_handler=stream_handler)
-        if normalized_decision == 'restate':
-            self.memory.save_state(self.session_state)
-            return self._needs_confirmation_result(
-                pending_thread_id,
-                self._pending_from_state() or pending,
-                await self._build_confirmation_message(pending),
-            )
-        if normalized_decision == 'clarify':
-            self.memory.save_state(self.session_state)
-            return self._needs_confirmation_result(
-                pending_thread_id,
-                self._pending_from_state() or pending,
-                await self._build_confirmation_message(self._pending_from_state() or pending),
-            )
-        if normalized_decision == 'edit':
-            self.memory.save_state(self.session_state)
-            return self._needs_confirmation_result(
-                pending_thread_id,
-                self._pending_from_state() or pending,
-                '我先保留当前待执行动作。你可以直接继续改参数、换环境、换模型，'
-                '等你改完后我会基于新的事实重新给出可执行方案。',
-            )
-        self.memory.save_state(self.session_state)
-        return self._needs_confirmation_result(
-            pending_thread_id,
-            self._pending_from_state() or pending,
-            '我先不擅自执行。你可以直接说“继续执行”、'
-            '“先不要做”、'
-            '“把 batch 改成 12 再继续”、'
-            '或继续追问这一步为什么要做。',
         )
 
     async def confirm(self, thread_id: str, approved: bool, stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None) -> dict[str, Any]:
@@ -1481,20 +1416,41 @@ class YoloStudioAgentClient:
                         merged_pending,
                         await self._build_confirmation_message(merged_pending),
                     )
-            return None
+            pending_thread_id = self._pending_confirmation_thread_id()
+            return self._needs_confirmation_result(
+                pending_thread_id,
+                self._pending_from_state() or pending,
+                '我先保留当前待执行动作。你可以直接继续改参数、换环境、换模型，'
+                '等你改完后我会基于新的事实重新给出可执行方案。',
+            )
         if pending_turn_intent in {'approve', 'reject'}:
-            return await self.review_pending_action(
-                {
-                    'decision': pending_turn_intent,
-                    'raw_user_text': user_text,
-                    'source': 'natural_language_chat',
-                },
+            self._record_pending_action_review(
+                pending,
+                decision=pending_turn_intent,
+                raw_user_text=user_text,
+                source='natural_language_chat',
+            )
+            return await self.confirm(
+                self._pending_confirmation_thread_id(),
+                approved=pending_turn_intent == 'approve',
                 stream_handler=stream_handler,
             )
         pending_thread_id = self._pending_confirmation_thread_id()
         if pending_turn_intent == 'restate':
+            self._record_pending_action_review(
+                pending,
+                decision='restate',
+                raw_user_text=user_text,
+                source='natural_language_chat',
+            )
             return self._needs_confirmation_result(pending_thread_id, pending, await self._build_confirmation_message(pending))
         if pending_turn_intent == 'status':
+            self._record_pending_action_review(
+                pending,
+                decision='clarify',
+                raw_user_text=user_text,
+                source='natural_language_chat',
+            )
             return self._needs_confirmation_result(
                 pending_thread_id,
                 pending,
@@ -5905,53 +5861,6 @@ async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudi
     return client
 
 
-def _build_graph_pending_interrupt_payload(
-    request: Any,
-    client: YoloStudioAgentClient | None,
-) -> dict[str, Any]:
-    tool_call = dict(getattr(request, 'tool_call', None) or {})
-    raw_name = str(tool_call.get('name') or '').strip()
-    canonical_name = canonical_tool_name(raw_name)
-    raw_args = dict(tool_call.get('args') or {})
-    tool_args = normalize_tool_args(canonical_name, raw_args)
-    runtime = getattr(request, 'runtime', None)
-    config = getattr(runtime, 'config', {}) if runtime is not None else {}
-    thread_id = str(((config or {}).get('configurable') or {}).get('thread_id') or '').strip()
-    tool_call_id = str(tool_call.get('id') or '').strip()
-    pending = {
-        'id': tool_call_id,
-        'tool_call_id': tool_call_id,
-        'name': canonical_name,
-        'tool_name': canonical_name,
-        'args': tool_args,
-        'tool_args': dict(tool_args),
-        'raw_name': raw_name,
-        'raw_args': raw_args,
-        'adapted': raw_name != canonical_name or raw_args != tool_args,
-        'thread_id': thread_id,
-        'source': 'graph',
-        'interrupt_kind': 'tool_approval',
-    }
-    if client is not None:
-        payload = client._build_pending_action_payload(pending, thread_id=thread_id)
-    else:
-        payload = {
-            'interrupt_kind': 'tool_approval',
-            'summary': '',
-            'objective': '',
-            'allowed_decisions': ['approve', 'reject', 'edit', 'clarify'],
-            'review_config': {},
-            'decision_context': {},
-        }
-    payload = {
-        **dict(payload or {}),
-        **pending,
-        'thread_id': thread_id,
-        'source': 'graph',
-    }
-    return payload
-
-
 def _build_graph_tool_surface(
     tools: list[Any],
     *,
@@ -5981,9 +5890,45 @@ def _build_graph_tool_surface(
         tool_name = canonical_tool_name(str(tool_call.get('name') or '').strip())
         policy = tool_policy_resolver(tool_name)
         if manual_confirmation and getattr(policy, 'confirmation_required', False):
-            pending_payload = _build_graph_pending_interrupt_payload(request, client_getter())
+            raw_name = str(tool_call.get('name') or '').strip()
+            raw_args = dict(tool_call.get('args') or {})
+            tool_args = normalize_tool_args(tool_name, raw_args)
             runtime = getattr(request, 'runtime', None)
             runtime_config = getattr(runtime, 'config', {}) if runtime is not None else {}
+            thread_id = str(((runtime_config or {}).get('configurable') or {}).get('thread_id') or '').strip()
+            tool_call_id = str(tool_call.get('id') or '').strip()
+            pending = {
+                'id': tool_call_id,
+                'tool_call_id': tool_call_id,
+                'name': tool_name,
+                'tool_name': tool_name,
+                'args': tool_args,
+                'tool_args': dict(tool_args),
+                'raw_name': raw_name,
+                'raw_args': raw_args,
+                'adapted': raw_name != tool_name or raw_args != tool_args,
+                'thread_id': thread_id,
+                'source': 'graph',
+                'interrupt_kind': 'tool_approval',
+            }
+            client = client_getter()
+            if client is not None:
+                pending_payload = client._build_pending_action_payload(pending, thread_id=thread_id)
+            else:
+                pending_payload = {
+                    'interrupt_kind': 'tool_approval',
+                    'summary': '',
+                    'objective': '',
+                    'allowed_decisions': ['approve', 'reject', 'edit', 'clarify'],
+                    'review_config': {},
+                    'decision_context': {},
+                }
+            pending_payload = {
+                **dict(pending_payload or {}),
+                **pending,
+                'thread_id': thread_id,
+                'source': 'graph',
+            }
             with set_config_context(runtime_config) as runtime_context:
                 if hasattr(runtime_context, 'run'):
                     resume_value = runtime_context.run(interrupt, pending_payload)

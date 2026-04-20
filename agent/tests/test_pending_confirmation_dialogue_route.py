@@ -241,48 +241,60 @@ async def _scenario_execute_phrase_routes_to_approve() -> None:
     client = _make_client('pending-execute-approve')
     captured: dict[str, object] = {}
 
-    async def _fake_review_pending_action(decision_payload, *, stream_handler=None):
+    async def _fake_confirm(thread_id, approved, stream_handler=None):
         del stream_handler
-        captured.update(dict(decision_payload))
+        captured['thread_id'] = thread_id
+        captured['approved'] = approved
         return {'status': 'completed', 'message': 'captured-approve', 'tool_call': None}
 
-    client.review_pending_action = _fake_review_pending_action  # type: ignore[assignment]
+    client.confirm = _fake_confirm  # type: ignore[assignment]
     turn = await client.chat('没问题，执行吧')
     assert turn['status'] == 'completed', turn
-    assert captured.get('decision') == 'approve', captured
-    assert captured.get('raw_user_text') == '没问题，执行吧', captured
+    assert captured.get('approved') is True, captured
+    pending = client.get_pending_action()
+    assert pending is not None, pending
+    assert pending['decision_context']['decision'] == 'approve', pending
+    assert pending['decision_context']['raw_user_text'] == '没问题，执行吧', pending
 
 
 async def _scenario_continue_phrase_routes_to_approve() -> None:
     client = _make_client('pending-continue-approve')
     captured: dict[str, object] = {}
 
-    async def _fake_review_pending_action(decision_payload, *, stream_handler=None):
+    async def _fake_confirm(thread_id, approved, stream_handler=None):
         del stream_handler
-        captured.update(dict(decision_payload))
+        captured['thread_id'] = thread_id
+        captured['approved'] = approved
         return {'status': 'completed', 'message': 'captured-approve', 'tool_call': None}
 
-    client.review_pending_action = _fake_review_pending_action  # type: ignore[assignment]
+    client.confirm = _fake_confirm  # type: ignore[assignment]
     turn = await client.chat('可以，继续')
     assert turn['status'] == 'completed', turn
-    assert captured.get('decision') == 'approve', captured
-    assert captured.get('raw_user_text') == '可以，继续', captured
+    assert captured.get('approved') is True, captured
+    pending = client.get_pending_action()
+    assert pending is not None, pending
+    assert pending['decision_context']['decision'] == 'approve', pending
+    assert pending['decision_context']['raw_user_text'] == '可以，继续', pending
 
 
 async def _scenario_continue_phrase_with_punctuation_routes_to_approve() -> None:
     client = _make_client('pending-continue-approve-punct')
     captured: dict[str, object] = {}
 
-    async def _fake_review_pending_action(decision_payload, *, stream_handler=None):
+    async def _fake_confirm(thread_id, approved, stream_handler=None):
         del stream_handler
-        captured.update(dict(decision_payload))
+        captured['thread_id'] = thread_id
+        captured['approved'] = approved
         return {'status': 'completed', 'message': 'captured-approve', 'tool_call': None}
 
-    client.review_pending_action = _fake_review_pending_action  # type: ignore[assignment]
+    client.confirm = _fake_confirm  # type: ignore[assignment]
     turn = await client.chat('好，继续。')
     assert turn['status'] == 'completed', turn
-    assert captured.get('decision') == 'approve', captured
-    assert captured.get('raw_user_text') == '好，继续。', captured
+    assert captured.get('approved') is True, captured
+    pending = client.get_pending_action()
+    assert pending is not None, pending
+    assert pending['decision_context']['decision'] == 'approve', pending
+    assert pending['decision_context']['raw_user_text'] == '好，继续。', pending
 
 
 async def _scenario_edit_phrase_marks_pending_as_edit() -> None:
@@ -311,16 +323,20 @@ async def _scenario_execute_phrase_with_punctuation_routes_to_approve() -> None:
     client = _make_client('pending-execute-approve-punct')
     captured: dict[str, object] = {}
 
-    async def _fake_review_pending_action(decision_payload, *, stream_handler=None):
+    async def _fake_confirm(thread_id, approved, stream_handler=None):
         del stream_handler
-        captured.update(dict(decision_payload))
+        captured['thread_id'] = thread_id
+        captured['approved'] = approved
         return {'status': 'completed', 'message': 'captured-approve', 'tool_call': None}
 
-    client.review_pending_action = _fake_review_pending_action  # type: ignore[assignment]
+    client.confirm = _fake_confirm  # type: ignore[assignment]
     turn = await client.chat('没问题，执行吧。')
     assert turn['status'] == 'completed', turn
-    assert captured.get('decision') == 'approve', captured
-    assert captured.get('raw_user_text') == '没问题，执行吧。', captured
+    assert captured.get('approved') is True, captured
+    pending = client.get_pending_action()
+    assert pending is not None, pending
+    assert pending['decision_context']['decision'] == 'approve', pending
+    assert pending['decision_context']['raw_user_text'] == '没问题，执行吧。', pending
 
 
 async def _scenario_non_training_pending_passthrough_routes_to_graph() -> None:

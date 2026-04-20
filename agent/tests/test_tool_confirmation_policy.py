@@ -162,6 +162,7 @@ except Exception:
     sys.modules['langgraph.checkpoint.memory'] = checkpoint_mod
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from yolostudio_agent.agent.client.hitl_manager import pending_review_config
 from yolostudio_agent.agent.client.tool_policy import build_manual_interrupt_nodes
 
 
@@ -213,37 +214,37 @@ async def _run() -> None:
         )
         raw_tools = list(client.tool_registry.values())
 
-        assert client._tool_requires_confirmation('upload_assets_to_remote') is True
+        assert client._tool_policy('upload_assets_to_remote').confirmation_required is True
         assert client._pending_allowed_decisions('upload_assets_to_remote') == ['approve', 'reject', 'edit', 'clarify']
-        upload_review = client._pending_review_config('upload_assets_to_remote', {})
+        upload_review = pending_review_config('upload_assets_to_remote', client._tool_policy('upload_assets_to_remote'))
         assert upload_review['confirmation_required'] is True
         assert upload_review['risk_level'] == 'high'
         assert upload_review['read_only'] is False
 
-        assert client._tool_requires_confirmation('list_remote_profiles') is False
+        assert client._tool_policy('list_remote_profiles').confirmation_required is False
         assert client._pending_allowed_decisions('list_remote_profiles') == ['approve', 'reject', 'clarify']
-        list_review = client._pending_review_config('list_remote_profiles', {})
+        list_review = pending_review_config('list_remote_profiles', client._tool_policy('list_remote_profiles'))
         assert list_review['risk_level'] == 'low'
         assert list_review['read_only'] is True
 
-        assert client._tool_requires_confirmation('custom_destructive_tool') is True
-        destructive_review = client._pending_review_config('custom_destructive_tool', {})
+        assert client._tool_policy('custom_destructive_tool').confirmation_required is True
+        destructive_review = pending_review_config('custom_destructive_tool', client._tool_policy('custom_destructive_tool'))
         assert destructive_review['destructive'] is True
         assert destructive_review['risk_level'] == 'high'
         assert destructive_review['confirmation_required'] is True
 
-        assert client._tool_requires_confirmation('start_training') is True
-        fallback_review = client._pending_review_config('start_training', {})
+        assert client._tool_policy('start_training').confirmation_required is True
+        fallback_review = pending_review_config('start_training', client._tool_policy('start_training'))
         assert fallback_review['risk_level'] == 'high'
 
-        assert client._tool_requires_confirmation('remote_training_pipeline') is True
-        remote_pipeline_review = client._pending_review_config('remote_training_pipeline', {})
+        assert client._tool_policy('remote_training_pipeline').confirmation_required is True
+        remote_pipeline_review = pending_review_config('remote_training_pipeline', client._tool_policy('remote_training_pipeline'))
         assert remote_pipeline_review['confirmation_required'] is True
         assert remote_pipeline_review['risk_level'] == 'high'
         assert remote_pipeline_review['open_world'] is True
 
         interrupt_nodes = build_manual_interrupt_nodes(raw_tools)
-        assert interrupt_nodes == ['tools'], interrupt_nodes
+        assert interrupt_nodes == [], interrupt_nodes
 
         print('tool confirmation policy ok')
     finally:

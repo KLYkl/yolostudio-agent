@@ -269,14 +269,7 @@ async def _scenario_review_reject() -> None:
         },
     )
 
-    result = await client.review_pending_action(
-        {
-            'decision': 'reject',
-            'reason': '先不要动数据集',
-            'raw_user_text': '不继续',
-            'source': 'natural_language_chat',
-        }
-    )
+    result = await client.chat('不继续')
     assert result['status'] == 'cancelled', result
     assert result['pending_action']['decision_state'] == 'rejected', result
     assert result['pending_action']['decision_context']['decision'] == 'reject', result
@@ -299,14 +292,7 @@ async def _scenario_review_clarify_keeps_pending() -> None:
         },
     )
 
-    result = await client.review_pending_action(
-        {
-            'decision': 'clarify',
-            'reason': '先解释下为什么要开循环训练',
-            'raw_user_text': '为什么要做这一步？',
-            'source': 'natural_language_chat',
-        }
-    )
+    result = await client.chat('为什么要做这一步？')
     assert result['status'] == 'needs_confirmation', result
     assert result['pending_action']['decision_state'] == 'pending', result
     assert result['pending_action']['decision_context']['decision'] == 'clarify', result
@@ -328,14 +314,7 @@ async def _scenario_review_edit_keeps_pending() -> None:
         },
     )
 
-    result = await client.review_pending_action(
-        {
-            'decision': 'edit',
-            'reason': '先改 batch 再继续',
-            'raw_user_text': '把 batch 改成 12 再继续',
-            'source': 'natural_language_chat',
-        }
-    )
+    result = await client.chat('把 batch 改成 12 再继续')
     assert result['status'] == 'needs_confirmation', result
     assert result['pending_action']['decision_state'] == 'pending', result
     assert result['pending_action']['decision_context']['decision'] == 'edit', result
@@ -371,14 +350,7 @@ async def _scenario_review_approve() -> None:
         },
     )
 
-    result = await client.review_pending_action(
-        {
-            'decision': 'approve',
-            'reason': '按这个执行',
-            'raw_user_text': '继续',
-            'source': 'natural_language_chat',
-        }
-    )
+    result = await client.chat('继续')
     assert result['status'] == 'completed', result
     assert '上传已完成' in result['message'], result
     assert calls == [('upload_assets_to_remote', {'server': 'lab', 'local_paths': ['/tmp/demo.pt']})], calls
