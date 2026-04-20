@@ -252,7 +252,6 @@ class YoloStudioAgentClient:
         self.context_builder = ContextBuilder(SYSTEM_PROMPT)
         self.event_retriever = EventRetriever(self.memory)
         self.session_state: SessionState = self.memory.load_state(settings.session_id)
-        self._bootstrap_pending_confirmation_state()
         self._reconcile_startup_pending_confirmation()
         self._bootstrap_turn_index()
         self._clear_stale_startup_state()
@@ -599,8 +598,7 @@ class YoloStudioAgentClient:
         return result
 
     def _clear_stale_startup_state(self) -> None:
-        pending = self.session_state.pending_confirmation
-        if str(pending.tool_name or '').strip():
+        if self._pending_from_state() is not None or self._active_graph_interrupt() is not None:
             return
         draft = dict(self.session_state.active_training.training_plan_draft or {})
         if not draft:
@@ -641,11 +639,6 @@ class YoloStudioAgentClient:
                 )
             except Exception:
                 pass
-        startup_pending = self._startup_pending_from_session()
-        if startup_pending and str(startup_pending.get('source') or '').strip().lower() == 'graph':
-            hinted_thread_id = str(startup_pending.get('thread_id') or '').strip()
-            if hinted_thread_id:
-                thread_ids.add(hinted_thread_id)
         return sorted(thread_ids)
 
     def _startup_graph_pending_candidates(self) -> list[dict[str, Any]]:
@@ -698,52 +691,11 @@ class YoloStudioAgentClient:
         pending = self._pending_from_state()
         if not pending:
             self._hydrate_startup_pending_confirmation()
-            restored = self._pending_from_state()
-            if restored is not None:
+            pending = self._pending_from_state()
+            if pending is None:
                 return
-            startup_pending = self._startup_pending_from_session()
-            if startup_pending and str(startup_pending.get('source') or '').strip().lower() == 'graph':
-                thread_id = str(startup_pending.get('thread_id') or '').strip()
-                self._clear_pending_confirmation(thread_id=thread_id, persist_graph=False)
-                self.session_state.active_training.training_plan_draft = {}
-                self.memory.append_event(
-                    self.session_state.session_id,
-                    'startup_stale_pending_cleared',
-                    {
-                        'tool': str(startup_pending.get('name') or startup_pending.get('tool_name') or '').strip(),
-                        'thread_id': thread_id,
-                        'pending_source': 'graph',
-                    },
-                )
-            return
         pending_source = str(pending.get('source') or 'synthetic').strip().lower() or 'synthetic'
         if pending_source != 'graph':
-            candidates = self._startup_graph_pending_candidates()
-            if len(candidates) == 1:
-                restored = candidates[0]
-                config = self._pending_config(str(restored.get('thread_id') or '').strip())
-                self.session_state.active_training.training_plan_draft = {}
-                self._remember_pending_confirmation(restored, emit_event=False, persist_graph=False)
-                self._restore_training_plan_draft_from_context(config=config, pending=restored)
-                self.memory.append_event(
-                    self.session_state.session_id,
-                    'startup_legacy_pending_replaced',
-                    {
-                        'previous_tool': str(pending.get('name') or pending.get('tool_name') or '').strip(),
-                        'previous_source': pending_source,
-                        'restored_tool': str(restored.get('name') or restored.get('tool_name') or '').strip(),
-                        'thread_id': str(restored.get('thread_id') or '').strip(),
-                    },
-                )
-                self.memory.append_event(
-                    self.session_state.session_id,
-                    'startup_graph_pending_restored',
-                    {
-                        'tool': str(restored.get('name') or restored.get('tool_name') or '').strip(),
-                        'thread_id': str(restored.get('thread_id') or '').strip(),
-                        'pending_source': str(restored.get('source') or 'graph').strip().lower() or 'graph',
-                    },
-                )
             return
         thread_id = str(pending.get('thread_id') or '').strip() or self._pending_confirmation_thread_id()
         resolved = self._resolve_pending_confirmation(
@@ -781,10 +733,7 @@ class YoloStudioAgentClient:
     def _bootstrap_turn_index(self) -> None:
         prefix = f'{self.session_state.session_id}-turn-'
         candidate_thread_ids = set(self._startup_checkpoint_thread_ids())
-        for candidate in (
-            str(self.session_state.pending_confirmation.thread_id or '').strip(),
-            str((self._pending_confirmation_shadow or {}).get('thread_id') or '').strip(),
-        ):
+        for candidate in (str((self._pending_confirmation_shadow or {}).get('thread_id') or '').strip(),):
             if candidate:
                 candidate_thread_ids.add(candidate)
         max_turn_index = 0
@@ -850,18 +799,6 @@ class YoloStudioAgentClient:
         rt.last_profile_listing = {}
         rt.last_upload = {}
         rt.last_download = {}
-        pending = state.pending_confirmation
-        pending.thread_id = ""
-        pending.tool_name = ""
-        pending.tool_args = {}
-        pending.source = 'synthetic'
-        pending.interrupt_kind = 'tool_approval'
-        pending.objective = ''
-        pending.summary = ''
-        pending.allowed_decisions = ['approve', 'reject', 'edit', 'clarify']
-        pending.review_config = {}
-        pending.decision_context = {}
-        pending.created_at = ""
         sync_training_workflow_state(state, pending_confirmation={})
         return state
 
@@ -870,6 +807,7 @@ class YoloStudioAgentClient:
             state=self.session_state,
             user_text=user_text,
             explicitly_references_previous_context=self._explicitly_references_previous_context(user_text),
+            has_pending_confirmation=bool(self._pending_from_state() or self._active_graph_interrupt()),
             training_plan_context=self._current_training_plan_context(),
         )
 
@@ -1323,7 +1261,6 @@ class YoloStudioAgentClient:
         if current_pending is not None:
             current_pending['decision_context'] = dict(decision_context)
             self._pending_confirmation_shadow = dict(current_pending)
-            self._mirror_pending_confirmation(current_pending)
             if str(current_pending.get('source') or '').strip().lower() != 'graph':
                 self._update_graph_pending_state(
                     thread_id=pending_thread_id,
@@ -3147,65 +3084,6 @@ class YoloStudioAgentClient:
             sort_keys=True,
         )
 
-    def _startup_pending_from_session(self) -> dict[str, Any] | None:
-        pc = self.session_state.pending_confirmation
-        if not pc.tool_name:
-            return None
-        return {
-            'name': pc.tool_name,
-            'args': dict(pc.tool_args),
-            'id': None,
-            'summary': pc.summary,
-            'objective': pc.objective,
-            'allowed_decisions': list(pc.allowed_decisions),
-            'review_config': dict(pc.review_config),
-            'decision_context': dict(pc.decision_context),
-            'thread_id': pc.thread_id,
-            'source': str(pc.source or 'synthetic').strip().lower() or 'synthetic',
-        }
-
-    def _mirror_pending_confirmation(self, pending: dict[str, Any] | None) -> None:
-        pc = self.session_state.pending_confirmation
-        if not pending:
-            pc.thread_id = ""
-            pc.tool_name = ""
-            pc.tool_args = {}
-            pc.source = 'synthetic'
-            pc.interrupt_kind = 'tool_approval'
-            pc.objective = ''
-            pc.summary = ''
-            pc.allowed_decisions = ['approve', 'reject', 'edit', 'clarify']
-            pc.review_config = {}
-            pc.decision_context = {}
-            pc.created_at = ""
-            return
-        pc.thread_id = str(pending.get('thread_id') or '').strip()
-        pc.tool_name = str(pending.get('name') or pending.get('tool_name') or '').strip()
-        pc.tool_args = dict(pending.get('args') or pending.get('tool_args') or {})
-        pc.source = str(pending.get('source') or 'synthetic').strip().lower() or 'synthetic'
-        pc.interrupt_kind = str(pending.get('interrupt_kind') or 'tool_approval').strip() or 'tool_approval'
-        pc.objective = str(pending.get('objective') or '').strip()
-        pc.summary = str(pending.get('summary') or '').strip()
-        pc.allowed_decisions = list(pending.get('allowed_decisions') or ['approve', 'reject', 'edit', 'clarify'])
-        pc.review_config = dict(pending.get('review_config') or {})
-        pc.decision_context = dict(pending.get('decision_context') or {})
-        pc.created_at = str(pending.get('created_at') or utc_now()).strip()
-
-    def _bootstrap_pending_confirmation_state(self) -> None:
-        legacy_pending = self._startup_pending_from_session()
-        if not legacy_pending:
-            self._pending_confirmation_shadow = None
-            self._pending_review_shadow = {}
-            self._mirror_pending_confirmation(None)
-            return
-        if str(legacy_pending.get('source') or 'synthetic').strip().lower() == 'graph':
-            self._pending_confirmation_shadow = None
-            self._pending_review_shadow = {}
-            return
-        self._pending_confirmation_shadow = dict(legacy_pending)
-        self._pending_review_shadow = dict(legacy_pending.get('decision_context') or {})
-        self._mirror_pending_confirmation(legacy_pending)
-
     @staticmethod
     def _pending_config(thread_id: str) -> dict[str, Any]:
         return {"configurable": {"thread_id": thread_id}}
@@ -3488,7 +3366,6 @@ class YoloStudioAgentClient:
         for candidate in (
             preferred_thread_id,
             str((self._pending_confirmation_shadow or {}).get('thread_id') or '').strip(),
-            str(self.session_state.pending_confirmation.thread_id or '').strip(),
         ):
             if candidate:
                 candidate_thread_ids.append(candidate)
@@ -3889,7 +3766,6 @@ class YoloStudioAgentClient:
         previous_signature = self._pending_signature(self._pending_confirmation_shadow)
         self._pending_confirmation_shadow = normalized
         self._pending_review_shadow = dict(normalized.get('decision_context') or {})
-        self._mirror_pending_confirmation(normalized)
         if persist_graph and normalized['source'] != 'graph':
             self._update_graph_pending_state(
                 thread_id=normalized['thread_id'],
@@ -3979,7 +3855,6 @@ class YoloStudioAgentClient:
         ).strip()
         self._pending_confirmation_shadow = None
         self._pending_review_shadow = {}
-        self._mirror_pending_confirmation(None)
         if persist_graph and resolved_thread_id:
             self._update_graph_pending_state(thread_id=resolved_thread_id, pending=None, review={})
         self._sync_training_workflow_state(reason='pending_cleared')
@@ -4162,6 +4037,7 @@ class YoloStudioAgentClient:
             state_for_model,
             recent_messages_for_model,
             digest=digest,
+            pending_confirmation=None if suppress_ephemeral_state_context else self._pending_from_state(),
             training_plan_context=effective_training_plan_context,
         )
         graph_input = {

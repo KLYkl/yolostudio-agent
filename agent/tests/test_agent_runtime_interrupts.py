@@ -275,7 +275,6 @@ async def _scenario_review_reject() -> None:
     assert result['pending_action']['decision_context']['decision'] == 'reject', result
     assert result['pending_action']['decision_context']['raw_user_text'] == '不继续', result
     assert client.get_pending_action() is None
-    assert client.session_state.pending_confirmation.tool_name == ''
 
 
 async def _scenario_review_clarify_keeps_pending() -> None:
@@ -373,7 +372,6 @@ async def _scenario_stale_graph_pending_is_cleared() -> None:
 
     result = await client.confirm('runtime-interrupt-stale-graph-turn-1', approved=True)
     assert result['status'] == 'error', result
-    assert client.session_state.pending_confirmation.tool_name == ''
     assert client.get_pending_action() is None
 
 
@@ -445,11 +443,6 @@ async def _scenario_runtime_ignores_manual_pending_session_mutation() -> None:
     scenario_root = WORK / 'runtime-ignores-manual-session-pending'
     settings = AgentSettings(session_id='runtime-ignore-manual-session', memory_root=str(scenario_root))
     client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
-    client.session_state.pending_confirmation.thread_id = 'manual-session-pending-turn-1'
-    client.session_state.pending_confirmation.tool_name = 'start_training'
-    client.session_state.pending_confirmation.tool_args = {'model': 'yolov8n.pt', 'epochs': 40}
-    client.session_state.pending_confirmation.source = 'synthetic'
-    client.session_state.pending_confirmation.summary = '手工改 dataclass 的旧 pending'
     assert client._pending_from_state() is None
     assert client.get_pending_action() is None
 

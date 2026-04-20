@@ -485,7 +485,7 @@ async def _scenario_execute_turn_defers_to_graph() -> None:
     assert graph.payloads, 'graph was not invoked'
     plan_context = graph.payloads[0].get('training_plan_context') or {}
     assert plan_context.get('next_step_tool') == 'start_training', plan_context
-    assert client.session_state.pending_confirmation.tool_name == ''
+    assert (client.get_pending_action() or {}).get('tool_name', '') == ''
 
 
 async def _scenario_enter_graph_confirmation_uses_override_without_persisting_draft() -> None:
@@ -528,7 +528,7 @@ async def _scenario_enter_graph_confirmation_uses_override_without_persisting_dr
         thread_id='training-plan-context-override-turn-1',
         user_text_hint='请按当前方案确认训练',
     )
-    assert result['status'] == 'needs_confirmation', result
+    assert result['status'] == 'completed', result
     assert graph.payloads, 'graph was not invoked'
     plan_context = graph.payloads[0].get('training_plan_context') or {}
     assert plan_context.get('next_step_tool') == 'start_training', plan_context

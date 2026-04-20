@@ -156,7 +156,7 @@ async def _scenario_c95_repeat_prepare_after_prepare_finished_is_blocked() -> No
     assert fourth['tool_call']['name'] == 'start_training'
     assert prepare_count['value'] == 1
     assert len(calls) == call_count
-    assert client.session_state.pending_confirmation.tool_name == 'start_training'
+    assert (client.get_pending_action() or {}).get('tool_name', '') == 'start_training'
 
 
 async def _run() -> None:

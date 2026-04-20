@@ -191,7 +191,7 @@ class _DummyGraph:
             if draft:
                 self.plan_context = build_training_plan_context_from_draft(draft)
             has_draft = bool(draft)
-            has_pending = bool(self.client.session_state.pending_confirmation.tool_name)
+            has_pending = bool((self.client.get_pending_action() or {}).get('tool_name'))
             if not has_draft and not has_pending:
                 self.plan_context = None
         if not self.plan_context:
@@ -421,7 +421,7 @@ async def _run() -> None:
         assert '执行后端: 自定义训练脚本' in turn1['message']
         assert '自定义脚本: /custom/train.py' in turn1['message']
         assert '当前自动执行链只支持标准 YOLO 训练' in turn1['message']
-        assert client.session_state.pending_confirmation.tool_name == ''
+        assert (client.get_pending_action() or {}).get('tool_name', '') == ''
 
         turn2 = await client.chat('不用自定义脚本了，改成标准 yolo，用 yolodo 环境。输出放到 project /runs/ablation，name exp-blue，只训练类别 1,3，fraction 0.5。展开高级参数，把 lr0 改成 0.005，patience 20，workers 4，关闭 amp。')
         assert turn2['status'] == 'completed', turn2
@@ -676,7 +676,7 @@ async def _run_backend_switch_followup() -> None:
         assert '自定义脚本: /custom/research_train.py' in turn4['message']
         assert '当前自动执行链只支持标准 YOLO 训练' in turn4['message']
         assert '输出组织: project=/runs/backend-switch, name=exp-a' in turn4['message']
-        assert client.session_state.pending_confirmation.tool_name == ''
+        assert (client.get_pending_action() or {}).get('tool_name', '') == ''
         assert len(calls) == call_count_before_backend_switch
 
         turn5 = await client.chat('不用脚本了，切回标准 yolo，环境改成 base，project /runs/backend-final，name exp-b，optimizer 改成 SGD，freeze 4，batch 10，imgsz 736，执行前先给我计划。')

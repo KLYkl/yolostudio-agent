@@ -197,7 +197,7 @@ async def main() -> None:
             'data_yaml': agent.session_state.active_dataset.data_yaml,
             'img_dir': agent.session_state.active_dataset.img_dir,
             'label_dir': agent.session_state.active_dataset.label_dir,
-            'pending_tool': agent.session_state.pending_confirmation.tool_name,
+            'pending_tool': (agent.get_pending_action() or {}).get('tool_name', ''),
         }
         agent_records.append(rec)
         if reply['status'] == 'needs_confirmation':
@@ -210,7 +210,7 @@ async def main() -> None:
                 'data_yaml': agent.session_state.active_dataset.data_yaml,
                 'img_dir': agent.session_state.active_dataset.img_dir,
                 'label_dir': agent.session_state.active_dataset.label_dir,
-                'pending_tool': agent.session_state.pending_confirmation.tool_name,
+                'pending_tool': (agent.get_pending_action() or {}).get('tool_name', ''),
             })
     result['agent_runs']['deepseek_training_flow'] = agent_records
 

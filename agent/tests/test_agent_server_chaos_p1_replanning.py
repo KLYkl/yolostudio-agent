@@ -75,12 +75,12 @@ async def _scenario_c33_wait_does_not_confirm_or_cancel() -> None:
 
     first = await client.chat('数据在 /data/p1，用 yolov8n.pt 训练，执行。')
     assert first['status'] == 'needs_confirmation', first
-    assert client.session_state.pending_confirmation.tool_name == 'start_training'
+    assert (client.get_pending_action() or {}).get('tool_name', '') == 'start_training'
 
     second = await client.chat('等等。')
     assert second['status'] == 'needs_confirmation', second
     assert second['tool_call']['name'] == 'start_training'
-    assert client.session_state.pending_confirmation.tool_name == 'start_training'
+    assert (client.get_pending_action() or {}).get('tool_name', '') == 'start_training'
 
 
 async def _scenario_c34_show_environment_before_execute() -> None:
@@ -93,7 +93,7 @@ async def _scenario_c34_show_environment_before_execute() -> None:
     second = await client.chat('可以，但先给我看环境。')
     assert second['status'] == 'needs_confirmation', second
     assert '训练环境: yolodo' in second['message']
-    assert client.session_state.pending_confirmation.tool_name == 'start_training'
+    assert (client.get_pending_action() or {}).get('tool_name', '') == 'start_training'
 
 
 async def _scenario_c35_revise_before_execute() -> None:
@@ -106,7 +106,7 @@ async def _scenario_c35_revise_before_execute() -> None:
     second = await client.chat('执行，不过先把 batch 改 32。')
     assert second['status'] == 'needs_confirmation', second
     assert second['tool_call']['name'] == 'start_training'
-    assert client.session_state.pending_confirmation.tool_name == 'start_training'
+    assert (client.get_pending_action() or {}).get('tool_name', '') == 'start_training'
     assert 'batch=32' in second['message']
     assert calls[-1][0] == 'training_preflight'
     assert calls[-1][1]['batch'] == 32

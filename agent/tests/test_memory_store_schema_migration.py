@@ -51,20 +51,13 @@ def main() -> None:
         state = store.load_state('legacy-session')
         assert state.session_id == 'legacy-session'
         assert state.schema_version == SESSION_STATE_SCHEMA_VERSION
-        assert state.pending_confirmation.tool_name == 'start_training'
-        assert state.pending_confirmation.source == 'synthetic'
-        assert state.pending_confirmation.allowed_decisions == ['approve', 'reject', 'edit', 'clarify']
-        assert state.pending_confirmation.review_config == {}
-        assert state.pending_confirmation.decision_context == {}
+        assert not hasattr(state, 'pending_confirmation')
         assert state.active_training.training_plan_draft == {}
 
         rewritten = json.loads(session_path.read_text(encoding='utf-8'))
         assert rewritten['session_id'] == 'legacy-session'
         assert rewritten['schema_version'] == SESSION_STATE_SCHEMA_VERSION
-        assert rewritten['pending_confirmation']['source'] == 'synthetic'
-        assert rewritten['pending_confirmation']['allowed_decisions'] == ['approve', 'reject', 'edit', 'clarify']
-        assert rewritten['pending_confirmation']['review_config'] == {}
-        assert rewritten['pending_confirmation']['decision_context'] == {}
+        assert 'pending_confirmation' not in rewritten
         assert rewritten['active_training']['training_plan_draft'] == {}
         events = store.read_events('legacy-session')
         assert any(

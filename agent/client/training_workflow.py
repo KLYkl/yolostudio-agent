@@ -68,12 +68,13 @@ def _first_non_empty(*values: object) -> str:
 
 
 def _pending_tool_name(pending_confirmation: dict[str, Any] | None, session_state: SessionState) -> str:
+    del session_state
     if pending_confirmation is not None:
         return _first_non_empty(
             pending_confirmation.get('tool_name'),
             pending_confirmation.get('name'),
         )
-    return _normalized(session_state.pending_confirmation.tool_name)
+    return ''
 
 
 def derive_training_workflow_state(

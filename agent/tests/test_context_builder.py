@@ -111,11 +111,13 @@ def _scenario_compact_populated_summary() -> None:
     state.active_prediction.last_realtime_status = {'status': 'running'}
     state.active_knowledge.last_analysis = {'summary': 'ok'}
     state.active_remote_transfer.target_label = 'server-a'
-    state.pending_confirmation.tool_name = 'start_training'
-    state.pending_confirmation.allowed_decisions = ['approve', 'reject']
     state.preferences.default_model = 'demo-model'
     digest = MemoryDigest(summary_lines=['最近调用过的工具: check_training_status'], recent_events=[])
-    summary = builder.build_state_summary(state, digest)
+    pending_confirmation = {
+        'tool_name': 'start_training',
+        'allowed_decisions': ['approve', 'reject'],
+    }
+    summary = builder.build_state_summary(state, digest, pending_confirmation=pending_confirmation)
     assert '数据集:' in summary
     assert 'dataset_root: /data/demo' in summary
     assert 'last_scan_classes: epidural, subdural' in summary
@@ -150,7 +152,7 @@ def _scenario_compact_populated_summary() -> None:
     assert '历史摘要:' in summary
     assert '- 最近调用过的工具: check_training_status' in summary
 
-    messages = builder.build_messages(state, [])
+    messages = builder.build_messages(state, [], pending_confirmation=pending_confirmation)
     assert len(messages) == 2, messages
     assert getattr(messages[0], 'content', '') == 'system'
     assert 'epidural' in getattr(messages[1], 'content', '')

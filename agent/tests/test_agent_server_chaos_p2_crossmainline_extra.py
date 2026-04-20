@@ -47,7 +47,7 @@ async def _scenario_c65_failed_then_predict_with_best_weight_requires_real_path(
     assert '不能直接假定“最佳训练”的权重文件路径' in turn['message']
     assert calls == []
     assert client.session_state.active_training.best_run_selection == before
-    assert client.session_state.pending_confirmation.tool_name == ''
+    assert (client.get_pending_action() or {}).get('tool_name', '') == ''
     assert client.session_state.active_prediction.source_path == ''
 
 
@@ -58,7 +58,7 @@ async def _scenario_c66_mixed_predict_train_compare_request_is_split() -> None:
     assert turn['status'] == 'completed', turn
     assert '请拆成连续步骤' in turn['message']
     assert calls == []
-    assert client.session_state.pending_confirmation.tool_name == ''
+    assert (client.get_pending_action() or {}).get('tool_name', '') == ''
     assert client.session_state.active_training.training_plan_draft == {}
     assert client.session_state.active_prediction.source_path == ''
 
@@ -70,7 +70,7 @@ async def _scenario_c67_merge_frames_into_old_dataset_requires_prepare_chain() -
     assert turn['status'] == 'completed', turn
     assert '先走数据准备/校验' in turn['message']
     assert calls == []
-    assert client.session_state.pending_confirmation.tool_name == ''
+    assert (client.get_pending_action() or {}).get('tool_name', '') == ''
     assert client.session_state.active_training.training_plan_draft == {}
 
 
@@ -89,7 +89,7 @@ async def _scenario_c68_predict_using_best_run_after_compare_still_needs_weight_
     assert '不能直接假定“最佳训练”的权重文件路径' in turn['message']
     assert calls == []
     assert client.session_state.active_training.last_run_comparison == before
-    assert client.session_state.pending_confirmation.tool_name == ''
+    assert (client.get_pending_action() or {}).get('tool_name', '') == ''
     assert client.session_state.active_prediction.source_path == ''
 
 
@@ -100,7 +100,7 @@ async def _scenario_c69_prediction_result_cannot_become_training_data_directly()
     assert turn['status'] == 'completed', turn
     assert '不能直接当训练数据开训' in turn['message']
     assert calls == []
-    assert client.session_state.pending_confirmation.tool_name == ''
+    assert (client.get_pending_action() or {}).get('tool_name', '') == ''
     assert client.session_state.active_training.training_plan_draft == {}
 
 
@@ -111,7 +111,7 @@ async def _scenario_c70_no_continuous_parallel_prediction_during_training() -> N
     assert turn['status'] == 'completed', turn
     assert '不支持“边训练边持续做视频预测”' in turn['message']
     assert calls == []
-    assert client.session_state.pending_confirmation.tool_name == ''
+    assert (client.get_pending_action() or {}).get('tool_name', '') == ''
     assert client.session_state.active_training.training_plan_draft == {}
     assert client.session_state.active_prediction.source_path == ''
 

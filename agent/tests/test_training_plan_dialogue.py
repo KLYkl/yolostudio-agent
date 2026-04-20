@@ -204,7 +204,7 @@ class _DummyGraph:
             if draft:
                 self.plan_context = build_training_plan_context_from_draft(draft)
             has_draft = bool(draft)
-            has_pending = bool(self.client.session_state.pending_confirmation.tool_name)
+            has_pending = bool((self.client.get_pending_action() or {}).get('tool_name'))
             if not has_draft and not has_pending:
                 self.plan_context = None
         if not self.plan_context:
@@ -870,7 +870,7 @@ async def _scenario_discussion_then_execute() -> None:
     assert '训练计划草案：' in turn1['message']
     assert '执行方式: 直接训练' in turn1['message']
     assert '训练环境: yolodo' in turn1['message']
-    assert client.session_state.pending_confirmation.tool_name == ''
+    assert (client.get_pending_action() or {}).get('tool_name', '') == ''
     assert [name for name, _ in calls[:3]] == ['training_readiness', 'list_training_environments', 'training_preflight']
 
     turn2 = await client.chat('为什么你觉得可以直接训练？把 batch 改成 16，imgsz 改成 960，optimizer AdamW，freeze 8，resume。')
@@ -999,7 +999,7 @@ async def _scenario_prepare_only_revision() -> None:
     assert turn1['status'] == 'needs_confirmation', turn1
     assert '执行方式: 先准备再训练' in turn1['message']
     assert '主要阻塞' not in turn1['message'] or 'missing_yaml' in turn1['message']
-    assert client.session_state.pending_confirmation.tool_name == 'prepare_dataset_for_training'
+    assert (client.get_pending_action() or {}).get('tool_name', '') == 'prepare_dataset_for_training'
     assert turn1['tool_call']['name'] == 'prepare_dataset_for_training'
     assert turn1['tool_call']['args'].get('force_split') is True
 
@@ -1371,7 +1371,7 @@ async def _scenario_cancel_then_replan() -> None:
     assert turn3['status'] == 'cancelled', turn3
     assert '先不执行这一步' in turn3['message']
     assert '当前计划已保留' in turn3['message']
-    assert client.session_state.pending_confirmation.tool_name == ''
+    assert (client.get_pending_action() or {}).get('tool_name', '') == ''
     assert client.session_state.active_training.training_plan_draft != {}
     assert all(name != 'start_training' for name, _ in calls)
 
@@ -1488,7 +1488,7 @@ async def _scenario_cancel_prepare_then_rebuild() -> None:
     assert turn3['status'] == 'cancelled', turn3
     assert '先不执行这一步' in turn3['message']
     assert '当前计划已保留' in turn3['message']
-    assert client.session_state.pending_confirmation.tool_name == ''
+    assert (client.get_pending_action() or {}).get('tool_name', '') == ''
     assert client.session_state.active_training.training_plan_draft != {}
     assert all(name != 'prepare_dataset_for_training' for name, _ in calls)
 
@@ -1581,7 +1581,7 @@ async def _scenario_preparable_backend_switch() -> None:
     assert '执行后端: 自定义 Trainer' in turn2['message']
     assert '当前自动执行链只支持标准 YOLO 训练' in turn2['message']
     assert '当前还不能直接训练' in turn2['message']
-    assert client.session_state.pending_confirmation.tool_name == ''
+    assert (client.get_pending_action() or {}).get('tool_name', '') == ''
     assert all(name != 'prepare_dataset_for_training' for name, _ in calls)
 
     turn3 = await client.chat('不用 trainer 了，切回标准 yolo，环境改成 base，只做准备，不要自动划分，先给我计划。')

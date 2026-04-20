@@ -191,7 +191,7 @@ class _ScriptedGraph:
             if draft:
                 self.plan_context = build_training_plan_context_from_draft(draft)
             has_draft = bool(draft)
-            has_pending = bool(self.client.session_state.pending_confirmation.tool_name)
+            has_pending = bool((self.client.get_pending_action() or {}).get('tool_name'))
             if not has_draft and not has_pending:
                 self.plan_context = None
         if not self.plan_context:

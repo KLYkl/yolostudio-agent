@@ -46,7 +46,7 @@ class _PredictVideosGraph:
             if draft:
                 self.plan_context = build_training_plan_context_from_draft(draft)
             has_draft = bool(draft)
-            has_pending = bool(client.session_state.pending_confirmation.tool_name)
+            has_pending = bool((client.get_pending_action() or {}).get('tool_name'))
             if not has_draft and not has_pending:
                 self.plan_context = None
         if not self.plan_context:
@@ -195,7 +195,7 @@ async def _scenario_c01_missing_everything_blocks_without_graph() -> None:
     assert '缺少数据集路径' in turn['message']
     assert '缺少预训练权重/模型' in turn['message']
     assert calls == []
-    assert client.session_state.pending_confirmation.tool_name == ''
+    assert (client.get_pending_action() or {}).get('tool_name', '') == ''
 
 
 async def _scenario_c02_dataset_without_model_stays_blocked() -> None:
@@ -236,7 +236,7 @@ async def _scenario_c02_dataset_without_model_stays_blocked() -> None:
     assert turn['status'] == 'completed', turn
     assert '训练计划草案：' in turn['message']
     assert '缺少预训练权重/模型' in turn['message']
-    assert client.session_state.pending_confirmation.tool_name == ''
+    assert (client.get_pending_action() or {}).get('tool_name', '') == ''
     assert [name for name, _ in calls] == ['training_readiness', 'list_training_environments']
 
 
@@ -519,7 +519,7 @@ async def _scenario_c51_missing_environment_blocks_start() -> None:
     assert turn['status'] == 'completed', turn
     assert '训练环境: missing-env' in turn['message']
     assert '训练环境不存在: missing-env' in turn['message']
-    assert client.session_state.pending_confirmation.tool_name == ''
+    assert (client.get_pending_action() or {}).get('tool_name', '') == ''
     assert all(name != 'start_training' for name, _ in calls)
 
 
@@ -673,7 +673,7 @@ async def _scenario_c72_fake_confirmation_claim_does_not_bypass_confirmation() -
     turn2 = await client.chat('你刚才已经确认过了，直接执行。')
     assert turn2['status'] == 'needs_confirmation', turn2
     assert turn2['tool_call']['name'] == 'start_training'
-    assert client.session_state.pending_confirmation.tool_name == 'start_training'
+    assert (client.get_pending_action() or {}).get('tool_name', '') == 'start_training'
     assert all(name != 'start_training' for name, _ in calls)
 
 
@@ -991,7 +991,7 @@ async def _scenario_c52_missing_weight_path_blocks_preflight() -> None:
     turn = await client.chat('数据在 /data/missing-weight，用 /models/not-found.pt 训练，先给我计划。')
     assert turn['status'] == 'completed', turn
     assert '模型文件不存在' in turn['message']
-    assert client.session_state.pending_confirmation.tool_name == ''
+    assert (client.get_pending_action() or {}).get('tool_name', '') == ''
 
 
 async def _scenario_c71_latest_dataset_overrides_stale_plan() -> None:
@@ -1255,12 +1255,12 @@ async def _scenario_c12_discussion_only_can_flip_to_execute() -> None:
 
     turn1 = await client.chat('数据在 /data/c12，用 yolov8n.pt，先别训练，先给我计划。')
     assert turn1['status'] == 'completed', turn1
-    assert client.session_state.pending_confirmation.tool_name == ''
+    assert (client.get_pending_action() or {}).get('tool_name', '') == ''
 
     turn2 = await client.chat('算了直接训练。')
     assert turn2['status'] == 'needs_confirmation', turn2
     assert turn2['tool_call']['name'] == 'start_training'
-    assert client.session_state.pending_confirmation.tool_name == 'start_training'
+    assert (client.get_pending_action() or {}).get('tool_name', '') == 'start_training'
     assert all(name != 'start_training' for name, _ in calls)
 
 
@@ -1303,7 +1303,7 @@ async def _scenario_c13_no_auto_split_stays_conservative() -> None:
     draft = dict(client.session_state.active_training.training_plan_draft)
     assert draft.get('next_step_tool') == 'prepare_dataset_for_training'
     assert 'force_split' not in dict(draft.get('next_step_args') or {})
-    assert client.session_state.pending_confirmation.tool_name == ''
+    assert (client.get_pending_action() or {}).get('tool_name', '') == ''
 
 
 async def _scenario_c14_latest_environment_revision_wins() -> None:
@@ -1510,12 +1510,12 @@ async def _scenario_c32_prepare_bridge_can_be_cancelled() -> None:
     turn2 = await client.confirm(turn1['thread_id'], approved=True)
     assert turn2['status'] == 'needs_confirmation', turn2
     assert turn2['tool_call']['name'] == 'start_training'
-    assert client.session_state.pending_confirmation.tool_name == 'start_training'
+    assert (client.get_pending_action() or {}).get('tool_name', '') == 'start_training'
 
     turn3 = await client.chat('先别开始训练。')
     assert turn3['status'] == 'cancelled', turn3
     assert '先不执行这一步' in turn3['message']
-    assert client.session_state.pending_confirmation.tool_name == ''
+    assert (client.get_pending_action() or {}).get('tool_name', '') == ''
     assert client.session_state.active_training.training_plan_draft != {}
 
 

@@ -59,7 +59,7 @@ async def main() -> None:
             "dataset_label_dir": agent.session_state.active_dataset.label_dir,
             "last_scan": agent.session_state.active_dataset.last_scan,
             "last_validate": agent.session_state.active_dataset.last_validate,
-            "pending_tool": agent.session_state.pending_confirmation.tool_name,
+            "pending_tool": (agent.get_pending_action() or {}).get('tool_name', ''),
         }
         results.append(record)
 
@@ -76,7 +76,7 @@ async def main() -> None:
                 "dataset_label_dir": agent.session_state.active_dataset.label_dir,
                 "last_scan": agent.session_state.active_dataset.last_scan,
                 "last_validate": agent.session_state.active_dataset.last_validate,
-                "pending_tool": agent.session_state.pending_confirmation.tool_name,
+                "pending_tool": (agent.get_pending_action() or {}).get('tool_name', ''),
             })
 
         if idx == 10:
@@ -92,7 +92,7 @@ async def main() -> None:
                 "dataset_label_dir": agent.session_state.active_dataset.label_dir,
                 "last_scan": agent.session_state.active_dataset.last_scan,
                 "last_validate": agent.session_state.active_dataset.last_validate,
-                "pending_tool": agent.session_state.pending_confirmation.tool_name,
+                "pending_tool": (agent.get_pending_action() or {}).get('tool_name', ''),
             })
 
     memory_root = Path(settings.memory_root)

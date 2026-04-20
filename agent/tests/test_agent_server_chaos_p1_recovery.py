@@ -122,7 +122,7 @@ async def _scenario_c97_resume_cancel_resume_stays_stable() -> None:
 
     second = await client.chat('取消。')
     assert second['status'] == 'cancelled', second
-    assert client.session_state.pending_confirmation.tool_name == ''
+    assert (client.get_pending_action() or {}).get('tool_name', '') == ''
 
     call_count = len(calls)
     third = await client.chat('从最近状态继续训练。')

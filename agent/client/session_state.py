@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-SESSION_STATE_SCHEMA_VERSION = 4
+SESSION_STATE_SCHEMA_VERSION = 5
 
 
 def utc_now() -> str:
@@ -150,7 +150,6 @@ class SessionState:
     active_prediction: PredictionContext = field(default_factory=PredictionContext)
     active_knowledge: KnowledgeContext = field(default_factory=KnowledgeContext)
     active_remote_transfer: RemoteTransferContext = field(default_factory=RemoteTransferContext)
-    pending_confirmation: PendingConfirmation = field(default_factory=PendingConfirmation)
     preferences: UserPreferences = field(default_factory=UserPreferences)
 
     def touch(self) -> None:
@@ -172,7 +171,6 @@ class SessionState:
             active_prediction=PredictionContext(**data.get('active_prediction', {})),
             active_knowledge=KnowledgeContext(**data.get('active_knowledge', {})),
             active_remote_transfer=RemoteTransferContext(**data.get('active_remote_transfer', {})),
-            pending_confirmation=PendingConfirmation(**data.get('pending_confirmation', {})),
             preferences=UserPreferences(**data.get('preferences', {})),
         )
 
@@ -195,24 +193,12 @@ def migrate_session_state_payload(data: dict[str, Any] | None, *, session_id_fal
         'active_prediction',
         'active_knowledge',
         'active_remote_transfer',
-        'pending_confirmation',
         'preferences',
     ):
         if not isinstance(payload.get(field_name), dict):
             payload[field_name] = {}
 
     if schema_version < 2:
-        pending = dict(payload.get('pending_confirmation') or {})
-        if not isinstance(pending.get('allowed_decisions'), list) or not pending.get('allowed_decisions'):
-            pending['allowed_decisions'] = ["approve", "reject", "edit", "clarify"]
-        if not isinstance(pending.get('review_config'), dict):
-            pending['review_config'] = {}
-        if not isinstance(pending.get('decision_context'), dict):
-            pending['decision_context'] = {}
-        if not str(pending.get('source') or '').strip():
-            pending['source'] = 'synthetic'
-        payload['pending_confirmation'] = pending
-
         active_training = dict(payload.get('active_training') or {})
         if not isinstance(active_training.get('training_plan_draft'), dict):
             active_training['training_plan_draft'] = {}
@@ -223,5 +209,6 @@ def migrate_session_state_payload(data: dict[str, Any] | None, *, session_id_fal
         active_training.pop('training_confirmation_interrupt', None)
         payload['active_training'] = active_training
 
+    payload.pop('pending_confirmation', None)
     payload['schema_version'] = SESSION_STATE_SCHEMA_VERSION
     return payload

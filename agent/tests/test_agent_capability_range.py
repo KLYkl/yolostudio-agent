@@ -73,7 +73,7 @@ def summarize_events(agent: YoloStudioAgentClient, limit: int = 20) -> dict[str,
 def state_snapshot(agent: YoloStudioAgentClient) -> dict[str, Any]:
     ds = agent.session_state.active_dataset
     tr = agent.session_state.active_training
-    pc = agent.session_state.pending_confirmation
+    pending = agent.get_pending_action() or {}
     return {
         'dataset_root': ds.dataset_root,
         'img_dir': ds.img_dir,
@@ -83,8 +83,8 @@ def state_snapshot(agent: YoloStudioAgentClient) -> dict[str, Any]:
         'training_model': tr.model,
         'training_data_yaml': tr.data_yaml,
         'training_device': tr.device,
-        'pending_tool': pc.tool_name,
-        'pending_args': pc.tool_args,
+        'pending_tool': pending.get('tool_name', ''),
+        'pending_args': pending.get('tool_args', {}),
     }
 
 

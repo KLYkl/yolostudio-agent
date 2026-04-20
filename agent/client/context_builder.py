@@ -171,9 +171,15 @@ class ContextBuilder:
         state: SessionState,
         recent_messages: Iterable[BaseMessage],
         digest: MemoryDigest | None = None,
+        pending_confirmation: dict[str, object] | None = None,
         training_plan_context: dict[str, object] | None = None,
     ) -> list[BaseMessage]:
-        summary = self.build_state_summary(state, digest, training_plan_context=training_plan_context)
+        summary = self.build_state_summary(
+            state,
+            digest,
+            pending_confirmation=pending_confirmation,
+            training_plan_context=training_plan_context,
+        )
         messages: list[BaseMessage] = [
             SystemMessage(content=self.system_prompt),
             SystemMessage(content=summary),
@@ -185,15 +191,17 @@ class ContextBuilder:
         self,
         state: SessionState,
         digest: MemoryDigest | None = None,
+        pending_confirmation: dict[str, object] | None = None,
         training_plan_context: dict[str, object] | None = None,
     ) -> str:
         ds = state.active_dataset
         tr = state.active_training
-        pc = state.pending_confirmation
         pred = state.active_prediction
         kn = state.active_knowledge
         rt = state.active_remote_transfer
         pref = state.preferences
+        pending = dict(pending_confirmation or {})
+        pending_decision_context = dict(pending.get('decision_context') or {})
         digest_text = digest.to_text() if digest else '无历史摘要'
         active_loop_request = dict(tr.active_loop_request or {})
         last_extract = dict(ds.last_extract_result or ds.last_frame_extract or ds.last_video_scan or ds.last_extract_preview or {})
@@ -366,11 +374,15 @@ class ContextBuilder:
             lines,
             '待确认操作',
             [
-                ('tool', pc.tool_name),
-                ('summary', pc.summary),
-                ('objective', pc.objective),
-                ('allowed_decisions', ', '.join(pc.allowed_decisions) if (pc.tool_name or pc.summary or pc.objective or pc.decision_context) and pc.allowed_decisions else ''),
-                ('latest_review', str((pc.decision_context or {}).get('decision') or '')),
+                ('tool', str(pending.get('tool_name') or pending.get('name') or '')),
+                ('summary', str(pending.get('summary') or '')),
+                ('objective', str(pending.get('objective') or '')),
+                (
+                    'allowed_decisions',
+                    ', '.join(str(item).strip() for item in (pending.get('allowed_decisions') or []) if str(item).strip())
+                    if pending else '',
+                ),
+                ('latest_review', str(pending_decision_context.get('decision') or '')),
             ],
         )
 

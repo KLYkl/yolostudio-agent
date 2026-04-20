@@ -60,7 +60,7 @@ async def main() -> None:
             'data_yaml': agent.session_state.active_dataset.data_yaml,
             'last_scan': agent.session_state.active_dataset.last_scan,
             'last_validate': agent.session_state.active_dataset.last_validate,
-            'pending_tool': agent.session_state.pending_confirmation.tool_name,
+            'pending_tool': (agent.get_pending_action() or {}).get('tool_name', ''),
         }
         results.append(record)
         if result['status'] == 'needs_confirmation':
@@ -77,7 +77,7 @@ async def main() -> None:
                 'data_yaml': agent.session_state.active_dataset.data_yaml,
                 'last_scan': agent.session_state.active_dataset.last_scan,
                 'last_validate': agent.session_state.active_dataset.last_validate,
-                'pending_tool': agent.session_state.pending_confirmation.tool_name,
+                'pending_tool': (agent.get_pending_action() or {}).get('tool_name', ''),
             })
         if idx == 10:
             agent = await build_agent_client(settings)
@@ -93,7 +93,7 @@ async def main() -> None:
                 'data_yaml': agent.session_state.active_dataset.data_yaml,
                 'last_scan': agent.session_state.active_dataset.last_scan,
                 'last_validate': agent.session_state.active_dataset.last_validate,
-                'pending_tool': agent.session_state.pending_confirmation.tool_name,
+                'pending_tool': (agent.get_pending_action() or {}).get('tool_name', ''),
             })
 
     memory_root = Path(settings.memory_root)

@@ -78,7 +78,7 @@ async def _scenario_c05_empty_directory_blocks_cleanly() -> None:
     assert '未发现可用图片或标签' in turn['message']
     assert calls and calls[0] == ('training_readiness', {'img_dir': '/data/empty'})
     assert all(name not in {'prepare_dataset_for_training', 'training_preflight', 'start_training'} for name, _ in calls)
-    assert client.session_state.pending_confirmation.tool_name == ''
+    assert (client.get_pending_action() or {}).get('tool_name', '') == ''
     assert client.session_state.active_training.running is False
     assert client.session_state.active_dataset.dataset_root == '/data/empty'
 
@@ -102,7 +102,7 @@ async def _scenario_c06_file_path_is_not_dataset_root() -> None:
     assert '不是可训练数据集根目录' in turn['message']
     assert calls and calls[0] == ('training_readiness', {'img_dir': '/data/not_dataset.txt'})
     assert all(name not in {'prepare_dataset_for_training', 'training_preflight', 'start_training'} for name, _ in calls)
-    assert client.session_state.pending_confirmation.tool_name == ''
+    assert (client.get_pending_action() or {}).get('tool_name', '') == ''
     assert client.session_state.active_training.running is False
     assert client.session_state.active_dataset.last_readiness.get('primary_blocker_type') == 'path_type_error'
 
@@ -127,7 +127,7 @@ async def _scenario_c07_video_directory_should_not_train_directly() -> None:
     assert '抽帧' in turn['message']
     assert calls and calls[0] == ('training_readiness', {'img_dir': '/data/videos'})
     assert all(name not in {'prepare_dataset_for_training', 'training_preflight', 'start_training'} for name, _ in calls)
-    assert client.session_state.pending_confirmation.tool_name == ''
+    assert (client.get_pending_action() or {}).get('tool_name', '') == ''
     assert client.session_state.active_training.running is False
     assert client.session_state.active_dataset.last_readiness.get('primary_blocker_type') == 'video_source'
 
@@ -151,7 +151,7 @@ async def _scenario_c08_labels_directory_only_stays_blocked() -> None:
     assert '缺少 images' in turn['message'] or '只有 labels' in turn['message']
     assert calls and calls[0] == ('training_readiness', {'img_dir': '/data/labels_only'})
     assert all(name not in {'prepare_dataset_for_training', 'training_preflight', 'start_training'} for name, _ in calls)
-    assert client.session_state.pending_confirmation.tool_name == ''
+    assert (client.get_pending_action() or {}).get('tool_name', '') == ''
     assert client.session_state.active_training.running is False
     assert client.session_state.active_dataset.last_readiness.get('primary_blocker_type') == 'missing_images'
 
@@ -169,7 +169,7 @@ async def _scenario_c09_vague_old_dataset_requires_explicit_path() -> None:
     assert turn['status'] == 'completed', turn
     assert '缺少数据集路径' in turn['message']
     assert calls == []
-    assert client.session_state.pending_confirmation.tool_name == ''
+    assert (client.get_pending_action() or {}).get('tool_name', '') == ''
     assert client.session_state.active_training.training_plan_draft == {}
 
 
@@ -189,7 +189,7 @@ async def _scenario_c10_second_push_without_info_stays_blocked() -> None:
     assert '缺少数据集路径' in second['message']
     assert '缺少预训练权重/模型' in second['message']
     assert calls == []
-    assert client.session_state.pending_confirmation.tool_name == ''
+    assert (client.get_pending_action() or {}).get('tool_name', '') == ''
     assert client.session_state.active_training.training_plan_draft == {}
 
 
