@@ -147,18 +147,41 @@ def _install_fake_test_dependencies() -> None:
 _install_fake_test_dependencies()
 
 from langchain_core.messages import AIMessage, ToolMessage
+from yolostudio_agent.agent.client import intent_parsing
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from yolostudio_agent.agent.client.mainline_route_support import resolve_mainline_dispatch_payload
+from yolostudio_agent.agent.client.training_plan_context_service import (
+    build_training_plan_context_from_draft,
+    build_training_plan_context_payload,
+)
+from yolostudio_agent.agent.client.training_request_service import (
+    run_prepare_only_flow,
+    run_training_request_entrypoint,
+)
 
 
 class _NoLLMGraph:
     def __init__(self) -> None:
         self.client = None
+        self.plan_context: dict[str, Any] | None = None
 
     def bind(self, client) -> None:
         self.client = client
 
     def get_state(self, config):
-        return None
+        del config
+        client = self.client
+        if client is not None:
+            draft = dict(client.session_state.active_training.training_plan_draft or {})
+            if draft:
+                self.plan_context = build_training_plan_context_from_draft(draft)
+            has_draft = bool(draft)
+            has_pending = bool(client.session_state.pending_confirmation.tool_name)
+            if not has_draft and not has_pending:
+                self.plan_context = None
+        if not self.plan_context:
+            return None
+        return types.SimpleNamespace(values={'training_plan_context': dict(self.plan_context)})
 
     async def ainvoke(self, payload, config=None):
         messages = list(payload['messages'])
@@ -169,13 +192,94 @@ class _NoLLMGraph:
                 user_text = content
                 break
 
-        plan_context = dict(payload.get('training_plan_context') or {})
+        plan_context = dict(payload.get('training_plan_context') or self.plan_context or {})
         plan_status = str(plan_context.get('status') or '').strip().lower()
         next_tool = str(plan_context.get('next_step_tool') or '').strip()
         next_args = dict(plan_context.get('next_step_args') or {})
         execution_mode = str(plan_context.get('execution_mode') or '').strip().lower()
         reasoning_summary = str(plan_context.get('reasoning_summary') or '').strip()
         preflight_summary = str(plan_context.get('preflight_summary') or '').strip()
+        if not plan_context and self.client is not None:
+            mainline_context = self.client._collect_mainline_context(user_text)
+            route_state = await self.client._resolve_mainline_route_state(user_text, mainline_context)
+            dispatch_payload = resolve_mainline_dispatch_payload(
+                mainline_context=mainline_context,
+                route_state=route_state,
+            )
+            training_entrypoint_args = dict(dispatch_payload.get('training_entrypoint_request_args') or {})
+            if training_entrypoint_args:
+                prepare_only_followup = await run_prepare_only_flow(
+                    user_text=user_text,
+                    looks_like_prepare_only_request=self.client._looks_like_prepare_only_request,
+                    extract_dataset_path=intent_parsing.extract_dataset_path_from_text,
+                    local_path_exists=lambda path: Path(path).expanduser().exists(),
+                    direct_tool=self.client.direct_tool,
+                    collect_requested_training_args=self.client._collect_requested_training_args,
+                    build_training_plan_draft_fn=self.client._build_training_plan_draft,
+                    render_tool_result_message=self.client._render_tool_result_message,
+                )
+                if prepare_only_followup:
+                    entrypoint_result = {
+                        'reply': str(prepare_only_followup.get('reply') or '').strip(),
+                        'draft': dict(prepare_only_followup.get('draft') or {}),
+                        'defer_to_graph': str(prepare_only_followup.get('action') or '').strip() == 'save_draft_and_handoff',
+                    }
+                else:
+                    entrypoint_result = await run_training_request_entrypoint(
+                        session_state=self.client.session_state,
+                        user_text=user_text,
+                        normalized_text=str(training_entrypoint_args.get('normalized_text') or ''),
+                        dataset_path=str(training_entrypoint_args.get('dataset_path') or ''),
+                        frame_followup_path=str(training_entrypoint_args.get('frame_followup_path') or ''),
+                        wants_train=bool(training_entrypoint_args.get('wants_train')),
+                        wants_predict=bool(training_entrypoint_args.get('wants_predict')),
+                        no_train=bool(training_entrypoint_args.get('no_train')),
+                        readiness_only_query=bool(training_entrypoint_args.get('readiness_only_query')),
+                        wants_training_outcome_analysis=bool(training_entrypoint_args.get('wants_training_outcome_analysis')),
+                        wants_next_step_guidance=bool(training_entrypoint_args.get('wants_next_step_guidance')),
+                        wants_training_knowledge=bool(training_entrypoint_args.get('wants_training_knowledge')),
+                        wants_training_revision=bool(training_entrypoint_args.get('wants_training_revision')),
+                        wants_stop_training=bool(training_entrypoint_args.get('wants_stop_training')),
+                        blocks_training_start=bool(training_entrypoint_args.get('blocks_training_start')),
+                        explicit_run_ids=list(training_entrypoint_args.get('explicit_run_ids') or []),
+                        wants_split=bool(training_entrypoint_args.get('wants_split')),
+                        current_training_plan_context=build_training_plan_context_payload(self.client.session_state),
+                        direct_tool=self.client.direct_tool,
+                        collect_requested_training_args=self.client._collect_requested_training_args,
+                        is_training_discussion_only=self.client._is_training_discussion_only,
+                        extract_training_execution_backend=self.client._extract_training_execution_backend_from_text,
+                        build_training_plan_draft_fn=self.client._build_training_plan_draft,
+                        render_training_plan_message=self.client._render_training_plan_message,
+                    )
+                draft = dict((entrypoint_result or {}).get('draft') or {})
+                reply = str((entrypoint_result or {}).get('reply') or '').strip()
+                discussion_only = self.client._is_training_discussion_only(user_text)
+                if draft:
+                    self.client.session_state.active_training.training_plan_draft = dict(draft)
+                    self.plan_context = build_training_plan_context_from_draft(draft)
+                if draft and discussion_only:
+                    rendered = reply or await self.client._render_training_plan_message(
+                        draft,
+                        pending=bool(draft.get('next_step_tool')),
+                    )
+                    return {'messages': messages + ([AIMessage(content=rendered)] if rendered else [])}
+                if bool((entrypoint_result or {}).get('defer_to_graph')) and draft:
+                    plan_context = dict(self.plan_context or {})
+                    plan_status = str(plan_context.get('status') or '').strip().lower()
+                    next_tool = str(plan_context.get('next_step_tool') or '').strip()
+                    next_args = dict(plan_context.get('next_step_args') or {})
+                    execution_mode = str(plan_context.get('execution_mode') or '').strip().lower()
+                    reasoning_summary = str(plan_context.get('reasoning_summary') or '').strip()
+                    preflight_summary = str(plan_context.get('preflight_summary') or '').strip()
+                elif reply:
+                    return {'messages': messages + [AIMessage(content=reply)]}
+                elif draft:
+                    rendered = await self.client._render_training_plan_message(
+                        draft,
+                        pending=bool(draft.get('next_step_tool')),
+                    )
+                    return {'messages': messages + [AIMessage(content=rendered)]}
+
         is_post_prepare_start_handoff = (
             next_tool == 'start_training'
             and bool(preflight_summary)
@@ -201,12 +305,28 @@ class _ScriptedGraph:
     def __init__(self, routes: dict[str, tuple[list[tuple[str, dict[str, Any]]], str]]) -> None:
         self.routes = dict(routes)
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.client = None
+        self.plan_context: dict[str, Any] | None = None
+
+    def bind(self, client) -> None:
+        self.client = client
 
     def get_state(self, config):
-        return None
+        del config
+        client = self.client
+        if client is not None:
+            draft = dict(client.session_state.active_training.training_plan_draft or {})
+            if draft:
+                self.plan_context = build_training_plan_context_from_draft(draft)
+            has_draft = bool(draft)
+            has_pending = bool(client.session_state.pending_confirmation.tool_name)
+            if not has_draft and not has_pending:
+                self.plan_context = None
+        if not self.plan_context:
+            return None
+        return types.SimpleNamespace(values={'training_plan_context': dict(self.plan_context)})
 
     async def ainvoke(self, payload, config=None):
-        del config
         messages = list(payload['messages'])
         user_text = ''
         for message in reversed(messages):
@@ -214,6 +334,91 @@ class _ScriptedGraph:
             if isinstance(content, str) and content:
                 user_text = content
                 break
+        client = self.client
+        plan_context = dict(payload.get('training_plan_context') or self.plan_context or {})
+        if not plan_context and client is not None:
+            mainline_context = client._collect_mainline_context(user_text)
+            route_state = await client._resolve_mainline_route_state(user_text, mainline_context)
+            dispatch_payload = resolve_mainline_dispatch_payload(
+                mainline_context=mainline_context,
+                route_state=route_state,
+            )
+            training_entrypoint_args = dict(dispatch_payload.get('training_entrypoint_request_args') or {})
+            if training_entrypoint_args:
+                prepare_only_followup = await run_prepare_only_flow(
+                    user_text=user_text,
+                    looks_like_prepare_only_request=client._looks_like_prepare_only_request,
+                    extract_dataset_path=intent_parsing.extract_dataset_path_from_text,
+                    local_path_exists=lambda path: Path(path).expanduser().exists(),
+                    direct_tool=client.direct_tool,
+                    collect_requested_training_args=client._collect_requested_training_args,
+                    build_training_plan_draft_fn=client._build_training_plan_draft,
+                    render_tool_result_message=client._render_tool_result_message,
+                )
+                if prepare_only_followup:
+                    entrypoint_result = {
+                        'reply': str(prepare_only_followup.get('reply') or '').strip(),
+                        'draft': dict(prepare_only_followup.get('draft') or {}),
+                        'defer_to_graph': str(prepare_only_followup.get('action') or '').strip() == 'save_draft_and_handoff',
+                    }
+                else:
+                    entrypoint_result = await run_training_request_entrypoint(
+                        session_state=client.session_state,
+                        user_text=user_text,
+                        normalized_text=str(training_entrypoint_args.get('normalized_text') or ''),
+                        dataset_path=str(training_entrypoint_args.get('dataset_path') or ''),
+                        frame_followup_path=str(training_entrypoint_args.get('frame_followup_path') or ''),
+                        wants_train=bool(training_entrypoint_args.get('wants_train')),
+                        wants_predict=bool(training_entrypoint_args.get('wants_predict')),
+                        no_train=bool(training_entrypoint_args.get('no_train')),
+                        readiness_only_query=bool(training_entrypoint_args.get('readiness_only_query')),
+                        wants_training_outcome_analysis=bool(training_entrypoint_args.get('wants_training_outcome_analysis')),
+                        wants_next_step_guidance=bool(training_entrypoint_args.get('wants_next_step_guidance')),
+                        wants_training_knowledge=bool(training_entrypoint_args.get('wants_training_knowledge')),
+                        wants_training_revision=bool(training_entrypoint_args.get('wants_training_revision')),
+                        wants_stop_training=bool(training_entrypoint_args.get('wants_stop_training')),
+                        blocks_training_start=bool(training_entrypoint_args.get('blocks_training_start')),
+                        explicit_run_ids=list(training_entrypoint_args.get('explicit_run_ids') or []),
+                        wants_split=bool(training_entrypoint_args.get('wants_split')),
+                        current_training_plan_context=build_training_plan_context_payload(client.session_state),
+                        direct_tool=client.direct_tool,
+                        collect_requested_training_args=client._collect_requested_training_args,
+                        is_training_discussion_only=client._is_training_discussion_only,
+                        extract_training_execution_backend=client._extract_training_execution_backend_from_text,
+                        build_training_plan_draft_fn=client._build_training_plan_draft,
+                        render_training_plan_message=client._render_training_plan_message,
+                    )
+                draft = dict((entrypoint_result or {}).get('draft') or {})
+                reply = str((entrypoint_result or {}).get('reply') or '').strip()
+                discussion_only = client._is_training_discussion_only(user_text)
+                if draft:
+                    client.session_state.active_training.training_plan_draft = dict(draft)
+                    self.plan_context = build_training_plan_context_from_draft(draft)
+                if draft and discussion_only:
+                    rendered = reply or await client._render_training_plan_message(
+                        draft,
+                        pending=bool(draft.get('next_step_tool')),
+                    )
+                    return {'messages': messages + ([AIMessage(content=rendered)] if rendered else [])}
+                if bool((entrypoint_result or {}).get('defer_to_graph')) and draft:
+                    plan_context = dict(self.plan_context or {})
+                    next_tool = str(plan_context.get('next_step_tool') or '').strip()
+                    next_args = dict(plan_context.get('next_step_args') or {})
+                    if config and next_tool and not discussion_only:
+                        thread_id = str(((config or {}).get('configurable') or {}).get('thread_id') or '').strip()
+                        client._set_pending_confirmation(
+                            thread_id,
+                            {'name': next_tool, 'args': next_args, 'id': None, 'synthetic': True},
+                        )
+                        return {'messages': messages + [AIMessage(content='按训练草案进入确认。')]}
+                elif reply:
+                    return {'messages': messages + [AIMessage(content=reply)]}
+                elif draft:
+                    rendered = await client._render_training_plan_message(
+                        draft,
+                        pending=bool(draft.get('next_step_tool')),
+                    )
+                    return {'messages': messages + [AIMessage(content=rendered)]}
         for marker, (tool_plan, final_text) in self.routes.items():
             if marker in user_text:
                 tool_messages: list[Any] = []

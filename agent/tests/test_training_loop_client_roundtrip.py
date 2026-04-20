@@ -163,7 +163,9 @@ except Exception:
     sys.modules['langgraph.types'] = types_mod
     sys.modules['langgraph.checkpoint.memory'] = checkpoint_mod
 
+import yolostudio_agent.agent.client.agent_client as agent_client_module
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from yolostudio_agent.agent.client.training_plan_context_service import build_training_plan_context_from_draft
 from langchain_core.messages import AIMessage, ToolMessage
 
 
@@ -177,12 +179,24 @@ class _ScriptedGraph:
         self.client: YoloStudioAgentClient | None = None
         self.script = script
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.plan_context: dict[str, Any] | None = None
 
     def bind(self, client: YoloStudioAgentClient) -> None:
         self.client = client
 
     def get_state(self, config):
-        return None
+        del config
+        if self.client is not None:
+            draft = dict(self.client.session_state.active_training.training_plan_draft or {})
+            if draft:
+                self.plan_context = build_training_plan_context_from_draft(draft)
+            has_draft = bool(draft)
+            has_pending = bool(self.client.session_state.pending_confirmation.tool_name)
+            if not has_draft and not has_pending:
+                self.plan_context = None
+        if not self.plan_context:
+            return None
+        return types.SimpleNamespace(values={'training_plan_context': dict(self.plan_context)})
 
     async def ainvoke(self, payload, config=None):
         messages = list(payload['messages'])
@@ -194,15 +208,17 @@ class _ScriptedGraph:
             if isinstance(content, str) and content:
                 user_text = content
                 break
-        plan_context = dict(payload.get('training_plan_context') or {})
+        plan_context = dict(payload.get('training_plan_context') or self.plan_context or {})
         next_tool = str(plan_context.get('next_step_tool') or '').strip()
         next_args = dict(plan_context.get('next_step_args') or {})
         execution_mode = str(plan_context.get('execution_mode') or '').strip().lower()
         reasoning_summary = str(plan_context.get('reasoning_summary') or '').strip()
         loop_request_tokens = ('环训练', '循环训练', '循环训', 'loop training', 'training loop', '自动复训', '自动续训')
+        loop_control_tokens = ('暂停', '恢复', '终止', '停止', '状态', '详情', '列表', '最近', '查看')
         is_loop_plan_handoff = (
             next_tool in {'prepare_dataset_for_training', 'start_training_loop'}
             and any(token in user_text or token in str(user_text).lower() for token in loop_request_tokens)
+            and not any(token in user_text for token in loop_control_tokens)
         )
         is_post_prepare_loop_handoff = (
             next_tool == 'start_training_loop'
@@ -216,6 +232,38 @@ class _ScriptedGraph:
                 {'name': next_tool, 'args': next_args, 'id': None, 'synthetic': True},
             )
             return {'messages': messages + [AIMessage(content='按训练草案进入确认。')]}
+
+        is_loop_start_request = (
+            self.client is not None
+            and any(token in user_text or token in str(user_text).lower() for token in loop_request_tokens)
+            and not any(token in user_text for token in loop_control_tokens)
+            and next_tool not in {'prepare_dataset_for_training', 'start_training_loop'}
+        )
+        if is_loop_start_request:
+            dataset_path = agent_client_module.intent_parsing.extract_dataset_path_from_text(user_text)
+            loop_args = self.client._collect_requested_training_loop_args(user_text, data_yaml=None)
+            entrypoint_result = await self.client._run_training_loop_start_entrypoint(
+                user_text=user_text,
+                dataset_path=dataset_path,
+                loop_args=loop_args,
+            )
+            draft = dict(entrypoint_result.get('draft') or {})
+            reply = str(entrypoint_result.get('reply') or '').strip()
+            if draft:
+                self.client.session_state.active_training.training_plan_draft = dict(draft)
+                self.plan_context = build_training_plan_context_from_draft(draft)
+            if entrypoint_result.get('defer_to_graph') and draft and config:
+                thread_id = str(((config or {}).get('configurable') or {}).get('thread_id') or '').strip()
+                next_tool_name = str(draft.get('next_step_tool') or '').strip()
+                next_tool_args = dict(draft.get('next_step_args') or {})
+                self.client._set_pending_confirmation(
+                    thread_id,
+                    {'name': next_tool_name, 'args': next_tool_args, 'id': None, 'synthetic': True},
+                )
+                return {'messages': messages + [AIMessage(content='按训练草案进入确认。')]}
+            if reply:
+                return {'messages': messages + [AIMessage(content=reply)]}
+
         tool_name, args, result, final_text = self.script(messages)
         self.calls.append((tool_name, dict(args)))
         tool_call_id = f'call-{len(self.calls)}'
@@ -326,7 +374,7 @@ async def _run() -> None:
 
             client._apply_to_state(tool_name, result, kwargs)
             if tool_name in {'start_training', 'start_training_loop'} and result.get('ok'):
-                client._clear_training_plan_draft()
+                client.session_state.active_training.training_plan_draft = {}
             client._record_secondary_event(tool_name, result)
             return result
 

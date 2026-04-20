@@ -88,7 +88,7 @@ def _install_repeat_tools(client, *, ready: bool):
                 'started_at': 'now',
             }
             client._apply_to_state(tool_name, result, kwargs)
-            client._clear_training_plan_draft()
+            client.session_state.active_training.training_plan_draft = {}
             return result
         elif tool_name == 'prepare_dataset_for_training':
             prepare_count['value'] += 1

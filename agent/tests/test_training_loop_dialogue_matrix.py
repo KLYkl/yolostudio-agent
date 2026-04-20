@@ -298,7 +298,7 @@ class _LoopOpsGraph:
             draft = dict(entrypoint_result.get('draft') or {})
             reply = str(entrypoint_result.get('reply') or '').strip()
             if draft:
-                self.client._save_training_plan_draft(draft)
+                self.client.session_state.active_training.training_plan_draft = dict(draft)
             if entrypoint_result.get('defer_to_graph') and draft and config:
                 thread_id = str(((config or {}).get('configurable') or {}).get('thread_id') or '').strip()
                 next_tool_name = str(draft.get('next_step_tool') or '').strip()
@@ -622,9 +622,9 @@ async def _build_client(planner_llm: Any | None = None, *, session_id: str = 'tr
                     draft['next_step_tool'] = 'start_training_loop'
                     draft['next_step_args'] = next_step_args
                     draft['planner_decision'] = 'start'
-                    client._save_training_plan_draft(draft)
+                    client.session_state.active_training.training_plan_draft = dict(draft)
         if tool_name in {'start_training', 'start_training_loop'} and result.get('ok'):
-            client._clear_training_plan_draft()
+            client.session_state.active_training.training_plan_draft = {}
         client._record_secondary_event(tool_name, result)
         return result
 

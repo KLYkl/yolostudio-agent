@@ -430,7 +430,7 @@ async def main() -> None:
         client._apply_to_state(tool_name, result, kwargs)
         client._record_secondary_event(tool_name, result)
         if tool_name == 'start_training' and result.get('ok'):
-            client._clear_training_plan_draft()
+            client.session_state.active_training.training_plan_draft = {}
         return result
 
     client.direct_tool = _direct_tool  # type: ignore[assignment]

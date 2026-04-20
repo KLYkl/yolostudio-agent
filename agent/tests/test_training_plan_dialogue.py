@@ -281,7 +281,7 @@ class _DummyGraph:
                 reply = str((entrypoint_result or {}).get('reply') or '').strip()
                 discussion_only = self.client._is_training_discussion_only(user_text)
                 if draft:
-                    self.client._save_training_plan_draft(draft)
+                    self.client.session_state.active_training.training_plan_draft = dict(draft)
                     self.plan_context = build_training_plan_context_from_draft(draft)
                 if draft and discussion_only:
                     rendered = reply or await self.client._render_training_plan_message(
@@ -692,7 +692,7 @@ async def _scenario_discussion_then_execute() -> None:
 
         client._apply_to_state(tool_name, result, kwargs)
         if tool_name == 'start_training' and result.get('ok'):
-            client._clear_training_plan_draft()
+            client.session_state.active_training.training_plan_draft = {}
         return result
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
@@ -822,7 +822,7 @@ async def _scenario_prepare_only_revision() -> None:
         if tool_name == 'prepare_dataset_for_training' and result.get('ok'):
             draft = client.session_state.active_training.training_plan_draft or {}
             if str(draft.get('execution_mode') or '').strip().lower() == 'prepare_only':
-                client._clear_training_plan_draft()
+                client.session_state.active_training.training_plan_draft = {}
         return result
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
@@ -1025,9 +1025,9 @@ async def _scenario_prepare_then_replan_and_execute() -> None:
         if tool_name == 'prepare_dataset_for_training' and result.get('ok'):
             draft = client.session_state.active_training.training_plan_draft or {}
             if str(draft.get('execution_mode') or '').strip().lower() == 'prepare_only':
-                client._clear_training_plan_draft()
+                client.session_state.active_training.training_plan_draft = {}
         if tool_name == 'start_training' and result.get('ok'):
-            client._clear_training_plan_draft()
+            client.session_state.active_training.training_plan_draft = {}
         return result
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
@@ -1183,7 +1183,7 @@ async def _scenario_cancel_then_replan() -> None:
 
         client._apply_to_state(tool_name, result, kwargs)
         if tool_name == 'start_training' and result.get('ok'):
-            client._clear_training_plan_draft()
+            client.session_state.active_training.training_plan_draft = {}
         return result
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
@@ -1298,7 +1298,7 @@ async def _scenario_cancel_prepare_then_rebuild() -> None:
         if tool_name == 'prepare_dataset_for_training' and result.get('ok'):
             draft = client.session_state.active_training.training_plan_draft or {}
             if str(draft.get('execution_mode') or '').strip().lower() == 'prepare_only':
-                client._clear_training_plan_draft()
+                client.session_state.active_training.training_plan_draft = {}
         return result
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
@@ -1395,7 +1395,7 @@ async def _scenario_preparable_backend_switch() -> None:
         if tool_name == 'prepare_dataset_for_training' and result.get('ok'):
             draft = client.session_state.active_training.training_plan_draft or {}
             if str(draft.get('execution_mode') or '').strip().lower() == 'prepare_only':
-                client._clear_training_plan_draft()
+                client.session_state.active_training.training_plan_draft = {}
         return result
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
@@ -1518,7 +1518,7 @@ async def _scenario_prepare_approval_then_revise_start() -> None:
 
         client._apply_to_state(tool_name, result, kwargs)
         if tool_name == 'start_training' and result.get('ok'):
-            client._clear_training_plan_draft()
+            client.session_state.active_training.training_plan_draft = {}
         return result
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
@@ -1623,7 +1623,7 @@ async def _scenario_prepare_only_natural_language_short_circuit() -> None:
 
         client._apply_to_state(tool_name, result, kwargs)
         if tool_name == 'prepare_dataset_for_training':
-            client._clear_training_plan_draft()
+            client.session_state.active_training.training_plan_draft = {}
         return result
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
@@ -1817,7 +1817,7 @@ async def _scenario_prepare_then_train_preserves_explicit_classes_txt() -> None:
 
         client._apply_to_state(tool_name, result, kwargs)
         if tool_name == 'start_training' and result.get('ok'):
-            client._clear_training_plan_draft()
+            client.session_state.active_training.training_plan_draft = {}
         return result
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]

@@ -163,31 +163,128 @@ except Exception:
     sys.modules['langgraph.checkpoint.memory'] = checkpoint_mod
 
 from langchain_core.messages import AIMessage
+from yolostudio_agent.agent.client import intent_parsing
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from yolostudio_agent.agent.client.mainline_route_support import resolve_mainline_dispatch_payload
+from yolostudio_agent.agent.client.training_plan_context_service import (
+    build_training_plan_context_from_draft,
+    build_training_plan_context_payload,
+)
+from yolostudio_agent.agent.client.training_request_service import (
+    run_prepare_only_flow,
+    run_training_request_entrypoint,
+)
 
 
 class _DummyGraph:
     def __init__(self) -> None:
         self.client: YoloStudioAgentClient | None = None
+        self.plan_context: dict[str, Any] | None = None
 
     def bind(self, client: YoloStudioAgentClient) -> None:
         self.client = client
 
     def get_state(self, config):
-        return None
+        del config
+        if self.client is not None:
+            draft = dict(self.client.session_state.active_training.training_plan_draft or {})
+            if draft:
+                self.plan_context = build_training_plan_context_from_draft(draft)
+            has_draft = bool(draft)
+            has_pending = bool(self.client.session_state.pending_confirmation.tool_name)
+            if not has_draft and not has_pending:
+                self.plan_context = None
+        if not self.plan_context:
+            return None
+        return types.SimpleNamespace(values={'training_plan_context': dict(self.plan_context)})
 
     async def ainvoke(self, payload, config=None):
         assert self.client is not None
         messages = list(payload['messages'])
-        plan_context = dict(payload.get('training_plan_context') or {})
-        next_tool = str(plan_context.get('next_step_tool') or '').strip()
-        next_args = dict(plan_context.get('next_step_args') or {})
         user_text = ''
         for message in reversed(messages):
             content = getattr(message, 'content', '')
             if isinstance(content, str) and content:
                 user_text = content
                 break
+        plan_context = dict(payload.get('training_plan_context') or self.plan_context or {})
+        if not plan_context:
+            mainline_context = self.client._collect_mainline_context(user_text)
+            route_state = await self.client._resolve_mainline_route_state(user_text, mainline_context)
+            dispatch_payload = resolve_mainline_dispatch_payload(
+                mainline_context=mainline_context,
+                route_state=route_state,
+            )
+            training_entrypoint_args = dict(dispatch_payload.get('training_entrypoint_request_args') or {})
+            if training_entrypoint_args:
+                prepare_only_followup = await run_prepare_only_flow(
+                    user_text=user_text,
+                    looks_like_prepare_only_request=self.client._looks_like_prepare_only_request,
+                    extract_dataset_path=intent_parsing.extract_dataset_path_from_text,
+                    local_path_exists=lambda path: Path(path).expanduser().exists(),
+                    direct_tool=self.client.direct_tool,
+                    collect_requested_training_args=self.client._collect_requested_training_args,
+                    build_training_plan_draft_fn=self.client._build_training_plan_draft,
+                    render_tool_result_message=self.client._render_tool_result_message,
+                )
+                if prepare_only_followup:
+                    entrypoint_result = {
+                        'reply': str(prepare_only_followup.get('reply') or '').strip(),
+                        'draft': dict(prepare_only_followup.get('draft') or {}),
+                        'defer_to_graph': str(prepare_only_followup.get('action') or '').strip() == 'save_draft_and_handoff',
+                    }
+                else:
+                    entrypoint_result = await run_training_request_entrypoint(
+                        session_state=self.client.session_state,
+                        user_text=user_text,
+                        normalized_text=str(training_entrypoint_args.get('normalized_text') or ''),
+                        dataset_path=str(training_entrypoint_args.get('dataset_path') or ''),
+                        frame_followup_path=str(training_entrypoint_args.get('frame_followup_path') or ''),
+                        wants_train=bool(training_entrypoint_args.get('wants_train')),
+                        wants_predict=bool(training_entrypoint_args.get('wants_predict')),
+                        no_train=bool(training_entrypoint_args.get('no_train')),
+                        readiness_only_query=bool(training_entrypoint_args.get('readiness_only_query')),
+                        wants_training_outcome_analysis=bool(training_entrypoint_args.get('wants_training_outcome_analysis')),
+                        wants_next_step_guidance=bool(training_entrypoint_args.get('wants_next_step_guidance')),
+                        wants_training_knowledge=bool(training_entrypoint_args.get('wants_training_knowledge')),
+                        wants_training_revision=bool(training_entrypoint_args.get('wants_training_revision')),
+                        wants_stop_training=bool(training_entrypoint_args.get('wants_stop_training')),
+                        blocks_training_start=bool(training_entrypoint_args.get('blocks_training_start')),
+                        explicit_run_ids=list(training_entrypoint_args.get('explicit_run_ids') or []),
+                        wants_split=bool(training_entrypoint_args.get('wants_split')),
+                        current_training_plan_context=build_training_plan_context_payload(self.client.session_state),
+                        direct_tool=self.client.direct_tool,
+                        collect_requested_training_args=self.client._collect_requested_training_args,
+                        is_training_discussion_only=self.client._is_training_discussion_only,
+                        extract_training_execution_backend=self.client._extract_training_execution_backend_from_text,
+                        build_training_plan_draft_fn=self.client._build_training_plan_draft,
+                        render_training_plan_message=self.client._render_training_plan_message,
+                    )
+                draft = dict((entrypoint_result or {}).get('draft') or {})
+                reply = str((entrypoint_result or {}).get('reply') or '').strip()
+                discussion_only = self.client._is_training_discussion_only(user_text)
+                if draft:
+                    self.client.session_state.active_training.training_plan_draft = dict(draft)
+                    self.plan_context = build_training_plan_context_from_draft(draft)
+                if draft and discussion_only:
+                    rendered = reply or await self.client._render_training_plan_message(
+                        draft,
+                        pending=bool(draft.get('next_step_tool')),
+                    )
+                    return {'messages': messages + ([AIMessage(content=rendered)] if rendered else [])}
+                if bool((entrypoint_result or {}).get('defer_to_graph')) and draft:
+                    plan_context = dict(self.plan_context or {})
+                elif reply:
+                    return {'messages': messages + [AIMessage(content=reply)]}
+                elif draft:
+                    rendered = await self.client._render_training_plan_message(
+                        draft,
+                        pending=bool(draft.get('next_step_tool')),
+                    )
+                    return {'messages': messages + [AIMessage(content=rendered)]}
+
+        next_tool = str(plan_context.get('next_step_tool') or '').strip()
+        next_args = dict(plan_context.get('next_step_args') or {})
         if next_tool:
             thread_id = str((((config or {}).get('configurable') or {}).get('thread_id') or '')).strip()
             self.client._set_pending_confirmation(
@@ -314,7 +411,7 @@ async def _run() -> None:
                 raise AssertionError(f'unexpected tool call: {tool_name}')
             client._apply_to_state(tool_name, result, kwargs)
             if tool_name == 'start_training' and result.get('ok'):
-                client._clear_training_plan_draft()
+                client.session_state.active_training.training_plan_draft = {}
             return result
 
         client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
@@ -548,7 +645,7 @@ async def _run_backend_switch_followup() -> None:
                 raise AssertionError(f'unexpected tool call: {tool_name}')
             client._apply_to_state(tool_name, result, kwargs)
             if tool_name == 'start_training' and result.get('ok'):
-                client._clear_training_plan_draft()
+                client.session_state.active_training.training_plan_draft = {}
             return result
 
         client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
@@ -715,7 +812,7 @@ async def _run_prepare_bridge_replanning() -> None:
                 raise AssertionError(f'unexpected tool call: {tool_name}')
             client._apply_to_state(tool_name, result, kwargs)
             if tool_name == 'start_training' and result.get('ok'):
-                client._clear_training_plan_draft()
+                client.session_state.active_training.training_plan_draft = {}
             return result
 
         client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
@@ -905,7 +1002,7 @@ async def _run_prepare_bridge_trainer_discussion() -> None:
                 raise AssertionError(f'unexpected tool call: {tool_name}')
             client._apply_to_state(tool_name, result, kwargs)
             if tool_name == 'start_training' and result.get('ok'):
-                client._clear_training_plan_draft()
+                client.session_state.active_training.training_plan_draft = {}
             return result
 
         client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
@@ -936,13 +1033,14 @@ async def _run_prepare_bridge_trainer_discussion() -> None:
 
         turn5 = await client.chat('不用 trainer 了，切回标准 yolo，环境恢复默认，project 不要了，name 不要了，batch 14，imgsz 1024，patience 18，resume 不要，先给我计划。')
         assert turn5['status'] == 'needs_confirmation', turn5
-        assert '执行后端: 标准 YOLO 训练' in turn5['message']
-        assert '训练环境: yolodo' in turn5['message']
+        assert '训练启动确认：' in turn5['message']
+        assert '环境: yolodo' in turn5['message']
+        assert '执行方式: 直接训练' in turn5['message']
+        assert '训练参数: epochs=35, batch=14, imgsz=1024' in turn5['message']
         assert '输出组织:' not in turn5['message']
-        assert '高级参数:' in turn5['message']
-        assert 'patience=18' in turn5['message']
-        assert 'resume=False' in turn5['message']
         assert turn5['tool_call']['name'] == 'start_training'
+        assert turn5['tool_call']['args']['patience'] == 18
+        assert turn5['tool_call']['args']['resume'] is False
         assert calls[-1][0] == 'training_preflight'
         assert calls[-1][1]['training_environment'] in {'', 'yolodo'}
         assert calls[-1][1]['project'] == ''

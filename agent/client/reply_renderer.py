@@ -24,6 +24,96 @@ GroundedSectionMerger = Callable[[list[str]], str]
 ToolResultMessageRenderer = Callable[[str, dict[str, Any]], Awaitable[str]]
 
 
+def render_training_plan_draft_text(draft: dict[str, Any], *, pending: bool) -> str:
+    if not draft:
+        return ''
+
+    def _has_value(value: Any) -> bool:
+        return value is not None and value != ''
+
+    args = dict(draft.get('planned_training_args') or {})
+    lines = ['训练计划草案：']
+    dataset_path = str(draft.get('dataset_path') or '').strip()
+    if dataset_path:
+        lines.append(f'- 数据集: {dataset_path}')
+    if draft.get('data_summary'):
+        lines.append(f"- 当前判断: {draft.get('data_summary')}")
+    if draft.get('reasoning_summary'):
+        lines.append(f"- 计划依据: {draft.get('reasoning_summary')}")
+    execution_mode_map = {
+        'prepare_then_train': '先准备再训练',
+        'prepare_then_loop': '先准备再进入循环训练',
+        'direct_train': '直接训练',
+        'direct_loop': '直接启动循环训练',
+        'prepare_only': '只做准备，暂不启动训练',
+        'discussion_only': '先讨论方案，暂不执行',
+        'blocked': '当前存在阻塞，先解决问题',
+    }
+    lines.append(f"- 执行方式: {execution_mode_map.get(str(draft.get('execution_mode') or ''), draft.get('execution_mode') or '未定')}")
+    backend_map = {
+        'standard_yolo': '标准 YOLO 训练',
+        'custom_script': '自定义训练脚本',
+        'custom_trainer': '自定义 Trainer',
+    }
+    lines.append(f"- 执行后端: {backend_map.get(str(draft.get('execution_backend') or ''), draft.get('execution_backend') or '标准 YOLO 训练')}")
+    if draft.get('custom_script'):
+        lines.append(f"- 自定义脚本: {draft.get('custom_script')}")
+    core_bits: list[str] = []
+    for key in ('model', 'data_yaml', 'epochs', 'batch', 'imgsz', 'device'):
+        value = args.get(key)
+        if not _has_value(value):
+            continue
+        display_key = 'data' if key == 'data_yaml' else key
+        core_bits.append(f'{display_key}={value}')
+    if core_bits:
+        lines.append(f"- 核心参数: {', '.join(core_bits)}")
+    classes_txt = str(args.get('classes_txt') or '').strip()
+    if classes_txt:
+        lines.append(f'- 类名来源文件: {classes_txt}')
+    output_bits: list[str] = []
+    for key in ('project', 'name'):
+        value = args.get(key)
+        if not _has_value(value):
+            continue
+        output_bits.append(f'{key}={value}')
+    if output_bits:
+        lines.append(f"- 输出组织: {', '.join(output_bits)}")
+    advanced_bits: list[str] = []
+    for key in ('fraction', 'classes', 'single_cls', 'optimizer', 'freeze', 'resume', 'lr0', 'patience', 'workers', 'amp'):
+        value = args.get(key)
+        if not _has_value(value):
+            continue
+        advanced_bits.append(f'{key}={value}')
+    if advanced_bits:
+        lines.append(f"- 高级参数: {', '.join(advanced_bits)}")
+    elif draft.get('advanced_details_requested'):
+        lines.append("- 高级参数: 当前未显式指定，将使用运行时默认值")
+    if draft.get('training_environment'):
+        lines.append(f"- 训练环境: {draft.get('training_environment')}")
+    if draft.get('preflight_summary'):
+        lines.append(f"- 预检: {draft.get('preflight_summary')}")
+    blockers = draft.get('blockers') or []
+    warnings = draft.get('warnings') or []
+    risks = draft.get('risks') or []
+    if blockers:
+        lines.append('- 当前阻塞:')
+        lines.extend(f'  - {item}' for item in blockers[:2])
+    elif risks:
+        lines.append('- 主要风险:')
+        lines.extend(f'  - {item}' for item in risks[:2])
+    elif warnings:
+        lines.append('- 主要风险:')
+        lines.extend(f'  - {item}' for item in warnings[:2])
+    next_tool_name = str(draft.get('next_step_tool') or '').strip()
+    if next_tool_name:
+        lines.append(f'- 下一步动作: {next_tool_name}')
+    if pending:
+        lines.append('你可以直接确认，也可以继续改参数、追问原因、改执行方式。')
+    else:
+        lines.append('你可以继续讨论、改参数；如果决定执行，我会再进入确认。')
+    return '\n'.join(lines)
+
+
 def build_confirmation_prompt(
     session_state: SessionState,
     tool_call: dict[str, Any],

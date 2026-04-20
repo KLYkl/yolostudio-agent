@@ -90,6 +90,7 @@ from yolostudio_agent.agent.client.reply_renderer import (
     render_confirmation_message as render_confirmation_message_reply,
     render_multi_tool_result_message as render_multi_tool_result_message_reply,
     render_tool_result_message as render_tool_result_message_reply,
+    render_training_plan_draft_text,
     tool_result_render_error,
     tool_result_user_facts,
     fallback_multi_tool_result_message as fallback_multi_tool_result_message_reply,
@@ -603,11 +604,11 @@ class YoloStudioAgentClient:
             return
         draft = dict(self.session_state.active_training.training_plan_draft or {})
         if not draft:
-            self._clear_training_plan_draft()
+            self.session_state.active_training.training_plan_draft = {}
             return
         mirrored = self._sync_startup_training_plan_mirror_from_graph()
         if not mirrored:
-            self._clear_training_plan_draft()
+            self.session_state.active_training.training_plan_draft = {}
             return
 
     def _record_startup_checkpoint_health(self) -> None:
@@ -704,7 +705,7 @@ class YoloStudioAgentClient:
             if startup_pending and str(startup_pending.get('source') or '').strip().lower() == 'graph':
                 thread_id = str(startup_pending.get('thread_id') or '').strip()
                 self._clear_pending_confirmation(thread_id=thread_id, persist_graph=False)
-                self._clear_training_plan_draft()
+                self.session_state.active_training.training_plan_draft = {}
                 self.memory.append_event(
                     self.session_state.session_id,
                     'startup_stale_pending_cleared',
@@ -721,7 +722,7 @@ class YoloStudioAgentClient:
             if len(candidates) == 1:
                 restored = candidates[0]
                 config = self._pending_config(str(restored.get('thread_id') or '').strip())
-                self._clear_training_plan_draft()
+                self.session_state.active_training.training_plan_draft = {}
                 self._remember_pending_confirmation(restored, emit_event=False, persist_graph=False)
                 self._restore_training_plan_draft_from_context(config=config, pending=restored)
                 self.memory.append_event(
@@ -898,11 +899,11 @@ class YoloStudioAgentClient:
         self.memory.append_event(self.session_state.session_id, "tool_result", {"tool": canonical_name, "args": normalized_args, "result": parsed})
         self._apply_to_state(canonical_name, parsed, normalized_args)
         if canonical_name in {'start_training', 'start_training_loop'} and parsed.get('ok'):
-            self._clear_training_plan_draft()
+            self.session_state.active_training.training_plan_draft = {}
         elif canonical_name == 'prepare_dataset_for_training' and parsed.get('ok'):
             draft = self.session_state.active_training.training_plan_draft or {}
             if str(draft.get('execution_mode') or '').strip().lower() == 'prepare_only':
-                self._clear_training_plan_draft()
+                self.session_state.active_training.training_plan_draft = {}
         self._record_secondary_event(canonical_name, parsed)
         self.memory.save_state(self.session_state)
         return parsed
@@ -2269,7 +2270,7 @@ class YoloStudioAgentClient:
                 and action in _GRAPH_NATIVE_TRAINING_CONFIRMATION_ACTIONS
             )
             if draft_to_save and should_persist_draft:
-                self._save_training_plan_draft(draft_to_save)
+                self.session_state.active_training.training_plan_draft = dict(draft_to_save)
                 draft = draft_to_save
             elif draft_to_save:
                 draft = draft_to_save
@@ -2615,11 +2616,11 @@ class YoloStudioAgentClient:
         if action == 'cancel_pending':
             return await self.confirm(thread_id, approved=False)
         if action == 'cancel_draft':
-            self._clear_training_plan_draft()
+            self.session_state.active_training.training_plan_draft = {}
             self.memory.save_state(self.session_state)
             return {'status': 'cancelled', 'message': '已取消当前训练计划草案。', 'tool_call': None}
         if action == 'clear_and_recheck':
-            self._clear_training_plan_draft()
+            self.session_state.active_training.training_plan_draft = {}
             self.memory.save_state(self.session_state)
             return None
         if action == 'confirmation_message':
@@ -2713,9 +2714,9 @@ class YoloStudioAgentClient:
         if action == 'save_draft_and_reply' or (action == 'save_draft_and_handoff' and persist_graph_handoff_draft):
             draft = dict(followup_action.get('draft') or {})
             if draft:
-                self._save_training_plan_draft(draft)
+                self.session_state.active_training.training_plan_draft = dict(draft)
         elif action == 'clear_draft_and_reply':
-            self._clear_training_plan_draft()
+            self.session_state.active_training.training_plan_draft = {}
 
         if action == 'save_draft_and_handoff':
             if draft and thread_id:
@@ -3313,7 +3314,7 @@ class YoloStudioAgentClient:
             return
         if existing_draft and all(existing_draft.get(key) == restored_draft.get(key) for key in restored_draft):
             return
-        self._save_training_plan_draft(restored_draft)
+        self.session_state.active_training.training_plan_draft = dict(restored_draft)
         self.memory.append_event(
             self.session_state.session_id,
             'startup_training_plan_mirror_synced',
@@ -3338,7 +3339,7 @@ class YoloStudioAgentClient:
         thread_id, mirrored_draft = candidates[0]
         if existing_draft and all(existing_draft.get(key) == mirrored_draft.get(key) for key in mirrored_draft):
             return True
-        self._save_training_plan_draft(mirrored_draft)
+        self.session_state.active_training.training_plan_draft = dict(mirrored_draft)
         self.memory.append_event(
             self.session_state.session_id,
             'startup_training_plan_mirror_synced',
@@ -3756,7 +3757,7 @@ class YoloStudioAgentClient:
         ):
             if existing_draft.get(key) not in (None, '', [], {}):
                 draft[key] = existing_draft.get(key)
-        self._save_training_plan_draft(draft)
+        self.session_state.active_training.training_plan_draft = dict(draft)
 
     async def _enter_graph_training_confirmation(
         self,
@@ -4993,7 +4994,7 @@ class YoloStudioAgentClient:
         )
         draft = dict(entrypoint_result.get('draft') or {})
         if draft:
-            self._save_training_plan_draft(draft)
+            self.session_state.active_training.training_plan_draft = dict(draft)
         reply = str(entrypoint_result.get('reply') or '').strip()
         if reply and not entrypoint_result.get('defer_to_graph'):
             self._messages.append(AIMessage(content=reply))
@@ -5265,100 +5266,6 @@ class YoloStudioAgentClient:
             'editable_fields': ['model', 'epochs', 'batch', 'imgsz', 'device', 'training_environment', 'project', 'name', 'fraction', 'classes', 'single_cls', 'execution_mode', 'execution_backend'],
         }
 
-    def _save_training_plan_draft(self, draft: dict[str, Any]) -> None:
-        self.session_state.active_training.training_plan_draft = dict(draft)
-
-    def _clear_training_plan_draft(self) -> None:
-        self.session_state.active_training.training_plan_draft = {}
-
-    def _render_training_plan_draft(self, draft: dict[str, Any], *, pending: bool) -> str:
-        if not draft:
-            return ''
-        def _has_value(value: Any) -> bool:
-            return value is not None and value != ''
-
-        args = dict(draft.get('planned_training_args') or {})
-        lines = ['训练计划草案：']
-        dataset_path = str(draft.get('dataset_path') or '').strip()
-        if dataset_path:
-            lines.append(f'- 数据集: {dataset_path}')
-        if draft.get('data_summary'):
-            lines.append(f"- 当前判断: {draft.get('data_summary')}")
-        if draft.get('reasoning_summary'):
-            lines.append(f"- 计划依据: {draft.get('reasoning_summary')}")
-        execution_mode_map = {
-            'prepare_then_train': '先准备再训练',
-            'prepare_then_loop': '先准备再进入循环训练',
-            'direct_train': '直接训练',
-            'direct_loop': '直接启动循环训练',
-            'prepare_only': '只做准备，暂不启动训练',
-            'discussion_only': '先讨论方案，暂不执行',
-            'blocked': '当前存在阻塞，先解决问题',
-        }
-        lines.append(f"- 执行方式: {execution_mode_map.get(str(draft.get('execution_mode') or ''), draft.get('execution_mode') or '未定')}")
-        backend_map = {
-            'standard_yolo': '标准 YOLO 训练',
-            'custom_script': '自定义训练脚本',
-            'custom_trainer': '自定义 Trainer',
-        }
-        lines.append(f"- 执行后端: {backend_map.get(str(draft.get('execution_backend') or ''), draft.get('execution_backend') or '标准 YOLO 训练')}")
-        if draft.get('custom_script'):
-            lines.append(f"- 自定义脚本: {draft.get('custom_script')}")
-        core_bits: list[str] = []
-        for key in ('model', 'data_yaml', 'epochs', 'batch', 'imgsz', 'device'):
-            value = args.get(key)
-            if not _has_value(value):
-                continue
-            display_key = 'data' if key == 'data_yaml' else key
-            core_bits.append(f'{display_key}={value}')
-        if core_bits:
-            lines.append(f"- 核心参数: {', '.join(core_bits)}")
-        classes_txt = str(args.get('classes_txt') or '').strip()
-        if classes_txt:
-            lines.append(f'- 类名来源文件: {classes_txt}')
-        output_bits: list[str] = []
-        for key in ('project', 'name'):
-            value = args.get(key)
-            if not _has_value(value):
-                continue
-            output_bits.append(f'{key}={value}')
-        if output_bits:
-            lines.append(f"- 输出组织: {', '.join(output_bits)}")
-        advanced_bits: list[str] = []
-        for key in ('fraction', 'classes', 'single_cls', 'optimizer', 'freeze', 'resume', 'lr0', 'patience', 'workers', 'amp'):
-            value = args.get(key)
-            if not _has_value(value):
-                continue
-            advanced_bits.append(f'{key}={value}')
-        if advanced_bits:
-            lines.append(f"- 高级参数: {', '.join(advanced_bits)}")
-        elif draft.get('advanced_details_requested'):
-            lines.append("- 高级参数: 当前未显式指定，将使用运行时默认值")
-        if draft.get('training_environment'):
-            lines.append(f"- 训练环境: {draft.get('training_environment')}")
-        if draft.get('preflight_summary'):
-            lines.append(f"- 预检: {draft.get('preflight_summary')}")
-        blockers = draft.get('blockers') or []
-        warnings = draft.get('warnings') or []
-        risks = draft.get('risks') or []
-        if blockers:
-            lines.append('- 当前阻塞:')
-            lines.extend(f'  - {item}' for item in blockers[:2])
-        elif risks:
-            lines.append('- 主要风险:')
-            lines.extend(f'  - {item}' for item in risks[:2])
-        elif warnings:
-            lines.append('- 主要风险:')
-            lines.extend(f'  - {item}' for item in warnings[:2])
-        next_tool_name = str(draft.get('next_step_tool') or '').strip()
-        if next_tool_name:
-            lines.append(f'- 下一步动作: {next_tool_name}')
-        if pending:
-            lines.append('你可以直接确认，也可以继续改参数、追问原因、改执行方式。')
-        else:
-            lines.append('你可以继续讨论、改参数；如果决定执行，我会再进入确认。')
-        return '\n'.join(lines)
-
     @staticmethod
     def _message_text(content: Any) -> str:
         if isinstance(content, str):
@@ -5408,12 +5315,12 @@ class YoloStudioAgentClient:
 
     async def _render_training_plan_message(self, draft: dict[str, Any], *, pending: bool) -> str:
         if self._should_force_structured_training_surface(draft, pending=pending):
-            return self._render_training_plan_draft(draft, pending=pending)
+            return render_training_plan_draft_text(draft, pending=pending)
         return await render_training_plan_message_core(
             planner_llm=self.planner_llm,
             draft=draft,
             pending=pending,
-            render_training_plan_draft=self._render_training_plan_draft,
+            render_training_plan_draft=render_training_plan_draft_text,
             invoke_renderer_text=self._invoke_renderer_text,
         )
 
@@ -5641,7 +5548,7 @@ class YoloStudioAgentClient:
         return build_confirmation_prompt_reply(
             self.session_state,
             tool_call,
-            render_training_plan_draft=self._render_training_plan_draft,
+            render_training_plan_draft=render_training_plan_draft_text,
             remote_join=self._remote_join,
             training_plan_context=self._current_training_plan_context(preferred_thread_id=thread_id),
         )
