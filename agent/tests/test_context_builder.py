@@ -159,9 +159,54 @@ def _scenario_compact_populated_summary() -> None:
     assert 'list_training_runs' not in getattr(messages[1], 'content', '')
 
 
+def _scenario_graph_training_context_overrides_stale_mirror() -> None:
+    builder = ContextBuilder('system')
+    state = SessionState(session_id='ctx-graph-priority')
+    state.active_training.training_plan_draft = {
+        'status': 'ready_for_confirmation',
+        'execution_mode': 'direct_train',
+        'dataset_path': '/data/stale',
+        'next_step_tool': 'start_training',
+        'planned_training_args': {
+            'model': 'stale.pt',
+            'data_yaml': '/data/stale/data.yaml',
+            'epochs': 300,
+        },
+    }
+    training_plan_context = {
+        'status': 'ready_for_confirmation',
+        'execution_mode': 'prepare_then_loop',
+        'dataset_path': '/data/fresh',
+        'next_step_tool': 'start_training_loop',
+        'planned_training_args': {
+            'model': 'fresh.pt',
+            'data_yaml': '/data/fresh/data.yaml',
+            'epochs': 10,
+            'project': '/runs/fresh',
+        },
+        'next_step_args': {
+            'model': 'fresh.pt',
+            'data_yaml': '/data/fresh/data.yaml',
+            'epochs': 10,
+            'max_rounds': 5,
+            'loop_name': 'ctx-loop',
+        },
+        'reasoning_summary': '应以 graph training context 为准。',
+    }
+    summary = builder.build_state_summary(state, training_plan_context=training_plan_context)
+    assert 'training_plan_dataset_path: /data/fresh' in summary
+    assert 'training_plan_model: fresh.pt' in summary
+    assert 'training_plan_data_yaml: /data/fresh/data.yaml' in summary
+    assert 'training_plan_epochs: 10' in summary
+    assert 'training_plan_next_step_tool: start_training_loop' in summary
+    assert 'stale.pt' not in summary
+    assert '/data/stale/data.yaml' not in summary
+
+
 def main() -> None:
     _scenario_sparse_summary()
     _scenario_compact_populated_summary()
+    _scenario_graph_training_context_overrides_stale_mirror()
     print('context builder ok')
 
 

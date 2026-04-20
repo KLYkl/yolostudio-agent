@@ -6,6 +6,9 @@ from langchain_core.messages import BaseMessage, SystemMessage
 
 from yolostudio_agent.agent.client.event_retriever import MemoryDigest
 from yolostudio_agent.agent.client.session_state import SessionState
+from yolostudio_agent.agent.client.training_plan_context_service import (
+    build_training_plan_draft_from_context,
+)
 
 
 def _cache_state(data: dict) -> str:
@@ -196,7 +199,11 @@ class ContextBuilder:
         last_extract = dict(ds.last_extract_result or ds.last_frame_extract or ds.last_video_scan or ds.last_extract_preview or {})
         last_training_pipeline = dict(tr.last_remote_roundtrip or {})
         last_prediction_pipeline = dict(pred.last_remote_roundtrip or {})
-        training_plan_draft = dict(training_plan_context or tr.training_plan_draft or {})
+        training_plan_draft = dict(
+            build_training_plan_draft_from_context(training_plan_context)
+            or tr.training_plan_draft
+            or {}
+        )
         best_run_selection = dict(tr.best_run_selection or {})
         best_run = dict(best_run_selection.get('best_run') or {})
         best_run_id = str(best_run.get('run_id') or best_run_selection.get('best_run_id') or '').strip()

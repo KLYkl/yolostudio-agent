@@ -4569,8 +4569,6 @@ class YoloStudioAgentClient:
                 draft['warnings'] = [str(item).strip() for item in (latest_readiness.get('warnings') or []) if str(item).strip()]
                 draft['next_step_tool'] = 'start_training'
                 draft['next_step_args'] = dict(planned_args)
-                self._save_training_plan_draft(draft)
-                self.memory.save_state(self.session_state)
                 return {
                     "id": None,
                     "name": "start_training",
@@ -4633,8 +4631,6 @@ class YoloStudioAgentClient:
         draft['warnings'] = [str(item).strip() for item in (latest_readiness.get('warnings') or []) if str(item).strip()]
         draft['next_step_tool'] = 'start_training_loop'
         draft['next_step_args'] = dict(planned_args)
-        self._save_training_plan_draft(draft)
-        self.memory.save_state(self.session_state)
         return {
             "id": None,
             "name": "start_training_loop",
