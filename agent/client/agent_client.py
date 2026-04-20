@@ -6361,6 +6361,7 @@ async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudi
         training_entrypoint_args = dict(dispatch_payload.get('training_entrypoint_request_args') or {})
         if not training_entrypoint_args:
             return Command(goto='agent_runtime')
+        wants_training_loop_start = bool(training_entrypoint_args.pop('wants_training_loop_start', False))
         prepare_only_followup = await run_prepare_only_flow(
             user_text=latest_user_text,
             looks_like_prepare_only_request=client._looks_like_prepare_only_request,
@@ -6377,7 +6378,7 @@ async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudi
                 'draft': dict(prepare_only_followup.get('draft') or {}),
                 'defer_to_graph': str(prepare_only_followup.get('action') or '').strip() == 'save_draft_and_handoff',
             }
-        elif bool(training_entrypoint_args.get('wants_training_loop_start')):
+        elif wants_training_loop_start:
             resolved_yaml = client._session_training_data_yaml(
                 dataset_path=str(training_entrypoint_args.get('dataset_path') or '').strip(),
             )

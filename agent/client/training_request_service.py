@@ -354,6 +354,7 @@ async def run_training_request_entrypoint(
     blocks_training_start: bool,
     explicit_run_ids: list[str] | None,
     wants_split: bool,
+    wants_training_loop_start: bool = False,
     current_training_plan_context: dict[str, Any] | None,
     direct_tool: DirectToolInvoker,
     collect_requested_training_args: TrainingArgsCollector,
@@ -362,6 +363,7 @@ async def run_training_request_entrypoint(
     build_training_plan_draft_fn: TrainingPlanDraftBuilder,
     render_training_plan_message: TrainingPlanMessageRenderer,
 ) -> TrainingRequestResult | None:
+    del wants_training_loop_start
     guard = resolve_training_request_entrypoint_guard(
         session_state=session_state,
         user_text=user_text,
