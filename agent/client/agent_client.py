@@ -124,6 +124,7 @@ from yolostudio_agent.agent.client.training_plan_service import (
     build_training_loop_start_draft as build_training_loop_start_draft_service,
     build_training_loop_start_fallback_plan as build_training_loop_start_fallback_plan_service,
     render_training_plan_message as render_training_plan_message_service,
+    run_training_loop_start_entrypoint as run_training_loop_start_entrypoint_service,
     run_training_loop_start_orchestration as run_training_loop_start_orchestration_service,
     training_plan_render_error,
     training_plan_user_facts,
@@ -2217,7 +2218,7 @@ class YoloStudioAgentClient:
             return live_training_control
 
         training_entrypoint_args = dict(dispatch_payload.get('training_entrypoint_request_args') or {})
-        if bool(training_entrypoint_args.get('wants_training_loop_start')) or not self._graph_has_training_entry:
+        if not self._graph_has_training_entry:
             training_entrypoint_request = await self._try_handle_training_entrypoints(
                 thread_id=thread_id,
                 user_text=user_text,
@@ -5233,6 +5234,28 @@ class YoloStudioAgentClient:
             ),
         )
 
+    async def _run_training_loop_start_entrypoint(
+        self,
+        *,
+        user_text: str,
+        dataset_path: str,
+        loop_args: dict[str, Any],
+        observed_tools: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        return await run_training_loop_start_entrypoint_service(
+            self.session_state,
+            user_text=user_text,
+            dataset_path=dataset_path,
+            loop_args=loop_args,
+            observed_tools=observed_tools,
+            direct_tool=self.direct_tool,
+            build_training_loop_start_fallback_plan_fn=self._build_training_loop_start_fallback_plan,
+            known_training_loop_data_yaml=self._known_training_loop_data_yaml,
+            append_event=lambda event, payload: self.memory.append_event(self.session_state.session_id, event, payload),
+            compact_training_loop_start_fact=self._compact_training_loop_start_fact,
+            build_training_loop_start_draft_fn=self._build_training_loop_start_draft,
+        )
+
     async def _continue_training_loop_start_after_prepare(
         self,
         *,
@@ -6222,19 +6245,33 @@ async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudi
             route_state=route_state,
         )
         training_entrypoint_args = dict(dispatch_payload.get('training_entrypoint_request_args') or {})
-        if not training_entrypoint_args or bool(training_entrypoint_args.get('wants_training_loop_start')):
+        if not training_entrypoint_args:
             return Command(goto='agent_runtime')
-        entrypoint_result = await run_training_request_entrypoint(
-            session_state=client.session_state,
-            user_text=latest_user_text,
-            direct_tool=client.direct_tool,
-            collect_requested_training_args=client._collect_requested_training_args,
-            is_training_discussion_only=client._is_training_discussion_only,
-            extract_training_execution_backend=client._extract_training_execution_backend_from_text,
-            build_training_plan_draft_fn=client._build_training_plan_draft,
-            render_training_plan_message=client._render_training_plan_message,
-            **training_entrypoint_args,
-        )
+        if bool(training_entrypoint_args.get('wants_training_loop_start')):
+            resolved_yaml = client._session_training_data_yaml(
+                dataset_path=str(training_entrypoint_args.get('dataset_path') or '').strip(),
+            )
+            loop_args = client._collect_requested_training_loop_args(
+                latest_user_text,
+                data_yaml=resolved_yaml if resolved_yaml else None,
+            )
+            entrypoint_result = await client._run_training_loop_start_entrypoint(
+                user_text=latest_user_text,
+                dataset_path=str(training_entrypoint_args.get('dataset_path') or '').strip(),
+                loop_args=loop_args,
+            )
+        else:
+            entrypoint_result = await run_training_request_entrypoint(
+                session_state=client.session_state,
+                user_text=latest_user_text,
+                direct_tool=client.direct_tool,
+                collect_requested_training_args=client._collect_requested_training_args,
+                is_training_discussion_only=client._is_training_discussion_only,
+                extract_training_execution_backend=client._extract_training_execution_backend_from_text,
+                build_training_plan_draft_fn=client._build_training_plan_draft,
+                render_training_plan_message=client._render_training_plan_message,
+                **training_entrypoint_args,
+            )
         if not entrypoint_result:
             return Command(goto='agent_runtime')
         draft = dict(entrypoint_result.get('draft') or {})

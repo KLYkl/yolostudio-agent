@@ -531,11 +531,49 @@ async def run_training_loop_start_orchestration(
     append_ai_message: AssistantMessageAppender,
     handoff_to_graph: GraphHandoffInvoker,
 ) -> dict[str, Any]:
+    entrypoint_result = await run_training_loop_start_entrypoint(
+        session_state,
+        user_text=user_text,
+        dataset_path=dataset_path,
+        loop_args=loop_args,
+        observed_tools=observed_tools,
+        direct_tool=direct_tool,
+        build_training_loop_start_fallback_plan_fn=build_training_loop_start_fallback_plan_fn,
+        known_training_loop_data_yaml=known_training_loop_data_yaml,
+        append_event=append_event,
+        compact_training_loop_start_fact=compact_training_loop_start_fact,
+        build_training_loop_start_draft_fn=build_training_loop_start_draft_fn,
+    )
+    draft = dict(entrypoint_result.get('draft') or {})
+    if draft:
+        save_training_plan_draft(draft)
+    reply = str(entrypoint_result.get('reply') or '').strip()
+    if reply and not entrypoint_result.get('defer_to_graph'):
+        append_ai_message(reply)
+        return {'status': 'completed', 'message': reply, 'tool_call': None}
+    if entrypoint_result.get('defer_to_graph'):
+        return await handoff_to_graph(thread_id, user_text)
+    return {'status': 'completed', 'message': reply, 'tool_call': None}
+
+
+async def run_training_loop_start_entrypoint(
+    session_state: SessionState,
+    *,
+    user_text: str,
+    dataset_path: str,
+    loop_args: dict[str, Any],
+    observed_tools: dict[str, dict[str, Any]] | None = None,
+    direct_tool: DirectToolInvoker,
+    build_training_loop_start_fallback_plan_fn: Callable[..., dict[str, Any]],
+    known_training_loop_data_yaml: LoopDataYamlResolver,
+    append_event: EventAppender,
+    compact_training_loop_start_fact: LoopFactCompactor,
+    build_training_loop_start_draft_fn: Callable[..., dict[str, Any]],
+) -> dict[str, Any]:
     observed: dict[str, dict[str, Any]] = dict(observed_tools or {})
     if not str(loop_args.get('model') or '').strip():
         reply = '当前还不能开启环训练：缺少预训练权重/模型。请先明确模型，例如 yolov8n.pt。'
-        append_ai_message(reply)
-        return {'status': 'completed', 'message': reply, 'tool_call': None}
+        return {'reply': reply, 'draft': None, 'defer_to_graph': False}
 
     async def _plan_once(step_index: int) -> dict[str, Any]:
         known_data_yaml = known_training_loop_data_yaml(loop_args, observed, dataset_path=dataset_path)
@@ -561,8 +599,7 @@ async def run_training_loop_start_orchestration(
     plan = await _plan_once(1)
     if plan.get('decision') == 'block':
         reply = str(plan.get('reason') or '当前还不能开启环训练。').strip()
-        append_ai_message(reply)
-        return {'status': 'completed', 'message': reply, 'tool_call': None}
+        return {'reply': reply, 'draft': None, 'defer_to_graph': False}
 
     next_tool_name = str(plan.get('next_tool') or '').strip()
     next_tool_args = dict(plan.get('next_args') or {})
@@ -581,13 +618,11 @@ async def run_training_loop_start_orchestration(
         plan = await _plan_once(2)
         if plan.get('decision') == 'block':
             reply = str(plan.get('reason') or '当前还不能开启环训练。').strip()
-            append_ai_message(reply)
-            return {'status': 'completed', 'message': reply, 'tool_call': None}
+            return {'reply': reply, 'draft': None, 'defer_to_graph': False}
         next_tool_name = str(plan.get('next_tool') or '').strip()
         if next_tool_name in {'training_readiness', 'list_training_environments'}:
             reply = '当前还不能稳定规划下一步；读到的事实没有继续收敛。请换一种方式说明需求，或直接明确 data.yaml / 模型。'
-            append_ai_message(reply)
-            return {'status': 'completed', 'message': reply, 'tool_call': None}
+            return {'reply': reply, 'draft': None, 'defer_to_graph': False}
 
     draft = build_training_loop_start_draft_fn(
         user_text=user_text,
@@ -596,8 +631,7 @@ async def run_training_loop_start_orchestration(
         observed_tools=observed,
         plan=plan,
     )
-    save_training_plan_draft(draft)
-    return await handoff_to_graph(thread_id, user_text)
+    return {'reply': '', 'draft': draft, 'defer_to_graph': True}
 
 
 def _human_training_step_name(tool_name: str) -> str:
