@@ -405,6 +405,73 @@ async def _scenario_current_context_prefers_graph_state_without_preferred_thread
     assert (context.get('planned_training_args') or {}).get('model') == 'graph.pt', context
 
 
+async def _scenario_interrupt_sync_replaces_stale_mirror_but_keeps_local_metadata() -> None:
+    root = WORK / 'interrupt-sync-replaces-stale-mirror'
+    settings = AgentSettings(session_id='training-plan-interrupt-sync', memory_root=str(root))
+    client = YoloStudioAgentClient(graph=_CaptureGraph(), settings=settings, tool_registry={})
+    client.session_state.active_training.training_plan_draft = {
+        'dataset_path': '/data/stale',
+        'execution_mode': 'direct_train',
+        'next_step_tool': 'start_training',
+        'planned_training_args': {
+            'model': 'stale.pt',
+            'data_yaml': '/data/stale/data.yaml',
+            'epochs': 300,
+        },
+        'source_intent': 'training_loop',
+        'planner_user_request': '开一个循环训练',
+        'planner_decision_source': 'fallback',
+        'planner_decision': 'start',
+        'planner_observed_tools': ['training_readiness'],
+    }
+    interrupt_payload = client._draft_to_training_confirmation_interrupt(
+        {
+            'dataset_path': '/data/fresh',
+            'execution_mode': 'direct_loop',
+            'training_environment': 'graph-env',
+            'reasoning_summary': 'graph should replace stale mirror',
+            'next_step_tool': 'start_training_loop',
+            'next_step_args': {
+                'model': 'graph.pt',
+                'data_yaml': '/data/fresh/data.yaml',
+                'epochs': 10,
+                'max_rounds': 5,
+                'loop_name': 'ctx-loop',
+            },
+            'planned_loop_args': {
+                'model': 'graph.pt',
+                'data_yaml': '/data/fresh/data.yaml',
+                'epochs': 10,
+                'max_rounds': 5,
+                'loop_name': 'ctx-loop',
+            },
+            'planned_training_args': {
+                'model': 'graph.pt',
+                'data_yaml': '/data/fresh/data.yaml',
+                'epochs': 10,
+                'max_rounds': 5,
+                'loop_name': 'ctx-loop',
+            },
+        },
+        thread_id='graph-turn-2',
+    )
+    assert interrupt_payload is not None
+
+    client._sync_training_draft_from_interrupt_payload(interrupt_payload)
+    mirrored = dict(client.session_state.active_training.training_plan_draft or {})
+    assert mirrored.get('dataset_path') == '/data/fresh', mirrored
+    assert mirrored.get('next_step_tool') == 'start_training_loop', mirrored
+    assert (mirrored.get('planned_training_args') or {}).get('model') == 'graph.pt', mirrored
+    assert (mirrored.get('planned_training_args') or {}).get('data_yaml') == '/data/fresh/data.yaml', mirrored
+    assert (mirrored.get('planned_training_args') or {}).get('epochs_per_round') == 10, mirrored
+    assert mirrored.get('source_intent') == 'training_loop', mirrored
+    assert mirrored.get('planner_user_request') == '开一个循环训练', mirrored
+    assert mirrored.get('planner_decision_source') == 'fallback', mirrored
+    assert mirrored.get('planner_decision') == 'start', mirrored
+    assert mirrored.get('planner_observed_tools') == ['training_readiness'], mirrored
+    assert (mirrored.get('planned_training_args') or {}).get('model') != 'stale.pt', mirrored
+
+
 async def _scenario_execute_turn_defers_to_graph() -> None:
     root = WORK / 'execute-via-graph'
     graph = _CaptureGraph()
@@ -478,6 +545,7 @@ async def _run() -> None:
         await _scenario_chat_prefers_graph_training_plan_context_over_stale_draft()
         await _scenario_current_draft_view_prefers_graph_context_over_stale_mirror()
         await _scenario_current_context_prefers_graph_state_without_preferred_thread()
+        await _scenario_interrupt_sync_replaces_stale_mirror_but_keeps_local_metadata()
         await _scenario_execute_turn_defers_to_graph()
         await _scenario_enter_graph_confirmation_uses_override_without_persisting_draft()
         print('training plan context payload ok')

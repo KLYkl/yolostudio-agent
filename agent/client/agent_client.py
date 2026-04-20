@@ -3702,70 +3702,19 @@ class YoloStudioAgentClient:
         }
 
     def _sync_training_draft_from_interrupt_payload(self, payload: dict[str, Any]) -> None:
-        draft = dict(self.session_state.active_training.training_plan_draft or {})
-        plan = coerce_training_plan(dict(payload.get('plan') or {}))
-        phase = str(payload.get('phase') or 'prepare').strip().lower() or 'prepare'
-        next_step_tool = 'prepare_dataset_for_training' if phase == 'prepare' else ('start_training_loop' if getattr(plan, 'mode', 'train') == 'loop' else 'start_training')
-        draft['dataset_path'] = plan.dataset_path
-        draft['training_environment'] = str(getattr(plan, 'training_environment', '') or '').strip()
-        draft['blockers'] = [str(item).strip() for item in (getattr(plan, 'blockers', None) or []) if str(item).strip()]
-        draft['warnings'] = [str(item).strip() for item in (getattr(plan, 'warnings', None) or []) if str(item).strip()]
-        draft['preflight_summary'] = str(getattr(plan, 'readiness_summary', '') or '').strip()
-        draft['reasoning_summary'] = str(getattr(plan, 'prepare_summary', '') or '').strip()
-        draft['next_step_tool'] = str(payload.get('next_step_tool') or next_step_tool).strip() or next_step_tool
-        draft['next_step_args'] = dict(payload.get('next_step_args') or draft.get('next_step_args') or {})
-        draft['execution_mode'] = str(payload.get('execution_mode') or '').strip() or (
-            'prepare_then_loop' if next_step_tool == 'prepare_dataset_for_training' and getattr(plan, 'mode', 'train') == 'loop' else (
-                'prepare_then_train' if next_step_tool == 'prepare_dataset_for_training' else (
-                    'direct_loop' if getattr(plan, 'mode', 'train') == 'loop' else 'direct_train'
-                )
-            )
-        )
-        if getattr(plan, 'mode', 'train') == 'loop':
-            draft['planned_loop_args'] = {
-                'model': plan.model,
-                'data_yaml': str(getattr(plan, 'data_yaml', '') or '').strip(),
-                'batch': getattr(plan, 'batch', None),
-                'imgsz': getattr(plan, 'imgsz', None),
-                'device': str(getattr(plan, 'device', '') or '').strip(),
-                'project': str(getattr(plan, 'project', '') or '').strip(),
-                'name': str(getattr(plan, 'name', '') or '').strip(),
-                'fraction': getattr(plan, 'fraction', None),
-                'classes': list(getattr(plan, 'classes', None) or []),
-                'single_cls': getattr(plan, 'single_cls', None),
-                'optimizer': str(getattr(plan, 'optimizer', '') or '').strip(),
-                'freeze': getattr(plan, 'freeze', None),
-                'resume': getattr(plan, 'resume', None),
-                'lr0': getattr(plan, 'lr0', None),
-                'patience': getattr(plan, 'patience', None),
-                'workers': getattr(plan, 'workers', None),
-                'amp': getattr(plan, 'amp', None),
-                'max_rounds': getattr(plan, 'max_rounds', None),
-                'epochs_per_round': getattr(plan, 'epochs_per_round', None),
-                'loop_name': str(getattr(plan, 'loop_name', '') or '').strip(),
-            }
-            draft['planned_training_args'] = dict(draft['planned_loop_args'])
-        else:
-            draft['planned_training_args'] = {
-                'model': plan.model,
-                'data_yaml': str(getattr(plan, 'data_yaml', '') or '').strip(),
-                'batch': getattr(plan, 'batch', None),
-                'imgsz': getattr(plan, 'imgsz', None),
-                'device': str(getattr(plan, 'device', '') or '').strip(),
-                'project': str(getattr(plan, 'project', '') or '').strip(),
-                'name': str(getattr(plan, 'name', '') or '').strip(),
-                'fraction': getattr(plan, 'fraction', None),
-                'classes': list(getattr(plan, 'classes', None) or []),
-                'single_cls': getattr(plan, 'single_cls', None),
-                'optimizer': str(getattr(plan, 'optimizer', '') or '').strip(),
-                'freeze': getattr(plan, 'freeze', None),
-                'resume': getattr(plan, 'resume', None),
-                'lr0': getattr(plan, 'lr0', None),
-                'patience': getattr(plan, 'patience', None),
-                'workers': getattr(plan, 'workers', None),
-                'amp': getattr(plan, 'amp', None),
-                'epochs': getattr(plan, 'epochs', None),
-            }
+        existing_draft = dict(self.session_state.active_training.training_plan_draft or {})
+        draft = self._draft_from_training_confirmation_interrupt(payload)
+        for key in (
+            'source_intent',
+            'advanced_details_requested',
+            'planner_user_request',
+            'planner_decision_source',
+            'planner_decision',
+            'planner_output',
+            'planner_observed_tools',
+        ):
+            if existing_draft.get(key) not in (None, '', [], {}):
+                draft[key] = existing_draft.get(key)
         self._save_training_plan_draft(draft)
 
     async def _enter_graph_training_confirmation(
