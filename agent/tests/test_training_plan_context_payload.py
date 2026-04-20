@@ -308,6 +308,58 @@ async def _scenario_chat_prefers_graph_training_plan_context_over_stale_draft() 
     assert plan_context.get('training_environment') == 'graph-env', plan_context
 
 
+async def _scenario_current_draft_view_prefers_graph_context_over_stale_mirror() -> None:
+    root = WORK / 'current-draft-view-prefers-graph'
+
+    class _GraphState:
+        def __init__(self, values: dict[str, Any]) -> None:
+            self.values = values
+
+    class _GraphWithState(_CaptureGraph):
+        def get_state(self, config):
+            del config
+            return _GraphState(
+                {
+                    'training_plan_context': {
+                        'dataset_path': '/data/from-graph',
+                        'execution_mode': 'prepare_then_loop',
+                        'next_step_tool': 'start_training_loop',
+                        'planned_training_args': {
+                            'model': 'graph.pt',
+                            'data_yaml': '/data/from-graph/data.yaml',
+                            'epochs': 10,
+                        },
+                        'next_step_args': {
+                            'model': 'graph.pt',
+                            'data_yaml': '/data/from-graph/data.yaml',
+                            'epochs': 10,
+                            'max_rounds': 5,
+                            'loop_name': 'ctx-loop',
+                        },
+                    }
+                }
+            )
+
+    graph = _GraphWithState()
+    settings = AgentSettings(session_id='training-plan-current-draft-view', memory_root=str(root))
+    client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
+    client.session_state.active_training.training_plan_draft = {
+        'dataset_path': '/data/stale',
+        'execution_mode': 'direct_train',
+        'next_step_tool': 'start_training',
+        'planned_training_args': {
+            'model': 'stale.pt',
+            'data_yaml': '/data/stale/data.yaml',
+            'epochs': 300,
+        },
+    }
+
+    draft_view = client._current_training_plan_draft_view(preferred_thread_id='graph-turn-1')
+    assert draft_view.get('dataset_path') == '/data/from-graph', draft_view
+    assert draft_view.get('next_step_tool') == 'start_training_loop', draft_view
+    assert (draft_view.get('planned_training_args') or {}).get('model') == 'graph.pt', draft_view
+
+
 async def _scenario_execute_turn_defers_to_graph() -> None:
     root = WORK / 'execute-via-graph'
     graph = _CaptureGraph()
@@ -379,6 +431,7 @@ async def _run() -> None:
         _scenario_build_payload()
         await _scenario_chat_passes_training_plan_context()
         await _scenario_chat_prefers_graph_training_plan_context_over_stale_draft()
+        await _scenario_current_draft_view_prefers_graph_context_over_stale_mirror()
         await _scenario_execute_turn_defers_to_graph()
         await _scenario_enter_graph_confirmation_uses_override_without_persisting_draft()
         print('training plan context payload ok')

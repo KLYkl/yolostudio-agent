@@ -3173,9 +3173,6 @@ class YoloStudioAgentClient:
             interrupt_payload = dict(active_interrupt[1] or {})
             if self._is_training_confirmation_interrupt_payload(interrupt_payload):
                 return self._draft_from_training_confirmation_interrupt(interrupt_payload)
-        mirror_draft = dict(self.session_state.active_training.training_plan_draft or {})
-        if mirror_draft:
-            return mirror_draft
         context = None
         if preferred_thread_id:
             context = self._graph_training_plan_context(self._pending_config(preferred_thread_id))
@@ -3184,6 +3181,9 @@ class YoloStudioAgentClient:
         draft = build_training_plan_draft_from_context(context)
         if draft:
             return draft
+        mirror_draft = dict(self.session_state.active_training.training_plan_draft or {})
+        if mirror_draft:
+            return mirror_draft
         return {}
 
     def _draft_from_graph_training_state(
@@ -5404,7 +5404,7 @@ class YoloStudioAgentClient:
         thread_id: str,
         prepare_result: dict[str, Any],
     ) -> dict[str, Any] | None:
-        draft = dict(self.session_state.active_training.training_plan_draft or {})
+        draft = self._current_training_plan_draft_view(preferred_thread_id=thread_id)
         if str(draft.get('source_intent') or '').strip().lower() != 'training_loop':
             return None
         user_text = str(draft.get('planner_user_request') or self._recent_user_text() or '').strip()
