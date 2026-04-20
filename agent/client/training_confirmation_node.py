@@ -37,7 +37,7 @@ def _normalize_decision(value: Any) -> PendingTurnIntent:
     return PendingTurnIntent(action='unclear', reason='')
 
 
-def training_confirmation_node(state: Mapping[str, Any]) -> Any:
+async def training_confirmation_node(state: Mapping[str, Any]) -> Any:
     plan = coerce_training_plan(_state_value(state, 'training_plan', {}))
     phase = str(_state_value(state, 'training_phase', 'prepare') or 'prepare').strip().lower() or 'prepare'
     suspended_plan = _state_value(state, 'suspended_training_plan')
