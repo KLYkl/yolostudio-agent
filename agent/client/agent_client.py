@@ -604,36 +604,15 @@ class YoloStudioAgentClient:
         self._ensure_materialized_training_state_context(draft=rebuilt_draft)
         self._save_training_plan_draft(rebuilt_draft)
         thread_id = f"{self.session_state.session_id}-turn-{max(self._turn_index, 1)}-startup-materialized"
-        merged_pending = self._merge_pending_review_context(pending, self._pending_review_shadow)
-        payload = self._build_pending_action_payload(merged_pending, thread_id=thread_id)
-        normalized = {
-            'id': merged_pending.get('id'),
-            'tool_call_id': str(merged_pending.get('tool_call_id') or merged_pending.get('id') or '').strip(),
-            'name': payload['tool_name'],
-            'tool_name': payload['tool_name'],
-            'args': dict(payload['tool_args']),
-            'tool_args': dict(payload['tool_args']),
-            'summary': payload['summary'],
-            'objective': payload['objective'],
-            'allowed_decisions': list(payload['allowed_decisions']),
-            'review_config': dict(payload['review_config']),
-            'decision_context': dict(payload.get('decision_context') or {}),
-            'thread_id': thread_id,
-            'source': 'synthetic',
-            'interrupt_kind': payload['interrupt_kind'],
-            'created_at': utc_now(),
-        }
-        self._remember_pending_confirmation(
-            normalized,
-            emit_event=True,
-            persist_graph=False,
-        )
+        interrupt_payload = self._draft_to_training_confirmation_interrupt(rebuilt_draft, thread_id=thread_id)
+        if interrupt_payload is None:
+            return False
         self.memory.append_event(
             self.session_state.session_id,
             'startup_training_plan_materialized',
             {
                 'thread_id': thread_id,
-                'tool': payload['tool_name'],
+                'tool': str(pending.get('name') or ''),
                 'execution_mode': str(rebuilt_draft.get('execution_mode') or '').strip(),
             },
         )
@@ -4411,8 +4390,6 @@ class YoloStudioAgentClient:
         ).strip() or thread_id
         self._save_training_plan_draft(rebuilt_draft)
         interrupt_payload = self._draft_to_training_confirmation_interrupt(rebuilt_draft, thread_id=confirmation_thread_id)
-        if interrupt_payload is None:
-            self._set_pending_confirmation(confirmation_thread_id, refreshed_pending)
         self.memory.append_event(
             self.session_state.session_id,
             'training_plan_confirmation_refreshed_locally',
@@ -4429,10 +4406,10 @@ class YoloStudioAgentClient:
                 thread_id=confirmation_thread_id,
                 user_text_hint='请按更新后的训练草案进入确认。',
             )
-        return self._needs_confirmation_result(
-            confirmation_thread_id,
-            self._pending_from_state() or refreshed_pending,
-            await self._render_training_plan_message(rebuilt_draft, pending=True),
+        return await self._render_training_plan_dialogue_response(
+            draft=rebuilt_draft,
+            pending=None,
+            thread_id=confirmation_thread_id,
         )
 
     def _build_followup_training_request(self) -> dict[str, Any] | None:
@@ -4741,8 +4718,6 @@ class YoloStudioAgentClient:
         self._ensure_materialized_training_state_context(draft=rebuilt_draft)
         self._save_training_plan_draft(rebuilt_draft)
         interrupt_payload = self._draft_to_training_confirmation_interrupt(rebuilt_draft, thread_id=thread_id)
-        if interrupt_payload is None:
-            self._set_pending_confirmation(thread_id, pending)
         self.memory.append_event(
             self.session_state.session_id,
             'graph_text_training_plan_materialized',
@@ -4759,11 +4734,7 @@ class YoloStudioAgentClient:
                 user_text_hint=user_text_hint or self._recent_user_text(),
                 stream_handler=stream_handler,
             )
-        return self._needs_confirmation_result(
-            thread_id,
-            pending,
-            await self._render_training_plan_message(rebuilt_draft, pending=True),
-        )
+        return None
 
     def _should_use_video_prediction(self, user_text: str, path: str) -> bool:
         normalized = str(user_text or '').lower()

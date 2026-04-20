@@ -1828,11 +1828,10 @@ async def _scenario_text_only_prepare_question_restore_edit_stays_local() -> Non
     turn2 = await restored.chat('把 batch 改成 12 再继续')
     draft = dict(restored.session_state.active_training.training_plan_draft or {})
     interrupt_payload = dict(turn2.get('interrupt_payload') or {})
-    assert turn2['status'] == 'needs_confirmation', turn2
-    assert interrupt_payload.get('type') == 'training_confirmation', turn2
-    assert interrupt_payload.get('phase') == 'prepare', interrupt_payload
-    assert interrupt_payload.get('next_step_tool') == 'prepare_dataset_for_training', interrupt_payload
-    assert interrupt_payload.get('next_step_args') == {'dataset_path': '/home/kly/ct_loop/data_ct'}, interrupt_payload
+    assert turn2['status'] == 'completed', turn2
+    assert interrupt_payload == {}, turn2
+    assert 'batch=12' in turn2['message'], turn2
+    assert '下一步动作: prepare_dataset_for_training' in turn2['message'], turn2
     assert (draft.get('planned_training_args') or {}).get('batch') == 12, draft
 
 
