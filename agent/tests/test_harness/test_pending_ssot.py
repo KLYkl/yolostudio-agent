@@ -12,13 +12,14 @@ from . conftest import (
     DummyGraph, make_client, make_client_at_state,
     setup_harness, cleanup_harness, HARNESS_WORK,
 )
+from yolostudio_agent.agent.tests._pending_confirmation_test_support import seed_pending_confirmation
 
 
 # ===== 测试 1: set → get 一致性 =====
 async def _test_set_get_consistency() -> None:
     """设置 pending 后，get_pending_action 应立即返回"""
     client = make_client('ssot-set-get')
-    client._set_pending_confirmation(
+    seed_pending_confirmation(client, 
         'ssot-t1',
         {
             'name': 'prepare_dataset_for_training',
@@ -38,7 +39,7 @@ async def _test_set_get_consistency() -> None:
 async def _test_set_updates_runtime_pending_shadow() -> None:
     """set_pending 后，runtime pending SSOT 应立即更新"""
     client = make_client('ssot-mirror')
-    client._set_pending_confirmation(
+    seed_pending_confirmation(client, 
         'ssot-mirror-t1',
         {
             'name': 'split_dataset',
@@ -62,7 +63,7 @@ async def _test_persist_and_reload() -> None:
 
     # 第一个 client: 设 pending
     c1 = make_client(scenario_id)
-    c1._set_pending_confirmation(
+    seed_pending_confirmation(c1, 
         'ssot-persist-t1',
         {
             'name': 'prepare_dataset_for_training',
@@ -106,7 +107,7 @@ async def _test_clear_pending() -> None:
     """clear 后 pending 应为 None"""
     client = make_client_at_state('ssot-clear', preset='pending_prepare')
     # 先用 _set 让 shadow 也有值
-    client._set_pending_confirmation(
+    seed_pending_confirmation(client, 
         'ssot-clear-t1',
         {
             'name': 'prepare_dataset_for_training',
@@ -126,7 +127,7 @@ async def _test_clear_pending() -> None:
 async def _test_reject_clears_pending() -> None:
     """reject 后 pending 应消失"""
     client = make_client('ssot-reject')
-    client._set_pending_confirmation(
+    seed_pending_confirmation(client, 
         'ssot-reject-t1',
         {
             'name': 'prepare_dataset_for_training',

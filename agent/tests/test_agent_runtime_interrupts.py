@@ -165,6 +165,7 @@ except Exception:
 from langchain_core.messages import AIMessage
 from langchain_core.messages import ToolMessage
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from yolostudio_agent.agent.tests._pending_confirmation_test_support import seed_pending_confirmation
 
 
 class _DummyGraph:
@@ -229,7 +230,7 @@ async def _scenario_pending_payload_contract() -> None:
     scenario_root = WORK / 'payload_contract'
     settings = AgentSettings(session_id='runtime-interrupt-payload', memory_root=str(scenario_root))
     client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
-    client._set_pending_confirmation(
+    seed_pending_confirmation(client, 
         'runtime-interrupt-payload-turn-1',
         {
             'name': 'upload_assets_to_remote',
@@ -259,7 +260,7 @@ async def _scenario_review_reject() -> None:
     scenario_root = WORK / 'review_reject'
     settings = AgentSettings(session_id='runtime-interrupt-reject', memory_root=str(scenario_root))
     client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
-    client._set_pending_confirmation(
+    seed_pending_confirmation(client, 
         'runtime-interrupt-reject-turn-1',
         {
             'name': 'upload_assets_to_remote',
@@ -281,7 +282,7 @@ async def _scenario_review_clarify_keeps_pending() -> None:
     scenario_root = WORK / 'review_clarify'
     settings = AgentSettings(session_id='runtime-interrupt-clarify', memory_root=str(scenario_root))
     client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
-    client._set_pending_confirmation(
+    seed_pending_confirmation(client, 
         'runtime-interrupt-clarify-turn-1',
         {
             'name': 'split_dataset',
@@ -303,7 +304,7 @@ async def _scenario_review_edit_keeps_pending() -> None:
     scenario_root = WORK / 'review_edit'
     settings = AgentSettings(session_id='runtime-interrupt-edit', memory_root=str(scenario_root))
     client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
-    client._set_pending_confirmation(
+    seed_pending_confirmation(client, 
         'runtime-interrupt-edit-turn-1',
         {
             'name': 'upload_assets_to_remote',
@@ -339,7 +340,7 @@ async def _scenario_review_approve() -> None:
         return result
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
-    client._set_pending_confirmation(
+    seed_pending_confirmation(client, 
         'runtime-interrupt-approve-turn-1',
         {
             'name': 'upload_assets_to_remote',
@@ -360,7 +361,7 @@ async def _scenario_stale_graph_pending_is_cleared() -> None:
     scenario_root = WORK / 'stale_graph_pending'
     settings = AgentSettings(session_id='runtime-interrupt-stale-graph', memory_root=str(scenario_root))
     client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
-    client._set_pending_confirmation(
+    seed_pending_confirmation(client, 
         'runtime-interrupt-stale-graph-turn-1',
         {
             'name': 'start_training',
@@ -380,7 +381,7 @@ async def _scenario_graph_pending_shadow_is_reused_when_graph_can_resume() -> No
     settings = AgentSettings(session_id='runtime-interrupt-graph-shadow', memory_root=str(scenario_root))
     graph = _ResumableGraphWithoutVisiblePending()
     client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
-    client._set_pending_confirmation(
+    seed_pending_confirmation(client, 
         'runtime-interrupt-graph-shadow-turn-1',
         {
             'name': 'upload_assets_to_remote',
@@ -423,7 +424,7 @@ async def _scenario_synthetic_pending_ignores_graph_pending() -> None:
         return result
 
     client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
-    client._set_pending_confirmation(
+    seed_pending_confirmation(client, 
         'runtime-interrupt-synthetic-graph-turn-1',
         {
             'name': 'start_training_loop',

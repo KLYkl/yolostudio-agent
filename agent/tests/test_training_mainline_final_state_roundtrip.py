@@ -168,6 +168,7 @@ except Exception:
 
 from yolostudio_agent.agent.client import intent_parsing
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from yolostudio_agent.agent.tests._pending_confirmation_test_support import seed_pending_confirmation
 from yolostudio_agent.agent.client.mainline_route_support import resolve_mainline_dispatch_payload
 from yolostudio_agent.agent.tests._training_plan_test_support import (
     clear_training_plan_draft,
@@ -304,7 +305,7 @@ class _FakeGraph:
         ) or str(user_text).strip().lower() in {'y', 'yes'}
         if client is not None and config and next_tool and is_execute_turn:
             thread_id = str(((config or {}).get('configurable') or {}).get('thread_id') or '').strip()
-            client._set_pending_confirmation(
+            seed_pending_confirmation(client, 
                 thread_id,
                 {'name': next_tool, 'args': next_args, 'id': None, 'synthetic': True},
             )

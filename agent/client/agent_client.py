@@ -59,8 +59,6 @@ from yolostudio_agent.agent.client.hitl_manager import (
     build_cancel_message as build_pending_cancel_message,
     build_pending_action_payload,
     confirmation_user_facts,
-    pending_action_objective,
-    pending_action_summary,
 )
 from yolostudio_agent.agent.client.state_applier import apply_tool_result_to_state
 from yolostudio_agent.agent.client import intent_parsing
@@ -104,7 +102,6 @@ from yolostudio_agent.agent.client.tool_adapter import (
     normalize_tool_args,
 )
 from yolostudio_agent.agent.client.tool_policy import (
-    pending_allowed_decisions,
     resolve_tool_execution_policy,
 )
 from yolostudio_agent.agent.client.tool_result_parser import parse_tool_message
@@ -3647,15 +3644,6 @@ class YoloStudioAgentClient:
         except Exception:
             return
 
-    def _pending_allowed_decisions(self, tool_name: str) -> list[str]:
-        return pending_allowed_decisions(self._tool_policy(tool_name))
-
-    def _pending_action_objective(self, tool_name: str, args: dict[str, Any]) -> str:
-        return pending_action_objective(self.session_state, tool_name, args)
-
-    def _pending_action_summary(self, tool_name: str, args: dict[str, Any]) -> str:
-        return pending_action_summary(self.session_state, tool_name, args)
-
     def _build_pending_action_payload(
         self,
         pending: dict[str, Any],
@@ -3725,65 +3713,6 @@ class YoloStudioAgentClient:
                 },
             )
         self._sync_training_workflow_state(reason='pending_set')
-
-    def _set_pending_confirmation(self, thread_id: str, pending: dict[str, Any]) -> None:
-        merged_pending = self._merge_pending_review_context(pending, self._pending_review_shadow)
-        payload = self._build_pending_action_payload(merged_pending, thread_id=thread_id)
-        source = str(
-            merged_pending.get('source')
-            or ('synthetic' if merged_pending.get('synthetic') else 'graph')
-        ).strip().lower()
-        if source not in {'graph', 'synthetic'}:
-            source = 'synthetic'
-        normalized = {
-            'id': merged_pending.get('id'),
-            'tool_call_id': str(merged_pending.get('tool_call_id') or merged_pending.get('id') or '').strip(),
-            'name': payload['tool_name'],
-            'tool_name': payload['tool_name'],
-            'args': dict(payload['tool_args']),
-            'tool_args': dict(payload['tool_args']),
-            'summary': payload['summary'],
-            'objective': payload['objective'],
-            'allowed_decisions': list(payload['allowed_decisions']),
-            'review_config': dict(payload['review_config']),
-            'decision_context': dict(payload.get('decision_context') or {}),
-            'thread_id': thread_id,
-            'source': source,
-            'interrupt_kind': payload['interrupt_kind'],
-            'created_at': utc_now(),
-        }
-        self._remember_pending_confirmation(
-            normalized,
-            emit_event=True,
-            persist_graph=True,
-        )
-
-    def _update_pending_confirmation_args(self, thread_id: str, updates: dict[str, Any]) -> bool:
-        pending = self._resolve_pending_confirmation(thread_id=thread_id, config=self._pending_config(thread_id))
-        if not pending:
-            return False
-        normalized_updates = dict(updates or {})
-        if not normalized_updates:
-            return True
-        updated_pending = dict(pending)
-        updated_args = dict(updated_pending.get('args') or updated_pending.get('tool_args') or {})
-        updated_args.update(normalized_updates)
-        updated_pending['args'] = dict(updated_args)
-        updated_pending['tool_args'] = dict(updated_args)
-        self._remember_pending_confirmation(
-            updated_pending,
-            emit_event=False,
-            persist_graph=False,
-        )
-        resolved_thread_id = str(updated_pending.get('thread_id') or thread_id or '').strip()
-        if resolved_thread_id:
-            self._update_graph_pending_state(
-                thread_id=resolved_thread_id,
-                pending=updated_pending,
-                review=self._pending_review_shadow,
-            )
-        self.memory.save_state(self.session_state)
-        return True
 
     def _clear_pending_confirmation(self, *, thread_id: str = '', persist_graph: bool = True) -> None:
         resolved_thread_id = str(

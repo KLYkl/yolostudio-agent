@@ -165,6 +165,7 @@ except Exception:
 
 from yolostudio_agent.agent.client import intent_parsing
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from yolostudio_agent.agent.tests._pending_confirmation_test_support import seed_pending_confirmation
 from yolostudio_agent.agent.client.mainline_route_support import resolve_mainline_dispatch_payload
 from yolostudio_agent.agent.client.training_plan_context_service import (
     build_training_plan_draft_from_context,
@@ -303,7 +304,7 @@ class _DummyGraph:
                 self.interrupt_states[thread_id] = _InterruptState(interrupt_payload)
                 tool_call = self.client._training_confirmation_tool_call(interrupt_payload)
                 if tool_call:
-                    self.client._set_pending_confirmation(
+                    seed_pending_confirmation(self.client, 
                         thread_id,
                         {'name': str(tool_call.get('name') or ''), 'args': dict(tool_call.get('args') or {}), 'id': None, 'source': 'graph'},
                     )
@@ -367,7 +368,7 @@ class _DummyGraph:
                                 self.interrupt_states[followup_thread_id] = _InterruptState(followup_interrupt)
                                 tool_call = self.client._training_confirmation_tool_call(followup_interrupt)
                                 if tool_call:
-                                    self.client._set_pending_confirmation(
+                                    seed_pending_confirmation(self.client, 
                                         followup_thread_id,
                                         {'name': str(tool_call.get('name') or ''), 'args': dict(tool_call.get('args') or {}), 'id': None, 'source': 'graph'},
                                     )
@@ -540,12 +541,12 @@ class _DummyGraph:
                     self.interrupt_states[thread_id] = _InterruptState(interrupt_payload)
                     tool_call = self.client._training_confirmation_tool_call(interrupt_payload)
                     if tool_call:
-                        self.client._set_pending_confirmation(
+                        seed_pending_confirmation(self.client, 
                             thread_id,
                             {'name': str(tool_call.get('name') or ''), 'args': dict(tool_call.get('args') or {}), 'id': None, 'source': 'graph'},
                         )
                     return {'messages': []}
-            self.client._set_pending_confirmation(
+            seed_pending_confirmation(self.client, 
                 thread_id,
                 {'name': next_tool, 'args': next_args, 'id': None, 'synthetic': True},
             )

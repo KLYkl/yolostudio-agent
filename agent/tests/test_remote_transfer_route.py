@@ -167,6 +167,10 @@ _install_fake_test_dependencies()
 
 from langchain_core.messages import AIMessage, ToolMessage
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from yolostudio_agent.agent.tests._pending_confirmation_test_support import (
+    seed_pending_confirmation,
+    update_pending_confirmation_args,
+)
 from yolostudio_agent.agent.tests._coroutine_runner import run
 
 
@@ -832,7 +836,7 @@ async def _scenario_remote_training_pipeline_waits_and_downloads() -> None:
     assert any(item.get('route') == 'graph-selected-tool' for item in routes), routes
 
     local_result_root = Path(turn['tool_call']['args']['local_result_root'])
-    assert client._update_pending_confirmation_args(
+    assert update_pending_confirmation_args(client, 
         turn['thread_id'],
         {'poll_interval_seconds': 0, 'max_wait_seconds': 1},
     ) is True

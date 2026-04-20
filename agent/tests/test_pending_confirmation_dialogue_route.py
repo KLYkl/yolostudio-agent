@@ -145,6 +145,7 @@ def _install_fake_test_dependencies() -> None:
 _install_fake_test_dependencies()
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from yolostudio_agent.agent.tests._pending_confirmation_test_support import seed_pending_confirmation
 from langchain_core.messages import AIMessage
 
 
@@ -207,7 +208,7 @@ def _make_client(
         'id': None,
         'synthetic': True,
     }
-    client._set_pending_confirmation(f'{session_id}-pending', pending)
+    seed_pending_confirmation(client, f'{session_id}-pending', pending)
     return client
 
 

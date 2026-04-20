@@ -165,6 +165,7 @@ except Exception:
 from langchain_core.messages import AIMessage
 from yolostudio_agent.agent.client import intent_parsing
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from yolostudio_agent.agent.tests._pending_confirmation_test_support import seed_pending_confirmation
 from yolostudio_agent.agent.client.mainline_route_support import resolve_mainline_dispatch_payload
 from yolostudio_agent.agent.tests._training_plan_test_support import (
     clear_training_plan_draft,
@@ -351,7 +352,7 @@ class _DummyGraph:
         next_tool = str(plan_context.get('next_step_tool') or '').strip()
         next_args = dict(plan_context.get('next_step_args') or {})
         if next_tool:
-            self.client._set_pending_confirmation(
+            seed_pending_confirmation(self.client, 
                 thread_id,
                 {'name': next_tool, 'args': next_args, 'id': None, 'synthetic': True},
             )

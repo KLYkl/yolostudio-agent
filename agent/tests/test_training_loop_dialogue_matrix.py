@@ -165,6 +165,7 @@ except Exception:
 
 import yolostudio_agent.agent.client.agent_client as agent_client_module
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from yolostudio_agent.agent.tests._pending_confirmation_test_support import seed_pending_confirmation
 from langchain_core.messages import AIMessage, ToolMessage
 from yolostudio_agent.agent.tests._training_plan_test_support import (
     clear_training_plan_draft,
@@ -257,7 +258,7 @@ class _LoopOpsGraph:
         )
         if self.client is not None and config and next_tool and (is_execute_turn or is_loop_plan_handoff or is_post_prepare_loop_handoff):
             thread_id = str(((config or {}).get('configurable') or {}).get('thread_id') or '').strip()
-            self.client._set_pending_confirmation(
+            seed_pending_confirmation(self.client, 
                 thread_id,
                 {'name': next_tool, 'args': next_args, 'id': None, 'synthetic': True},
             )
@@ -290,7 +291,7 @@ class _LoopOpsGraph:
                 draft_next_args = dict(planned_loop_args)
                 draft_next_args['model'] = model
                 draft_next_args['data_yaml'] = data_yaml
-                self.client._set_pending_confirmation(
+                seed_pending_confirmation(self.client, 
                     thread_id,
                     {'name': 'start_training_loop', 'args': draft_next_args, 'id': None, 'synthetic': True},
                 )
@@ -319,7 +320,7 @@ class _LoopOpsGraph:
                 thread_id = str(((config or {}).get('configurable') or {}).get('thread_id') or '').strip()
                 next_tool_name = str(draft.get('next_step_tool') or '').strip()
                 next_tool_args = dict(draft.get('next_step_args') or {})
-                self.client._set_pending_confirmation(
+                seed_pending_confirmation(self.client, 
                     thread_id,
                     {'name': next_tool_name, 'args': next_tool_args, 'id': None, 'synthetic': True},
                 )

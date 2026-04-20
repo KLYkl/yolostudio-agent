@@ -149,6 +149,7 @@ _install_fake_test_dependencies()
 from langchain_core.messages import AIMessage, ToolMessage
 from yolostudio_agent.agent.client import intent_parsing
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
+from yolostudio_agent.agent.tests._pending_confirmation_test_support import seed_pending_confirmation
 from yolostudio_agent.agent.client.mainline_route_support import resolve_mainline_dispatch_payload
 from yolostudio_agent.agent.tests._training_plan_test_support import (
     current_training_plan_context_payload,
@@ -295,7 +296,7 @@ class _NoLLMGraph:
         )
         if self.client is not None and config and next_tool and is_execute_turn:
             thread_id = str(((config or {}).get('configurable') or {}).get('thread_id') or '').strip()
-            self.client._set_pending_confirmation(
+            seed_pending_confirmation(self.client, 
                 thread_id,
                 {'name': next_tool, 'args': next_args, 'id': None, 'synthetic': True},
             )
@@ -406,7 +407,7 @@ class _ScriptedGraph:
                     next_args = dict(plan_context.get('next_step_args') or {})
                     if config and next_tool and not discussion_only:
                         thread_id = str(((config or {}).get('configurable') or {}).get('thread_id') or '').strip()
-                        client._set_pending_confirmation(
+                        seed_pending_confirmation(client, 
                             thread_id,
                             {'name': next_tool, 'args': next_args, 'id': None, 'synthetic': True},
                         )

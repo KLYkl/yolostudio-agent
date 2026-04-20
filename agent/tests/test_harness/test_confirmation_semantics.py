@@ -9,11 +9,12 @@ from typing import Any
 
 from . conftest import make_client, setup_harness, cleanup_harness
 from . fixtures import CONFIRMATION_SYNONYMS
+from yolostudio_agent.agent.tests._pending_confirmation_test_support import seed_pending_confirmation
 
 
 def _set_prepare_pending(client: Any) -> None:
     """设置 prepare pending 状态"""
-    client._set_pending_confirmation(
+    seed_pending_confirmation(client, 
         'confirm-sem-t1',
         {
             'name': 'prepare_dataset_for_training',
