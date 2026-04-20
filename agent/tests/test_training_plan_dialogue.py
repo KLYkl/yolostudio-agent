@@ -188,7 +188,10 @@ class _DummyGraph:
     def get_state(self, config):
         del config
         if self.client is not None:
-            has_draft = bool(self.client.session_state.active_training.training_plan_draft)
+            draft = dict(self.client.session_state.active_training.training_plan_draft or {})
+            if draft:
+                self.plan_context = build_training_plan_context_from_draft(draft)
+            has_draft = bool(draft)
             has_pending = bool(self.client.session_state.pending_confirmation.tool_name)
             if not has_draft and not has_pending:
                 self.plan_context = None
@@ -296,6 +299,10 @@ class _DummyGraph:
                         pending=bool(draft.get('next_step_tool')),
                     )
                     return {'messages': messages + [AIMessage(content=rendered)]}
+        draft_view = dict(self.client.session_state.active_training.training_plan_draft or {})
+        if draft_view:
+            plan_context = build_training_plan_context_from_draft(draft_view) or plan_context
+            self.plan_context = dict(plan_context or {})
         plan_status = str(plan_context.get('status') or '').strip().lower()
         next_tool = str(plan_context.get('next_step_tool') or '').strip()
         next_args = dict(plan_context.get('next_step_args') or {})
@@ -315,6 +322,15 @@ class _DummyGraph:
         )
         if config and next_tool and is_execute_turn:
             thread_id = str(((config or {}).get('configurable') or {}).get('thread_id') or '').strip()
+            if draft_view:
+                interrupt_payload = self.client._draft_to_training_confirmation_interrupt(
+                    draft_view,
+                    thread_id=thread_id,
+                )
+                if interrupt_payload is not None:
+                    tool_call = dict(interrupt_payload.get('tool_call') or {})
+                    next_tool = str(tool_call.get('name') or next_tool).strip()
+                    next_args = dict(tool_call.get('args') or next_args)
             self.client._set_pending_confirmation(
                 thread_id,
                 {'name': next_tool, 'args': next_args, 'id': None, 'synthetic': True},

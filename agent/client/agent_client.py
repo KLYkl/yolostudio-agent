@@ -1395,6 +1395,43 @@ class YoloStudioAgentClient:
                 raw_user_text=user_text,
                 source='natural_language_chat',
             )
+            if canonical_tool_name(str(pending.get('name') or '').strip()) == 'prepare_dataset_for_training':
+                updated_pending = dict(pending)
+                updated_args = dict(updated_pending.get('args') or updated_pending.get('tool_args') or {})
+                updated = False
+                normalized_text = str(user_text or '').strip().lower()
+                prepare_only_tokens = ('只做准备', '先只做准备', '不要开始训练', '暂不启动训练', '只准备')
+                disable_split_tokens = ('不要自动划分', '不自动划分', '不要划分', '不划分', '先不要自动划分')
+                enable_split_tokens = ('按默认比例', '默认比例', '先划分', '划分训练集', '划分数据集', 'force_split', 'split')
+                if any(token in user_text or token in normalized_text for token in prepare_only_tokens):
+                    updated = False
+                elif any(token in user_text or token in normalized_text for token in disable_split_tokens):
+                    if 'force_split' in updated_args:
+                        updated_args.pop('force_split', None)
+                        updated = True
+                elif any(token in user_text or token in normalized_text for token in enable_split_tokens):
+                    if updated_args.get('force_split') is not True:
+                        updated_args['force_split'] = True
+                        updated = True
+                if updated:
+                    updated_pending['args'] = dict(updated_args)
+                    updated_pending['tool_args'] = dict(updated_args)
+                    merged_pending = self._merge_pending_review_context(updated_pending, self._pending_review_shadow)
+                    self._remember_pending_confirmation(
+                        merged_pending,
+                        emit_event=False,
+                        persist_graph=False,
+                    )
+                    pending_thread_id = str(
+                        merged_pending.get('thread_id')
+                        or self._pending_confirmation_thread_id()
+                        or ''
+                    ).strip()
+                    return self._needs_confirmation_result(
+                        pending_thread_id,
+                        merged_pending,
+                        await self._build_confirmation_message(merged_pending),
+                    )
             return None
         if pending_turn_intent in {'approve', 'reject'}:
             return await self.review_pending_action(
@@ -3745,6 +3782,16 @@ class YoloStudioAgentClient:
             return handoff
         interrupt_payload = self._draft_to_training_confirmation_interrupt(draft, thread_id=thread_id)
         if interrupt_payload is not None:
+            tool_call = self._training_confirmation_tool_call(interrupt_payload)
+            if tool_call:
+                self._set_pending_confirmation(
+                    thread_id,
+                    {
+                        'name': str(tool_call.get('name') or '').strip(),
+                        'args': dict(tool_call.get('args') or {}),
+                        'synthetic': True,
+                    },
+                )
             return self._format_interrupt_or_result({}, thread_id=thread_id, interrupt_payload=interrupt_payload)
         return handoff
 
