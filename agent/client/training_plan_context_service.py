@@ -7,8 +7,8 @@ from yolostudio_agent.agent.client.session_state import SessionState
 TRAINING_PLAN_CONTEXT_KEY = 'training_plan_context'
 
 
-def build_training_plan_context_payload(state: SessionState) -> dict[str, Any] | None:
-    draft = dict(state.active_training.training_plan_draft or {})
+def build_training_plan_context_from_draft(draft: dict[str, Any] | None) -> dict[str, Any] | None:
+    draft = dict(draft or {})
     if not draft:
         return None
 
@@ -32,6 +32,10 @@ def build_training_plan_context_payload(state: SessionState) -> dict[str, Any] |
         'risks': [str(item).strip() for item in (draft.get('risks') or []) if str(item).strip()],
     }
     return payload
+
+
+def build_training_plan_context_payload(state: SessionState) -> dict[str, Any] | None:
+    return build_training_plan_context_from_draft(dict(state.active_training.training_plan_draft or {}))
 
 
 def extract_training_plan_context_from_state(state: dict[str, Any]) -> dict[str, Any] | None:

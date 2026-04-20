@@ -790,6 +790,30 @@ async def _scenario_resolve_mainline_route_state_aggregates_followups() -> None:
     assert bool(guard_policy.blocks_training_start) is True, guard_policy
 
 
+async def _scenario_dispatch_mainline_requests_skips_standard_training_entrypoint() -> None:
+    client = _make_client('dispatch-mainline-skips-standard-training')
+    client._graph_has_training_entry = True
+    calls: list[dict[str, object]] = []
+
+    async def _unexpected_training_entrypoint(**kwargs):
+        calls.append(dict(kwargs))
+        return {'status': 'completed', 'message': 'should not happen', 'tool_call': None}
+
+    client._try_handle_training_entrypoints = _unexpected_training_entrypoint  # type: ignore[method-assign]
+    route_state = await client._resolve_mainline_route_state(
+        '请用 /data/demo 基于 /models/yolov8n.pt 做一次训练，batch 改成 16',
+        client._collect_mainline_context('请用 /data/demo 基于 /models/yolov8n.pt 做一次训练，batch 改成 16'),
+    )
+    result = await client._dispatch_mainline_requests(
+        thread_id='dispatch-mainline-skips-standard-training-turn-1',
+        user_text='请用 /data/demo 基于 /models/yolov8n.pt 做一次训练，batch 改成 16',
+        mainline_context=client._collect_mainline_context('请用 /data/demo 基于 /models/yolov8n.pt 做一次训练，batch 改成 16'),
+        route_state=route_state,
+    )
+    assert result is None, result
+    assert calls == [], calls
+
+
 async def _run() -> None:
     shutil.rmtree(WORK, ignore_errors=True)
     WORK.mkdir(parents=True, exist_ok=True)
@@ -819,6 +843,7 @@ async def _run() -> None:
         await _scenario_resolve_mainline_route_state_payload_helper_aggregates_followups()
         await _scenario_resolve_mainline_dispatch_payload_helper_builds_request_args()
         await _scenario_resolve_mainline_route_state_aggregates_followups()
+        await _scenario_dispatch_mainline_requests_skips_standard_training_entrypoint()
         print('structured action router ok')
     finally:
         shutil.rmtree(WORK, ignore_errors=True)

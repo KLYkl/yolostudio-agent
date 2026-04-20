@@ -153,6 +153,7 @@ from langchain_core.messages import AIMessage
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
 from yolostudio_agent.agent.client.session_state import SessionState
 from yolostudio_agent.agent.client.training_plan_context_service import (
+    build_training_plan_context_from_draft,
     build_training_plan_context_payload,
     extract_training_plan_context_from_state,
 )
@@ -222,6 +223,7 @@ def _scenario_build_payload() -> None:
     assert payload['planned_training_args']['batch'] == 8
     assert payload['warnings'] == ['样本量偏小，建议先小步验证']
     assert extract_training_plan_context_from_state({'training_plan_context': payload}) == payload
+    assert build_training_plan_context_from_draft(dict(state.active_training.training_plan_draft or {})) == payload
 
 
 async def _scenario_chat_passes_training_plan_context() -> None:

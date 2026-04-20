@@ -129,6 +129,7 @@ from yolostudio_agent.agent.client.training_plan_service import (
     training_plan_user_facts,
 )
 from yolostudio_agent.agent.client.training_plan_context_service import (
+    build_training_plan_context_from_draft,
     build_training_plan_context_payload,
     extract_training_plan_context_from_state,
 )
@@ -237,6 +238,7 @@ class YoloStudioAgentClient:
         self._recorded_graph_text_signatures: set[str] = set()
         self._pending_confirmation_shadow: dict[str, Any] | None = None
         self._pending_review_shadow: dict[str, Any] = {}
+        self._graph_has_training_entry = bool(getattr(graph, '__codex_training_entry__', False))
         self.memory = memory or MemoryStore(settings.memory_root)
         self.checkpointer = checkpointer
         self.context_builder = ContextBuilder(SYSTEM_PROMPT)
@@ -2214,14 +2216,17 @@ class YoloStudioAgentClient:
         if live_training_control:
             return live_training_control
 
-        training_entrypoint_request = await self._try_handle_training_entrypoints(
-            thread_id=thread_id,
-            user_text=user_text,
-            **dict(dispatch_payload.get('training_entrypoint_request_args') or {}),
-        )
-        if training_entrypoint_request is _DEFER_TO_GRAPH:
-            return None
-        return training_entrypoint_request
+        training_entrypoint_args = dict(dispatch_payload.get('training_entrypoint_request_args') or {})
+        if bool(training_entrypoint_args.get('wants_training_loop_start')) or not self._graph_has_training_entry:
+            training_entrypoint_request = await self._try_handle_training_entrypoints(
+                thread_id=thread_id,
+                user_text=user_text,
+                **training_entrypoint_args,
+            )
+            if training_entrypoint_request is _DEFER_TO_GRAPH:
+                return None
+            return training_entrypoint_request
+        return None
 
     def _collect_mainline_context(self, user_text: str) -> dict[str, Any]:
         return resolve_mainline_context(
@@ -3635,13 +3640,12 @@ class YoloStudioAgentClient:
         stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
     ) -> dict[str, Any]:
         draft = dict(draft or {})
-        if draft:
-            self._save_training_plan_draft(draft)
         handoff = await self._handoff_current_runtime_to_graph(
             thread_id=thread_id,
             user_text_hint=user_text_hint,
             auto_approve=False,
             suppress_training_plan_context=False,
+            training_plan_context_override=build_training_plan_context_from_draft(draft),
             skip_text_only_training_confirmation=True,
             stream_handler=stream_handler,
         )
@@ -3976,6 +3980,7 @@ class YoloStudioAgentClient:
         thread_id: str,
         user_text_hint: str,
         suppress_training_plan_context: bool = False,
+        training_plan_context_override: dict[str, Any] | None = None,
         suppress_ephemeral_state_context: bool = False,
         stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any], int]:
@@ -3997,7 +4002,11 @@ class YoloStudioAgentClient:
             "messages": built_messages,
             "cached_tool_context": build_cached_tool_context_payload(self.session_state),
             "dataset_fact_context": build_dataset_fact_context_payload(self.session_state),
-            "training_plan_context": None if suppress_training_plan_context else build_training_plan_context_payload(self.session_state),
+            "training_plan_context": (
+                None
+                if suppress_training_plan_context
+                else dict(training_plan_context_override or build_training_plan_context_payload(self.session_state) or {})
+            ) or None,
         }
         result = await self._graph_invoke(graph_input, config=config, stream_handler=stream_handler)
         built_messages_len = len(built_messages)
@@ -4014,6 +4023,7 @@ class YoloStudioAgentClient:
         auto_approve: bool = False,
         ignore_existing_pending: bool = False,
         suppress_training_plan_context: bool = False,
+        training_plan_context_override: dict[str, Any] | None = None,
         suppress_ephemeral_state_context: bool = False,
         skip_text_only_training_confirmation: bool = False,
         stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
@@ -4022,6 +4032,7 @@ class YoloStudioAgentClient:
             thread_id=thread_id,
             user_text_hint=user_text_hint,
             suppress_training_plan_context=suppress_training_plan_context,
+            training_plan_context_override=training_plan_context_override,
             suppress_ephemeral_state_context=suppress_ephemeral_state_context,
             stream_handler=stream_handler,
         )
@@ -6121,6 +6132,14 @@ async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudi
         configurable = dict(getattr(config, 'configurable', {}) or {})
         return str(configurable.get('thread_id') or '').strip()
 
+    def _latest_human_text_from_state(state: _AgentRuntimeGraphState) -> str:
+        for message in reversed(list((state or {}).get('messages') or [])):
+            if isinstance(message, HumanMessage):
+                return str(getattr(message, 'content', '') or '').strip()
+            if getattr(message.__class__, '__name__', '') == 'HumanMessage':
+                return str(getattr(message, 'content', '') or '').strip()
+        return ''
+
     def _update_plan_from_preflight(
         client: YoloStudioAgentClient,
         *,
@@ -6180,19 +6199,65 @@ async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudi
         client = client_holder.get('client')
         if client is None:
             return Command(goto='agent_runtime')
+        thread_id = _thread_id_from_config(config)
         context = extract_training_plan_context_from_state(dict(state or {})) or {}
-        if not context:
+        if context:
+            interrupt_payload = client._draft_to_training_confirmation_interrupt(
+                context,
+                thread_id=thread_id,
+            )
+            if interrupt_payload:
+                return Command(
+                    update=_training_state_update_from_interrupt_payload(interrupt_payload),
+                    goto='training_confirmation',
+                )
+
+        latest_user_text = _latest_human_text_from_state(state)
+        if not latest_user_text:
             return Command(goto='agent_runtime')
-        interrupt_payload = client._draft_to_training_confirmation_interrupt(
-            context,
-            thread_id=_thread_id_from_config(config),
+        mainline_context = client._collect_mainline_context(latest_user_text)
+        route_state = await client._resolve_mainline_route_state(latest_user_text, mainline_context)
+        dispatch_payload = resolve_mainline_dispatch_payload(
+            mainline_context=mainline_context,
+            route_state=route_state,
         )
-        if not interrupt_payload:
+        training_entrypoint_args = dict(dispatch_payload.get('training_entrypoint_request_args') or {})
+        if not training_entrypoint_args or bool(training_entrypoint_args.get('wants_training_loop_start')):
             return Command(goto='agent_runtime')
-        return Command(
-            update=_training_state_update_from_interrupt_payload(interrupt_payload),
-            goto='training_confirmation',
+        entrypoint_result = await run_training_request_entrypoint(
+            session_state=client.session_state,
+            user_text=latest_user_text,
+            direct_tool=client.direct_tool,
+            collect_requested_training_args=client._collect_requested_training_args,
+            is_training_discussion_only=client._is_training_discussion_only,
+            extract_training_execution_backend=client._extract_training_execution_backend_from_text,
+            build_training_plan_draft_fn=client._build_training_plan_draft,
+            render_training_plan_message=client._render_training_plan_message,
+            **training_entrypoint_args,
         )
+        if not entrypoint_result:
+            return Command(goto='agent_runtime')
+        draft = dict(entrypoint_result.get('draft') or {})
+        if bool(entrypoint_result.get('defer_to_graph')) and draft:
+            interrupt_payload = client._draft_to_training_confirmation_interrupt(
+                draft,
+                thread_id=thread_id,
+            )
+            if interrupt_payload:
+                return Command(
+                    update=_training_state_update_from_interrupt_payload(interrupt_payload),
+                    goto='training_confirmation',
+                )
+        reply = str(entrypoint_result.get('reply') or '').strip()
+        if reply:
+            return Command(
+                update={
+                    'messages': [AIMessage(content=reply)],
+                    'training_plan_context': None,
+                },
+                goto=END,
+            )
+        return Command(goto='agent_runtime')
 
     async def _refresh_training_start_after_edit(state: _AgentRuntimeGraphState, config: Any = None) -> Command:
         del config
@@ -6354,6 +6419,10 @@ async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudi
         workflow.add_edge(START, 'route_training_entry')
         workflow.add_edge('agent_runtime', END)
         graph = workflow.compile(checkpointer=checkpointer)
+        try:
+            setattr(graph, '__codex_training_entry__', True)
+        except Exception:
+            pass
     else:
         graph = react_graph
     tool_registry = {tool.name: tool for tool in raw_tools}
