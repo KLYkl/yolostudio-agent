@@ -223,6 +223,48 @@ class _ResumableGraphWithoutVisiblePending:
         return {'messages': messages}
 
 
+class _InterruptEnvelope:
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self.value = dict(payload)
+
+
+class _InterruptTask:
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self.interrupts = [_InterruptEnvelope(payload)]
+
+
+class _VisibleInterruptState:
+    def __init__(self, payload: dict[str, Any] | None = None) -> None:
+        self.next = ('tools',) if payload else ()
+        self.values = {'messages': []}
+        self.interrupts = ()
+        self.tasks = (_InterruptTask(payload),) if payload else ()
+
+
+class _ResumableGraphWithVisibleInterrupt:
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self.resume_calls: list[Any] = []
+        self._state = _VisibleInterruptState(payload)
+
+    def get_state(self, config):
+        del config
+        return self._state
+
+    async def ainvoke(self, payload, config=None):
+        del config
+        self.resume_calls.append(payload)
+        resume = getattr(payload, 'resume', payload)
+        decision = ''
+        if isinstance(resume, dict):
+            decision = str(resume.get('action') or resume.get('decision') or '').strip().lower()
+        else:
+            decision = str(resume or '').strip().lower()
+        self._state = _VisibleInterruptState(None)
+        if decision == 'reject':
+            return {'messages': [AIMessage(content='已取消上传')]}
+        return {'messages': [AIMessage(content='上传完成')]}
+
+
 WORK = Path(__file__).resolve().parent / '_tmp_runtime_interrupts'
 
 
@@ -402,6 +444,70 @@ async def _scenario_graph_pending_shadow_is_reused_when_graph_can_resume() -> No
     assert client.get_pending_action() is None
 
 
+async def _scenario_confirm_approves_visible_graph_interrupt() -> None:
+    scenario_root = WORK / 'visible_graph_interrupt_approve'
+    settings = AgentSettings(session_id='runtime-interrupt-visible-approve', memory_root=str(scenario_root))
+    graph = _ResumableGraphWithVisibleInterrupt(
+        {
+            'id': 'call-1',
+            'tool_call_id': 'call-1',
+            'name': 'upload_assets_to_remote',
+            'tool_name': 'upload_assets_to_remote',
+            'args': {'server': 'lab', 'local_paths': ['/tmp/demo.pt']},
+            'tool_args': {'server': 'lab', 'local_paths': ['/tmp/demo.pt']},
+            'summary': '上传资源到远端服务器',
+            'objective': '把本地资源上传到远端服务器',
+            'allowed_decisions': ['approve', 'reject', 'edit', 'clarify'],
+            'review_config': {'risk_level': 'high'},
+            'decision_context': {},
+            'thread_id': 'visible-graph-approve-turn-1',
+            'source': 'graph',
+            'interrupt_kind': 'tool_approval',
+        }
+    )
+    client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
+
+    pending = client.get_pending_action()
+    assert pending is not None, pending
+    assert pending['tool_name'] == 'upload_assets_to_remote', pending
+
+    result = await client.confirm('visible-graph-approve-turn-1', approved=True)
+    assert result['status'] == 'completed', result
+    assert '上传完成' in result['message'], result
+    assert len(graph.resume_calls) == 1, graph.resume_calls
+    assert client.get_pending_action() is None
+
+
+async def _scenario_confirm_rejects_visible_graph_interrupt() -> None:
+    scenario_root = WORK / 'visible_graph_interrupt_reject'
+    settings = AgentSettings(session_id='runtime-interrupt-visible-reject', memory_root=str(scenario_root))
+    graph = _ResumableGraphWithVisibleInterrupt(
+        {
+            'id': 'call-1',
+            'tool_call_id': 'call-1',
+            'name': 'upload_assets_to_remote',
+            'tool_name': 'upload_assets_to_remote',
+            'args': {'server': 'lab', 'local_paths': ['/tmp/demo.pt']},
+            'tool_args': {'server': 'lab', 'local_paths': ['/tmp/demo.pt']},
+            'summary': '上传资源到远端服务器',
+            'objective': '把本地资源上传到远端服务器',
+            'allowed_decisions': ['approve', 'reject', 'edit', 'clarify'],
+            'review_config': {'risk_level': 'high'},
+            'decision_context': {},
+            'thread_id': 'visible-graph-reject-turn-1',
+            'source': 'graph',
+            'interrupt_kind': 'tool_approval',
+        }
+    )
+    client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
+
+    result = await client.confirm('visible-graph-reject-turn-1', approved=False)
+    assert result['status'] == 'cancelled', result
+    assert result['pending_action']['decision_state'] == 'rejected', result
+    assert len(graph.resume_calls) == 1, graph.resume_calls
+    assert client.get_pending_action() is None
+
+
 async def _scenario_synthetic_pending_ignores_graph_pending() -> None:
     scenario_root = WORK / 'synthetic_ignores_graph'
     settings = AgentSettings(session_id='runtime-interrupt-synthetic-graph', memory_root=str(scenario_root))
@@ -459,6 +565,8 @@ async def _run() -> None:
         await _scenario_review_approve()
         await _scenario_stale_graph_pending_is_cleared()
         await _scenario_graph_pending_shadow_is_reused_when_graph_can_resume()
+        await _scenario_confirm_approves_visible_graph_interrupt()
+        await _scenario_confirm_rejects_visible_graph_interrupt()
         await _scenario_synthetic_pending_ignores_graph_pending()
         await _scenario_runtime_ignores_manual_pending_session_mutation()
         print('agent runtime interrupts ok')

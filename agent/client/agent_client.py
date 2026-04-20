@@ -905,44 +905,16 @@ class YoloStudioAgentClient:
         if active_interrupt is not None:
             interrupt_thread_id, interrupt_payload = active_interrupt
             if self._is_training_confirmation_interrupt_payload(interrupt_payload):
-                pending_tool_call = self._training_confirmation_tool_call(interrupt_payload) or {}
                 decision = await self._parse_user_decision(
                     user_text=user_text,
                     interrupt_payload=interrupt_payload,
                 )
-                graph_result = await self._graph_invoke(
-                    Command(resume=decision),
-                    config=self._pending_config(interrupt_thread_id),
+                return await self._resume_active_confirmation_interrupt(
+                    interrupt_thread_id=interrupt_thread_id,
+                    interrupt_payload=interrupt_payload,
+                    decision=decision,
                     stream_handler=stream_handler,
                 )
-                next_interrupt = self._active_graph_interrupt(preferred_thread_id=interrupt_thread_id)
-                action = str((decision or {}).get('action') or '').strip().lower()
-                if action == 'reject' and next_interrupt is None:
-                    pending = {
-                        'name': str(pending_tool_call.get('name') or '').strip(),
-                        'args': dict(pending_tool_call.get('args') or {}),
-                        'thread_id': interrupt_thread_id,
-                        'source': 'graph',
-                    }
-                    cancel_message = self._build_cancel_message(pending) or self._extract_or_fallback(list(graph_result.get('messages') or []))
-                    if cancel_message:
-                        self._messages.append(AIMessage(content=cancel_message))
-                    self._trim_history()
-                    self.memory.append_event(
-                        self.session_state.session_id,
-                        'confirmation_cancelled',
-                        {'tool': pending['name'], 'args': pending.get('args', {})},
-                    )
-                    self.memory.save_state(self.session_state)
-                    return self._cancelled_result(pending, cancel_message or '好，我先不执行这一步。')
-                response = self._format_interrupt_or_result(
-                    graph_result,
-                    thread_id=interrupt_thread_id,
-                    interrupt_payload=next_interrupt[1] if next_interrupt is not None else None,
-                )
-                self._trim_history()
-                self.memory.save_state(self.session_state)
-                return response
 
         pending_dialogue = await self._try_handle_pending_confirmation_dialogue(user_text, stream_handler=stream_handler)
         pending_passthrough_requested = pending_dialogue is _DEFER_TO_GRAPH
@@ -1010,44 +982,15 @@ class YoloStudioAgentClient:
         active_interrupt = self._active_graph_interrupt(preferred_thread_id=thread_id)
         if active_interrupt is not None:
             interrupt_thread_id, interrupt_payload = active_interrupt
-            if self._is_training_confirmation_interrupt_payload(interrupt_payload):
-                pending_tool_call = self._training_confirmation_tool_call(interrupt_payload) or {}
-                decision = {
+            return await self._resume_active_confirmation_interrupt(
+                interrupt_thread_id=interrupt_thread_id,
+                interrupt_payload=interrupt_payload,
+                decision={
                     'action': 'approve' if approved else 'reject',
                     'reason': 'confirm() resume',
-                }
-                graph_result = await self._graph_invoke(
-                    Command(resume=decision),
-                    config=self._pending_config(interrupt_thread_id),
-                    stream_handler=stream_handler,
-                )
-                next_interrupt = self._active_graph_interrupt(preferred_thread_id=interrupt_thread_id)
-                if not approved and next_interrupt is None:
-                    pending = {
-                        'name': str(pending_tool_call.get('name') or '').strip(),
-                        'args': dict(pending_tool_call.get('args') or {}),
-                        'thread_id': interrupt_thread_id,
-                        'source': 'graph',
-                    }
-                    cancel_message = self._build_cancel_message(pending) or self._extract_or_fallback(list(graph_result.get('messages') or []))
-                    if cancel_message:
-                        self._messages.append(AIMessage(content=cancel_message))
-                    self._trim_history()
-                    self.memory.append_event(
-                        self.session_state.session_id,
-                        'confirmation_cancelled',
-                        {'tool': pending['name'], 'args': pending.get('args', {})},
-                    )
-                    self.memory.save_state(self.session_state)
-                    return self._cancelled_result(pending, cancel_message or '好，我先不执行这一步。')
-                response = self._format_interrupt_or_result(
-                    graph_result,
-                    thread_id=interrupt_thread_id,
-                    interrupt_payload=next_interrupt[1] if next_interrupt is not None else None,
-                )
-                self._trim_history()
-                self.memory.save_state(self.session_state)
-                return response
+                },
+                stream_handler=stream_handler,
+            )
 
         config = self._pending_config(thread_id)
         pending = self._resolve_pending_confirmation(thread_id=thread_id, config=config)
@@ -1147,7 +1090,7 @@ class YoloStudioAgentClient:
         active_interrupt = self._active_graph_interrupt()
         if active_interrupt is not None:
             _, interrupt_payload = active_interrupt
-            payload = self._pending_action_from_training_confirmation_interrupt(interrupt_payload)
+            payload = self._pending_action_from_interrupt_payload(interrupt_payload)
             if payload is not None:
                 return payload
         pending = self._resolve_pending_confirmation(thread_id=self._pending_confirmation_thread_id())
@@ -2234,7 +2177,7 @@ class YoloStudioAgentClient:
             active_interrupt = self._active_graph_interrupt(preferred_thread_id=thread_id)
             interrupt_payload = dict(active_interrupt[1] or {}) if active_interrupt is not None else {}
             if self._is_training_confirmation_interrupt_payload(interrupt_payload):
-                pending = self._pending_action_from_training_confirmation_interrupt(interrupt_payload)
+                pending = self._pending_action_from_interrupt_payload(interrupt_payload)
             else:
                 pending = self._pending_from_state()
             draft = self._current_training_plan_draft_view(preferred_thread_id=thread_id)
@@ -3305,21 +3248,119 @@ class YoloStudioAgentClient:
         except Exception:
             return None
 
-    def _pending_action_from_training_confirmation_interrupt(self, payload: dict[str, Any]) -> dict[str, Any] | None:
-        tool_call = self._training_confirmation_tool_call(payload)
-        if not tool_call:
+    def _pending_from_interrupt_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        thread_id: str = '',
+    ) -> dict[str, Any] | None:
+        resolved_thread_id = str(thread_id or payload.get('thread_id') or '').strip()
+        if self._is_training_confirmation_interrupt_payload(payload):
+            tool_call = self._training_confirmation_tool_call(payload)
+            if not tool_call:
+                return None
+            pending_args = dict(tool_call.get('args') or {})
+            return {
+                'name': str(tool_call.get('name') or '').strip(),
+                'tool_name': str(tool_call.get('name') or '').strip(),
+                'args': pending_args,
+                'tool_args': dict(pending_args),
+                'thread_id': resolved_thread_id,
+                'source': 'synthetic',
+                'interrupt_kind': 'training_confirmation',
+                'decision_context': dict((self._pending_from_state() or {}).get('decision_context') or {}),
+            }
+        tool_name = canonical_tool_name(str(payload.get('name') or payload.get('tool_name') or '').strip())
+        if not tool_name:
             return None
-        pending = {
-            'name': str(tool_call.get('name') or '').strip(),
-            'args': dict(tool_call.get('args') or {}),
-            'thread_id': str(payload.get('thread_id') or '').strip(),
-            'source': 'synthetic',
-            'decision_context': dict((self._pending_from_state() or {}).get('decision_context') or {}),
+        normalized_args = normalize_tool_args(
+            tool_name,
+            dict(payload.get('args') or payload.get('tool_args') or {}),
+        )
+        raw_args = dict(payload.get('raw_args') or payload.get('args') or payload.get('tool_args') or {})
+        return {
+            'id': payload.get('id') or payload.get('tool_call_id'),
+            'tool_call_id': str(payload.get('tool_call_id') or payload.get('id') or '').strip(),
+            'name': tool_name,
+            'tool_name': tool_name,
+            'args': normalized_args,
+            'tool_args': dict(normalized_args),
+            'raw_name': str(payload.get('raw_name') or payload.get('name') or payload.get('tool_name') or '').strip(),
+            'raw_args': raw_args,
+            'adapted': bool(payload.get('adapted')),
+            'summary': str(payload.get('summary') or '').strip(),
+            'objective': str(payload.get('objective') or '').strip(),
+            'allowed_decisions': list(payload.get('allowed_decisions') or []),
+            'review_config': dict(payload.get('review_config') or {}),
+            'decision_context': dict(payload.get('decision_context') or (self._pending_from_state() or {}).get('decision_context') or {}),
+            'thread_id': resolved_thread_id,
+            'source': 'graph',
+            'interrupt_kind': str(payload.get('interrupt_kind') or 'tool_approval').strip() or 'tool_approval',
         }
+
+    def _pending_action_from_interrupt_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        thread_id: str = '',
+    ) -> dict[str, Any] | None:
+        pending = self._pending_from_interrupt_payload(payload, thread_id=thread_id)
+        if pending is None:
+            return None
         return self._build_pending_action_payload(
             pending,
-            thread_id=str(payload.get('thread_id') or '').strip() or None,
+            thread_id=str(pending.get('thread_id') or '').strip() or None,
         )
+
+    async def _resume_active_confirmation_interrupt(
+        self,
+        *,
+        interrupt_thread_id: str,
+        interrupt_payload: dict[str, Any],
+        decision: dict[str, Any],
+        stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
+    ) -> dict[str, Any]:
+        pending = self._pending_from_interrupt_payload(interrupt_payload, thread_id=interrupt_thread_id) or {}
+        if pending:
+            self._remember_pending_confirmation(
+                pending,
+                emit_event=False,
+                persist_graph=False,
+            )
+        graph_result = await self._graph_invoke(
+            Command(resume=decision),
+            config=self._pending_config(interrupt_thread_id),
+            stream_handler=stream_handler,
+        )
+        next_interrupt = self._active_graph_interrupt(preferred_thread_id=interrupt_thread_id)
+        action = _normalize_confirmation_resume_value(decision)
+        if action == 'reject' and next_interrupt is None and pending:
+            self._clear_pending_confirmation(thread_id=interrupt_thread_id, persist_graph=False)
+            cancel_message = self._build_cancel_message(pending) or self._extract_or_fallback(list(graph_result.get('messages') or []))
+            if cancel_message:
+                self._messages.append(AIMessage(content=cancel_message))
+            self._pending_confirmation_shadow = None
+            self._sync_training_workflow_state(reason='pending_cleared')
+            self._trim_history()
+            self.memory.append_event(
+                self.session_state.session_id,
+                'confirmation_cancelled',
+                {'tool': str(pending.get('name') or ''), 'args': dict(pending.get('args') or {})},
+            )
+            self.memory.save_state(self.session_state)
+            return self._cancelled_result(pending, cancel_message or '好，我先不执行这一步。')
+        response = self._format_interrupt_or_result(
+            graph_result,
+            thread_id=interrupt_thread_id,
+            interrupt_payload=next_interrupt[1] if next_interrupt is not None else None,
+        )
+        if next_interrupt is None:
+            self._clear_pending_confirmation(thread_id=interrupt_thread_id, persist_graph=False)
+            self._pending_confirmation_shadow = None
+            self._sync_training_workflow_state(reason='pending_cleared')
+        self._trim_history()
+        self.memory.save_state(self.session_state)
+        return response
 
     def _draft_from_training_confirmation_interrupt(self, payload: dict[str, Any]) -> dict[str, Any]:
         plan = coerce_training_plan(dict(payload.get('plan') or {}))
@@ -3442,7 +3483,7 @@ class YoloStudioAgentClient:
                 str((payload or {}).get('execution_mode') or ''),
                 status_reply=str((payload or {}).get('status_reply') or '').strip(),
             )
-            pending_action = self._pending_action_from_training_confirmation_interrupt(payload or {})
+            pending_action = self._pending_action_from_interrupt_payload(payload or {}, thread_id=thread_id)
             if message:
                 self._messages.append(AIMessage(content=message))
             return {
