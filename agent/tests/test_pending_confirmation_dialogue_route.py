@@ -361,11 +361,12 @@ async def _scenario_pending_passthrough_beats_clarify_classifier() -> None:
     graph = _LoopListGraph()
     client = _make_client('pending-passthrough-clf', graph=graph)
 
-    async def _fake_classify_confirmation_reply(user_text, pending):
-        del user_text, pending
-        return 'clarify'
+    async def _fake_invoke_structured_payload(*, messages, schema):
+        del messages, schema
+        return {'action': 'status', 'reason': '先解释一下'}
 
-    client._classify_confirmation_reply = _fake_classify_confirmation_reply  # type: ignore[assignment]
+    client.planner_llm = object()  # type: ignore[assignment]
+    client._invoke_structured_payload = _fake_invoke_structured_payload  # type: ignore[assignment]
     turn = await client.chat('最近有哪些环训练')
     assert turn['status'] == 'completed', turn
     assert turn['message'] == '找到 2 条环训练记录', turn

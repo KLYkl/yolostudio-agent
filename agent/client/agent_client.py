@@ -1117,35 +1117,103 @@ class YoloStudioAgentClient:
         )
         return any(token in text or token in normalized for token in generic_revision_markers)
 
-    async def _classify_pending_turn_intent(self, user_text: str, pending: dict[str, Any]) -> str:
-        if self._looks_like_pending_edit_request(user_text, pending):
-            return 'edit'
+    def _fallback_pending_turn_intent_from_pending(
+        self,
+        *,
+        user_text: str,
+        pending: dict[str, Any],
+    ) -> dict[str, Any]:
+        text = str(user_text or '').strip()
+        if not text:
+            return {'action': 'unclear', 'reason': ''}
+        if self._looks_like_pending_passthrough_request(text):
+            return {'action': 'new_task', 'reason': text}
+        if self._looks_like_pending_edit_request(text, pending):
+            return {'action': 'edit', 'reason': text}
         clarify_tokens = (
             '为什么', '原因', '依据', '怎么看', '会不会', '会生成到哪里', '会上传到哪里', '产物路径', '输出路径', '先给我计划', '先看计划',
             '先讨论', '解释一下', '再解释一下', '说详细一点', '详细说说',
         )
-        if any(token in str(user_text or '').strip() for token in clarify_tokens):
-            return 'status'
-        if self._looks_like_pending_passthrough_request(user_text):
-            return 'passthrough'
-        decision = await self._classify_confirmation_reply(user_text, pending)
-        if decision == 'approve':
-            return 'approve'
-        if decision == 'deny':
-            return 'reject'
-        if decision == 'restate':
-            return 'restate'
-        if decision == 'edit':
-            return 'edit'
-        if decision == 'clarify':
-            return 'status'
-        pending_followup_action = await self._classify_pending_followup_action(
-            user_text=user_text,
-            pending=pending,
+        if any(token in text for token in clarify_tokens):
+            return {'action': 'status', 'reason': text}
+        if self._looks_like_pending_status_or_detail_query(text):
+            return {'action': 'status', 'reason': text}
+        confirmation = self._classify_confirmation_reply_fallback(text)
+        if confirmation == 'approve':
+            return {'action': 'approve', 'reason': text}
+        if confirmation in {'deny', 'reject'}:
+            return {'action': 'reject', 'reason': text}
+        if confirmation == 'restate':
+            return {'action': 'unclear', 'reason': text}
+        return {'action': 'unclear', 'reason': text}
+
+    def _pending_turn_user_facts(self, pending: dict[str, Any], *, user_text: str) -> dict[str, Any]:
+        facts = self._confirmation_user_facts(pending)
+        facts.update(
+            {
+                'tool_name': str(pending.get('name') or ''),
+                'tool_args': dict(pending.get('args') or pending.get('tool_args') or {}),
+                'summary': str(pending.get('summary') or ''),
+                'objective': str(pending.get('objective') or ''),
+                'allowed_decisions': list(pending.get('allowed_decisions') or []),
+                'review_config': dict(pending.get('review_config') or {}),
+                'decision_context': dict(pending.get('decision_context') or {}),
+                'user_text': str(user_text or '').strip(),
+            }
         )
-        if pending_followup_action == 'status_or_detail' or self._looks_like_pending_status_or_detail_query(user_text):
-            return 'status'
-        return 'restate'
+        return facts
+
+    async def _parse_pending_turn_intent(self, user_text: str, pending: dict[str, Any]) -> dict[str, Any]:
+        text = str(user_text or '').strip()
+        fallback = self._fallback_pending_turn_intent_from_pending(user_text=text, pending=pending)
+        if self.planner_llm is None:
+            return fallback
+        messages = [
+            SystemMessage(
+                content=(
+                    '你是 YoloStudio Agent 的待确认动作回复路由器。'
+                    '当前会话里已经存在一个待确认动作。'
+                    '你只负责判断用户这句跟进对当前待确认动作意味着什么。'
+                    '输出必须是 JSON，对象格式固定为 '
+                    '{"action":"approve|reject|edit|status|new_task|unclear","edits":{...可选},"reason":"..."}。'
+                    '只有用户明确表达继续执行/批准时，action 才能是 approve；'
+                    '只有用户明确表达不要执行/取消时，action 才能是 reject；'
+                    '如果用户是在改参数、改执行方式、改环境或改训练计划字段，返回 edit；'
+                    '如果用户是在追问原因、计划细节、当前状态、输出位置或想先听说明，返回 status；'
+                    '如果用户是在发起与当前待确认动作无关的新任务，返回 new_task；'
+                    '如果拿不准，返回 unclear。'
+                    '只有在用户明确提到新的训练参数时，edits 才填写对应字段；不要编造参数。'
+                    '不要输出 markdown，不要输出额外文字。'
+                )
+            ),
+            HumanMessage(
+                content=(
+                    '当前待确认事实：\n'
+                    f'{json.dumps(self._pending_turn_user_facts(pending, user_text=text), ensure_ascii=False, indent=2)}'
+                )
+            ),
+        ]
+        try:
+            parsed = await self._invoke_structured_payload(
+                messages=messages,
+                schema=self._pending_turn_intent_schema(),
+            )
+            normalized = self._normalize_pending_turn_intent_payload(parsed)
+        except Exception as exc:
+            self.memory.append_event(
+                self.session_state.session_id,
+                'pending_turn_intent_classify_failed',
+                {'tool': str(pending.get('name') or ''), 'error': str(exc)},
+            )
+            normalized = {'action': 'unclear', 'reason': text}
+        action = str(normalized.get('action') or '').strip().lower()
+        if fallback.get('action') == 'new_task' and action not in {'new_task', 'approve'}:
+            return fallback
+        if action == 'unclear':
+            return fallback
+        if not normalized.get('reason'):
+            normalized['reason'] = text
+        return normalized
 
     def _record_pending_action_review(
         self,
@@ -1207,13 +1275,16 @@ class YoloStudioAgentClient:
         stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
         active_interrupt: tuple[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any] | object | None:
-        pending_turn_intent = await self._classify_pending_turn_intent(user_text, pending)
+        pending_turn_intent_payload = await self._parse_pending_turn_intent(user_text, pending)
+        pending_turn_intent = str(pending_turn_intent_payload.get('action') or '').strip().lower()
+        pending_turn_edits = dict(pending_turn_intent_payload.get('edits') or {})
         if pending_turn_intent == 'edit':
             self._record_pending_action_review(
                 pending,
                 decision='edit',
                 raw_user_text=user_text,
                 source='natural_language_chat',
+                edits=pending_turn_edits,
             )
             if canonical_tool_name(str(pending.get('name') or '').strip()) == 'prepare_dataset_for_training':
                 updated_pending = dict(pending)
@@ -1224,15 +1295,15 @@ class YoloStudioAgentClient:
                 prepare_only_tokens = ('只做准备', '先只做准备', '不要开始训练', '暂不启动训练', '只准备')
                 disable_split_tokens = ('不要自动划分', '不自动划分', '不要划分', '不划分', '先不要自动划分')
                 enable_split_tokens = ('按默认比例', '默认比例', '先划分', '划分训练集', '划分数据集', 'force_split', 'split')
-                if any(token in user_text or token in normalized_text for token in prepare_only_tokens):
+                if pending_turn_edits.get('prepare_only') is True or any(token in user_text or token in normalized_text for token in prepare_only_tokens):
                     if str(updated_draft.get('execution_mode') or '').strip().lower() != 'prepare_only':
                         updated_draft['execution_mode'] = 'prepare_only'
                         updated = True
-                if any(token in user_text or token in normalized_text for token in disable_split_tokens):
+                if pending_turn_edits.get('force_split') is False or any(token in user_text or token in normalized_text for token in disable_split_tokens):
                     if 'force_split' in updated_args:
                         updated_args.pop('force_split', None)
                         updated = True
-                elif any(token in user_text or token in normalized_text for token in enable_split_tokens):
+                elif pending_turn_edits.get('force_split') is True or any(token in user_text or token in normalized_text for token in enable_split_tokens):
                     if updated_args.get('force_split') is not True:
                         updated_args['force_split'] = True
                         updated = True
@@ -1326,7 +1397,7 @@ class YoloStudioAgentClient:
                 pending,
                 await self._build_confirmation_message(pending),
             )
-        if pending_turn_intent == 'passthrough':
+        if pending_turn_intent in {'passthrough', 'new_task'}:
             return _DEFER_TO_GRAPH
         return None
 
@@ -1364,9 +1435,21 @@ class YoloStudioAgentClient:
                     active_interrupt=active_interrupt,
                 )
 
-        pending_dialogue = await self._try_handle_pending_confirmation_dialogue(user_text, stream_handler=stream_handler)
-        if pending_dialogue is not None:
-            return pending_dialogue
+        pending = self._resolve_pending_confirmation(thread_id=self._pending_confirmation_thread_id())
+        if pending:
+            pending_thread_id = str(
+                pending.get('thread_id')
+                or self._pending_confirmation_thread_id()
+                or ''
+            ).strip()
+            pending_dialogue = await self._handle_pending_turn_intent(
+                user_text=user_text,
+                pending=pending,
+                pending_thread_id=pending_thread_id,
+                stream_handler=stream_handler,
+            )
+            if pending_dialogue is not None:
+                return pending_dialogue
 
         unresolved_pending = self._resolve_pending_confirmation(thread_id=self._pending_confirmation_thread_id())
         if unresolved_pending is not None:
@@ -1384,22 +1467,6 @@ class YoloStudioAgentClient:
                 self._messages.append(AIMessage(content=reply))
                 return self._needs_confirmation_result(pending_thread_id, unresolved_pending, reply)
         return None
-
-    async def _try_handle_pending_confirmation_dialogue(
-        self,
-        user_text: str,
-        *,
-        stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
-    ) -> dict[str, Any] | object | None:
-        pending = self._resolve_pending_confirmation(thread_id=self._pending_confirmation_thread_id())
-        if not pending:
-            return None
-        return await self._handle_pending_turn_intent(
-            user_text=user_text,
-            pending=pending,
-            pending_thread_id=self._pending_confirmation_thread_id(),
-            stream_handler=stream_handler,
-        )
 
     @staticmethod
     def _looks_like_pending_status_or_detail_query(user_text: str) -> bool:
@@ -1816,65 +1883,6 @@ class YoloStudioAgentClient:
             messages=messages,
             allowed_actions={'status_or_detail'},
         )
-
-    async def _classify_confirmation_reply(self, user_text: str, pending: dict[str, Any]) -> str:
-        heuristic = self._classify_confirmation_reply_fallback(user_text)
-        if heuristic in {'approve', 'deny', 'restate'}:
-            return heuristic
-        if self.planner_llm is None:
-            return heuristic
-        facts = self._confirmation_user_facts(pending)
-        messages = [
-            SystemMessage(
-                content=(
-                    '你是 YoloStudio Agent 的审批回复解释器。'
-                    '你只负责判断用户这句回复，对当前待确认操作意味着什么。'
-                    '输出必须是 JSON，对象格式固定为 '
-                    '{"decision":"approve|deny|edit|clarify|unclear|restate","reason":"..."}。'
-                    '只有当用户明确表达“继续执行/批准”时，decision 才能是 approve；'
-                    '只有当用户明确表达“不要执行/取消”时，decision 才能是 deny；'
-                    '如果用户主要是在改参数、换环境、换模型、调整执行方式，返回 edit；'
-                    '如果用户主要是在追问原因、要求解释或想先听说明，返回 clarify；'
-                    '如果用户只是表达犹豫但没有明确批准/拒绝/修改/追问，返回 unclear；'
-                    '如果用户只是让你重复当前确认内容，返回 restate。'
-                    '不要输出 Markdown，不要输出额外文字。'
-                )
-            ),
-            HumanMessage(
-                content=(
-                    '当前待确认事实：\n'
-                    f'{json.dumps(facts, ensure_ascii=False, indent=2)}\n\n'
-                    f'用户回复：{user_text}'
-                )
-            ),
-        ]
-        try:
-            parsed = await self._invoke_structured_payload(
-                messages=messages,
-                schema={
-                    'title': 'yolostudio_confirmation_reply',
-                    'type': 'object',
-                    'properties': {
-                        'decision': {
-                            'type': 'string',
-                            'enum': ['approve', 'deny', 'edit', 'clarify', 'unclear', 'restate'],
-                        },
-                        'reason': {'type': 'string'},
-                    },
-                    'required': ['decision', 'reason'],
-                    'additionalProperties': False,
-                },
-            )
-            decision = self._normalize_confirmation_reply_decision(parsed.get('decision'))
-            if decision != 'unclear':
-                return decision
-        except Exception as exc:
-            self.memory.append_event(
-                self.session_state.session_id,
-                'confirmation_reply_classify_failed',
-                {'tool': str(pending.get('name') or ''), 'error': str(exc)},
-            )
-        return heuristic
 
     @staticmethod
     def _normalize_confirmation_reply_decision(value: Any) -> str:

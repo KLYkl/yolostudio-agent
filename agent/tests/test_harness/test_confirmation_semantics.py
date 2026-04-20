@@ -1,6 +1,6 @@
 """
 第 3 层 Harness 测试：确认语义同义族验证
-验证 _try_handle_pending_confirmation_dialogue 对各种确认/编辑/取消/追问表达的一致处理
+验证 pending turn intent 结构化解析对各种确认/编辑/取消/追问表达的一致处理
 """
 from __future__ import annotations
 
@@ -40,8 +40,8 @@ async def _test_approve_not_intercepted_as_edit() -> None:
         client = make_client(f'confirm-not-edit-{hash(phrase) % 10000}')
         _set_prepare_pending(client)
         pending = client._resolve_pending_confirmation(thread_id='confirm-sem-t1')
-        decision = await client._classify_pending_turn_intent(phrase, pending)
-        results.append((phrase, decision))
+        payload = await client._parse_pending_turn_intent(phrase, pending)
+        results.append((phrase, payload.get('action')))
 
     intercepted = [(p, d) for p, d in results if d == 'edit']
     print(f'  被截为 edit 的确认语: {len(intercepted)}/{len(results)}')
@@ -58,15 +58,15 @@ async def _test_approve_not_intercepted_as_edit() -> None:
 
 # ===== 测试 2: 纯确认语义应走 approve =====
 async def _test_pure_approve_phrases() -> None:
-    """纯确认语应走到 _try_handle_pending_confirmation_dialogue → approve"""
+    """纯确认语应被 pending turn intent 解析为 approve"""
     approve_phrases = ['确认', '可以开始', '没问题', '继续', '好的', '行']
     results = []
     for phrase in approve_phrases:
         client = make_client(f'confirm-pure-{hash(phrase) % 10000}')
         _set_prepare_pending(client)
         pending = client._resolve_pending_confirmation(thread_id='confirm-sem-t1')
-        pt = await client._classify_pending_turn_intent(phrase, pending)
-        results.append((phrase, pt))
+        payload = await client._parse_pending_turn_intent(phrase, pending)
+        results.append((phrase, payload.get('action')))
 
     passthrough_intercepted = [(p, d) for p, d in results if d != 'approve']
     print(f'  非 approve 截获: {len(passthrough_intercepted)}/{len(results)}')
@@ -83,8 +83,8 @@ async def _test_edit_phrases_passthrough() -> None:
         client = make_client(f'confirm-edit-{hash(phrase) % 10000}')
         _set_prepare_pending(client)
         pending = client._resolve_pending_confirmation(thread_id='confirm-sem-t1')
-        pt = await client._classify_pending_turn_intent(phrase, pending)
-        results.append((phrase, pt))
+        payload = await client._parse_pending_turn_intent(phrase, pending)
+        results.append((phrase, payload.get('action')))
 
     correct = [(p, d) for p, d in results if d == 'edit']
     print(f'  编辑语正确识别: {correct.__len__()}/{len(results)}')
@@ -102,16 +102,16 @@ async def _test_clarify_phrases_passthrough() -> None:
         client = make_client(f'confirm-clarify-{hash(phrase) % 10000}')
         _set_prepare_pending(client)
         pending = client._resolve_pending_confirmation(thread_id='confirm-sem-t1')
-        pt = await client._classify_pending_turn_intent(phrase, pending)
-        results.append((phrase, pt))
+        payload = await client._parse_pending_turn_intent(phrase, pending)
+        results.append((phrase, payload.get('action')))
 
     correct = [(p, d) for p, d in results if d == 'status']
     print(f'  追问语正确识别: {correct.__len__()}/{len(results)}')
 
 
-# ===== 测试 5: _try_handle 完整流程（不走 LLM） =====
+# ===== 测试 5: pending turn intent 完整流程（不走 LLM） =====
 async def _test_try_handle_returns_for_pending() -> None:
-    """有 pending 时，_try_handle_pending_confirmation_dialogue 不应返回 None"""
+    """有 pending 时，结构化解析的 fallback 应保持核心语义不变"""
     client = make_client('confirm-try-handle')
     _set_prepare_pending(client)
 
@@ -125,7 +125,8 @@ async def _test_try_handle_returns_for_pending() -> None:
         client2 = make_client(f'confirm-flow-{hash(phrase) % 10000}')
         _set_prepare_pending(client2)
         pending = client2._resolve_pending_confirmation(thread_id='confirm-sem-t1')
-        actual_pt = await client2._classify_pending_turn_intent(phrase, pending)
+        payload = await client2._parse_pending_turn_intent(phrase, pending)
+        actual_pt = payload.get('action')
         if actual_pt != expected_pt:
             print(f'    ⚠️ "{phrase}": 期望 intent={expected_pt}, 实际={actual_pt}')
         else:
@@ -139,7 +140,7 @@ async def _run_all() -> None:
         ('纯确认语 passthrough', _test_pure_approve_phrases),
         ('编辑语 passthrough', _test_edit_phrases_passthrough),
         ('追问语 passthrough', _test_clarify_phrases_passthrough),
-        ('_try_handle 完整流程', _test_try_handle_returns_for_pending),
+        ('pending turn intent 完整流程', _test_try_handle_returns_for_pending),
     ]
     passed, failed = 0, 0
     for name, fn in tests:
