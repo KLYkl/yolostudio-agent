@@ -109,6 +109,7 @@ from yolostudio_agent.agent.client.tool_policy import (
 from yolostudio_agent.agent.client.tool_result_parser import parse_tool_message
 from yolostudio_agent.agent.client.training_workflow import sync_training_workflow_state
 from yolostudio_agent.agent.client.training_request_service import (
+    run_prepare_only_flow,
     run_training_request_entrypoint,
 )
 from yolostudio_agent.agent.client.training_execution_service import (
@@ -246,7 +247,6 @@ class YoloStudioAgentClient:
         self._recorded_graph_text_signatures: set[str] = set()
         self._pending_confirmation_shadow: dict[str, Any] | None = None
         self._pending_review_shadow: dict[str, Any] = {}
-        self._graph_has_training_entry = bool(getattr(graph, '__codex_training_entry__', False))
         self.memory = memory or MemoryStore(settings.memory_root)
         self.checkpointer = checkpointer
         self.context_builder = ContextBuilder(SYSTEM_PROMPT)
@@ -2105,83 +2105,6 @@ class YoloStudioAgentClient:
             return _DEFER_TO_GRAPH
         return None
 
-    def _complete_training_entrypoint_result(self, entrypoint_result: dict[str, Any]) -> dict[str, Any] | object:
-        draft = dict(entrypoint_result.get('draft') or {})
-        reply = str(entrypoint_result.get('reply') or '').strip()
-        if draft:
-            self._save_training_plan_draft(draft)
-        if reply:
-            self._messages.append(AIMessage(content=reply))
-        if entrypoint_result.get('defer_to_graph'):
-            return _DEFER_TO_GRAPH
-        return {'status': 'completed', 'message': reply, 'tool_call': None}
-
-    async def _try_handle_training_entrypoints(
-        self,
-        *,
-        thread_id: str,
-        user_text: str,
-        normalized_text: str,
-        dataset_path: str,
-        frame_followup_path: str,
-        wants_train: bool,
-        wants_predict: bool,
-        no_train: bool,
-        readiness_only_query: bool,
-        wants_training_outcome_analysis: bool,
-        wants_next_step_guidance: bool,
-        wants_training_knowledge: bool,
-        wants_training_loop_start: bool,
-        training_command_like: bool,
-        wants_training_revision: bool,
-        wants_stop_training: bool,
-        blocks_training_start: bool,
-        explicit_run_ids: list[str],
-        wants_split: bool,
-    ) -> dict[str, Any] | None:
-        if wants_training_loop_start and not wants_predict and not training_command_like:
-            resolved_yaml = self._session_training_data_yaml(dataset_path=dataset_path)
-            loop_args = self._collect_requested_training_loop_args(
-                user_text,
-                data_yaml=resolved_yaml if resolved_yaml else None,
-            )
-            return await self._run_training_loop_start_orchestration(
-                user_text=user_text,
-                thread_id=thread_id,
-                dataset_path=dataset_path,
-                loop_args=loop_args,
-            )
-
-        entrypoint_result = await run_training_request_entrypoint(
-            session_state=self.session_state,
-            user_text=user_text,
-            normalized_text=normalized_text,
-            dataset_path=dataset_path,
-            frame_followup_path=frame_followup_path,
-            wants_train=wants_train,
-            wants_predict=wants_predict,
-            no_train=no_train,
-            readiness_only_query=readiness_only_query,
-            wants_training_outcome_analysis=wants_training_outcome_analysis,
-            wants_next_step_guidance=wants_next_step_guidance,
-            wants_training_knowledge=wants_training_knowledge,
-            wants_training_revision=wants_training_revision,
-            wants_stop_training=wants_stop_training,
-            blocks_training_start=blocks_training_start,
-            explicit_run_ids=explicit_run_ids,
-            wants_split=wants_split,
-            current_training_plan_context=build_training_plan_context_payload(self.session_state),
-            direct_tool=self.direct_tool,
-            collect_requested_training_args=self._collect_requested_training_args,
-            is_training_discussion_only=self._is_training_discussion_only,
-            extract_training_execution_backend=self._extract_training_execution_backend_from_text,
-            build_training_plan_draft_fn=self._build_training_plan_draft,
-            render_training_plan_message=self._render_training_plan_message,
-        )
-        if entrypoint_result is not None:
-            return self._complete_training_entrypoint_result(entrypoint_result)
-        return None
-
     async def _dispatch_mainline_requests(
         self,
         *,
@@ -2219,16 +2142,6 @@ class YoloStudioAgentClient:
         if live_training_control:
             return live_training_control
 
-        training_entrypoint_args = dict(dispatch_payload.get('training_entrypoint_request_args') or {})
-        if not self._graph_has_training_entry:
-            training_entrypoint_request = await self._try_handle_training_entrypoints(
-                thread_id=thread_id,
-                user_text=user_text,
-                **training_entrypoint_args,
-            )
-            if training_entrypoint_request is _DEFER_TO_GRAPH:
-                return None
-            return training_entrypoint_request
         return None
 
     def _collect_mainline_context(self, user_text: str) -> dict[str, Any]:
@@ -2714,8 +2627,7 @@ class YoloStudioAgentClient:
                 thread_id=thread_id,
             )
         persist_graph_handoff_draft = not (
-            self._graph_has_training_entry
-            and thread_id
+            thread_id
             and action == 'save_draft_and_handoff'
         )
         if action == 'save_draft_and_reply' or (action == 'save_draft_and_handoff' and persist_graph_handoff_draft):
@@ -6034,8 +5946,7 @@ class YoloStudioAgentClient:
         draft_to_save = dict(dialogue_result.get('draft_to_save') or {})
         action = str(followup_action.get('action') or '').strip()
         should_persist_draft = not (
-            self._graph_has_training_entry
-            and thread_id
+            thread_id
             and action in _GRAPH_NATIVE_TRAINING_CONFIRMATION_ACTIONS
         )
         if draft_to_save and should_persist_draft:
@@ -6396,7 +6307,23 @@ async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudi
         training_entrypoint_args = dict(dispatch_payload.get('training_entrypoint_request_args') or {})
         if not training_entrypoint_args:
             return Command(goto='agent_runtime')
-        if bool(training_entrypoint_args.get('wants_training_loop_start')):
+        prepare_only_followup = await run_prepare_only_flow(
+            user_text=latest_user_text,
+            looks_like_prepare_only_request=client._looks_like_prepare_only_request,
+            extract_dataset_path=intent_parsing.extract_dataset_path_from_text,
+            local_path_exists=lambda path: Path(path).expanduser().exists(),
+            direct_tool=client.direct_tool,
+            collect_requested_training_args=client._collect_requested_training_args,
+            build_training_plan_draft_fn=client._build_training_plan_draft,
+            render_tool_result_message=client._render_tool_result_message,
+        )
+        if prepare_only_followup:
+            entrypoint_result = {
+                'reply': str(prepare_only_followup.get('reply') or '').strip(),
+                'draft': dict(prepare_only_followup.get('draft') or {}),
+                'defer_to_graph': str(prepare_only_followup.get('action') or '').strip() == 'save_draft_and_handoff',
+            }
+        elif bool(training_entrypoint_args.get('wants_training_loop_start')):
             resolved_yaml = client._session_training_data_yaml(
                 dataset_path=str(training_entrypoint_args.get('dataset_path') or '').strip(),
             )
@@ -6425,6 +6352,21 @@ async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudi
         if not entrypoint_result:
             return Command(goto='agent_runtime')
         draft = dict(entrypoint_result.get('draft') or {})
+        discussion_only = client._is_training_discussion_only(latest_user_text)
+        if draft and discussion_only:
+            rendered = str(entrypoint_result.get('reply') or '').strip()
+            if not rendered:
+                rendered = await client._render_training_plan_message(
+                    draft,
+                    pending=bool(draft.get('next_step_tool')),
+                )
+            return Command(
+                update={
+                    'messages': [AIMessage(content=rendered)] if rendered else [],
+                    'training_plan_context': build_training_plan_context_from_draft(draft),
+                },
+                goto=END,
+            )
         if bool(entrypoint_result.get('defer_to_graph')) and draft:
             interrupt_payload = client._draft_to_training_confirmation_interrupt(
                 draft,
@@ -6606,10 +6548,6 @@ async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudi
         workflow.add_edge(START, 'route_training_entry')
         workflow.add_edge('agent_runtime', END)
         graph = workflow.compile(checkpointer=checkpointer)
-        try:
-            setattr(graph, '__codex_training_entry__', True)
-        except Exception:
-            pass
     else:
         graph = react_graph
     tool_registry = {tool.name: tool for tool in raw_tools}

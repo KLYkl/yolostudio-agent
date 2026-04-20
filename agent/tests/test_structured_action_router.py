@@ -792,14 +792,6 @@ async def _scenario_resolve_mainline_route_state_aggregates_followups() -> None:
 
 async def _scenario_dispatch_mainline_requests_skips_standard_training_entrypoint() -> None:
     client = _make_client('dispatch-mainline-skips-standard-training')
-    client._graph_has_training_entry = True
-    calls: list[dict[str, object]] = []
-
-    async def _unexpected_training_entrypoint(**kwargs):
-        calls.append(dict(kwargs))
-        return {'status': 'completed', 'message': 'should not happen', 'tool_call': None}
-
-    client._try_handle_training_entrypoints = _unexpected_training_entrypoint  # type: ignore[method-assign]
     route_state = await client._resolve_mainline_route_state(
         '请用 /data/demo 基于 /models/yolov8n.pt 做一次训练，batch 改成 16',
         client._collect_mainline_context('请用 /data/demo 基于 /models/yolov8n.pt 做一次训练，batch 改成 16'),
@@ -811,19 +803,10 @@ async def _scenario_dispatch_mainline_requests_skips_standard_training_entrypoin
         route_state=route_state,
     )
     assert result is None, result
-    assert calls == [], calls
 
 
 async def _scenario_dispatch_mainline_requests_skips_loop_training_entrypoint() -> None:
     client = _make_client('dispatch-mainline-skips-loop-training')
-    client._graph_has_training_entry = True
-    calls: list[dict[str, object]] = []
-
-    async def _unexpected_training_entrypoint(**kwargs):
-        calls.append(dict(kwargs))
-        return {'status': 'completed', 'message': 'should not happen', 'tool_call': None}
-
-    client._try_handle_training_entrypoints = _unexpected_training_entrypoint  # type: ignore[method-assign]
     text = '基于 /data/demo 开一个 5 轮的循环训练，每轮 10 个 epoch'
     context = client._collect_mainline_context(text)
     route_state = await client._resolve_mainline_route_state(text, context)
@@ -834,7 +817,6 @@ async def _scenario_dispatch_mainline_requests_skips_loop_training_entrypoint() 
         route_state=route_state,
     )
     assert result is None, result
-    assert calls == [], calls
 
 
 async def _run() -> None:

@@ -274,7 +274,6 @@ async def _scenario_enter_graph_confirmation_uses_override_without_persisting_dr
             return await super().ainvoke(payload, config=config)
 
     graph = _DraftInspectGraph()
-    setattr(graph, '__codex_training_entry__', True)
     settings = AgentSettings(session_id='training-plan-context-override', memory_root=str(root))
     client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
     client_holder['client'] = client
