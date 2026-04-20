@@ -7,6 +7,9 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from yolostudio_agent.agent.client.session_state import SessionState
 from yolostudio_agent.agent.client.tool_adapter import canonical_tool_name, stringify_tool_result_facts
+from yolostudio_agent.agent.client.training_plan_context_service import (
+    build_training_plan_draft_from_context,
+)
 
 
 TrainingPlanDraftRenderer = Callable[..., str]
@@ -27,12 +30,13 @@ def build_confirmation_prompt(
     *,
     render_training_plan_draft: TrainingPlanDraftRenderer,
     remote_join: Callable[[str, str], str],
+    training_plan_context: dict[str, Any] | None = None,
 ) -> str:
     args = tool_call.get('args', {})
     tool_name = str(tool_call.get('name') or '')
     ds = session_state.active_dataset
     tr = session_state.active_training
-    plan_draft = tr.training_plan_draft or {}
+    plan_draft = build_training_plan_draft_from_context(training_plan_context) or tr.training_plan_draft or {}
     execution_mode = str(plan_draft.get('execution_mode') or '').strip().lower()
 
     if (
@@ -256,10 +260,15 @@ async def build_confirmation_message(
     *,
     render_training_plan_message: TrainingPlanMessageRenderer,
     render_confirmation_message: ConfirmationMessageRenderer,
+    training_plan_context: dict[str, Any] | None = None,
 ) -> str:
     args = tool_call.get('args', {})
     tool_name = str(tool_call.get('name') or '')
-    plan_draft = session_state.active_training.training_plan_draft or {}
+    plan_draft = (
+        build_training_plan_draft_from_context(training_plan_context)
+        or session_state.active_training.training_plan_draft
+        or {}
+    )
     execution_mode = str(plan_draft.get('execution_mode') or '').strip().lower()
     if (
         plan_draft

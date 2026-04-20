@@ -379,6 +379,47 @@ def main() -> None:
         assert '当前阻塞:' not in bridged_prompt
         assert '你可以直接确认，也可以继续改参数、追问原因、改执行方式。' in bridged_prompt
 
+        client.session_state.active_training.training_plan_draft = {
+            'dataset_path': '/data/stale',
+            'execution_mode': 'direct_train',
+            'next_step_tool': 'start_training',
+            'planned_training_args': {
+                'model': 'stale.pt',
+                'data_yaml': '/data/stale/data.yaml',
+                'epochs': 300,
+            },
+        }
+        client._current_training_plan_context = lambda preferred_thread_id='': {
+            'dataset_path': '/data/graph',
+            'execution_mode': 'direct_train',
+            'training_environment': 'graph-env',
+            'reasoning_summary': 'graph context 应优先生效',
+            'next_step_tool': 'start_training',
+            'planned_training_args': {
+                'model': 'graph.pt',
+                'data_yaml': '/data/graph/data.yaml',
+                'epochs': 12,
+                'project': '/runs/graph',
+                'name': 'graph-run',
+            },
+            'next_step_args': {
+                'model': 'graph.pt',
+                'data_yaml': '/data/graph/data.yaml',
+                'epochs': 12,
+                'project': '/runs/graph',
+                'name': 'graph-run',
+            },
+        }
+        graph_prompt = client._build_confirmation_prompt({
+            'name': 'start_training',
+            'args': {'model': 'graph.pt', 'data_yaml': '/data/graph/data.yaml', 'epochs': 12},
+        })
+        assert 'graph.pt' in graph_prompt
+        assert '/data/graph/data.yaml' in graph_prompt
+        assert 'project=/runs/graph, name=graph-run' in graph_prompt
+        assert 'stale.pt' not in graph_prompt
+        assert '/data/stale/data.yaml' not in graph_prompt
+
         cancel_prompt = client._build_cancel_message({
             'name': 'start_training',
             'args': {'model': 'yolov8n.pt', 'data_yaml': '/data/dataset/data.yaml'},

@@ -5816,11 +5816,13 @@ class YoloStudioAgentClient:
         return {'status': 'completed', 'message': reply, 'tool_call': None}
 
     async def _build_confirmation_message(self, tool_call: dict[str, Any]) -> str:
+        thread_id = str(tool_call.get('thread_id') or self._pending_confirmation_thread_id() or '').strip()
         return await build_confirmation_message_reply(
             self.session_state,
             tool_call,
             render_training_plan_message=self._render_training_plan_message,
             render_confirmation_message=self._render_confirmation_message,
+            training_plan_context=self._current_training_plan_context(preferred_thread_id=thread_id),
         )
 
     def _confirmation_user_facts(self, tool_call: dict[str, Any]) -> dict[str, Any]:
@@ -6055,11 +6057,13 @@ class YoloStudioAgentClient:
         )
 
     def _build_confirmation_prompt(self, tool_call: dict[str, Any]) -> str:
+        thread_id = str(tool_call.get('thread_id') or self._pending_confirmation_thread_id() or '').strip()
         return build_confirmation_prompt_reply(
             self.session_state,
             tool_call,
             render_training_plan_draft=self._render_training_plan_draft,
             remote_join=self._remote_join,
+            training_plan_context=self._current_training_plan_context(preferred_thread_id=thread_id),
         )
 
     @staticmethod
