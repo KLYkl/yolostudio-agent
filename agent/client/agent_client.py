@@ -136,10 +136,8 @@ from yolostudio_agent.agent.client.training_plan_context_service import (
     build_training_plan_context_payload,
     extract_training_plan_context_from_state,
 )
-from yolostudio_agent.agent.client.training_confirmation_node import (
-    answer_training_status_node,
-    post_prepare_node,
-    training_confirmation_node,
+from yolostudio_agent.agent.client.training_workflow_graph import (
+    install_training_workflow_nodes,
 )
 from yolostudio_agent.agent.client.training_schemas import (
     PendingTurnIntent,
@@ -6081,7 +6079,6 @@ def _checkpoint_path(settings: AgentSettings) -> Path:
 
 try:
     from langgraph.prebuilt.chat_agent_executor import AgentState as _LangGraphAgentState
-
     class _AgentRuntimeGraphState(_LangGraphAgentState, total=False):
         cached_tool_context: dict[str, Any] | None
         dataset_fact_context: dict[str, Any] | None
@@ -6098,6 +6095,7 @@ try:
         training_status_reply: str | None
         prepare_result: dict[str, Any] | None
         training_preflight: dict[str, Any] | None
+        training_entry_request: dict[str, Any] | None
 
 except Exception:
     class _AgentRuntimeGraphState(TypedDict, total=False):
@@ -6118,6 +6116,7 @@ except Exception:
         training_status_reply: str | None
         prepare_result: dict[str, Any] | None
         training_preflight: dict[str, Any] | None
+        training_entry_request: dict[str, Any] | None
 
 
 def _normalize_confirmation_resume_value(value: Any) -> str:
@@ -6269,359 +6268,45 @@ async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudi
         configurable = dict(getattr(config, 'configurable', {}) or {})
         return str(configurable.get('thread_id') or '').strip()
 
-    def _latest_human_text_from_state(state: _AgentRuntimeGraphState) -> str:
-        for message in reversed(list((state or {}).get('messages') or [])):
-            if isinstance(message, HumanMessage):
-                return str(getattr(message, 'content', '') or '').strip()
-            if getattr(message.__class__, '__name__', '') == 'HumanMessage':
-                return str(getattr(message, 'content', '') or '').strip()
-        return ''
-
-    def _update_plan_from_preflight(
-        client: YoloStudioAgentClient,
-        *,
-        plan_payload: dict[str, Any],
-        preflight: dict[str, Any],
-        next_tool_name: str,
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
-        updated_plan = dict(plan_payload or {})
-        resolved_args = dict(preflight.get('resolved_args') or {})
-        if next_tool_name == 'start_training_loop' and 'epochs' in resolved_args and 'epochs_per_round' not in resolved_args:
-            resolved_args['epochs_per_round'] = resolved_args.get('epochs')
-        if next_tool_name == 'start_training_loop':
-            resolved_args.pop('epochs', None)
-        for key in (
-            'model',
-            'data_yaml',
-            'batch',
-            'imgsz',
-            'device',
-            'training_environment',
-            'project',
-            'name',
-            'fraction',
-            'classes',
-            'single_cls',
-            'optimizer',
-            'freeze',
-            'resume',
-            'lr0',
-            'patience',
-            'workers',
-            'amp',
-        ):
-            value = resolved_args.get(key)
-            if value not in (None, ''):
-                updated_plan[key] = value
-            elif key in {'fraction', 'classes', 'single_cls', 'freeze', 'resume', 'lr0', 'patience', 'workers', 'amp'}:
-                updated_plan[key] = [] if key == 'classes' and value is None else value
-        if str(updated_plan.get('mode') or '').strip().lower() == 'loop':
-            for key in ('max_rounds', 'epochs_per_round', 'loop_name'):
-                value = resolved_args.get(key)
-                if value not in (None, ''):
-                    updated_plan[key] = value
-        else:
-            epochs_value = resolved_args.get('epochs')
-            if epochs_value not in (None, ''):
-                updated_plan['epochs'] = epochs_value
-        blockers = [str(item).strip() for item in (preflight.get('blockers') or []) if str(item).strip()]
-        warnings = [str(item).strip() for item in (preflight.get('warnings') or []) if str(item).strip()]
-        summary = str(preflight.get('summary') or '').strip()
-        updated_plan['blockers'] = blockers
-        updated_plan['warnings'] = warnings
-        updated_plan['readiness_summary'] = summary
-        return updated_plan, (resolved_args or dict(plan_payload or {}))
-
     async def _route_training_entry(state: _AgentRuntimeGraphState, config: Any = None) -> Command:
         client = client_holder.get('client')
         if client is None:
             return Command(goto='agent_runtime')
         thread_id = _thread_id_from_config(config)
         context = extract_training_plan_context_from_state(dict(state or {})) or {}
-        if context:
-            interrupt_payload = client._draft_to_training_confirmation_interrupt(
-                context,
-                thread_id=thread_id,
-            )
-            if interrupt_payload:
-                return Command(
-                    update=_training_state_update_from_interrupt_payload(interrupt_payload),
-                    goto='training_confirmation',
-                )
-
-        latest_user_text = _latest_human_text_from_state(state)
-        if not latest_user_text:
+        latest_user_text = _latest_human_text_from_messages((state or {}).get('messages') or [])
+        if not latest_user_text and not context:
             return Command(goto='agent_runtime')
-        mainline_context = client._collect_mainline_context(latest_user_text)
-        route_state = await client._resolve_mainline_route_state(latest_user_text, mainline_context)
+        mainline_context = client._collect_mainline_context(latest_user_text) if latest_user_text else {}
+        route_state = await client._resolve_mainline_route_state(latest_user_text, mainline_context) if latest_user_text else {}
         dispatch_payload = resolve_mainline_dispatch_payload(
             mainline_context=mainline_context,
             route_state=route_state,
-        )
+        ) if latest_user_text else {}
         training_entrypoint_args = dict(dispatch_payload.get('training_entrypoint_request_args') or {})
-        if not training_entrypoint_args:
-            return Command(goto='agent_runtime')
-        wants_training_loop_start = bool(training_entrypoint_args.get('wants_training_loop_start'))
-        prepare_only_followup = await run_prepare_only_flow(
-            user_text=latest_user_text,
-            looks_like_prepare_only_request=client._looks_like_prepare_only_request,
-            extract_dataset_path=intent_parsing.extract_dataset_path_from_text,
-            local_path_exists=lambda path: Path(path).expanduser().exists(),
-            direct_tool=client.direct_tool,
-            collect_requested_training_args=client._collect_requested_training_args,
-            build_training_plan_draft_fn=client._build_training_plan_draft,
-            render_tool_result_message=client._render_tool_result_message,
-        )
-        if prepare_only_followup:
-            entrypoint_result = {
-                'reply': str(prepare_only_followup.get('reply') or '').strip(),
-                'draft': dict(prepare_only_followup.get('draft') or {}),
-                'defer_to_graph': str(prepare_only_followup.get('action') or '').strip() == 'save_draft_and_handoff',
-            }
-        elif wants_training_loop_start:
-            resolved_yaml = client._session_training_data_yaml(
-                dataset_path=str(training_entrypoint_args.get('dataset_path') or '').strip(),
-            )
-            loop_args = client._collect_requested_training_loop_args(
-                latest_user_text,
-                data_yaml=resolved_yaml if resolved_yaml else None,
-            )
-            entrypoint_result = await client._run_training_loop_start_entrypoint(
-                user_text=latest_user_text,
-                dataset_path=str(training_entrypoint_args.get('dataset_path') or '').strip(),
-                loop_args=loop_args,
-            )
-        else:
-            standard_training_args = {
-                'normalized_text': str(training_entrypoint_args.get('normalized_text') or ''),
-                'dataset_path': str(training_entrypoint_args.get('dataset_path') or ''),
-                'frame_followup_path': str(training_entrypoint_args.get('frame_followup_path') or ''),
-                'wants_train': bool(training_entrypoint_args.get('wants_train')),
-                'wants_predict': bool(training_entrypoint_args.get('wants_predict')),
-                'no_train': bool(training_entrypoint_args.get('no_train')),
-                'readiness_only_query': bool(training_entrypoint_args.get('readiness_only_query')),
-                'wants_training_outcome_analysis': bool(
-                    training_entrypoint_args.get('wants_training_outcome_analysis')
-                ),
-                'wants_next_step_guidance': bool(training_entrypoint_args.get('wants_next_step_guidance')),
-                'wants_training_knowledge': bool(training_entrypoint_args.get('wants_training_knowledge')),
-                'wants_training_revision': bool(training_entrypoint_args.get('wants_training_revision')),
-                'wants_stop_training': bool(training_entrypoint_args.get('wants_stop_training')),
-                'blocks_training_start': bool(training_entrypoint_args.get('blocks_training_start')),
-                'explicit_run_ids': list(training_entrypoint_args.get('explicit_run_ids') or []),
-                'wants_split': bool(training_entrypoint_args.get('wants_split')),
-                'wants_training_loop_start': wants_training_loop_start,
-            }
-            entrypoint_result = await run_training_request_entrypoint(
-                session_state=client.session_state,
-                user_text=latest_user_text,
-                current_training_plan_context=context,
-                direct_tool=client.direct_tool,
-                collect_requested_training_args=client._collect_requested_training_args,
-                is_training_discussion_only=client._is_training_discussion_only,
-                extract_training_execution_backend=client._extract_training_execution_backend_from_text,
-                build_training_plan_draft_fn=client._build_training_plan_draft,
-                render_training_plan_message=client._render_training_plan_message,
-                **standard_training_args,
-            )
-        if not entrypoint_result:
-            return Command(goto='agent_runtime')
-        draft = dict(entrypoint_result.get('draft') or {})
-        discussion_only = client._is_training_discussion_only(latest_user_text)
-        if draft and discussion_only:
-            rendered = str(entrypoint_result.get('reply') or '').strip()
-            if not rendered:
-                rendered = await client._render_training_plan_message(
-                    draft,
-                    pending=bool(draft.get('next_step_tool')),
-                )
-            return Command(
-                update={
-                    'messages': [AIMessage(content=rendered)] if rendered else [],
-                    'training_plan_context': build_training_plan_context_from_draft(draft),
-                },
-                goto=END,
-            )
-        if bool(entrypoint_result.get('defer_to_graph')) and draft:
-            interrupt_payload = client._draft_to_training_confirmation_interrupt(
-                draft,
-                thread_id=thread_id,
-            )
-            if interrupt_payload:
-                return Command(
-                    update=_training_state_update_from_interrupt_payload(interrupt_payload),
-                    goto='training_confirmation',
-                )
-        reply = str(entrypoint_result.get('reply') or '').strip()
-        if reply:
-            return Command(
-                update={
-                    'messages': [AIMessage(content=reply)],
-                    'training_plan_context': None,
-                },
-                goto=END,
-            )
-        return Command(goto='agent_runtime')
-
-    async def _refresh_training_start_after_edit(state: _AgentRuntimeGraphState, config: Any = None) -> Command:
-        del config
-        client = client_holder.get('client')
-        if client is None:
-            return Command(goto='training_confirmation')
-        plan_payload = dict((state or {}).get('training_plan') or {})
-        if not plan_payload:
-            return Command(goto='training_confirmation')
-        next_tool_name = canonical_tool_name(str((state or {}).get('training_next_step_tool') or '').strip())
-        if next_tool_name not in {'start_training', 'start_training_loop'}:
-            return Command(goto='training_confirmation')
-        preflight_args = dict((state or {}).get('training_next_step_args') or plan_payload)
-        preflight = await client.direct_tool('training_preflight', **preflight_args)
-        updated_plan, resolved_args = _update_plan_from_preflight(
-            client,
-            plan_payload=plan_payload,
-            preflight=preflight,
-            next_tool_name=next_tool_name,
-        )
-        return Command(
-            update={
-                'training_plan': updated_plan,
-                'training_next_step_tool': next_tool_name,
-                'training_next_step_args': resolved_args,
-                'training_preflight': preflight,
-                'training_status_reply': '',
-            },
-            goto='training_confirmation',
-        )
-
-    async def _execute_prepare(state: _AgentRuntimeGraphState, config: Any = None) -> Command:
-        del config
-        client = client_holder.get('client')
-        if client is None:
-            return Command(goto='training_confirmation')
-        plan_payload = dict((state or {}).get('training_plan') or {})
-        if not plan_payload:
-            return Command(goto='training_confirmation')
-        plan = coerce_training_plan(plan_payload)
-        next_args = dict((state or {}).get('training_next_step_args') or {'dataset_path': plan.dataset_path})
-        next_args = {key: value for key, value in next_args.items() if value is not None}
-        prepare_result = await client.direct_tool('prepare_dataset_for_training', **next_args)
-        messages: list[Any] = [_tool_result_message('prepare_dataset_for_training', parsed=prepare_result)]
-        if not prepare_result.get('ok'):
-            failed_plan = dict(plan_payload)
-            failed_plan['blockers'] = [str(prepare_result.get('error') or prepare_result.get('summary') or '数据准备失败').strip()]
-            failed_plan['prepare_summary'] = str(prepare_result.get('summary') or prepare_result.get('error') or '').strip()
-            return Command(
-                update={
-                    'messages': messages,
-                    'training_plan': failed_plan,
-                    'training_status_reply': failed_plan['prepare_summary'],
-                },
-                goto='training_confirmation',
-            )
-        preflight_args = client._model_dump_compat(plan)
-        prepared_yaml = str(prepare_result.get('data_yaml') or prepare_result.get('resolved_data_yaml') or '').strip()
-        if prepared_yaml:
-            preflight_args['data_yaml'] = prepared_yaml
-        if getattr(plan, 'mode', 'train') == 'loop':
-            preflight_args.setdefault('epochs', getattr(plan, 'epochs_per_round', None))
-        preflight = await client.direct_tool('training_preflight', **preflight_args)
-        messages.append(_tool_result_message('training_preflight', parsed=preflight))
-        return Command(
-            update={
-                'messages': messages,
-                'prepare_result': prepare_result,
-                'training_preflight': preflight,
-                'training_status_reply': '',
-            },
-            goto='post_prepare',
-        )
-
-    async def _execute_training(state: _AgentRuntimeGraphState, config: Any = None) -> Command:
-        del config
-        client = client_holder.get('client')
-        if client is None:
-            return Command(goto='training_confirmation')
-        plan_payload = dict((state or {}).get('training_plan') or {})
-        if not plan_payload:
-            return Command(goto='training_confirmation')
-        plan = coerce_training_plan(plan_payload)
-        next_tool_name = canonical_tool_name(str((state or {}).get('training_next_step_tool') or '').strip())
-        if next_tool_name not in {'start_training', 'start_training_loop'}:
-            next_tool_name = 'start_training_loop' if getattr(plan, 'mode', 'train') == 'loop' else 'start_training'
-        next_args = dict((state or {}).get('training_next_step_args') or client._model_dump_compat(plan))
-        next_args = {key: value for key, value in next_args.items() if value is not None}
-        parsed = await client.direct_tool(next_tool_name, **next_args)
-        reply = await client._render_tool_result_message(next_tool_name, parsed)
-        messages: list[Any] = [_tool_result_message(next_tool_name, parsed=parsed)]
-        if reply:
-            messages.append(AIMessage(content=reply))
-        if parsed.get('ok'):
-            return Command(
-                update={
-                    'messages': messages,
-                    'training_plan': None,
-                    'training_phase': None,
-                    'training_execution_mode': None,
-                    'training_next_step_tool': None,
-                    'training_next_step_args': None,
-                    'suspended_training_plan': None,
-                    'pending_new_task': None,
-                    'training_status_reply': '',
-                    'training_plan_context': None,
-                },
-                goto=END,
-            )
-        failed_plan = dict(plan_payload)
-        failed_plan['blockers'] = [str(parsed.get('error') or parsed.get('summary') or '训练启动失败').strip()]
-        failed_plan['readiness_summary'] = str(parsed.get('summary') or parsed.get('error') or '').strip()
-        return Command(
-            update={
-                'messages': messages,
-                'training_plan': failed_plan,
-                'training_status_reply': str(reply or failed_plan['readiness_summary']).strip(),
-            },
-            goto='training_confirmation',
-        )
-
-    async def _route_new_task(state: _AgentRuntimeGraphState, config: Any = None) -> Command:
-        del config
-        pending_new_task = str((state or {}).get('pending_new_task') or '').strip()
-        if not pending_new_task:
-            suspended = dict((state or {}).get('suspended_training_plan') or {})
-            if suspended:
-                return Command(
-                    update={
-                        'training_plan': dict(suspended.get('plan') or {}) or None,
-                        'training_phase': str(suspended.get('phase') or '').strip() or None,
-                        'training_execution_mode': str(suspended.get('execution_mode') or '').strip() or None,
-                        'training_next_step_tool': str(suspended.get('next_step_tool') or '').strip() or None,
-                        'training_next_step_args': dict(suspended.get('next_step_args') or {}) or None,
-                        'suspended_training_plan': None,
-                        'training_status_reply': '',
-                    },
-                    goto='training_confirmation',
-                )
+        prepare_only_candidate = bool(latest_user_text and client._looks_like_prepare_only_request(latest_user_text))
+        if not context and not training_entrypoint_args and not prepare_only_candidate:
             return Command(goto='agent_runtime')
         return Command(
             update={
-                'messages': [HumanMessage(content=pending_new_task)],
-                'pending_new_task': None,
-                'training_status_reply': '',
+                'training_entry_request': {
+                    'user_text': latest_user_text,
+                    'thread_id': thread_id,
+                    'training_entrypoint_request_args': training_entrypoint_args,
+                    'prepare_only_candidate': prepare_only_candidate,
+                }
             },
-            goto='agent_runtime',
+            goto='plan_training',
         )
 
     if StateGraph is not None:
         workflow = StateGraph(_AgentRuntimeGraphState)
         workflow.add_node('route_training_entry', _route_training_entry)
         workflow.add_node('agent_runtime', react_graph)
-        workflow.add_node('training_confirmation', training_confirmation_node)
-        workflow.add_node('refresh_training_start_after_edit', _refresh_training_start_after_edit)
-        workflow.add_node('execute_prepare', _execute_prepare)
-        workflow.add_node('post_prepare', post_prepare_node)
-        workflow.add_node('execute_training', _execute_training)
-        workflow.add_node('answer_training_status', answer_training_status_node)
-        workflow.add_node('route_new_task', _route_new_task)
+        install_training_workflow_nodes(
+            workflow,
+            client_getter=lambda: client_holder.get('client'),
+        )
         workflow.add_edge(START, 'route_training_entry')
         workflow.add_edge('agent_runtime', END)
         graph = workflow.compile(checkpointer=checkpointer)
