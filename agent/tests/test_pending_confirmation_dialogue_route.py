@@ -242,16 +242,18 @@ async def _scenario_execute_phrase_routes_to_approve() -> None:
     client = _make_client('pending-execute-approve')
     captured: dict[str, object] = {}
 
-    async def _fake_confirm(thread_id, approved, stream_handler=None):
+    async def _fake_confirm(thread_id, approved, stream_handler=None, decision=None):
         del stream_handler
         captured['thread_id'] = thread_id
         captured['approved'] = approved
+        captured['decision'] = dict(decision or {})
         return {'status': 'completed', 'message': 'captured-approve', 'tool_call': None}
 
     client.confirm = _fake_confirm  # type: ignore[assignment]
     turn = await client.chat('没问题，执行吧')
     assert turn['status'] == 'completed', turn
     assert captured.get('approved') is True, captured
+    assert captured.get('decision', {}).get('action') == 'approve', captured
     pending = client.get_pending_action()
     assert pending is not None, pending
     assert pending['decision_context']['decision'] == 'approve', pending
@@ -262,16 +264,18 @@ async def _scenario_continue_phrase_routes_to_approve() -> None:
     client = _make_client('pending-continue-approve')
     captured: dict[str, object] = {}
 
-    async def _fake_confirm(thread_id, approved, stream_handler=None):
+    async def _fake_confirm(thread_id, approved, stream_handler=None, decision=None):
         del stream_handler
         captured['thread_id'] = thread_id
         captured['approved'] = approved
+        captured['decision'] = dict(decision or {})
         return {'status': 'completed', 'message': 'captured-approve', 'tool_call': None}
 
     client.confirm = _fake_confirm  # type: ignore[assignment]
     turn = await client.chat('可以，继续')
     assert turn['status'] == 'completed', turn
     assert captured.get('approved') is True, captured
+    assert captured.get('decision', {}).get('action') == 'approve', captured
     pending = client.get_pending_action()
     assert pending is not None, pending
     assert pending['decision_context']['decision'] == 'approve', pending
@@ -282,16 +286,18 @@ async def _scenario_continue_phrase_with_punctuation_routes_to_approve() -> None
     client = _make_client('pending-continue-approve-punct')
     captured: dict[str, object] = {}
 
-    async def _fake_confirm(thread_id, approved, stream_handler=None):
+    async def _fake_confirm(thread_id, approved, stream_handler=None, decision=None):
         del stream_handler
         captured['thread_id'] = thread_id
         captured['approved'] = approved
+        captured['decision'] = dict(decision or {})
         return {'status': 'completed', 'message': 'captured-approve', 'tool_call': None}
 
     client.confirm = _fake_confirm  # type: ignore[assignment]
     turn = await client.chat('好，继续。')
     assert turn['status'] == 'completed', turn
     assert captured.get('approved') is True, captured
+    assert captured.get('decision', {}).get('action') == 'approve', captured
     pending = client.get_pending_action()
     assert pending is not None, pending
     assert pending['decision_context']['decision'] == 'approve', pending
@@ -324,16 +330,18 @@ async def _scenario_execute_phrase_with_punctuation_routes_to_approve() -> None:
     client = _make_client('pending-execute-approve-punct')
     captured: dict[str, object] = {}
 
-    async def _fake_confirm(thread_id, approved, stream_handler=None):
+    async def _fake_confirm(thread_id, approved, stream_handler=None, decision=None):
         del stream_handler
         captured['thread_id'] = thread_id
         captured['approved'] = approved
+        captured['decision'] = dict(decision or {})
         return {'status': 'completed', 'message': 'captured-approve', 'tool_call': None}
 
     client.confirm = _fake_confirm  # type: ignore[assignment]
     turn = await client.chat('没问题，执行吧。')
     assert turn['status'] == 'completed', turn
     assert captured.get('approved') is True, captured
+    assert captured.get('decision', {}).get('action') == 'approve', captured
     pending = client.get_pending_action()
     assert pending is not None, pending
     assert pending['decision_context']['decision'] == 'approve', pending

@@ -945,17 +945,45 @@ class YoloStudioAgentClient:
             stream_handler=stream_handler,
         )
 
-    async def confirm(self, thread_id: str, approved: bool, stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None) -> dict[str, Any]:
+    @staticmethod
+    def _confirm_decision_payload(
+        approved: bool,
+        *,
+        decision: dict[str, Any] | None = None,
+        default_reason: str = 'confirm()',
+    ) -> dict[str, Any]:
+        payload = dict(decision or {})
+        action = str(payload.get('action') or payload.get('decision') or '').strip().lower()
+        if action not in {'approve', 'reject'}:
+            action = 'approve' if approved else 'reject'
+        payload['action'] = action
+        payload.setdefault('reason', default_reason)
+        return payload
+
+    @staticmethod
+    def _graph_resume_decision(approved: bool) -> dict[str, Any]:
+        return {'decision': 'approve' if approved else 'reject'}
+
+    async def confirm(
+        self,
+        thread_id: str,
+        approved: bool,
+        stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
+        *,
+        decision: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        decision_payload = self._confirm_decision_payload(
+            approved,
+            decision=decision,
+            default_reason='confirm() resume',
+        )
         active_interrupt = self._active_graph_interrupt(preferred_thread_id=thread_id)
         if active_interrupt is not None:
             interrupt_thread_id, interrupt_payload = active_interrupt
             return await self._resume_active_confirmation_interrupt(
                 interrupt_thread_id=interrupt_thread_id,
                 interrupt_payload=interrupt_payload,
-                decision={
-                    'action': 'approve' if approved else 'reject',
-                    'reason': 'confirm() resume',
-                },
+                decision=decision_payload,
                 stream_handler=stream_handler,
             )
 
@@ -974,7 +1002,11 @@ class YoloStudioAgentClient:
             if str(pending.get('source') or '').strip().lower() == 'graph':
                 self._clear_pending_confirmation(thread_id=thread_id, persist_graph=False)
                 with contextlib.suppress(Exception):
-                    await self._graph_invoke(Command(resume={'decision': 'reject'}), config=config, stream_handler=stream_handler)
+                    await self._graph_invoke(
+                        Command(resume=self._graph_resume_decision(False)),
+                        config=config,
+                        stream_handler=stream_handler,
+                    )
             else:
                 self._clear_pending_confirmation(thread_id=thread_id)
             self._trim_history()
@@ -1006,7 +1038,7 @@ class YoloStudioAgentClient:
         if pending.get('name') == 'prepare_dataset_for_training':
             graph_stream_handler = None
         result = await self._graph_invoke(
-            Command(resume={'decision': 'approve'}),
+            Command(resume=self._graph_resume_decision(True)),
             config=config,
             stream_handler=graph_stream_handler,
         )
@@ -1242,16 +1274,10 @@ class YoloStudioAgentClient:
         if current_pending is not None:
             current_pending['decision_context'] = dict(decision_context)
             self._pending_confirmation_shadow = dict(current_pending)
-            if str(current_pending.get('source') or '').strip().lower() != 'graph':
-                self._update_graph_pending_state(
-                    thread_id=pending_thread_id,
-                    pending=current_pending,
-                )
-            else:
-                self._update_graph_pending_state(
-                    thread_id=pending_thread_id,
-                    pending=current_pending,
-                )
+            self._update_graph_pending_state(
+                thread_id=pending_thread_id,
+                pending=current_pending,
+            )
         self.memory.append_event(
             self.session_state.session_id,
             'pending_action_reviewed',
@@ -1273,7 +1299,6 @@ class YoloStudioAgentClient:
         pending: dict[str, Any],
         pending_thread_id: str,
         stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
-        active_interrupt: tuple[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any] | object | None:
         pending_turn_intent_payload = await self._parse_pending_turn_intent(user_text, pending)
         pending_turn_intent = str(pending_turn_intent_payload.get('action') or '').strip().lower()
@@ -1361,21 +1386,14 @@ class YoloStudioAgentClient:
                 raw_user_text=user_text,
                 source='natural_language_chat',
             )
-            if active_interrupt is not None:
-                interrupt_thread_id, interrupt_payload = active_interrupt
-                return await self._resume_active_confirmation_interrupt(
-                    interrupt_thread_id=interrupt_thread_id,
-                    interrupt_payload=interrupt_payload,
-                    decision={
-                        'action': pending_turn_intent,
-                        'reason': 'pending dialogue',
-                    },
-                    stream_handler=stream_handler,
-                )
             return await self.confirm(
                 pending_thread_id,
                 approved=pending_turn_intent == 'approve',
                 stream_handler=stream_handler,
+                decision={
+                    'action': pending_turn_intent,
+                    'reason': 'pending dialogue',
+                },
             )
         if pending_turn_intent == 'restate':
             self._record_pending_action_review(
@@ -1432,7 +1450,6 @@ class YoloStudioAgentClient:
                     pending=interrupt_pending,
                     pending_thread_id=interrupt_thread_id,
                     stream_handler=stream_handler,
-                    active_interrupt=active_interrupt,
                 )
 
         pending = self._resolve_pending_confirmation(thread_id=self._pending_confirmation_thread_id())
