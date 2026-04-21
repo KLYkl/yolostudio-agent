@@ -16,6 +16,10 @@ if __package__ in {None, ""}:
             sys.path.insert(0, path)
 
 from yolostudio_agent.agent.client.agent_client import AgentSettings, build_agent_client
+from yolostudio_agent.agent.client.cli_output import (
+    normalize_cli_reply as _normalize_cli_reply,
+    should_print_final_agent_message as _should_print_final_agent_message,
+)
 
 for stream_name in ("stdout", "stderr"):
     stream = getattr(sys, stream_name, None)
@@ -113,7 +117,7 @@ async def main() -> None:
         if _is_exit_command(user):
             break
 
-        stream_state = {"token_started": False, "tool_calls": set()}
+        stream_state = {"token_started": False, "tool_calls": set(), "streamed_text_seen": False, "streamed_text": ""}
 
         async def _handle_stream(event: dict) -> None:
             event_type = str(event.get("type") or "")
@@ -124,6 +128,8 @@ async def main() -> None:
                 if not stream_state["token_started"]:
                     print("Agent: ", end="", flush=True)
                     stream_state["token_started"] = True
+                stream_state["streamed_text_seen"] = True
+                stream_state["streamed_text"] = f"{stream_state['streamed_text']}{text}"
                 print(text, end="", flush=True)
                 return
             if event_type == "tool_call":
@@ -139,7 +145,7 @@ async def main() -> None:
         result = await agent.chat(user, stream_handler=_handle_stream)
         if stream_state["token_started"]:
             print()
-        if not stream_state["token_started"]:
+        if _should_print_final_agent_message(stream_state, str(result.get('message') or '')):
             print(f"Agent: {result['message']}")
 
 

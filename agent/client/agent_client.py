@@ -918,6 +918,15 @@ class YoloStudioAgentClient:
         pending_passthrough_requested: bool = False,
         stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
     ) -> dict[str, Any]:
+        preserved_pending: dict[str, Any] | None = None
+        preserved_context: dict[str, Any] | None = None
+        preserved_thread_id = ''
+        if pending_passthrough_requested:
+            preserved_thread_id = self._pending_confirmation_thread_id()
+            preserved_pending = self._resolve_pending_confirmation(thread_id=preserved_thread_id)
+            preserved_context = dict(
+                self._current_training_plan_context(preferred_thread_id=preserved_thread_id) or {}
+            ) or None
         handoff_kwargs: dict[str, Any] = {
             'thread_id': thread_id,
             'user_text_hint': user_text,
@@ -932,7 +941,29 @@ class YoloStudioAgentClient:
                     'suppress_ephemeral_state_context': True,
                 }
             )
-        return await self._handoff_current_runtime_to_graph(**handoff_kwargs)
+        result = await self._handoff_current_runtime_to_graph(**handoff_kwargs)
+        if pending_passthrough_requested and result.get('status') == 'completed':
+            if preserved_context and preserved_thread_id:
+                current_context = self._current_training_plan_context(preferred_thread_id=preserved_thread_id)
+                if not current_context:
+                    self._update_graph_training_plan_context(
+                        thread_id=preserved_thread_id,
+                        context=preserved_context,
+                    )
+            if preserved_pending and preserved_thread_id:
+                current_pending = self._resolve_pending_confirmation(thread_id=preserved_thread_id)
+                if current_pending is None:
+                    if str(preserved_pending.get('source') or '').strip().lower() == 'graph':
+                        self._update_graph_pending_state(
+                            thread_id=preserved_thread_id,
+                            pending=preserved_pending,
+                        )
+                    self._remember_pending_confirmation(
+                        preserved_pending,
+                        emit_event=False,
+                        persist_graph=False,
+                    )
+        return result
 
     async def chat(self, user_text: str, auto_approve: bool = False, stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None) -> dict[str, Any]:
         if not str(user_text).strip():
@@ -986,7 +1017,7 @@ class YoloStudioAgentClient:
     ) -> dict[str, Any]:
         payload = dict(decision or {})
         action = str(payload.get('action') or payload.get('decision') or '').strip().lower()
-        if action not in {'approve', 'reject'}:
+        if action not in {'approve', 'reject', 'edit'}:
             action = 'approve' if approved else 'reject'
         payload['action'] = action
         payload.setdefault('reason', default_reason)
@@ -995,6 +1026,26 @@ class YoloStudioAgentClient:
     @staticmethod
     def _graph_resume_decision(approved: bool) -> dict[str, Any]:
         return {'decision': 'approve' if approved else 'reject'}
+
+    def _graph_pending_value_requires_direct_execution(
+        self,
+        *,
+        thread_id: str,
+        config: dict[str, Any],
+    ) -> bool:
+        active_interrupt = self._active_graph_interrupt(preferred_thread_id=thread_id)
+        if active_interrupt is not None:
+            return False
+        if hasattr(self.graph, '_codex_pending_state_store'):
+            return False
+        state = self._graph_state_snapshot(config)
+        values = getattr(state, 'values', {}) if state else {}
+        if not isinstance(values, dict):
+            return False
+        pending = values.get('pending_confirmation')
+        if not isinstance(pending, dict):
+            return False
+        return str(pending.get('source') or '').strip().lower() == 'graph'
 
     async def confirm(
         self,
@@ -1009,6 +1060,11 @@ class YoloStudioAgentClient:
             decision=decision,
             default_reason='confirm() resume',
         )
+        graph_resume_payload: dict[str, Any] = self._graph_resume_decision(approved)
+        if str(decision_payload.get('action') or '').strip().lower() == 'edit' or any(
+            key in decision_payload for key in ('edits', 'approve_after_edit')
+        ):
+            graph_resume_payload = dict(decision_payload)
         active_interrupt = self._active_graph_interrupt(preferred_thread_id=thread_id)
         if active_interrupt is not None:
             interrupt_thread_id, interrupt_payload = active_interrupt
@@ -1035,7 +1091,7 @@ class YoloStudioAgentClient:
                 self._clear_pending_confirmation(thread_id=thread_id, persist_graph=False)
                 with contextlib.suppress(Exception):
                     await self._graph_invoke(
-                        Command(resume=self._graph_resume_decision(False)),
+                        Command(resume=graph_resume_payload),
                         config=config,
                         stream_handler=stream_handler,
                     )
@@ -1057,6 +1113,27 @@ class YoloStudioAgentClient:
         if pending.get('name') == 'remote_training_pipeline':
             return await self._execute_remote_training_pipeline(pending.get('args') or {})
 
+        if pending.get('source') == 'graph' and self._graph_pending_value_requires_direct_execution(
+            thread_id=thread_id,
+            config=config,
+        ):
+            self._update_graph_pending_state(thread_id=thread_id, pending=None)
+            self.memory.append_event(
+                self.session_state.session_id,
+                'graph_pending_direct_execution_fallback',
+                {
+                    'tool': str(pending.get('name') or ''),
+                    'thread_id': str(thread_id or ''),
+                },
+            )
+            return await self._execute_adapted_pending_tool(
+                thread_id=thread_id,
+                pending=pending,
+                approved=True,
+                auto_progress_followups=self._auto_confirmation_enabled(),
+                stream_handler=stream_handler,
+            )
+
         if pending.get('source') != 'graph' or pending.get('adapted'):
             return await self._execute_adapted_pending_tool(
                 thread_id=thread_id,
@@ -1070,7 +1147,7 @@ class YoloStudioAgentClient:
         if pending.get('name') == 'prepare_dataset_for_training':
             graph_stream_handler = None
         result = await self._graph_invoke(
-            Command(resume=self._graph_resume_decision(True)),
+            Command(resume=graph_resume_payload),
             config=config,
             stream_handler=graph_stream_handler,
         )
@@ -1190,10 +1267,37 @@ class YoloStudioAgentClient:
         text = str(user_text or '').strip()
         if not text:
             return {'action': 'unclear', 'reason': ''}
+        if self._looks_like_return_to_current_pending_request(text):
+            return {'action': 'status', 'reason': text}
         if self._looks_like_pending_passthrough_request(text):
             return {'action': 'new_task', 'reason': text}
+        confirmation = self._classify_confirmation_reply_fallback(text)
+        approve_after_edit = confirmation == 'approve' or self._looks_like_edit_then_approve_request(text)
         if self._looks_like_pending_edit_request(text, pending):
-            return {'action': 'edit', 'reason': text}
+            result = {'action': 'edit', 'reason': text}
+            tool_name = canonical_tool_name(str((pending or {}).get('name') or '').strip())
+            edits: dict[str, Any] = {}
+            if tool_name in {'start_training', 'start_training_loop', 'prepare_dataset_for_training'}:
+                edits = dict(self._collect_requested_training_args(text, data_yaml=None) or {})
+                if edits:
+                    edits.pop('data_yaml', None)
+                clear_fields = self._collect_training_clear_fields(text)
+                for field in clear_fields:
+                    edits[field] = None
+                normalized_text = text.lower()
+                if tool_name == 'prepare_dataset_for_training':
+                    prepare_only_tokens = ('只做准备', '先只做准备', '不要开始训练', '暂不启动训练', '只准备')
+                    if self._looks_like_prepare_only_request(text) or any(token in text or token in normalized_text for token in prepare_only_tokens):
+                        edits['prepare_only'] = True
+                    if any(token in text or token in normalized_text for token in ('不要自动划分', '不自动划分', '不要划分', '不划分', '先不要自动划分')):
+                        edits['force_split'] = False
+                    elif any(token in text or token in normalized_text for token in ('按默认比例', '默认比例', '先划分', '划分训练集', '划分数据集', 'force_split', 'split')):
+                        edits['force_split'] = True
+            if edits:
+                result['edits'] = edits
+            if approve_after_edit:
+                result['approve_after_edit'] = True
+            return result
         clarify_tokens = (
             '为什么', '原因', '依据', '怎么看', '会不会', '会生成到哪里', '会上传到哪里', '产物路径', '输出路径', '先给我计划', '先看计划',
             '先讨论', '解释一下', '再解释一下', '说详细一点', '详细说说',
@@ -1202,7 +1306,6 @@ class YoloStudioAgentClient:
             return {'action': 'status', 'reason': text}
         if self._looks_like_pending_status_or_detail_query(text):
             return {'action': 'status', 'reason': text}
-        confirmation = self._classify_confirmation_reply_fallback(text)
         if confirmation == 'approve':
             return {'action': 'approve', 'reason': text}
         if confirmation in {'deny', 'reject'}:
@@ -1229,6 +1332,8 @@ class YoloStudioAgentClient:
 
     async def _parse_pending_turn_intent(self, user_text: str, pending: dict[str, Any]) -> dict[str, Any]:
         text = str(user_text or '').strip()
+        if self._looks_like_return_to_current_pending_request(text):
+            return {'action': 'status', 'reason': text}
         fallback = self._fallback_pending_turn_intent_from_pending(user_text=text, pending=pending)
         if self.planner_llm is None:
             return fallback
@@ -1239,11 +1344,13 @@ class YoloStudioAgentClient:
                     '当前会话里已经存在一个待确认动作。'
                     '你只负责判断用户这句跟进对当前待确认动作意味着什么。'
                     '输出必须是 JSON，对象格式固定为 '
-                    '{"action":"approve|reject|edit|status|new_task|unclear","edits":{...可选},"reason":"..."}。'
+                    '{"action":"approve|reject|edit|status|new_task|unclear","edits":{...可选},"approve_after_edit":true|false,"reason":"..."}。'
                     '只有用户明确表达继续执行/批准时，action 才能是 approve；'
                     '只有用户明确表达不要执行/取消时，action 才能是 reject；'
                     '如果用户是在改参数、改执行方式、改环境或改训练计划字段，返回 edit；'
+                    '如果用户一边改参数，一边明确要求改完后立刻继续执行，就保持 action=edit，同时 approve_after_edit=true；'
                     '如果用户是在追问原因、计划细节、当前状态、输出位置或想先听说明，返回 status；'
+                    '如果用户是在说“继续当前这个/回到刚才那个待确认动作”，这不是 new_task，应返回 status；'
                     '如果用户是在发起与当前待确认动作无关的新任务，返回 new_task；'
                     '如果拿不准，返回 unclear。'
                     '只有在用户明确提到新的训练参数时，edits 才填写对应字段；不要编造参数。'
@@ -1273,6 +1380,11 @@ class YoloStudioAgentClient:
         action = str(normalized.get('action') or '').strip().lower()
         if fallback.get('action') == 'new_task' and action not in {'new_task', 'approve'}:
             return fallback
+        if action == 'edit':
+            if fallback.get('edits') and not normalized.get('edits'):
+                normalized['edits'] = dict(fallback.get('edits') or {})
+            if fallback.get('approve_after_edit'):
+                normalized['approve_after_edit'] = True
         if action == 'unclear':
             return fallback
         if not normalized.get('reason'):
@@ -1335,7 +1447,61 @@ class YoloStudioAgentClient:
         pending_turn_intent_payload = await self._parse_pending_turn_intent(user_text, pending)
         pending_turn_intent = str(pending_turn_intent_payload.get('action') or '').strip().lower()
         pending_turn_edits = dict(pending_turn_intent_payload.get('edits') or {})
+        approve_after_edit = bool(pending_turn_intent_payload.get('approve_after_edit'))
+        pending_tool_name = canonical_tool_name(str(pending.get('name') or '').strip())
+        pending_source = str(pending.get('source') or '').strip().lower()
         if pending_turn_intent == 'edit':
+            if (
+                approve_after_edit
+                and pending_tool_name in {'start_training', 'start_training_loop', 'prepare_dataset_for_training'}
+                and pending_source == 'graph'
+            ):
+                self._record_pending_action_review(
+                    pending,
+                    decision='edit',
+                    raw_user_text=user_text,
+                    source='natural_language_chat',
+                    edits=pending_turn_edits,
+                )
+                return await self.confirm(
+                    pending_thread_id,
+                    approved=True,
+                    stream_handler=stream_handler,
+                    decision={
+                        'action': 'edit',
+                        'reason': 'pending dialogue',
+                        'edits': pending_turn_edits,
+                        'approve_after_edit': True,
+                    },
+                )
+            if (
+                approve_after_edit
+                and pending_turn_edits
+                and pending_tool_name in {'start_training', 'start_training_loop', 'prepare_dataset_for_training'}
+                and pending_source == 'synthetic'
+            ):
+                updated_pending = dict(pending)
+                updated_args = dict(updated_pending.get('args') or updated_pending.get('tool_args') or {})
+                updated_args.update(pending_turn_edits)
+                updated_pending['args'] = dict(updated_args)
+                updated_pending['tool_args'] = dict(updated_args)
+                self._remember_pending_confirmation(
+                    updated_pending,
+                    emit_event=False,
+                    persist_graph=False,
+                )
+                self._record_pending_action_review(
+                    updated_pending,
+                    decision='edit',
+                    raw_user_text=user_text,
+                    source='natural_language_chat',
+                    edits=pending_turn_edits,
+                )
+                return await self.confirm(
+                    pending_thread_id,
+                    approved=True,
+                    stream_handler=stream_handler,
+                )
             self._record_pending_action_review(
                 pending,
                 decision='edit',
@@ -1401,7 +1567,6 @@ class YoloStudioAgentClient:
                         merged_pending,
                         await self._build_confirmation_message(merged_pending),
                     )
-            pending_tool_name = canonical_tool_name(str(pending.get('name') or '').strip())
             if pending_tool_name in {'start_training', 'start_training_loop', 'prepare_dataset_for_training'}:
                 if self._is_training_discussion_only(user_text):
                     return _DEFER_TO_GRAPH
@@ -1530,6 +1695,30 @@ class YoloStudioAgentClient:
         ) or any(token in normalized for token in ('status', 'details', 'detail'))
 
     @staticmethod
+    def _looks_like_edit_then_approve_request(user_text: str) -> bool:
+        normalized = YoloStudioAgentClient._normalize_confirmation_text(user_text)
+        if not normalized:
+            return False
+        explicit_tokens = (
+            '确认开始准备',
+            '确认开始训练',
+            '确认启动训练',
+            '确认开始循环训练',
+            '确认启动循环训练',
+            '确认开始',
+            '确认启动',
+            '开始训练',
+            '启动训练',
+            '开始循环训练',
+            '启动循环训练',
+            '继续执行',
+        )
+        return any(
+            YoloStudioAgentClient._normalize_confirmation_text(token) in normalized
+            for token in explicit_tokens
+        )
+
+    @staticmethod
     def _looks_like_pending_passthrough_request(user_text: str) -> bool:
         text = str(user_text or '').strip()
         normalized = text.lower()
@@ -1567,6 +1756,34 @@ class YoloStudioAgentClient:
         return any(token in text or token in normalized for token in list_or_history_tokens) and any(
             token in text or token in normalized for token in subject_tokens
         )
+
+    @staticmethod
+    def _looks_like_return_to_current_pending_request(user_text: str) -> bool:
+        text = str(user_text or '').strip()
+        normalized = text.lower()
+        if not text:
+            return False
+        negative_tokens = (
+            '我不是要继续当前计划',
+            '不是要继续当前计划',
+            '不是继续当前计划',
+            '先不管当前计划',
+        )
+        if any(token in text for token in negative_tokens):
+            return False
+        return_tokens = (
+            '继续当前这个',
+            '继续当前这个环训练',
+            '继续当前这个训练',
+            '继续当前计划',
+            '继续刚才那个',
+            '继续刚才这个',
+            '回到刚才',
+            '回到当前计划',
+            '先继续当前',
+            '先继续刚才',
+        )
+        return any(token in text or token in normalized for token in return_tokens)
 
     async def _classify_structured_action(
         self,
@@ -1686,6 +1903,7 @@ class YoloStudioAgentClient:
                     'additionalProperties': False,
                 },
                 'reason': {'type': 'string'},
+                'approve_after_edit': {'type': 'boolean'},
             },
             'required': ['action', 'reason'],
             'additionalProperties': False,
@@ -1735,6 +1953,12 @@ class YoloStudioAgentClient:
         }
         if normalized_edits:
             normalized['edits'] = normalized_edits
+        approve_after_edit = bool(
+            (normalized_source or {}).get('approve_after_edit')
+            or (payload or {}).get('approve_after_edit')
+        )
+        if approve_after_edit:
+            normalized['approve_after_edit'] = True
         return normalized
 
     async def _parse_user_decision(
@@ -1757,6 +1981,7 @@ class YoloStudioAgentClient:
                     '根据当前训练计划和用户回复，输出结构化 JSON。'
                     'action 只能是 approve / reject / edit / status / new_task / unclear。'
                     '如果用户在修改参数，action=edit，且 edits 里只填写明确提到的新值。'
+                    '如果用户一边改参数，一边明确要求按修改后的方案立刻继续执行，就保持 action=edit，同时 approve_after_edit=true。'
                     '如果用户在追问当前计划细节、产物路径、原因、当前参数，action=status。'
                     '如果用户在问与当前计划无关的新任务，例如查看历史、列出环训练、查其他对象，action=new_task。'
                     '不要编造参数，不要输出额外字段。'
@@ -1775,6 +2000,16 @@ class YoloStudioAgentClient:
             schema=self._pending_turn_intent_schema(),
         )
         normalized = self._normalize_pending_turn_intent_payload(parsed)
+        if normalized.get('action') == 'edit':
+            fallback = self._fallback_pending_turn_intent(
+                user_text=user_text,
+                interrupt_payload=interrupt_payload,
+            )
+            if fallback:
+                if fallback.get('edits') and not normalized.get('edits'):
+                    normalized['edits'] = dict(fallback.get('edits') or {})
+                if fallback.get('approve_after_edit'):
+                    normalized['approve_after_edit'] = True
         if normalized.get('action') == 'unclear':
             fallback = self._fallback_pending_turn_intent(
                 user_text=user_text,
@@ -1799,6 +2034,8 @@ class YoloStudioAgentClient:
             return {'action': 'new_task', 'reason': text}
         if self._looks_like_pending_status_or_detail_query(text):
             return {'action': 'status', 'reason': text}
+        confirmation = self._classify_confirmation_reply_fallback(text)
+        approve_after_edit = confirmation == 'approve' or self._looks_like_edit_then_approve_request(text)
         pending_like: dict[str, Any] = {}
         tool_call = self._training_confirmation_tool_call(interrupt_payload)
         if tool_call:
@@ -1821,8 +2058,10 @@ class YoloStudioAgentClient:
                 elif any(token in text or token in normalized_text for token in ('按默认比例', '默认比例', '先划分', '划分训练集', '划分数据集', 'force_split', 'split')):
                     edits['force_split'] = True
             if edits:
-                return {'action': 'edit', 'reason': text, 'edits': edits}
-        confirmation = self._classify_confirmation_reply_fallback(text)
+                result = {'action': 'edit', 'reason': text, 'edits': edits}
+                if approve_after_edit:
+                    result['approve_after_edit'] = True
+                return result
         if confirmation == 'approve':
             return {'action': 'approve', 'reason': text}
         if confirmation in {'deny', 'reject'}:

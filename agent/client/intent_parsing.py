@@ -349,6 +349,8 @@ def extract_device_from_text(text: str) -> str:
     if 'device=auto' in lowered or '设备自动' in text or '自动选卡' in text or 'auto device' in lowered:
         return 'auto'
     match = re.search(r'device\s*[=:]?\s*([0-9,]+|cpu|auto)', text, flags=re.I)
+    if not match:
+        match = re.search(r'device\s*(?:改成|设成|设置为|为|用)\s*([0-9,]+|cpu|auto)', text, flags=re.I)
     if match:
         return match.group(1).lower()
     match = re.search(r'设备\s*(?:改成|设成|设置为|为|用)?\s*([0-9,]+|cpu|auto)', text, flags=re.I)

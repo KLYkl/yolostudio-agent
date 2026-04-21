@@ -740,6 +740,17 @@ async def _run() -> None:
         assert loop_facts['max_rounds'] == 2, loop_facts
         assert loop_facts['next_step'] == '启动循环训练', loop_facts
 
+        combo_client, combo_calls = await _build_client(session_id='loop-dialogue-edit-approve')
+        combo_prepare = await combo_client.chat('用 /home/kly/ct_loop/data_ct 数据集和 /home/kly/yolov8n.pt 循环训一下，最多 2 轮。')
+        assert combo_prepare['status'] == 'needs_confirmation', combo_prepare
+        combo_start = await combo_client.confirm(combo_prepare['thread_id'], True)
+        assert combo_start['status'] == 'needs_confirmation', combo_start
+        combo_done = await combo_client.chat('device 改成 auto，确认开始。')
+        assert combo_done['status'] == 'completed', combo_done
+        assert combo_calls[-1][0] == 'start_training_loop', combo_calls[-1]
+        assert combo_calls[-1][1]['device'] == 'auto', combo_calls[-1]
+        assert combo_client.session_state.active_training.active_loop_id == 'loop-123', combo_client.session_state.active_training.active_loop_id
+
         pending_list_turn = await client.chat('最近有哪些环训练')
         assert pending_list_turn['status'] == 'completed', pending_list_turn
         assert client.graph.calls[-1][0] == 'list_training_loops', client.graph.calls[-1]
@@ -760,6 +771,9 @@ async def _run() -> None:
             agent_client_module.run_training_plan_dialogue_flow = original_dialogue_flow  # type: ignore[assignment]
         assert pending_passthrough_list['status'] == 'completed', pending_passthrough_list
         assert pending_passthrough_client.graph.calls[-1][0] == 'list_training_loops', pending_passthrough_client.graph.calls[-1]
+        assert (pending_passthrough_client.get_pending_action() or {}).get('tool_name', '') == 'start_training_loop'
+        pending_passthrough_resume = await pending_passthrough_client.chat('先继续当前这个环训练')
+        assert pending_passthrough_resume['status'] == 'needs_confirmation', pending_passthrough_resume
         assert (pending_passthrough_client.get_pending_action() or {}).get('tool_name', '') == 'start_training_loop'
 
         confirm_loop_start = await client.confirm(confirm_prepare_then_loop['thread_id'], True)

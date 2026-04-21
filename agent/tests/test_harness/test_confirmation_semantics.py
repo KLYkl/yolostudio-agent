@@ -51,9 +51,9 @@ async def _test_approve_not_intercepted_as_edit() -> None:
     # 当前预期: 这些会被截获（已知问题）
     # 修复后应该全部不截获
     if intercepted:
-        print(f'  ⚠️ 已知问题: {len(intercepted)} 个确认语被 passthrough 截为 edit')
+        print(f'  [WARN] 已知问题: {len(intercepted)} 个确认语被 passthrough 截为 edit')
     else:
-        print(f'  ✅ 所有确认语都正常通过 passthrough')
+        print('  [OK] 所有确认语都正常通过 passthrough')
 
 
 # ===== 测试 2: 纯确认语义应走 approve =====
@@ -90,7 +90,7 @@ async def _test_edit_phrases_passthrough() -> None:
     print(f'  编辑语正确识别: {correct.__len__()}/{len(results)}')
     for p, d in results:
         if d != 'edit':
-            print(f'    ⚠️ "{p}" → {d} (期望 edit)')
+            print(f'    [WARN] "{p}" → {d} (期望 edit)')
 
 
 # ===== 测试 4: 追问语义应 passthrough 为 clarify =====
@@ -128,9 +128,27 @@ async def _test_try_handle_returns_for_pending() -> None:
         payload = await client2._parse_pending_turn_intent(phrase, pending)
         actual_pt = payload.get('action')
         if actual_pt != expected_pt:
-            print(f'    ⚠️ "{phrase}": 期望 intent={expected_pt}, 实际={actual_pt}')
+            print(f'    [WARN] "{phrase}": 期望 intent={expected_pt}, 实际={actual_pt}')
         else:
-            print(f'    ✅ "{phrase}": intent={actual_pt}')
+            print(f'    [OK] "{phrase}": intent={actual_pt}')
+
+
+# ===== 测试 6: 返回当前 pending 不应被判成 new_task =====
+async def _test_return_to_current_pending_phrase() -> None:
+    client = make_client('confirm-return-current')
+    _set_prepare_pending(client)
+    pending = client._resolve_pending_confirmation(thread_id='confirm-sem-t1')
+    client.planner_llm = object()
+
+    async def _should_not_call(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise AssertionError('return-to-current-pending should short-circuit before structured parse')
+
+    client._invoke_structured_payload = _should_not_call  # type: ignore[assignment]
+    payload = await client._parse_pending_turn_intent('先继续当前这个环训练', pending)
+    actual = payload.get('action')
+    if actual != 'status':
+        raise AssertionError(f'期望 status，实际 {actual!r}: {payload}')
+    print(f'    [OK] "先继续当前这个环训练": intent={actual}')
 
 
 # ===== 入口 =====
@@ -141,6 +159,7 @@ async def _run_all() -> None:
         ('编辑语 passthrough', _test_edit_phrases_passthrough),
         ('追问语 passthrough', _test_clarify_phrases_passthrough),
         ('pending turn intent 完整流程', _test_try_handle_returns_for_pending),
+        ('返回当前 pending', _test_return_to_current_pending_phrase),
     ]
     passed, failed = 0, 0
     for name, fn in tests:

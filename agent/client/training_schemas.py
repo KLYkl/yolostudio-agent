@@ -35,6 +35,7 @@ class TrainingEdits(BaseModel):
 class PendingTurnIntent(BaseModel):
     action: Literal['approve', 'reject', 'edit', 'status', 'new_task', 'unclear']
     edits: TrainingEdits | None = None
+    approve_after_edit: bool | None = None
     reason: str | None = None
 
 

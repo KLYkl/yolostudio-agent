@@ -33,7 +33,12 @@ except Exception:
     END = '__end__'  # type: ignore[assignment]
 
 try:
-    from langgraph.types import Command, interrupt
+    from langgraph.errors import GraphInterrupt
+except Exception:
+    GraphInterrupt = None  # type: ignore[assignment]
+
+try:
+    from langgraph.types import Command, Interrupt, interrupt
 except Exception:
     class Command:  # type: ignore[override]
         def __init__(self, *, update: Any = None, goto: str | None = None, resume: Any = None, graph: Any = None):
@@ -42,8 +47,31 @@ except Exception:
             self.resume = resume
             self.graph = graph
 
+    Interrupt = None  # type: ignore[assignment]
+
     def interrupt(value: Any) -> Any:
         return value
+
+try:
+    from langgraph._internal._constants import (
+        CONFIG_KEY_CHECKPOINT_NS,
+        CONFIG_KEY_SCRATCHPAD,
+        CONFIG_KEY_SEND,
+        RESUME,
+    )
+except Exception:
+    try:
+        from langgraph.constants import (  # type: ignore[attr-defined]
+            CONFIG_KEY_CHECKPOINT_NS,
+            CONFIG_KEY_SCRATCHPAD,
+            CONFIG_KEY_SEND,
+            RESUME,
+        )
+    except Exception:
+        CONFIG_KEY_CHECKPOINT_NS = None  # type: ignore[assignment]
+        CONFIG_KEY_SCRATCHPAD = None  # type: ignore[assignment]
+        CONFIG_KEY_SEND = None  # type: ignore[assignment]
+        RESUME = None  # type: ignore[assignment]
 
 from yolostudio_agent.agent.client import intent_parsing
 from yolostudio_agent.agent.client.mainline_route_support import resolve_mainline_dispatch_payload
@@ -80,6 +108,57 @@ def _thread_id_from_config(config: Any) -> str:
         return str(configurable.get('thread_id') or '').strip()
     configurable = dict(getattr(config, 'configurable', {}) or {})
     return str(configurable.get('thread_id') or '').strip()
+
+
+def _configurable_from_config(config: Any) -> dict[str, Any]:
+    if isinstance(config, Mapping):
+        return dict(config.get('configurable') or {})
+    return dict(getattr(config, 'configurable', {}) or {})
+
+
+def _interrupt_with_runtime_config(config: Any, payload: Any) -> Any:
+    configurable = _configurable_from_config(config)
+    if not configurable:
+        return interrupt(payload)
+    if (
+        GraphInterrupt is None
+        or Interrupt is None
+        or CONFIG_KEY_CHECKPOINT_NS is None
+        or CONFIG_KEY_SCRATCHPAD is None
+        or CONFIG_KEY_SEND is None
+        or RESUME is None
+    ):
+        return interrupt(payload)
+
+    scratchpad = configurable.get(CONFIG_KEY_SCRATCHPAD)
+    send = configurable.get(CONFIG_KEY_SEND)
+    checkpoint_ns = configurable.get(CONFIG_KEY_CHECKPOINT_NS)
+    interrupt_counter = getattr(scratchpad, 'interrupt_counter', None)
+    get_null_resume = getattr(scratchpad, 'get_null_resume', None)
+    resume_values = getattr(scratchpad, 'resume', None)
+    if (
+        scratchpad is None
+        or not callable(send)
+        or checkpoint_ns is None
+        or not callable(interrupt_counter)
+        or not callable(get_null_resume)
+        or not isinstance(resume_values, list)
+    ):
+        return interrupt(payload)
+
+    idx = interrupt_counter()
+    if idx < len(resume_values):
+        send([(RESUME, resume_values)])
+        return resume_values[idx]
+
+    null_resume = get_null_resume(True)
+    if null_resume is not None:
+        if len(resume_values) == idx:
+            resume_values.append(null_resume)
+        send([(RESUME, resume_values)])
+        return resume_values[idx]
+
+    raise GraphInterrupt((Interrupt.from_ns(value=payload, ns=checkpoint_ns),))
 
 
 def _latest_human_text_from_state(state: Mapping[str, Any]) -> str:
@@ -569,7 +648,6 @@ async def training_confirmation_node(
     state: Mapping[str, Any],
     config: RunnableConfig | None = None,
 ) -> Any:
-    del config
     plan = coerce_training_plan(state.get('training_plan', {}))
     phase = str(state.get('training_phase', 'prepare') or 'prepare').strip().lower() or 'prepare'
     suspended_plan = state.get('suspended_training_plan')
@@ -587,7 +665,7 @@ async def training_confirmation_node(
         'status_reply': status_reply,
         'suspended_training_plan': dict(suspended_plan or {}) if isinstance(suspended_plan, Mapping) else None,
     }
-    decision = _normalize_decision(interrupt(payload))
+    decision = _normalize_decision(_interrupt_with_runtime_config(config, payload))
     action = str(decision.action or 'unclear').strip().lower()
 
     if action == 'approve':
@@ -642,6 +720,10 @@ async def training_confirmation_node(
             updated_args = updated.model_dump()
             if next_step_tool == 'start_training_loop' and 'epochs_per_round' in updated_args and 'epochs' not in updated_args:
                 updated_args['epochs'] = updated_args['epochs_per_round']
+        approve_after_edit = bool(getattr(decision, 'approve_after_edit', None))
+        next_goto = 'refresh_training_start_after_edit' if phase == 'start' else 'training_confirmation'
+        if approve_after_edit:
+            next_goto = 'execute_prepare' if phase == 'prepare' else 'execute_training'
         return Command(update={
             'training_plan': updated.model_dump(),
             'training_phase': phase,
@@ -649,7 +731,7 @@ async def training_confirmation_node(
             'training_next_step_args': updated_args,
             'training_execution_mode': updated_execution_mode,
             'training_status_reply': '',
-        }, goto='refresh_training_start_after_edit' if phase == 'start' else 'training_confirmation')
+        }, goto=next_goto)
 
     if action == 'new_task':
         return Command(update={
@@ -676,6 +758,9 @@ async def training_confirmation_node(
         'training_plan': plan.model_dump(),
         'training_phase': phase,
     }, goto='training_confirmation')
+
+
+training_confirmation_node.__annotations__['config'] = RunnableConfig | None
 
 
 def post_prepare_node(state: Mapping[str, Any]) -> Command:

@@ -92,6 +92,97 @@ def _scenario_training_confirmation_new_task_suspends_plan() -> None:
         confirmation_mod.interrupt = original_interrupt
 
 
+def _scenario_training_confirmation_uses_runtime_config_resume() -> None:
+    original_interrupt = confirmation_mod.interrupt
+    original_graph_interrupt = confirmation_mod.GraphInterrupt
+    original_interrupt_type = confirmation_mod.Interrupt
+    original_checkpoint_ns = confirmation_mod.CONFIG_KEY_CHECKPOINT_NS
+    original_scratchpad_key = confirmation_mod.CONFIG_KEY_SCRATCHPAD
+    original_send_key = confirmation_mod.CONFIG_KEY_SEND
+    original_resume_key = confirmation_mod.RESUME
+
+    class _FakeInterrupt:
+        @staticmethod
+        def from_ns(*, value, ns):
+            return {'value': value, 'ns': ns}
+
+    class _FakeGraphInterrupt(Exception):
+        pass
+
+    class _FakeScratchpad:
+        def __init__(self) -> None:
+            self.resume: list[dict[str, str]] = []
+
+        def interrupt_counter(self) -> int:
+            return 0
+
+        def get_null_resume(self, _consume: bool) -> dict[str, str]:
+            return {'action': 'approve', 'reason': 'runtime resume'}
+
+    sent: list[list[tuple[str, list[dict[str, str]]]]] = []
+
+    try:
+        def _unexpected_interrupt(_payload):
+            raise AssertionError('should use runtime config resume instead of global interrupt')
+
+        confirmation_mod.interrupt = _unexpected_interrupt
+        confirmation_mod.GraphInterrupt = _FakeGraphInterrupt
+        confirmation_mod.Interrupt = _FakeInterrupt
+        confirmation_mod.CONFIG_KEY_CHECKPOINT_NS = '__checkpoint_ns__'
+        confirmation_mod.CONFIG_KEY_SCRATCHPAD = '__scratchpad__'
+        confirmation_mod.CONFIG_KEY_SEND = '__send__'
+        confirmation_mod.RESUME = '__resume__'
+
+        command = asyncio.run(training_confirmation_node(
+            {
+                'training_plan': TrainPlan(dataset_path='/data/demo', model='yolov8n.pt').model_dump(),
+                'training_phase': 'prepare',
+            },
+            {
+                'configurable': {
+                    '__checkpoint_ns__': 'training_confirmation:prepare',
+                    '__scratchpad__': _FakeScratchpad(),
+                    '__send__': lambda values: sent.append(values),
+                }
+            },
+        ))
+        _assert_equal(getattr(command, 'goto', None), 'execute_prepare', 'runtime config resume goto')
+        _assert_equal(sent, [[('__resume__', [{'action': 'approve', 'reason': 'runtime resume'}])]], 'runtime config resume payload')
+    finally:
+        confirmation_mod.interrupt = original_interrupt
+        confirmation_mod.GraphInterrupt = original_graph_interrupt
+        confirmation_mod.Interrupt = original_interrupt_type
+        confirmation_mod.CONFIG_KEY_CHECKPOINT_NS = original_checkpoint_ns
+        confirmation_mod.CONFIG_KEY_SCRATCHPAD = original_scratchpad_key
+        confirmation_mod.CONFIG_KEY_SEND = original_send_key
+        confirmation_mod.RESUME = original_resume_key
+
+
+def _scenario_training_confirmation_edit_and_approve_starts_immediately() -> None:
+    original_interrupt = confirmation_mod.interrupt
+    try:
+        confirmation_mod.interrupt = lambda payload: {
+            'action': 'edit',
+            'reason': 'device 改成 auto，确认开始',
+            'approve_after_edit': True,
+            'edits': {'device': 'auto'},
+        }
+        command = asyncio.run(training_confirmation_node({
+            'training_plan': TrainPlan(dataset_path='/data/demo', model='yolov8n.pt', device='').model_dump(),
+            'training_phase': 'start',
+            'training_next_step_tool': 'start_training',
+            'training_next_step_args': {'model': 'yolov8n.pt', 'data_yaml': '/data/demo/data.yaml', 'epochs': 100},
+        }))
+        _assert_equal(getattr(command, 'goto', None), 'execute_training', 'edit+approve goto execute_training')
+        update = dict(getattr(command, 'update', {}) or {})
+        plan = dict(update.get('training_plan') or {})
+        next_step_args = dict(update.get('training_next_step_args') or {})
+        _assert_equal(plan.get('device'), 'auto', 'edit+approve updates plan device')
+        _assert_equal(next_step_args.get('device'), 'auto', 'edit+approve updates start args device')
+    finally:
+        confirmation_mod.interrupt = original_interrupt
+
+
 def _scenario_post_prepare_updates_plan_and_phase() -> None:
     command = post_prepare_node({
         'training_plan': TrainPlan(dataset_path='/data/demo', model='yolov8n.pt').model_dump(),
@@ -122,6 +213,8 @@ def main() -> None:
     _scenario_training_confirmation_approve_prepare()
     _scenario_training_confirmation_status_routes_to_answer_node()
     _scenario_training_confirmation_new_task_suspends_plan()
+    _scenario_training_confirmation_uses_runtime_config_resume()
+    _scenario_training_confirmation_edit_and_approve_starts_immediately()
     _scenario_post_prepare_updates_plan_and_phase()
     _scenario_answer_training_status_returns_to_confirmation()
     print('training confirmation node ok')

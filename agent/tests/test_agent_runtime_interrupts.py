@@ -166,6 +166,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.messages import ToolMessage
 from yolostudio_agent.agent.client.agent_client import AgentSettings, YoloStudioAgentClient
 from yolostudio_agent.agent.tests._pending_confirmation_test_support import seed_pending_confirmation
+from yolostudio_agent.agent.tests._training_plan_test_support import current_training_plan_context_payload, set_training_plan_draft
 
 
 class _DummyGraph:
@@ -221,6 +222,46 @@ class _ResumableGraphWithoutVisiblePending:
             AIMessage(content='上传完成'),
         ]
         return {'messages': messages}
+
+
+class _PendingValueOnlyState:
+    def __init__(self, values: dict[str, Any] | None = None) -> None:
+        normalized_values = dict(values or {})
+        pending = normalized_values.get('pending_confirmation')
+        next_nodes: tuple[str, ...] = ()
+        if isinstance(pending, dict) and pending:
+            next_nodes = ('tools',)
+        self.next = next_nodes
+        self.values = {'messages': [], **normalized_values}
+        self.interrupts = ()
+        self.tasks = ()
+
+
+class _GraphWithPendingValueOnly:
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self._state = _PendingValueOnlyState({'pending_confirmation': dict(payload)})
+        self.resume_calls: list[Any] = []
+
+    def get_state(self, config):
+        del config
+        return self._state
+
+    def update_state(self, config, update):
+        del config
+        values = dict(getattr(self._state, 'values', {}) or {})
+        for key, value in dict(update or {}).items():
+            if isinstance(value, dict):
+                values[key] = dict(value)
+                continue
+            if value is None:
+                values.pop(key, None)
+                continue
+            values[key] = value
+        self._state = _PendingValueOnlyState(values)
+
+    async def ainvoke(self, *args, **kwargs):
+        self.resume_calls.append((args, kwargs))
+        raise AssertionError('graph pending value fallback should execute direct tool, not resume graph')
 
 
 class _InterruptEnvelope:
@@ -613,6 +654,139 @@ async def _scenario_synthetic_pending_ignores_graph_pending() -> None:
     assert graph.resume_calls == [], graph.resume_calls
 
 
+async def _scenario_confirm_executes_graph_pending_value_without_visible_interrupt() -> None:
+    scenario_root = WORK / 'graph_pending_value_confirm'
+    settings = AgentSettings(session_id='runtime-graph-pending-value-confirm', memory_root=str(scenario_root))
+    pending = {
+        'id': 'call-1',
+        'tool_call_id': 'call-1',
+        'name': 'start_training',
+        'tool_name': 'start_training',
+        'args': {'model': 'yolov8n.pt', 'data_yaml': '/data/demo/data.yaml', 'epochs': 10, 'device': 'auto'},
+        'tool_args': {'model': 'yolov8n.pt', 'data_yaml': '/data/demo/data.yaml', 'epochs': 10, 'device': 'auto'},
+        'summary': '启动训练：model=yolov8n.pt, data=/data/demo/data.yaml, epochs=10',
+        'objective': '启动训练（yolov8n.pt / /data/demo/data.yaml）',
+        'allowed_decisions': ['approve', 'reject', 'edit', 'clarify'],
+        'review_config': {'risk_level': 'high'},
+        'decision_context': {},
+        'thread_id': 'runtime-graph-pending-value-confirm-turn-1',
+        'source': 'graph',
+        'interrupt_kind': 'tool_approval',
+    }
+    graph = _GraphWithPendingValueOnly(pending)
+    client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((tool_name, dict(kwargs)))
+        result = {'ok': True, 'summary': '训练已启动', 'status': 'running'}
+        client._apply_to_state(tool_name, result, kwargs)
+        return result
+
+    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+
+    result = await client.confirm('runtime-graph-pending-value-confirm-turn-1', approved=True)
+    assert result['status'] == 'completed', result
+    assert calls == [('start_training', {'model': 'yolov8n.pt', 'data_yaml': '/data/demo/data.yaml', 'epochs': 10, 'device': 'auto'})], calls
+    assert graph.resume_calls == [], graph.resume_calls
+    assert client.get_pending_action() is None
+
+
+async def _scenario_chat_executes_graph_pending_value_without_visible_interrupt() -> None:
+    scenario_root = WORK / 'graph_pending_value_chat'
+    settings = AgentSettings(session_id='runtime-graph-pending-value-chat', memory_root=str(scenario_root))
+    pending = {
+        'id': 'call-1',
+        'tool_call_id': 'call-1',
+        'name': 'start_training_loop',
+        'tool_name': 'start_training_loop',
+        'args': {'model': 'yolov8n.pt', 'data_yaml': '/data/loop/data.yaml', 'max_rounds': 2, 'device': 'auto'},
+        'tool_args': {'model': 'yolov8n.pt', 'data_yaml': '/data/loop/data.yaml', 'max_rounds': 2, 'device': 'auto'},
+        'summary': '启动循环训练：model=yolov8n.pt, data=/data/loop/data.yaml, max_rounds=2',
+        'objective': '启动循环训练（yolov8n.pt / /data/loop/data.yaml）',
+        'allowed_decisions': ['approve', 'reject', 'edit', 'clarify'],
+        'review_config': {'risk_level': 'high'},
+        'decision_context': {},
+        'thread_id': 'runtime-graph-pending-value-chat-turn-1',
+        'source': 'graph',
+        'interrupt_kind': 'tool_approval',
+    }
+    graph = _GraphWithPendingValueOnly(pending)
+    client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((tool_name, dict(kwargs)))
+        result = {'ok': True, 'summary': '环训练已启动', 'loop_id': 'loop-123', 'status': 'queued'}
+        client._apply_to_state(tool_name, result, kwargs)
+        return result
+
+    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+
+    result = await client.chat('确认开始')
+    assert result['status'] == 'completed', result
+    assert calls == [('start_training_loop', {'model': 'yolov8n.pt', 'data_yaml': '/data/loop/data.yaml', 'max_rounds': 2, 'device': 'auto'})], calls
+    assert graph.resume_calls == [], graph.resume_calls
+    assert client.get_pending_action() is None
+
+
+async def _scenario_pending_passthrough_restores_graph_pending_and_context() -> None:
+    scenario_root = WORK / 'pending_passthrough_restore'
+    settings = AgentSettings(session_id='runtime-pending-passthrough-restore', memory_root=str(scenario_root))
+    pending_thread_id = 'runtime-pending-passthrough-restore-turn-1'
+    pending = {
+        'id': 'call-1',
+        'tool_call_id': 'call-1',
+        'name': 'start_training_loop',
+        'tool_name': 'start_training_loop',
+        'args': {'model': 'yolov8n.pt', 'data_yaml': '/data/loop/data.yaml', 'max_rounds': 2, 'device': 'auto'},
+        'tool_args': {'model': 'yolov8n.pt', 'data_yaml': '/data/loop/data.yaml', 'max_rounds': 2, 'device': 'auto'},
+        'summary': '启动循环训练：model=yolov8n.pt, data=/data/loop/data.yaml, max_rounds=2',
+        'objective': '启动循环训练（yolov8n.pt / /data/loop/data.yaml）',
+        'allowed_decisions': ['approve', 'reject', 'edit', 'clarify'],
+        'review_config': {'risk_level': 'high'},
+        'decision_context': {},
+        'thread_id': pending_thread_id,
+        'source': 'graph',
+        'interrupt_kind': 'tool_approval',
+    }
+    graph = _GraphWithPendingValueOnly(pending)
+    client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
+    set_training_plan_draft(
+        client,
+        {
+            'dataset_path': '/data/loop',
+            'model': 'yolov8n.pt',
+            'device': 'auto',
+            'next_step_tool': 'start_training_loop',
+            'next_step_args': {'model': 'yolov8n.pt', 'data_yaml': '/data/loop/data.yaml', 'max_rounds': 2, 'device': 'auto'},
+        },
+        thread_id=pending_thread_id,
+    )
+    client._resolve_pending_confirmation(thread_id=pending_thread_id, config=client._pending_config(pending_thread_id))
+
+    async def _fake_handoff_current_runtime_to_graph(**kwargs: Any) -> dict[str, Any]:
+        del kwargs
+        client._update_graph_pending_state(thread_id=pending_thread_id, pending=None)
+        client._clear_pending_confirmation(thread_id=pending_thread_id, persist_graph=False)
+        client._update_graph_training_plan_context(thread_id=pending_thread_id, context=None)
+        return {'status': 'completed', 'message': '最近有 2 条环训练记录。'}
+
+    client._handoff_current_runtime_to_graph = _fake_handoff_current_runtime_to_graph  # type: ignore[assignment]
+    result = await client._handoff_chat_turn(
+        thread_id=pending_thread_id,
+        user_text='最近有哪些环训练',
+        pending_passthrough_requested=True,
+    )
+    assert result['status'] == 'completed', result
+    restored_pending = client.get_pending_action()
+    assert (restored_pending or {}).get('tool_name') == 'start_training_loop', restored_pending
+    restored_context = current_training_plan_context_payload(client, thread_id=pending_thread_id)
+    assert restored_context is not None, restored_context
+    assert restored_context.get('next_step_tool') == 'start_training_loop', restored_context
+    assert dict(restored_context.get('next_step_args') or {}).get('model') == 'yolov8n.pt', restored_context
+
+
 async def _scenario_runtime_ignores_manual_pending_session_mutation() -> None:
     scenario_root = WORK / 'runtime-ignores-manual-session-pending'
     settings = AgentSettings(session_id='runtime-ignore-manual-session', memory_root=str(scenario_root))
@@ -637,6 +811,9 @@ async def _run() -> None:
         await _scenario_chat_approves_visible_graph_interrupt()
         await _scenario_chat_clarifies_visible_graph_interrupt()
         await _scenario_synthetic_pending_ignores_graph_pending()
+        await _scenario_confirm_executes_graph_pending_value_without_visible_interrupt()
+        await _scenario_chat_executes_graph_pending_value_without_visible_interrupt()
+        await _scenario_pending_passthrough_restores_graph_pending_and_context()
         await _scenario_runtime_ignores_manual_pending_session_mutation()
         print('agent runtime interrupts ok')
     finally:
