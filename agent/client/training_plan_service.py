@@ -37,6 +37,11 @@ ToolResultMessageRenderer = Callable[[str, dict[str, Any]], Awaitable[str]]
 TrainingArgsCollector = Callable[..., dict[str, Any]]
 TrainingDiscussionChecker = Callable[[str], bool]
 TrainingExecutionBackendExtractor = Callable[[str], str]
+
+
+def normalize_training_device(value: Any, *, default: str = 'auto') -> str:
+    device = str(value or '').strip()
+    return device or default
 TrainingAdvancedDetailsChecker = Callable[[str], bool]
 
 TRAINING_PREFLIGHT_STRING_FIELDS = (
@@ -84,7 +89,7 @@ def build_training_preflight_tool_args(
         'model': str(planned_args.get('model') or fallback_model or ''),
         'data_yaml': str(planned_args.get('data_yaml') or fallback_data_yaml or ''),
         'epochs': int(planned_args.get('epochs', 100)),
-        'device': str(planned_args.get('device', 'auto') or 'auto'),
+        'device': normalize_training_device(planned_args.get('device')),
     }
     for field in TRAINING_PREFLIGHT_STRING_FIELDS:
         payload[field] = str(planned_args.get(field) or '')
@@ -106,7 +111,7 @@ def resolve_training_start_args(
         'model': str(resolved_args.get('model') or planned_args.get('model') or fallback_model or ''),
         'data_yaml': str(resolved_args.get('data_yaml') or planned_args.get('data_yaml') or fallback_data_yaml or ''),
         'epochs': int(resolved_args.get('epochs') or planned_args.get('epochs', 100)),
-        'device': str(resolved_args.get('device') or planned_args.get('device') or 'auto'),
+        'device': normalize_training_device(resolved_args.get('device') or planned_args.get('device')),
     }
     for field in TRAINING_PREFLIGHT_STRING_FIELDS:
         payload[field] = str(resolved_args.get(field) or planned_args.get(field) or '')
@@ -135,6 +140,7 @@ def build_training_loop_start_draft(
         or ''
     ).strip()
     planned_args = dict(loop_args)
+    planned_args['device'] = normalize_training_device(planned_args.get('device'))
     data_yaml = known_training_loop_data_yaml(planned_args, observed_tools, dataset_path=dataset_path)
     if data_yaml:
         planned_args['data_yaml'] = data_yaml
@@ -142,6 +148,9 @@ def build_training_loop_start_draft(
     execution_mode = 'prepare_then_loop' if next_tool_name == 'prepare_dataset_for_training' else 'direct_loop'
     if next_tool_name == 'start_training_loop' and 'prepare_dataset_for_training' in observed_tools:
         execution_mode = 'prepare_then_loop'
+    next_step_args = dict(plan.get('next_args') or {})
+    if next_tool_name == 'start_training_loop':
+        next_step_args['device'] = normalize_training_device(next_step_args.get('device') or planned_args.get('device'))
     return {
         'source_intent': 'training_loop',
         'execution_mode': execution_mode,
@@ -152,7 +161,7 @@ def build_training_loop_start_draft(
         'planned_training_args': dict(planned_args),
         'planned_loop_args': dict(planned_args),
         'next_step_tool': next_tool_name,
-        'next_step_args': dict(plan.get('next_args') or {}),
+        'next_step_args': next_step_args,
         'planner_decision_source': str(plan.get('planner_source') or 'fallback'),
         'planner_decision': 'prepare' if next_tool_name == 'prepare_dataset_for_training' else 'start',
         'planner_output': dict(plan.get('planner_payload') or {}),
@@ -197,7 +206,7 @@ def training_plan_user_facts(draft: dict[str, Any], *, pending: bool) -> dict[st
         'project': str(args.get('project') or '').strip(),
         'name': str(args.get('name') or '').strip(),
         'epochs': args.get('epochs'),
-        'device': str(args.get('device') or '').strip(),
+        'device': normalize_training_device(args.get('device')),
         'loop_requested': loop_like,
         'managed_level': str(args.get('managed_level') or '').strip(),
         'max_rounds': args.get('max_rounds'),

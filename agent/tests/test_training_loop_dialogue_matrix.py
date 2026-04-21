@@ -721,6 +721,7 @@ async def _run() -> None:
         planner_prepare_followup = await planner_route_client.confirm(planner_prepare['thread_id'], True)
         assert planner_prepare_followup['status'] == 'needs_confirmation', planner_prepare_followup
         assert planner_prepare_followup['tool_call']['name'] == 'start_training_loop', planner_prepare_followup
+        assert planner_prepare_followup['tool_call']['args']['device'] == 'auto', planner_prepare_followup
         assert '训练计划草案：' in planner_prepare_followup['message'], planner_prepare_followup
         assert '执行方式: 先准备再进入循环训练' in planner_prepare_followup['message'], planner_prepare_followup
         assert current_training_plan_draft(planner_route_client).get('planner_decision_source') == 'fallback', planner_prepare_followup
@@ -732,6 +733,7 @@ async def _run() -> None:
         assert confirm_prepare_then_loop['tool_call']['args']['model'] == '/home/kly/yolov8n.pt', confirm_prepare_then_loop
         assert confirm_prepare_then_loop['tool_call']['args']['data_yaml'] == '/home/kly/ct_loop/data_ct/data.yaml', confirm_prepare_then_loop
         assert confirm_prepare_then_loop['tool_call']['args']['max_rounds'] == 2, confirm_prepare_then_loop
+        assert confirm_prepare_then_loop['tool_call']['args']['device'] == 'auto', confirm_prepare_then_loop
         assert 'epochs' not in confirm_prepare_then_loop['tool_call']['args'], confirm_prepare_then_loop
         assert current_training_plan_draft(client).get('next_step_tool') == 'start_training_loop'
         loop_facts = client._training_plan_user_facts(current_training_plan_draft(client), pending=True)

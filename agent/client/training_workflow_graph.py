@@ -81,6 +81,7 @@ from yolostudio_agent.agent.client.training_plan_context_service import (
 )
 from yolostudio_agent.agent.client.training_plan_service import (
     build_training_preflight_tool_args,
+    normalize_training_device,
     resolve_training_start_args,
     training_plan_render_error,
     training_plan_user_facts,
@@ -244,6 +245,7 @@ def _update_plan_from_preflight(
             updated_plan[key] = value
         elif key in {'fraction', 'classes', 'single_cls', 'freeze', 'resume', 'lr0', 'patience', 'workers', 'amp'}:
             updated_plan[key] = [] if key == 'classes' and value is None else value
+    updated_plan['device'] = normalize_training_device(updated_plan.get('device'))
     if str(updated_plan.get('mode') or '').strip().lower() == 'loop':
         for key in ('max_rounds', 'epochs_per_round', 'loop_name'):
             value = resolved_args.get(key)
@@ -770,7 +772,9 @@ def post_prepare_node(state: Mapping[str, Any]) -> Command:
         prepare_result=state.get('prepare_result', {}),
         readiness=state.get('training_preflight', {}) or state.get('training_readiness', {}),
     )
+    updated = updated.model_copy(update={'device': normalize_training_device(getattr(updated, 'device', ''))})
     resolved_args = dict(state.get('training_preflight', {}) or {}).get('resolved_args') or updated.model_dump()
+    resolved_args['device'] = normalize_training_device(resolved_args.get('device') or getattr(updated, 'device', ''))
     next_tool_name = 'start_training_loop' if getattr(updated, 'mode', 'train') == 'loop' else 'start_training'
     if next_tool_name == 'start_training_loop' and 'epochs_per_round' in resolved_args and 'epochs' not in resolved_args:
         resolved_args['epochs'] = resolved_args['epochs_per_round']

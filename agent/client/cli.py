@@ -118,6 +118,7 @@ async def main() -> None:
             break
 
         stream_state = {"token_started": False, "tool_calls": set(), "streamed_text_seen": False, "streamed_text": ""}
+        show_tool_calls = os.getenv("YOLOSTUDIO_CLI_SHOW_TOOL_CALLS") == "1"
 
         async def _handle_stream(event: dict) -> None:
             event_type = str(event.get("type") or "")
@@ -136,11 +137,13 @@ async def main() -> None:
                 tool_name = str(event.get("tool_name") or "").strip()
                 if not tool_name or tool_name in stream_state["tool_calls"]:
                     return
+                stream_state["tool_calls"].add(tool_name)
+                if not show_tool_calls:
+                    return
                 if stream_state["token_started"]:
                     print()
                     stream_state["token_started"] = False
                 print(f"[Agent] 调用工具: {tool_name}", flush=True)
-                stream_state["tool_calls"].add(tool_name)
 
         result = await agent.chat(user, stream_handler=_handle_stream)
         if stream_state["token_started"]:

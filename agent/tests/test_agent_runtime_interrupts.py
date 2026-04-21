@@ -306,6 +306,30 @@ class _ResumableGraphWithVisibleInterrupt:
         return {'messages': [AIMessage(content='上传完成')]}
 
 
+class _TrainingConfirmationGraphWithVisibleInterrupt:
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self.resume_calls: list[Any] = []
+        self._state = _VisibleInterruptState(payload)
+
+    def get_state(self, config):
+        del config
+        return self._state
+
+    async def ainvoke(self, payload, config=None):
+        del config
+        self.resume_calls.append(payload)
+        resume = getattr(payload, 'resume', payload)
+        decision = ''
+        if isinstance(resume, dict):
+            decision = str(resume.get('action') or resume.get('decision') or '').strip().lower()
+        else:
+            decision = str(resume or '').strip().lower()
+        self._state = _VisibleInterruptState(None)
+        if decision == 'reject':
+            return {'messages': [AIMessage(content='已取消循环训练')]}
+        return {'messages': [AIMessage(content='环训练已启动')]}
+
+
 WORK = Path(__file__).resolve().parent / '_tmp_runtime_interrupts'
 
 
@@ -616,6 +640,104 @@ async def _scenario_chat_clarifies_visible_graph_interrupt() -> None:
     assert pending['tool_name'] == 'upload_assets_to_remote', pending
 
 
+async def _scenario_training_confirmation_chat_override_status_to_approve() -> None:
+    scenario_root = WORK / 'training_confirmation_chat_override_status'
+    settings = AgentSettings(session_id='runtime-training-confirm-override', memory_root=str(scenario_root))
+    graph = _TrainingConfirmationGraphWithVisibleInterrupt(
+        {
+            'type': 'training_confirmation',
+            'phase': 'start',
+            'plan': {
+                'mode': 'loop',
+                'dataset_path': '/data/loop',
+                'model': 'yolov8n.pt',
+                'data_yaml': '/data/loop/data.yaml',
+                'device': 'auto',
+                'max_rounds': 2,
+                'epochs_per_round': 10,
+            },
+            'execution_mode': 'prepare_then_loop',
+            'next_step_tool': 'start_training_loop',
+            'next_step_args': {
+                'model': 'yolov8n.pt',
+                'data_yaml': '/data/loop/data.yaml',
+                'device': 'auto',
+                'max_rounds': 2,
+            },
+            'thread_id': 'runtime-training-confirm-override-turn-1',
+        }
+    )
+    client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
+
+    async def _fake_invoke_structured_payload(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        del args, kwargs
+        return {'action': 'status', 'reason': '请再次确认'}
+
+    client._invoke_structured_payload = _fake_invoke_structured_payload  # type: ignore[assignment]
+
+    result = await client.chat('确认开始')
+    assert result['status'] == 'completed', result
+    assert '环训练已启动' in result['message'], result
+    assert len(graph.resume_calls) == 1, graph.resume_calls
+    resume_payload = getattr(graph.resume_calls[0], 'resume', graph.resume_calls[0])
+    assert dict(resume_payload or {}).get('action') == 'approve', resume_payload
+    assert client.get_pending_action() is None
+
+
+async def _scenario_training_confirmation_shadow_fallback_approves_when_interrupt_not_visible() -> None:
+    scenario_root = WORK / 'training_confirmation_shadow_fallback'
+    settings = AgentSettings(session_id='runtime-training-confirm-shadow', memory_root=str(scenario_root))
+    client = YoloStudioAgentClient(graph=_DummyGraph(), settings=settings, tool_registry={})
+    payload = {
+        'type': 'training_confirmation',
+        'phase': 'start',
+        'plan': {
+            'mode': 'loop',
+            'dataset_path': '/data/loop',
+            'model': 'yolov8n.pt',
+            'data_yaml': '/data/loop/data.yaml',
+            'device': 'auto',
+            'max_rounds': 2,
+            'epochs_per_round': 10,
+        },
+        'execution_mode': 'prepare_then_loop',
+        'next_step_tool': 'start_training_loop',
+        'next_step_args': {
+            'model': 'yolov8n.pt',
+            'data_yaml': '/data/loop/data.yaml',
+            'device': 'auto',
+            'max_rounds': 2,
+            'project': None,
+            'name': None,
+            'optimizer': None,
+        },
+        'thread_id': 'runtime-training-confirm-shadow-turn-1',
+    }
+    initial = client._format_interrupt_or_result({}, thread_id='runtime-training-confirm-shadow-turn-1', interrupt_payload=payload)
+    assert initial['status'] == 'needs_confirmation', initial
+    assert client.get_pending_action() is not None
+    client.planner_llm = object()
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((tool_name, dict(kwargs)))
+        result = {'ok': True, 'summary': '环训练已启动', 'loop_id': 'loop-123', 'status': 'queued'}
+        client._apply_to_state(tool_name, result, kwargs)
+        return result
+
+    async def _fake_invoke_structured_payload(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        del args, kwargs
+        return {'action': 'status', 'reason': '请再次确认'}
+
+    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+    client._invoke_structured_payload = _fake_invoke_structured_payload  # type: ignore[assignment]
+
+    result = await client.chat('确认开始')
+    assert result['status'] == 'completed', result
+    assert calls == [('start_training_loop', {'model': 'yolov8n.pt', 'data_yaml': '/data/loop/data.yaml', 'device': 'auto', 'max_rounds': 2})], calls
+    assert client.get_pending_action() is None
+
+
 async def _scenario_synthetic_pending_ignores_graph_pending() -> None:
     scenario_root = WORK / 'synthetic_ignores_graph'
     settings = AgentSettings(session_id='runtime-interrupt-synthetic-graph', memory_root=str(scenario_root))
@@ -730,6 +852,50 @@ async def _scenario_chat_executes_graph_pending_value_without_visible_interrupt(
     assert client.get_pending_action() is None
 
 
+async def _scenario_chat_pending_value_override_status_to_approve() -> None:
+    scenario_root = WORK / 'graph_pending_value_chat_override_status'
+    settings = AgentSettings(session_id='runtime-graph-pending-value-chat-override', memory_root=str(scenario_root))
+    pending = {
+        'id': 'call-1',
+        'tool_call_id': 'call-1',
+        'name': 'start_training_loop',
+        'tool_name': 'start_training_loop',
+        'args': {'model': 'yolov8n.pt', 'data_yaml': '/data/loop/data.yaml', 'max_rounds': 2, 'device': 'auto'},
+        'tool_args': {'model': 'yolov8n.pt', 'data_yaml': '/data/loop/data.yaml', 'max_rounds': 2, 'device': 'auto'},
+        'summary': '启动循环训练：model=yolov8n.pt, data=/data/loop/data.yaml, max_rounds=2',
+        'objective': '启动循环训练（yolov8n.pt / /data/loop/data.yaml）',
+        'allowed_decisions': ['approve', 'reject', 'edit', 'clarify'],
+        'review_config': {'risk_level': 'high'},
+        'decision_context': {},
+        'thread_id': 'runtime-graph-pending-value-chat-override-turn-1',
+        'source': 'graph',
+        'interrupt_kind': 'tool_approval',
+    }
+    graph = _GraphWithPendingValueOnly(pending)
+    client = YoloStudioAgentClient(graph=graph, settings=settings, tool_registry={})
+    client.planner_llm = object()
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _fake_direct_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((tool_name, dict(kwargs)))
+        result = {'ok': True, 'summary': '环训练已启动', 'loop_id': 'loop-123', 'status': 'queued'}
+        client._apply_to_state(tool_name, result, kwargs)
+        return result
+
+    async def _fake_invoke_structured_payload(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        del args, kwargs
+        return {'action': 'status', 'reason': '请再次确认'}
+
+    client.direct_tool = _fake_direct_tool  # type: ignore[assignment]
+    client._invoke_structured_payload = _fake_invoke_structured_payload  # type: ignore[assignment]
+
+    result = await client.chat('确认开始')
+    assert result['status'] == 'completed', result
+    assert calls == [('start_training_loop', {'model': 'yolov8n.pt', 'data_yaml': '/data/loop/data.yaml', 'max_rounds': 2, 'device': 'auto'})], calls
+    assert graph.resume_calls == [], graph.resume_calls
+    assert client.get_pending_action() is None
+
+
 async def _scenario_pending_passthrough_restores_graph_pending_and_context() -> None:
     scenario_root = WORK / 'pending_passthrough_restore'
     settings = AgentSettings(session_id='runtime-pending-passthrough-restore', memory_root=str(scenario_root))
@@ -810,9 +976,12 @@ async def _run() -> None:
         await _scenario_confirm_rejects_visible_graph_interrupt()
         await _scenario_chat_approves_visible_graph_interrupt()
         await _scenario_chat_clarifies_visible_graph_interrupt()
+        await _scenario_training_confirmation_chat_override_status_to_approve()
+        await _scenario_training_confirmation_shadow_fallback_approves_when_interrupt_not_visible()
         await _scenario_synthetic_pending_ignores_graph_pending()
         await _scenario_confirm_executes_graph_pending_value_without_visible_interrupt()
         await _scenario_chat_executes_graph_pending_value_without_visible_interrupt()
+        await _scenario_chat_pending_value_override_status_to_approve()
         await _scenario_pending_passthrough_restores_graph_pending_and_context()
         await _scenario_runtime_ignores_manual_pending_session_mutation()
         print('agent runtime interrupts ok')

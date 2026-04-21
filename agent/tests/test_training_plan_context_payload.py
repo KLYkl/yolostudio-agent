@@ -462,12 +462,15 @@ async def _scenario_interrupt_sync_replaces_stale_mirror_but_keeps_local_metadat
         thread_id='graph-turn-2',
     )
     assert interrupt_payload is not None
+    assert interrupt_payload['plan']['device'] == 'auto', interrupt_payload
+    assert interrupt_payload['next_step_args']['device'] == 'auto', interrupt_payload
 
     client._sync_training_draft_from_interrupt_payload(interrupt_payload)
     mirrored = dict(client._current_training_plan_draft_view(preferred_thread_id='graph-turn-2') or {})
     assert mirrored.get('dataset_path') == '/data/fresh', mirrored
     assert mirrored.get('next_step_tool') == 'start_training_loop', mirrored
     assert (mirrored.get('planned_training_args') or {}).get('model') == 'graph.pt', mirrored
+    assert (mirrored.get('planned_training_args') or {}).get('device') == 'auto', mirrored
     assert (mirrored.get('planned_training_args') or {}).get('data_yaml') == '/data/fresh/data.yaml', mirrored
     assert (mirrored.get('planned_training_args') or {}).get('epochs_per_round') == 10, mirrored
     assert mirrored.get('source_intent') == 'training_loop', mirrored

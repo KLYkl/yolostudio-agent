@@ -122,6 +122,7 @@ from yolostudio_agent.agent.client.training_dialogue_service import (
 from yolostudio_agent.agent.client.training_contracts import TrainingPlanFollowupAction
 from yolostudio_agent.agent.client.training_plan_service import (
     build_training_loop_start_draft as build_training_loop_start_draft_service,
+    normalize_training_device,
     training_plan_render_error,
     training_plan_user_facts,
 )
@@ -564,7 +565,12 @@ class YoloStudioAgentClient:
         auto_progress_followups: bool = False,
         stream_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
     ) -> dict[str, Any]:
-        parsed = await self.direct_tool(pending["name"], **pending.get("args", {}))
+        tool_args = {
+            key: value
+            for key, value in dict(pending.get("args", {}) or {}).items()
+            if value is not None
+        }
+        parsed = await self.direct_tool(pending["name"], **tool_args)
         final_text = await self._render_tool_result_message(pending['name'], parsed)
         self._messages.append(AIMessage(content=final_text))
         self._trim_history()
@@ -1385,6 +1391,12 @@ class YoloStudioAgentClient:
                 normalized['edits'] = dict(fallback.get('edits') or {})
             if fallback.get('approve_after_edit'):
                 normalized['approve_after_edit'] = True
+        if action == 'status':
+            fallback_action = str(fallback.get('action') or '').strip().lower()
+            if fallback_action in {'approve', 'reject'} or (
+                fallback_action == 'edit' and bool(fallback.get('approve_after_edit'))
+            ):
+                return fallback
         if action == 'unclear':
             return fallback
         if not normalized.get('reason'):
@@ -2000,21 +2012,25 @@ class YoloStudioAgentClient:
             schema=self._pending_turn_intent_schema(),
         )
         normalized = self._normalize_pending_turn_intent_payload(parsed)
-        if normalized.get('action') == 'edit':
+        fallback = None
+        if normalized.get('action') in {'edit', 'status', 'unclear'}:
             fallback = self._fallback_pending_turn_intent(
                 user_text=user_text,
                 interrupt_payload=interrupt_payload,
             )
+        if normalized.get('action') == 'edit':
             if fallback:
                 if fallback.get('edits') and not normalized.get('edits'):
                     normalized['edits'] = dict(fallback.get('edits') or {})
                 if fallback.get('approve_after_edit'):
                     normalized['approve_after_edit'] = True
+        if normalized.get('action') == 'status' and fallback:
+            fallback_action = str(fallback.get('action') or '').strip().lower()
+            if fallback_action in {'approve', 'reject'} or (
+                fallback_action == 'edit' and bool(fallback.get('approve_after_edit'))
+            ):
+                normalized = fallback
         if normalized.get('action') == 'unclear':
-            fallback = self._fallback_pending_turn_intent(
-                user_text=user_text,
-                interrupt_payload=interrupt_payload,
-            )
             if fallback:
                 normalized = fallback
         if normalized.get('action') == 'unclear' and not normalized.get('reason'):
@@ -3750,7 +3766,7 @@ class YoloStudioAgentClient:
             'data_yaml': str(getattr(plan, 'data_yaml', '') or '').strip(),
             'batch': getattr(plan, 'batch', None),
             'imgsz': getattr(plan, 'imgsz', None),
-            'device': str(getattr(plan, 'device', '') or '').strip(),
+            'device': normalize_training_device(getattr(plan, 'device', '')),
             'training_environment': str(getattr(plan, 'training_environment', '') or '').strip(),
             'project': str(getattr(plan, 'project', '') or '').strip(),
             'name': str(getattr(plan, 'name', '') or '').strip(),
@@ -3836,6 +3852,13 @@ class YoloStudioAgentClient:
                 str((payload or {}).get('execution_mode') or ''),
                 status_reply=str((payload or {}).get('status_reply') or '').strip(),
             )
+            pending = self._pending_from_interrupt_payload(payload or {}, thread_id=thread_id)
+            if pending is not None:
+                self._remember_pending_confirmation(
+                    pending,
+                    emit_event=False,
+                    persist_graph=False,
+                )
             pending_action = self._pending_action_from_interrupt_payload(payload or {}, thread_id=thread_id)
             if message:
                 self._messages.append(AIMessage(content=message))
@@ -3869,6 +3892,8 @@ class YoloStudioAgentClient:
             return None
         planned_training_args = dict(draft.get('planned_training_args') or {})
         planned_loop_args = dict(draft.get('planned_loop_args') or planned_training_args)
+        planned_training_args['device'] = normalize_training_device(planned_training_args.get('device'))
+        planned_loop_args['device'] = normalize_training_device(planned_loop_args.get('device'))
         dataset_path = str(draft.get('dataset_path') or self.session_state.active_dataset.dataset_root or self.session_state.active_dataset.img_dir or '').strip()
         model = str(planned_training_args.get('model') or planned_loop_args.get('model') or self.session_state.active_training.model or '').strip()
         if not dataset_path or not model:
@@ -3891,7 +3916,9 @@ class YoloStudioAgentClient:
             'model': model,
             'batch': batch_value,
             'imgsz': imgsz_value,
-            'device': str(planned_training_args.get('device') or planned_loop_args.get('device') or draft.get('device') or '').strip(),
+            'device': normalize_training_device(
+                planned_training_args.get('device') or planned_loop_args.get('device') or draft.get('device')
+            ),
             'training_environment': str(draft.get('training_environment') or '').strip(),
             'data_yaml': str(planned_training_args.get('data_yaml') or planned_loop_args.get('data_yaml') or self.session_state.active_training.data_yaml or '').strip(),
             'project': str(planned_training_args.get('project') or planned_loop_args.get('project') or '').strip(),
@@ -3932,6 +3959,7 @@ class YoloStudioAgentClient:
                 if value in ('', [], {}):
                     continue
                 merged_args[key] = value
+            merged_args['device'] = normalize_training_device(merged_args.get('device'))
             next_step_args = merged_args
         return {
             'type': 'training_confirmation',
@@ -4569,6 +4597,7 @@ class YoloStudioAgentClient:
         if str(draft.get('execution_mode') or '').strip().lower() == 'prepare_only':
             return None
         planned_args = dict(draft.get('planned_training_args') or {})
+        planned_args['device'] = normalize_training_device(planned_args.get('device'))
         latest_readiness = self.session_state.active_dataset.last_readiness or {}
         if draft and planned_args.get('model'):
             prepared_yaml = str(planned_args.get('data_yaml') or self.session_state.active_dataset.data_yaml or '').strip()
@@ -4617,6 +4646,7 @@ class YoloStudioAgentClient:
         if str(draft.get('execution_mode') or '').strip().lower() != 'prepare_then_loop':
             return None
         planned_args = dict(draft.get('planned_loop_args') or draft.get('planned_training_args') or {})
+        planned_args['device'] = normalize_training_device(planned_args.get('device'))
         latest_readiness = self.session_state.active_dataset.last_readiness or {}
         prepared_yaml = str(
             planned_args.get('data_yaml')
@@ -5355,6 +5385,7 @@ class YoloStudioAgentClient:
             planned_training_args['data_yaml'] = data_yaml
         if env_name:
             planned_training_args['training_environment'] = env_name
+        planned_training_args['device'] = normalize_training_device(planned_training_args.get('device'))
 
         default_environment = self.session_state.active_training.last_environment_probe.get('default_environment') or {}
         default_env_name = str(default_environment.get('display_name') or default_environment.get('name') or '').strip()
