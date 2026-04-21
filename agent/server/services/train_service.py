@@ -15,7 +15,7 @@ import yaml
 from yolostudio_agent.agent.server.services.gpu_utils import (
     GpuAllocationPolicy,
     get_effective_gpu_policy,
-    query_gpu_status,
+    query_gpu_status_with_error,
     resolve_auto_device,
 )
 from yolostudio_agent.agent.server.services.train_log_parser import parse_latest_metrics, parse_training_log
@@ -1371,14 +1371,22 @@ class TrainService:
         if device == 'auto':
             return resolve_auto_device(policy=policy)
 
-        gpus = query_gpu_status()
-        gpu_map = {gpu.index: gpu for gpu in gpus}
         requested_ids = [part.strip() for part in device.split(',') if part.strip()]
         if not requested_ids:
             return '', 'device 不能为空'
+        if any(not gpu_id.isdigit() for gpu_id in requested_ids):
+            return '', 'device 必须是 GPU 编号（如 0 / 1 / 0,1），或使用 auto'
 
         if len(requested_ids) > 1 and policy == GpuAllocationPolicy.SINGLE_IDLE_GPU:
             return '', f'当前策略 {policy} 仅允许单卡；收到 device={device}'
+
+        gpus, query_error = query_gpu_status_with_error()
+        if query_error and not gpus:
+            return ','.join(requested_ids), None
+
+        gpu_map = {gpu.index: gpu for gpu in gpus}
+        if not gpu_map:
+            return '', '当前未检测到可用 GPU；请检查训练环境，或稍后重试'
 
         missing = [gpu_id for gpu_id in requested_ids if gpu_id not in gpu_map]
         if missing:

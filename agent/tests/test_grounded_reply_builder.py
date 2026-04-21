@@ -57,6 +57,7 @@ def main() -> None:
         'analysis_ready': False,
         'minimum_facts_ready': True,
         'progress': {'epoch': 1, 'total_epochs': 10, 'progress_ratio': 0.1},
+        'latest_train_metrics': {'gpu_mem': '2.17G', 'box_loss': 1.2, 'cls_loss': 0.7, 'dfl_loss': 0.4},
         'metrics': {'box_loss': 1.2, 'cls_loss': 0.7, 'dfl_loss': 0.4},
         'signals': ['loss_only_metrics', 'insufficient_eval_metrics'],
         'facts': ['仅有训练损失: box_loss=1.2, cls_loss=0.7, dfl_loss=0.4'],
@@ -64,6 +65,8 @@ def main() -> None:
     })])
     assert '观察阶段: 最终状态' in training
     assert '训练进度: 1/10 (10%)' in training
+    assert 'GPU 显存: 2.17G' in training
+    assert '最近评估指标: 暂无（等待验证阶段产出）' in training
     assert '当前不足: 缺少稳定评估指标' in training
     assert '当前仅有训练损失' in training
 
@@ -78,9 +81,9 @@ def main() -> None:
             {'description': '当前不能直接训练，但可以先调用 prepare_dataset_for_training 自动补齐 YAML 和划分产物', 'tool': 'prepare_dataset_for_training'},
         ],
     })])
-    assert '当前可继续自动准备: prepare_dataset_for_training' in readiness
-    assert '主要阻塞类型: missing_yaml' in readiness
-    assert 'prepare_dataset_for_training' in readiness
+    assert '阻塞项:' in readiness
+    assert '下一步: 可以先准备数据，补齐 data.yaml 和划分产物' in readiness
+    assert 'prepare_dataset_for_training' not in readiness
 
     envs = build_grounded_tool_reply([('list_training_environments', {
         'ok': True,

@@ -142,6 +142,45 @@ def main() -> None:
     assert '下一步: 可继续调用 summarize_training_run 汇总训练结果' in status_text
     assert '事实:' not in status_text
 
+    running_loss_only_status = build_grounded_tool_reply(
+        [(
+            'check_training_status',
+            {
+                'ok': True,
+                'summary': '训练进行中 (device=1, pid=1001，epoch 1/100，当前仍属早期观察)',
+                'run_state': 'running',
+                'observation_stage': 'early',
+                'progress': {'epoch': 1, 'total_epochs': 100, 'progress_ratio': 0.01},
+                'latest_train_metrics': {
+                    'gpu_mem': '2.17G',
+                    'box_loss': 2.62,
+                    'cls_loss': 4.852,
+                    'dfl_loss': 2.334,
+                },
+                'latest_metrics': {
+                    'metrics': {
+                        'epoch': 1,
+                        'total_epochs': 100,
+                        'gpu_mem': '2.17G',
+                        'box_loss': 2.62,
+                        'cls_loss': 4.852,
+                        'dfl_loss': 2.334,
+                    },
+                },
+                'analysis_ready': False,
+                'minimum_facts_ready': True,
+                'signals': ['loss_only_metrics', 'missing_eval_metrics'],
+                'action_candidates': [
+                    {'description': '可继续调用 check_training_status 观察训练进度', 'tool': 'check_training_status'},
+                ],
+            },
+        )],
+    )
+    assert 'GPU 显存: 2.17G' in running_loss_only_status
+    assert '最近评估指标: 暂无（等待验证阶段产出）' in running_loss_only_status
+    assert '当前仅有训练损失: box=2.62, cls=4.852, dfl=2.334' in running_loss_only_status
+    assert '当前不足: 缺少稳定评估指标' in running_loss_only_status
+
     prepare_text = build_grounded_tool_reply(
         [(
             'prepare_dataset_for_training',

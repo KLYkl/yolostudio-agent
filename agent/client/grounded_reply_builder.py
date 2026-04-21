@@ -53,6 +53,56 @@ def _observation_stage_label(stage: Any) -> str:
     return mapping.get(key, key or '未知')
 
 
+def _format_metric_value(value: Any, *, precision: int = 3) -> str:
+    if isinstance(value, (int, float)):
+        return f'{float(value):.{precision}f}'
+    return str(value)
+
+
+def _append_training_metric_snapshot(lines: list[str], result: dict[str, Any], *, eval_label: str) -> None:
+    latest_metrics = ((result.get('latest_metrics') or {}).get('metrics') or {})
+    latest_train_metrics = result.get('latest_train_metrics') or {}
+    latest_eval_metrics = result.get('latest_eval_metrics') or {}
+
+    train_metrics = latest_train_metrics or {
+        key: latest_metrics.get(key)
+        for key in ('gpu_mem', 'box_loss', 'cls_loss', 'dfl_loss')
+        if latest_metrics.get(key) is not None
+    }
+    eval_metrics = latest_eval_metrics or {
+        key: latest_metrics.get(key)
+        for key in ('precision', 'recall', 'map50', 'map', 'mAP50', 'mAP50-95')
+        if latest_metrics.get(key) is not None
+    }
+
+    gpu_mem = train_metrics.get('gpu_mem')
+    if gpu_mem:
+        lines.append(f'GPU 显存: {gpu_mem}')
+
+    if eval_metrics and any(eval_metrics.get(key) is not None for key in ('precision', 'recall', 'map50', 'map', 'mAP50', 'mAP50-95')):
+        map50 = eval_metrics.get('map50')
+        if map50 is None:
+            map50 = eval_metrics.get('mAP50')
+        map5095 = eval_metrics.get('map')
+        if map5095 is None:
+            map5095 = eval_metrics.get('mAP50-95')
+        lines.append(
+            f'{eval_label}: '
+            f"precision={_format_metric_value(eval_metrics.get('precision'))}, "
+            f"recall={_format_metric_value(eval_metrics.get('recall'))}, "
+            f"mAP50={_format_metric_value(map50)}, "
+            f"mAP50-95={_format_metric_value(map5095)}"
+        )
+    elif train_metrics:
+        lines.append('最近评估指标: 暂无（等待验证阶段产出）')
+
+    if train_metrics and any(train_metrics.get(key) is not None for key in ('box_loss', 'cls_loss', 'dfl_loss')):
+        lines.append(
+            '当前仅有训练损失: '
+            f"box={train_metrics.get('box_loss')}, cls={train_metrics.get('cls_loss')}, dfl={train_metrics.get('dfl_loss')}"
+        )
+
+
 def _knowledge_gate_category_label(category: Any) -> str:
     mapping = {
         'hard_stop': '硬停止建议',
@@ -684,20 +734,7 @@ def build_grounded_tool_reply(applied_results: list[tuple[str, dict[str, Any]]])
             lines.append(f"训练进度: {progress.get('epoch')}/{progress.get('total_epochs')}{ratio_text}")
         elif overview.get('epoch') is not None and overview.get('total_epochs') is not None:
             lines.append(f"训练进度: {overview.get('epoch')}/{overview.get('total_epochs')}")
-        metrics = result.get('metrics') or {}
-        if metrics and any(metrics.get(key) is not None for key in ('precision', 'recall', 'map50', 'map')):
-            lines.append(
-                '关键指标: '
-                f"precision={metrics.get('precision', 0):.3f}, "
-                f"recall={metrics.get('recall', 0):.3f}, "
-                f"mAP50={metrics.get('map50', 0):.3f}, "
-                f"mAP50-95={metrics.get('map', 0):.3f}"
-            )
-        elif metrics and any(metrics.get(key) is not None for key in ('box_loss', 'cls_loss', 'dfl_loss')):
-            lines.append(
-                '当前仅有训练损失: '
-                f"box={metrics.get('box_loss')}, cls={metrics.get('cls_loss')}, dfl={metrics.get('dfl_loss')}"
-            )
+        _append_training_metric_snapshot(lines, result, eval_label='关键指标')
         if not result.get('analysis_ready'):
             shortages: list[str] = []
             signals = [str(item) for item in (result.get('signals') or [])]
@@ -750,20 +787,7 @@ def build_grounded_tool_reply(applied_results: list[tuple[str, dict[str, Any]]])
             lines.append(f"最近进度: {progress.get('epoch')}/{progress.get('total_epochs')}{ratio_text}")
         elif overview.get('epoch') is not None and overview.get('total_epochs') is not None:
             lines.append(f"最近进度: {overview.get('epoch')}/{overview.get('total_epochs')}")
-        metrics = ((result.get('latest_metrics') or {}).get('metrics') or {})
-        if metrics and any(metrics.get(key) is not None for key in ('precision', 'recall', 'map50', 'map')):
-            lines.append(
-                '最近指标: '
-                f"precision={metrics.get('precision', 0):.3f}, "
-                f"recall={metrics.get('recall', 0):.3f}, "
-                f"mAP50={metrics.get('map50', 0):.3f}, "
-                f"mAP50-95={metrics.get('map', 0):.3f}"
-            )
-        elif metrics and any(metrics.get(key) is not None for key in ('box_loss', 'cls_loss', 'dfl_loss')):
-            lines.append(
-                '当前仅有训练损失: '
-                f"box={metrics.get('box_loss')}, cls={metrics.get('cls_loss')}, dfl={metrics.get('dfl_loss')}"
-            )
+        _append_training_metric_snapshot(lines, result, eval_label='最近指标')
         if not result.get('analysis_ready'):
             shortages: list[str] = []
             signals = [str(item) for item in (result.get('signals') or [])]

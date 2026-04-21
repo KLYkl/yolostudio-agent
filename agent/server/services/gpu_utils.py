@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass
@@ -73,16 +74,32 @@ def _classify_gpu_busy(gpu: GpuInfo) -> tuple[bool, str]:
     )
 
 
-def query_gpu_status() -> list[GpuInfo]:
-    gpu_result = subprocess.run(
-        ['nvidia-smi', '--query-gpu=index,gpu_uuid,memory.free,memory.total,utilization.gpu', '--format=csv,noheader,nounits'],
-        capture_output=True, text=True, timeout=10,
+def _run_nvidia_smi(command: list[str]) -> tuple[Any | None, str | None]:
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=10)
+    except subprocess.TimeoutExpired:
+        return None, f"nvidia-smi 调用超时（10s）: {' '.join(command)}"
+    except FileNotFoundError:
+        return None, 'nvidia-smi 不可用'
+    except OSError as exc:
+        return None, f'nvidia-smi 调用失败: {exc}'
+
+    if getattr(result, 'returncode', 1) != 0:
+        stderr = str(getattr(result, 'stderr', '') or '').strip()
+        detail = f'：{stderr}' if stderr else ''
+        return None, f"nvidia-smi 返回非零状态 {getattr(result, 'returncode', 1)}{detail}"
+    return result, None
+
+
+def query_gpu_status_with_error() -> tuple[list[GpuInfo], str | None]:
+    gpu_result, gpu_error = _run_nvidia_smi(
+        ['nvidia-smi', '--query-gpu=index,gpu_uuid,memory.free,memory.total,utilization.gpu', '--format=csv,noheader,nounits']
     )
-    if gpu_result.returncode != 0:
-        return []
+    if gpu_error:
+        return [], gpu_error
 
     gpus: list[GpuInfo] = []
-    for line in gpu_result.stdout.strip().splitlines():
+    for line in str(getattr(gpu_result, 'stdout', '') or '').strip().splitlines():
         parts = [p.strip() for p in line.split(',')]
         if len(parts) < 5:
             continue
@@ -97,13 +114,18 @@ def query_gpu_status() -> list[GpuInfo]:
             )
         )
 
-    app_result = subprocess.run(
-        ['nvidia-smi', '--query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory', '--format=csv,noheader'],
-        capture_output=True, text=True, timeout=10,
+    if not gpus:
+        return [], 'nvidia-smi 未返回可见 GPU'
+
+    app_result, app_error = _run_nvidia_smi(
+        ['nvidia-smi', '--query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory', '--format=csv,noheader']
     )
-    if app_result.returncode == 0 and app_result.stdout.strip():
+    if app_error:
+        return gpus, f'GPU 占用明细暂不可用: {app_error}'
+
+    if str(getattr(app_result, 'stdout', '') or '').strip():
         app_stats: dict[str, dict[str, int]] = {}
-        for line in app_result.stdout.strip().splitlines():
+        for line in str(getattr(app_result, 'stdout', '') or '').strip().splitlines():
             parts = [p.strip() for p in line.split(',')]
             if len(parts) < 1:
                 continue
@@ -119,6 +141,11 @@ def query_gpu_status() -> list[GpuInfo]:
             gpu.compute_used_mb = int(stats.get('used_mb') or 0)
             gpu.busy, gpu.busy_reason = _classify_gpu_busy(gpu)
 
+    return gpus, None
+
+
+def query_gpu_status() -> list[GpuInfo]:
+    gpus, _ = query_gpu_status_with_error()
     return gpus
 
 
@@ -149,10 +176,17 @@ def describe_gpu_policy(policy: str | None = None) -> str:
 
 def resolve_auto_device(policy: str | None = None, gpus: list[GpuInfo] | None = None) -> tuple[str, str | None]:
     selected_policy = (policy or get_effective_gpu_policy()).strip().lower()
-    idle_gpus = get_idle_gpus(gpus)
+    query_error: str | None = None
+    observed_gpus = gpus
+    if observed_gpus is None:
+        observed_gpus, query_error = query_gpu_status_with_error()
 
     if selected_policy == GpuAllocationPolicy.MANUAL_ONLY:
         return '', '当前策略为 manual_only，必须显式指定 device'
+    if query_error:
+        return '', f'当前无法自动选择 GPU：{query_error}；请显式指定 device'
+
+    idle_gpus = get_idle_gpus(observed_gpus)
     if not idle_gpus:
         return '', '没有空闲 GPU（所有可见 GPU 都有进程占用，或当前不可见）'
 
@@ -170,10 +204,12 @@ def find_available_gpu() -> str | None:
 
 
 def get_gpu_status_summary() -> str:
-    gpus = query_gpu_status()
+    gpus, query_error = query_gpu_status_with_error()
     if not gpus:
-        return '无法获取 GPU 信息（nvidia-smi 不可用）'
+        return f'无法获取 GPU 信息（{query_error or "nvidia-smi 不可用"}）'
     lines = [f'GPU 策略: {describe_gpu_policy()}']
+    if query_error:
+        lines.append(f'注意: {query_error}')
     for gpu in gpus:
         if gpu.busy:
             status = f'忙碌（{gpu.busy_reason or "资源占用较高"}）'
