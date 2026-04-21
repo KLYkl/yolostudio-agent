@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import sys
 from pathlib import Path
 
@@ -48,10 +49,10 @@ def _scenario_training_confirmation_approve_prepare() -> None:
     original_interrupt = confirmation_mod.interrupt
     try:
         confirmation_mod.interrupt = lambda payload: PendingTurnIntent(action='approve', reason='go').model_dump()
-        command = training_confirmation_node({
+        command = asyncio.run(training_confirmation_node({
             'training_plan': TrainPlan(dataset_path='/data/demo', model='yolov8n.pt').model_dump(),
             'training_phase': 'prepare',
-        })
+        }))
         _assert_equal(getattr(command, 'goto', None), 'execute_prepare', 'approve prepare goto')
     finally:
         confirmation_mod.interrupt = original_interrupt
@@ -61,10 +62,10 @@ def _scenario_training_confirmation_status_routes_to_answer_node() -> None:
     original_interrupt = confirmation_mod.interrupt
     try:
         confirmation_mod.interrupt = lambda payload: {'action': 'status', 'reason': 'data.yaml 会生成到 split 目录'}
-        command = training_confirmation_node({
+        command = asyncio.run(training_confirmation_node({
             'training_plan': TrainPlan(dataset_path='/data/demo', model='yolov8n.pt').model_dump(),
             'training_phase': 'start',
-        })
+        }))
         _assert_equal(getattr(command, 'goto', None), 'answer_training_status', 'status goto')
         update = dict(getattr(command, 'update', {}) or {})
         _assert_equal(update.get('training_status_reply'), 'data.yaml 会生成到 split 目录', 'status reply payload')
@@ -77,10 +78,10 @@ def _scenario_training_confirmation_new_task_suspends_plan() -> None:
     try:
         confirmation_mod.interrupt = lambda payload: {'action': 'new_task', 'reason': '最近有哪些环训练'}
         plan = LoopTrainPlan(dataset_path='/data/demo', model='yolov8n.pt', max_rounds=5, epochs_per_round=10, loop_name='ctxloop5')
-        command = training_confirmation_node({
+        command = asyncio.run(training_confirmation_node({
             'training_plan': plan.model_dump(),
             'training_phase': 'start',
-        })
+        }))
         _assert_equal(getattr(command, 'goto', None), 'route_new_task', 'new_task goto')
         update = dict(getattr(command, 'update', {}) or {})
         suspended = dict(update.get('suspended_training_plan') or {})

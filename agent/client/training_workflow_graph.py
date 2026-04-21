@@ -5,6 +5,7 @@ from typing import Any, Awaitable, Callable, Mapping
 
 try:
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+    from langchain_core.runnables import RunnableConfig
 except Exception:
     class _BaseMessage:
         def __init__(self, content: Any = '', **kwargs: Any):
@@ -23,6 +24,8 @@ except Exception:
 
     class ToolMessage(_BaseMessage):
         pass
+
+    RunnableConfig = Any  # type: ignore[assignment]
 
 try:
     from langgraph.graph import END
@@ -562,7 +565,10 @@ async def plan_training_loop_start_request(
     return {'reply': '', 'draft': draft, 'defer_to_graph': True}
 
 
-def training_confirmation_node(state: Mapping[str, Any], config: Any = None) -> Any:
+async def training_confirmation_node(
+    state: Mapping[str, Any],
+    config: RunnableConfig | None = None,
+) -> Any:
     del config
     plan = coerce_training_plan(state.get('training_plan', {}))
     phase = str(state.get('training_phase', 'prepare') or 'prepare').strip().lower() or 'prepare'
@@ -757,7 +763,11 @@ def build_training_workflow_nodes(*, client_getter: ClientGetter) -> dict[str, A
                 direct_tool=client.direct_tool,
                 build_training_loop_start_fallback_plan_fn=client._build_training_loop_start_fallback_plan,
                 known_training_loop_data_yaml=client._known_training_loop_data_yaml,
-                append_event=client._append_event,
+                append_event=lambda event_type, payload: client.memory.append_event(
+                    client.session_state.session_id,
+                    event_type,
+                    payload,
+                ),
                 compact_training_loop_start_fact=client._compact_training_loop_start_fact,
                 build_training_loop_start_draft_fn=client._build_training_loop_start_draft,
             )
