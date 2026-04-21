@@ -800,7 +800,10 @@ def answer_training_status_node(state: Mapping[str, Any]) -> Command:
 
 
 def build_training_workflow_nodes(*, client_getter: ClientGetter) -> dict[str, Any]:
-    async def plan_training_node(state: Mapping[str, Any], config: Any = None) -> Command:
+    async def plan_training_node(
+        state: Mapping[str, Any],
+        config: RunnableConfig | None = None,
+    ) -> Command:
         client = client_getter()
         if client is None:
             return Command(goto='agent_runtime')
@@ -954,7 +957,10 @@ def build_training_workflow_nodes(*, client_getter: ClientGetter) -> dict[str, A
             )
         return Command(update={'training_entry_request': None}, goto='agent_runtime')
 
-    async def refresh_training_start_after_edit(state: Mapping[str, Any], config: Any = None) -> Command:
+    async def refresh_training_start_after_edit(
+        state: Mapping[str, Any],
+        config: RunnableConfig | None = None,
+    ) -> Command:
         del config
         client = client_getter()
         if client is None:
@@ -984,7 +990,10 @@ def build_training_workflow_nodes(*, client_getter: ClientGetter) -> dict[str, A
             goto='training_confirmation',
         )
 
-    async def execute_prepare(state: Mapping[str, Any], config: Any = None) -> Command:
+    async def execute_prepare(
+        state: Mapping[str, Any],
+        config: RunnableConfig | None = None,
+    ) -> Command:
         del config
         client = client_getter()
         if client is None:
@@ -1027,7 +1036,10 @@ def build_training_workflow_nodes(*, client_getter: ClientGetter) -> dict[str, A
             goto='post_prepare',
         )
 
-    async def execute_training(state: Mapping[str, Any], config: Any = None) -> Command:
+    async def execute_training(
+        state: Mapping[str, Any],
+        config: RunnableConfig | None = None,
+    ) -> Command:
         del config
         client = client_getter()
         if client is None:
@@ -1075,7 +1087,10 @@ def build_training_workflow_nodes(*, client_getter: ClientGetter) -> dict[str, A
             goto='training_confirmation',
         )
 
-    async def route_new_task(state: Mapping[str, Any], config: Any = None) -> Command:
+    async def route_new_task(
+        state: Mapping[str, Any],
+        config: RunnableConfig | None = None,
+    ) -> Command:
         del config
         pending_new_task = str((state or {}).get('pending_new_task') or '').strip()
         if not pending_new_task:
@@ -1102,6 +1117,12 @@ def build_training_workflow_nodes(*, client_getter: ClientGetter) -> dict[str, A
             },
             goto='agent_runtime',
         )
+
+    plan_training_node.__annotations__['config'] = RunnableConfig | None
+    refresh_training_start_after_edit.__annotations__['config'] = RunnableConfig | None
+    execute_prepare.__annotations__['config'] = RunnableConfig | None
+    execute_training.__annotations__['config'] = RunnableConfig | None
+    route_new_task.__annotations__['config'] = RunnableConfig | None
 
     return {
         'plan_training': plan_training_node,

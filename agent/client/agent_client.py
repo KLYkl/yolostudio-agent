@@ -14,8 +14,11 @@ from typing import Any, Awaitable, Callable, TypedDict
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 try:
+    from langchain_core.runnables import RunnableConfig
     from langchain_core.runnables.config import set_config_context
 except Exception:
+    RunnableConfig = Any  # type: ignore[assignment]
+
     @contextlib.contextmanager
     def set_config_context(config: Any):
         del config
@@ -5944,7 +5947,10 @@ async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudi
         configurable = dict(getattr(config, 'configurable', {}) or {})
         return str(configurable.get('thread_id') or '').strip()
 
-    async def _route_training_entry(state: _AgentRuntimeGraphState, config: Any = None) -> Command:
+    async def _route_training_entry(
+        state: _AgentRuntimeGraphState,
+        config: RunnableConfig | None = None,
+    ) -> Command:
         client = client_holder.get('client')
         if client is None:
             return Command(goto='agent_runtime')
@@ -5974,6 +5980,7 @@ async def build_agent_client(settings: AgentSettings | None = None) -> YoloStudi
             },
             goto='plan_training',
         )
+    _route_training_entry.__annotations__['config'] = RunnableConfig | None
 
     if StateGraph is not None:
         workflow = StateGraph(_AgentRuntimeGraphState)
